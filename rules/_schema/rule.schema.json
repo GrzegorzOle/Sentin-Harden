@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GrzegorzOle/Sentin-Harden/rules/_schema/rule.schema.json",
+  "title": "Sentin-Harden rule",
+  "description": "A single audit item with its assessment and commands. The record has two parts of different origin: 'benchmark' is transcribed from the CIS document and limited to identification, everything else is original work. Text fields are bilingual (pl, en) and both are required, so a missing translation cannot pass unnoticed. Commands, categories and impact areas are language neutral and are never translated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "benchmark",
+    "platform",
+    "risk_category",
+    "disruption",
+    "assessment_state",
+    "description",
+    "audit",
+    "privileges",
+    "runnable"
+  ],
+
+  "properties": {
+    "id": {
+      "description": "Our stable rule identifier. It does not change when the benchmark renumbers its items.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+
+    "benchmark": {
+      "description": "IDENTIFICATION - the only part transcribed from the CIS document, limited to what lets a reader find the item in their own copy of the benchmark.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "item"],
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "version": { "type": "string", "minLength": 1 },
+        "item": {
+          "description": "Item number in the benchmark. The value TBD means the number has not been confirmed against the document - we do not guess it.",
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "description": "Short label that allows the item to be located. Do not transcribe the description or rationale.",
+          "$ref": "#/$defs/text"
+        },
+        "section": {
+          "description": "Benchmark area, e.g. 'Account Policies > Password Policy'. Lets the pack be matched against the document before item numbers are confirmed.",
+          "type": "string"
+        },
+        "level": { "enum": [1, 2] },
+        "profile": { "enum": ["workstation", "server", "application"] }
+      }
+    },
+
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system"],
+      "properties": {
+        "system": { "$ref": "#/$defs/system" },
+        "applies_to_roles": {
+          "description": "Server roles the rule applies to. Absent = applies regardless of role.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "risk_category": {
+      "description": "OWN ASSESSMENT. What the attacker gains while the item stays unmet. Never derive it from the L1/L2 level.",
+      "enum": ["critical", "high", "medium", "low"]
+    },
+
+    "disruption": {
+      "description": "OWN ASSESSMENT. Decides whether the change may be applied in bulk.",
+      "enum": ["none", "needs-review", "needs-planned-rollout"]
+    },
+
+    "assessment_state": {
+      "description": "Separates 'checked, no impact' from 'not assessed yet'. An empty impact list must never pose as safety.",
+      "enum": ["assessed-no-impact", "assessed-impact-described", "not-assessed"]
+    },
+
+    "description": {
+      "description": "What it defends against and what stops being possible after the change. Original work.",
+      "$ref": "#/$defs/long_text"
+    },
+
+    "disruption_description": {
+      "description": "Why this disruption class was assigned. Required for anything other than 'none'.",
+      "$ref": "#/$defs/text"
+    },
+
+    "implementation_consequences": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "impact_areas": {
+          "description": "Identifiers from impact-areas.yaml. They drive the reverse view and the pre-execution summary. Never translated.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+          "uniqueItems": true
+        },
+        "what_breaks": {
+          "description": "Concrete scenarios, not general warnings. The minimum length is deliberately high: a platitude fits in a few words, a described scenario does not.",
+          "$ref": "#/$defs/text_list"
+        },
+        "interruption": { "enum": ["none", "logoff", "service-restart", "system-restart"] },
+        "user_visible": { "type": "boolean" },
+        "do_not_apply_when": {
+          "description": "Roles and configurations where this change is a mistake.",
+          "$ref": "#/$defs/text_list"
+        },
+        "reversibility": { "enum": ["immediate", "after-restart", "difficult"] }
+      }
+    },
+
+    "audit": {
+      "description": "Read-only stage. The test command MUST NOT change system configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shell", "test_command", "expected"],
+      "properties": {
+        "shell": { "$ref": "#/$defs/shell" },
+        "test_command": {
+          "description": "Read-only check. Two output tokens are reserved and must not be matched by 'expected': CHECK_ERROR means the check could not be performed (missing privileges, unavailable subsystem) and maps to the ERROR result; NOT_APPLICABLE means the element does not exist in this edition. Suppressing errors so that a failed check looks like a pass is the worst possible defect in a rule - always separate 'not set' from 'could not read'.",
+          "type": "string",
+          "minLength": 1
+        },
+        "expected": { "type": "string", "minLength": 1 },
+        "comparison": {
+          "default": "equals",
+          "enum": ["equals", "regex", "not-less-than", "not-greater-than", "contains"]
+        }
+      }
+    },
+
+    "remediation": {
+      "description": "State changing commands. The {{backup_file}} placeholder is filled by the engine with the same path in the backup command and in the rollback command, so rollback knows what to restore.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change_command"],
+      "properties": {
+        "change_command": { "type": "string", "minLength": 1 },
+        "backup_command": {
+          "description": "Protects the modified resource BEFORE the change, with a scope matching the change exactly.",
+          "type": "string",
+          "minLength": 1
+        },
+        "rollback_command": {
+          "description": "Restores the state from before the change, usually from {{backup_file}}.",
+          "type": "string",
+          "minLength": 1
+        },
+        "shell": { "$ref": "#/$defs/shell" }
+      }
+    },
+
+    "privileges": { "enum": ["user", "administrator", "root"] },
+
+    "runnable": {
+      "description": "Whether the 'Run' button may be shown. The 'Copy' button is always available regardless of this value.",
+      "type": "boolean"
+    },
+
+    "sources": {
+      "description": "Links to the system vendor documentation. Never to CIS content.",
+      "type": "array",
+      "items": { "type": "string", "format": "uri" }
+    },
+
+    "notes": { "$ref": "#/$defs/text" }
+  },
+
+  "allOf": [
+    {
+      "$comment": "Hard rule: no backup and rollback means no Run button.",
+      "if": {
+        "properties": { "runnable": { "const": true } },
+        "required": ["runnable"]
+      },
+      "then": {
+        "required": ["remediation"],
+        "properties": {
+          "remediation": { "required": ["change_command", "backup_command", "rollback_command"] }
+        }
+      }
+    },
+    {
+      "$comment": "An unassessed rule must never reach bulk mode.",
+      "if": {
+        "properties": { "disruption": { "const": "none" } },
+        "required": ["disruption"]
+      },
+      "then": {
+        "properties": { "assessment_state": { "not": { "const": "not-assessed" } } }
+      }
+    },
+    {
+      "$comment": "If the impact is described, it must be described concretely, not declaratively.",
+      "if": {
+        "properties": { "assessment_state": { "const": "assessed-impact-described" } },
+        "required": ["assessment_state"]
+      },
+      "then": {
+        "required": ["disruption_description", "implementation_consequences"],
+        "properties": {
+          "implementation_consequences": {
+            "required": ["impact_areas", "what_breaks"],
+            "properties": {
+              "impact_areas": { "minItems": 1 },
+              "what_breaks": {
+                "properties": {
+                  "pl": { "minItems": 1 },
+                  "en": { "minItems": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Disruptive classes require a justification of the assigned class.",
+      "if": {
+        "properties": {
+          "disruption": { "enum": ["needs-review", "needs-planned-rollout"] }
+        },
+        "required": ["disruption"]
+      },
+      "then": { "required": ["disruption_description"] }
+    }
+  ],
+
+  "$defs": {
+    "text": {
+      "description": "Bilingual text field. Both versions required.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pl", "en"],
+      "properties": {
+        "pl": { "type": "string", "minLength": 1 },
+        "en": { "type": "string", "minLength": 1 }
+      }
+    },
+    "long_text": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pl", "en"],
+      "properties": {
+        "pl": { "type": "string", "minLength": 30 },
+        "en": { "type": "string", "minLength": 30 }
+      }
+    },
+    "text_list": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pl", "en"],
+      "properties": {
+        "pl": { "type": "array", "items": { "type": "string", "minLength": 40 } },
+        "en": { "type": "array", "items": { "type": "string", "minLength": 40 } }
+      }
+    },
+    "system": {
+      "enum": [
+        "windows-10",
+        "windows-11",
+        "windows-server-2016",
+        "windows-server-2025",
+        "iis",
+        "debian-13",
+        "ubuntu-24.04",
+        "fedora-44"
+      ]
+    },
+    "shell": { "enum": ["powershell", "bash"] }
+  }
+}

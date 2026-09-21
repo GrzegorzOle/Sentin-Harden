@@ -1,0 +1,124 @@
+id: win11-always-install-elevated
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Installer
+  title:
+    pl: Instalacja pakietów z podniesionymi uprawnieniami wyłączona
+    en: Always install with elevated privileges disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Włączone ustawienie sprawia, że każdy pakiet instalacyjny uruchomiony przez
+    zwykłego użytkownika wykonuje się z pełnymi uprawnieniami systemu. Wystarczy
+    wtedy, że użytkownik podwójnie kliknie przygotowany plik instalatora, aby
+    dowolny kod dostał najwyższe uprawnienia — bez pytania o hasło administratora
+    i bez żadnego ostrzeżenia.
+
+    Po wyłączeniu instalator działa z uprawnieniami osoby, która go uruchomiła.
+    Podniesienie uprawnień wymaga świadomej zgody, a przypadkowo otwarty pakiet
+    nie przejmuje maszyny.
+  en: |
+    When enabled, this setting makes every installer package launched by an
+    ordinary user run with full system privileges. It is then enough for a user
+    to double-click a prepared installer file for arbitrary code to receive the
+    highest privileges, with no administrator password prompt and no warning.
+
+    Once disabled, the installer runs with the privileges of whoever started it.
+    Elevation requires deliberate consent, and an accidentally opened package
+    does not take over the machine.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - scripting-and-automation
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Wdrożone oprogramowanie wymaga instalacji przez użytkowników bez uprawnień administratora
+    en:
+      - Deployed software relies on installation by users who hold no administrator rights
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    # Elevation happens only when BOTH hives are set, so both must be read.
+    function Get-Flag($path) {
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { return $null }
+      (Get-ItemProperty -Path $path -ErrorAction Stop).AlwaysInstallElevated
+    }
+    try {
+      $m = Get-Flag 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+      $u = Get-Flag 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+      if (($m -eq 1) -and ($u -eq 1)) { 'ENABLED' } else { 'DISABLED' }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^DISABLED$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+    $name = 'AlwaysInstallElevated'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+    if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AlwaysInstallElevated' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/msi/alwaysinstallelevated
+
+notes:
+  pl: |
+    Podniesienie uprawnień następuje tylko wtedy, gdy ustawienie jest włączone
+    JEDNOCZEŚNIE w gałęzi maszyny i użytkownika. Audyt sprawdza obie, bo
+    wyłączenie tylko jednej daje złudzenie zgodności, a druga może zostać
+    włączona przez politykę użytkownika.
+
+    Remediacja zmienia gałąź maszyny. Jeśli wartość w gałęzi użytkownika jest
+    ustawiona przez politykę grupy, trzeba ją poprawić tam, a nie w rejestrze.
+  en: |
+    Elevation happens only when the setting is enabled in BOTH the machine and
+    the user hive. The audit checks both, because clearing just one creates an
+    illusion of compliance while the other may still be set by user policy.
+
+    The remediation changes the machine hive. If the user hive value comes from
+    group policy, it has to be corrected there rather than in the registry.

@@ -1,0 +1,133 @@
+id: win11-smb1-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MS Security Guide
+  title:
+    pl: Obsługa protokołu SMB w wersji 1 wyłączona
+    en: SMB version 1 support disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    SMB w wersji pierwszej nie potrafi potwierdzić, że po drugiej stronie
+    połączenia jest ten serwer, za który się podaje, ani wykryć, że przesyłane
+    dane ktoś po drodze podmienił. Napastnik w tej samej sieci może dzięki temu
+    przechwycić sesję dostępu do udziału albo podstawić własny zasób.
+
+    Po wyłączeniu tej wersji komputer posługuje się wyłącznie nowszymi, które
+    wymagają potwierdzenia tożsamości serwera. Odbiera to napastnikowi jedną
+    z najprostszych dróg do poświadczeń w sieci lokalnej.
+  en: |
+    SMB version one cannot confirm that the other end of the connection is the
+    server it claims to be, nor detect that transmitted data was altered on the
+    way. An attacker on the same network can therefore hijack a share session
+    or substitute a resource of their own.
+
+    With this version disabled the computer uses only the newer ones, which
+    require the server to prove its identity. This removes one of the simplest
+    routes to credentials on a local network.
+
+disruption_description:
+  pl: |
+    Sama zmiana jest niewidoczna dla użytkownika — dopóki w sieci nie stoi
+    urządzenie, które nie umie nic nowszego. Wtedy dostęp do zasobu znika
+    całkowicie i bez czytelnego komunikatu: udział po prostu przestaje być
+    osiągalny.
+
+    Stąd klasa „wymaga sprawdzenia": na typowej stacji nikt nie zauważy, ale
+    jedno stare urządzenie w sieci zamienia to w awarię.
+  en: |
+    The change itself is invisible to the user - until the network contains a
+    device that speaks nothing newer. Then access to the resource disappears
+    entirely and without a readable message: the share simply stops being
+    reachable.
+
+    Hence the "needs review" class: nobody notices on a typical workstation,
+    but one old device on the network turns this into an outage.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Skanery i urządzenia wielofunkcyjne zapisujące skany prosto na udział sieciowy przestaną tam zapisywać
+      - Starsze systemy NAS bez obsługi nowszych wersji protokołu staną się niedostępne z tej stacji
+      - Zadania kopii zapasowej kierowane na udział obsługiwany wyłącznie przez SMB1 zaczną kończyć się błędem
+    en:
+      - Scanners and multifunction devices writing scans straight to a network share will stop writing there
+      - Older NAS systems without support for newer protocol versions become unreachable from this workstation
+      - Backup jobs targeting a share served only over SMB1 will start failing with connection errors
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W sieci pracuje urządzenie wielofunkcyjne bez obsługi nowszych wersji, dla którego nie ma aktualizacji
+      - Stacja obsługuje sprzęt produkcyjny lub pomiarowy komunikujący się wyłącznie tą wersją protokołu
+    en:
+      - The network hosts a multifunction device with no newer protocol support and no firmware update available
+      - The workstation drives production or measurement equipment that speaks only this protocol version
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    # Get-WindowsOptionalFeature requires elevation. Without try/catch a denied
+    # call returns $null, which would look exactly like "feature not present"
+    # and report a false PASS.
+    try {
+      $f = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -ErrorAction Stop
+      if ($null -eq $f) { 'ABSENT' } else { $f.State }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(Disabled|ABSENT)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $f = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      feature = 'SMB1Protocol'
+      state   = if ($null -eq $f) { 'ABSENT' } else { $f.State.ToString() }
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.state -eq 'Enabled') {
+      Enable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+
+notes:
+  pl: |
+    Zmiana obowiązuje w pełni po ponownym uruchomieniu systemu, więc audyt tuż
+    po wykonaniu może pokazywać stan przejściowy. Przed wdrożeniem w sieci
+    z nieznanym sprzętem warto najpierw sprawdzić, czy cokolwiek jeszcze łączy
+    się tą wersją protokołu.
+  en: |
+    The change takes full effect after a restart, so an audit run immediately
+    afterwards may report a transitional state. Before rolling this out on a
+    network with unknown equipment, check first whether anything still connects
+    using this protocol version.

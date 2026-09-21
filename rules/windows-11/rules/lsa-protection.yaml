@@ -1,0 +1,147 @@
+id: win11-lsa-protection
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Ochrona procesu LSA włączona
+    en: LSA process protection enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Proces LSA przechowuje w pamięci poświadczenia zalogowanych użytkowników.
+    Bez dodatkowej ochrony napastnik, który zdobył uprawnienia administratora,
+    może odczytać jego pamięć i wyjąć stamtąd skróty haseł oraz bilety dostępu —
+    a następnie użyć ich do logowania na kolejnych maszynach bez znajomości hasła.
+
+    Po włączeniu ochrony system uruchamia LSA jako proces chroniony, do którego
+    nie da się podłączyć zwykłym narzędziem ani wstrzyknąć własnego kodu.
+    Odbiera to napastnikowi standardową drogę z jednej przejętej stacji do całej
+    sieci.
+  en: |
+    The LSA process keeps the credentials of signed-in users in memory. Without
+    extra protection an attacker who has gained administrator rights can read
+    that memory and extract password hashes and access tickets, then reuse them
+    to sign in to further machines without ever knowing the password.
+
+    With the protection enabled the system runs LSA as a protected process that
+    cannot be attached to with ordinary tooling or injected into. This removes
+    the standard route from one compromised workstation to the whole network.
+
+disruption_description:
+  pl: |
+    Dla użytkownika zmiana jest niewidoczna. Problem dotyczy oprogramowania,
+    które celowo podłącza się do LSA: starszych pakietów uwierzytelniania,
+    niektórych agentów bezpieczeństwa i narzędzi jednokrotnego logowania.
+    Takie moduły przestaną się ładować, jeśli nie są podpisane zgodnie
+    z wymaganiami ochrony.
+
+    Stąd klasa „wymaga sprawdzenia": na typowej stacji biurowej nic się nie
+    stanie, ale na maszynie z agentem dostawcy zewnętrznego warto to najpierw
+    potwierdzić.
+  en: |
+    The change is invisible to the user. The problem concerns software that
+    deliberately hooks into LSA: older authentication packages, some security
+    agents and single sign-on tooling. Such modules stop loading unless they are
+    signed to the standard the protection requires.
+
+    Hence the "needs review" class: nothing happens on a typical office
+    workstation, but on a machine running a third-party agent this is worth
+    confirming first.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - accounts-and-passwords
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Niepodpisane pakiety uwierzytelniania innych producentów przestaną być ładowane przy starcie systemu
+      - Narzędzia jednokrotnego logowania podłączające się do procesu LSA mogą stracić możliwość działania
+      - Starsi agenci bezpieczeństwa odczytujący pamięć LSA zaczną zgłaszać błędy dostępu w swoich dziennikach
+    en:
+      - Unsigned third-party authentication packages will stop loading during system start-up
+      - Single sign-on tooling that attaches to the LSA process may lose the ability to operate
+      - Older security agents reading LSA memory will start reporting access errors in their own logs
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa pakiet uwierzytelniania dostawcy, dla którego nie ma podpisanej wersji
+      - Stacja korzysta z czytnika biometrycznego lub kart z własnym modułem logowania bez aktualizacji
+    en:
+      - The machine runs a vendor authentication package with no signed version available
+      - The workstation uses a biometric or smart card reader with its own unmaintained logon module
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'RunAsPPL'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(1|2)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'RunAsPPL'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+      -Name 'RunAsPPL' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection
+
+notes:
+  pl: |
+    Ochrona zaczyna obowiązywać po ponownym uruchomieniu systemu, więc ponowny
+    audyt tuż po zmianie odczyta już nową wartość w rejestrze, mimo że proces
+    nie jest jeszcze chroniony. Zdarzenia o zablokowanych modułach znajdziesz
+    w dzienniku systemowym pod źródłem Wininit.
+  en: |
+    The protection takes effect after a restart, so a re-audit immediately after
+    the change already reads the new registry value even though the process is
+    not protected yet. Events about blocked modules appear in the system log
+    under the Wininit source.

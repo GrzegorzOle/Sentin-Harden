@@ -84,6 +84,9 @@ i naprawy są autorskie.
 
 Po dokument benchmarku sięgnij bezpośrednio do CIS.
 
+Pełne zastrzeżenie o braku afiliacji i o znakach towarowych znajduje się w pliku
+[NOTICE](NOTICE). Wyniki działania narzędzia nie są certyfikacją ani atestacją CIS.
+
 ## Zastrzeżenie
 
 Narzędzie modyfikuje konfigurację systemu operacyjnego. Zmiany wykonujesz na własną
@@ -92,4 +95,7 @@ zanim je wdrożysz.
 
 ## Licencja
 
-Apache License 2.0 — zobacz [LICENSE](LICENSE).
+Apache License 2.0 — zobacz [LICENSE](LICENSE) oraz [NOTICE](NOTICE).
+
+Redystrybuując projekt lub jego fragmenty, dołącz plik `NOTICE` — wymaga tego punkt 4(d)
+licencji.

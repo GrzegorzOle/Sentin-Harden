@@ -1,0 +1,197 @@
+id: win2025-builtin-guest-renamed
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Wbudowane konto gościa przemianowane
+    en: The built-in guest account renamed
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt wymaga, żeby wbudowane konto gościa nosiło nazwę inną niż
+    domyślna.
+
+    Jest to punkt najsłabszy z całej grupy dotyczącej kont wbudowanych
+    i warto powiedzieć to wprost, zamiast pisać o nim tak, jakby zamykał
+    jakąś drogę. Konto gościa powinno być wyłączone, a konto wyłączone nie
+    wpuszcza nikogo niezależnie od tego, jak się nazywa. Zmiana nazwy jest
+    więc zabezpieczeniem drugiego rzędu, działającym tylko wtedy, gdy
+    zabezpieczenie pierwszego rzędu zawiodło.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: znane
+    nazwisko konta, które i tak odszuka po identyfikatorze. Wartość zmiany
+    ogranicza się do narzędzi automatycznych, które próbują nazw domyślnych
+    i nie sprawdzają identyfikatorów.
+
+    Na serwerze punkt ma jednak sens dodatkowy, którego na stanowisku
+    roboczym nie ma: nazwa konta gościa pojawia się w uprawnieniach do
+    udziałów i katalogów, nadawanych kiedyś ręcznie. Nazwa nietypowa sprawia,
+    że taki wpis rzuca się w oczy przy przeglądzie, zamiast wtapiać się
+    w tło jako coś, co „zawsze tam było".
+  en: |
+    The item takes that the built-in guest account bear a name other than the default one.
+
+    It is the weakest item of the whole group concerning built-in accounts, and that is
+    worth saying outright rather than writing of it as though it closed some road. The guest
+    account ought to be switched off, and a switched-off account lets nobody in whatever it
+    is called. Renaming is therefore a second-order safeguard, working only where the
+    first-order one has failed.
+
+    What an attacker gains while the item goes unmet: a known name for an account they will
+    find by its identifier anyway. The change's worth is bounded by automatic tools that try
+    default names and do not check identifiers.
+
+    On a server the item has a further sense, though, which it does not have at a working
+    station: the guest account's name appears in the rights to shares and directories,
+    granted by hand once. An unusual name makes such an entry catch the eye at a review
+    rather than blend into the background as something that "was always there".
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymagają uprawnienia nadane tej nazwie wprost, bo one nazwy
+    nie śledzą tak, jak śledzą ją uprawnienia nadane identyfikatorowi.
+
+    W praktyce uprawnienia do plików i udziałów są przechowywane po
+    identyfikatorze, więc zmiana nazwy ich nie psuje — wpis pokaże po prostu
+    nową nazwę. Zdarzają się jednak konfiguracje aplikacji, w których nazwa
+    konta jest zapisana jako tekst: listy dostępu w narzędziach własnych,
+    pliki konfiguracyjne serwerów usług, reguły przepisywane ręcznie. Te
+    przestaną trafiać w konto.
+
+    Skutek jest tym mniejszy, im bardziej konto jest wyłączone — a powinno
+    być. Tam, gdzie punkt o wyłączeniu konta gościa jest spełniony, zmiana
+    nazwy jest praktycznie niewidoczna.
+
+    Zmiana nie wymaga restartu.
+  en: |
+    What needs checking are the rights granted to that name outright, since they do not
+    follow the name the way rights granted to an identifier do.
+
+    In practice the rights to files and shares are kept by identifier, so renaming does not
+    break them - the entry will simply show the new name. There are, though, application
+    configurations in which an account's name is recorded as text: access lists in tools of
+    one's own, the configuration files of service servers, rules copied out by hand. Those
+    will stop hitting the account.
+
+    The effect is the smaller the more the account is switched off - and it ought to be.
+    Where the item on switching the guest account off is met, renaming is as good as
+    invisible.
+
+    The change takes no restart.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - file-sharing
+  what_breaks:
+    pl:
+      - Konfiguracje aplikacji zapisujące nazwę konta jako tekst przestają w nie trafiać
+      - Uprawnienia do plików i udziałów działają dalej, bo trzymają identyfikator
+      - Skutek jest niewidoczny wszędzie tam, gdzie konto gościa jest wyłączone
+      - Dokumentacja podająca nazwę domyślną przestaje być zgodna ze stanem
+    en:
+      - Application configurations recording the account's name as text stop hitting it
+      - The rights to files and shares go on working, since they hold the identifier
+      - The effect is invisible wherever the guest account is switched off
+      - Documentation giving the default name stops matching the state
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Aplikacja na serwerze nadaje uprawnienia po nazwie konta gościa zapisanej jako tekst
+    en:
+      - An application on the server grants rights by the guest account's name recorded as text
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+      if ($os.ProductType -eq 2) {
+        # A domain controller keeps no local accounts. The built-in guest is a
+        # domain account there and falls under a separate item.
+        'NOT_APPLICABLE'
+      }
+      else {
+        # The built-in account is found by the ending of its identifier, not by
+        # name. The default names below stand for the commonest language
+        # versions; a dot takes the place of a letter outside the basic alphabet,
+        # so that the check does not depend on the encoding in which the command
+        # reaches the shell.
+        $account = Get-LocalUser | Where-Object { $_.SID.Value -match '-501$' }
+        if ($null -eq $account) { 'CHECK_ERROR' }
+        elseif ($account.Name -match '^(guest|gast|go.{1,2}|invit.|invitado|convidado|ospite)$') { 'DEFAULT_NAME' }
+        else { 'RENAMED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: RENAMED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $account = Get-LocalUser | Where-Object { $_.SID.Value -match '-501$' }
+    [pscustomobject]@{
+      sid     = $account.SID.Value
+      name    = $account.Name
+      existed = ($null -ne $account)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $account = Get-LocalUser | Where-Object { $_.SID.Value -match '-501$' }
+    $new = 'legacyacct-' + (Get-Random -Minimum 1000 -Maximum 9999)
+    Rename-LocalUser -SID $account.SID -NewName $new
+    "Renamed to $new"
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous name - refusing to guess one.' }
+    Rename-LocalUser -SID $b.sid -NewName $b.name
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/accounts-rename-guest-account
+
+notes:
+  pl: |
+    Punkt nie zastępuje wyłączenia konta gościa i przy wyłączonym koncie nie
+    zmienia praktycznie niczego. W raporcie warto czytać oba razem: sam ten
+    punkt spełniony obok tamtego niespełnionego opisuje konto czynne pod
+    inną nazwą, a to jest stan gorszy niż wygląda.
+
+    Sprawdzenie porównuje nazwę z listą wariantów domyślnych w kilku
+    wersjach językowych i lista ta nie jest pełna. Na systemie w wersji
+    spoza niej konto z nazwą domyślną zostanie uznane za przemianowane.
+
+    Na kontrolerze domeny wynik brzmi „nie dotyczy" — kontroler nie ma kont
+    lokalnych.
+  en: |
+    The item is no substitute for switching the guest account off and with the account
+    switched off changes as good as nothing. In the report it is worth reading the two
+    together: this item met beside that one unmet describes a live account under another
+    name, and that is a worse state than it looks.
+
+    The check compares the name with a list of default variants in several language versions
+    and that list is not complete. On a system in a version outside it an account with a
+    default name will be held renamed.
+
+    On a domain controller the result reads "not applicable" - a controller has no local
+    accounts.

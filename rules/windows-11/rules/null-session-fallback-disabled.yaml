@@ -1,0 +1,176 @@
+id: win11-null-session-fallback-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Powrót do sesji bez uwierzytelnienia zabroniony
+    en: Falling back to an unauthenticated session forbidden
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przy nawiązywaniu połączenia z maszyną obie strony uzgadniają sposób
+    potwierdzenia tożsamości. Bez tego punktu w uzgodnieniu tym pozostaje
+    możliwość zejścia do sesji, w której tożsamości nie potwierdza się wcale —
+    połączenie dochodzi do skutku, a druga strona występuje jako nikt.
+
+    Mechanizm ten pochodzi z czasów, gdy część usług systemowych wymagała
+    rozmowy przed zalogowaniem kogokolwiek. Dziś jego jedyną znaną rolą jest
+    stanowienie furtki: napastnik, który nie ma żadnego konta, wymusza zejście
+    do takiej sesji i rozmawia z usługami maszyny bez podania kim jest.
+
+    Wyłączenie tej możliwości nie odbiera niczego stronie, która potrafi się
+    uwierzytelnić. Odbiera ją wyłącznie tej, która nie potrafi albo nie chce.
+  en: |
+    While a connection to the machine is being established, the two sides agree on
+    how identity is to be confirmed. Without this item that agreement retains the
+    possibility of dropping to a session in which identity is not confirmed at all
+    - the connection comes about and the other side appears as nobody.
+
+    The mechanism dates from when some system services needed to talk before
+    anybody had signed in. Today its only known role is to constitute a back way:
+    an attacker with no account at all forces a drop to such a session and talks to
+    the machine's services without saying who they are.
+
+    Switching the possibility off takes nothing from a side that can authenticate.
+    It takes it only from one that cannot or will not.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać na maszynie z aktualnym oprogramowaniem. Zejście
+    do sesji bez uwierzytelnienia nie jest dziś używane przez żaden mechanizm,
+    który byłby na stanowisku potrzebny.
+
+    Ryzyko dotyczy urządzeń sieciowych sprzed kilkunastu lat, odzywających się do
+    stanowiska bez poświadczeń: starych skanerów odkładających pliki, rejestratorów
+    i sterowników przemysłowych. Jeżeli takie urządzenie z tą maszyną rozmawia,
+    przestanie — objawem jest brak plików odkładanych przez urządzenie, bez
+    komunikatu na stanowisku.
+
+    W sieci biurowej bez takich urządzeń zmiana przechodzi niezauważona.
+
+    Nie ma restartu. Zmiana obowiązuje od razu, a dla trwających sesji —
+    po ich zakończeniu.
+  en: |
+    Nothing stops working on a machine with current software. Dropping to an
+    unauthenticated session is not used today by any mechanism a station would
+    need.
+
+    The risk concerns network devices from over a decade ago that talk to a station
+    without credentials: old scanners dropping files, recorders and industrial
+    controllers. If such a device talks to this machine, it will stop - the symptom
+    being an absence of files the device used to drop, with no message at the
+    station.
+
+    In an office network without such devices the change passes unnoticed.
+
+    There is no restart. The change takes effect at once, and for sessions under
+    way, once they end.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - file-sharing
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Urządzenia sieciowe odzywające się do stanowiska bez poświadczeń stracą z nim łączność
+      - Stare skanery i rejestratory odkładające pliki na stanowisko przestaną to robić, bez komunikatu
+    en:
+      - Network devices that talk to the station without credentials lose their connection to it
+      - Old scanners and recorders dropping files onto the station stop doing so, with no message
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Ze stanowiskiem rozmawia urządzenie sieciowe niepotrafiące podać żadnych poświadczeń
+    en:
+      - A network device unable to supply any credentials talks to this station
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'
+      $name = 'AllowNullSessionFallback'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'
+    $name = 'AllowNullSessionFallback'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowNullSessionFallback' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-allow-localsystem-null-session-fallback
+
+notes:
+  pl: |
+    Punkt należy do rodziny reguł o dostępie bez tożsamości, obok ograniczenia
+    odpytywania bazy kont i pustych list zasobów dostępnych anonimowo. Każda
+    zamyka inną drogę i żadna nie zastępuje pozostałych — wspólnym mianownikiem
+    jest to, że po drugiej stronie nikt się nie przedstawia.
+
+    Wynik „brak wartości" jest tu niespełnieniem punktu, choć domyślne zachowanie
+    systemu jest już właściwe. Powodem jest to, że nic tego nie utrwala i zmiana
+    po stronie systemu albo wpis wprowadzony przez instalator mogą to cicho
+    odwrócić.
+  en: |
+    The item belongs to the family of rules about access without identity, next to
+    the restriction on querying the account database and the empty lists of
+    resources reachable anonymously. Each closes a different road and none replaces
+    the others - the common thread is that nobody on the other side introduces
+    themselves.
+
+    A result of "no value" counts as the item unmet, even though the system's
+    default behaviour is already right. The reason is that nothing makes it
+    permanent, and a change on the system's side or an entry made by an installer
+    could quietly reverse it.

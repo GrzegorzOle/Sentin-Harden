@@ -1,0 +1,181 @@
+id: win11-online-identity-authentication-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Uwierzytelnianie tożsamościami z usług sieciowych zabronione
+    en: Authentication with identities from online services forbidden
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System potrafi przyjąć przy łączeniu między maszynami tożsamość pochodzącą
+    z usługi sieciowej, a nie z domeny ani z lokalnej bazy kont. Mechanizm
+    powstał dla maszyn poza domeną, które mają się rozpoznać bez wspólnego
+    kontrolera — dwa komputery w grupie roboczej, kojarzone przez konto
+    założone w usłudze producenta.
+
+    Konsekwencją jest to, że o dopuszczeniu do maszyny rozstrzyga podmiot spoza
+    organizacji. Konto, którego nikt w firmie nie zakładał, nie zawiesza i nie
+    kasuje, staje się podstawą do nawiązania połączenia. Odejście pracownika,
+    zmiana hasła w firmie i wyłączenie konta w domenie nie mają na tę drogę
+    żadnego wpływu, bo prowadzi ona obok nich.
+
+    Punkt zamyka tę drogę, zostawiając wyłącznie tożsamości, nad którymi
+    organizacja panuje: domenowe i lokalne.
+  en: |
+    When connecting between machines the system can accept an identity coming from
+    an online service rather than from a domain or the local account database. The
+    mechanism was made for machines outside a domain that must recognise each other
+    without a shared controller - two computers in a workgroup, matched through an
+    account set up in the vendor's service.
+
+    The consequence is that admission to the machine is settled by a party outside
+    the organisation. An account nobody in the company created, suspends or
+    deletes becomes the basis for establishing a connection. An employee leaving, a
+    password changed in the company and an account disabled in the domain have no
+    bearing on this road, because it runs alongside them.
+
+    The item closes that road, leaving only identities the organisation commands:
+    domain ones and local ones.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy maszyna łączy się z innymi poza domeną przy użyciu
+    konta założonego w usłudze producenta.
+
+    Tam, gdzie tak jest, połączenia te przestaną dochodzić do skutku. Spotyka się
+    to w małych sieciach bez domeny, przy udostępnianiu między dwoma komputerami
+    tego samego właściciela i przy dostępie do maszyny domowej z firmowej.
+
+    W środowisku domenowym zmiany nie widać wcale — tam tożsamości pochodzą
+    z kontrolera i ten mechanizm nie jest używany.
+
+    Logowanie kontem powiązanym z usługą producenta przy samej maszynie nie jest
+    tym punktem objęte. Dotyczy on łączenia między maszynami, a nie zalogowania
+    się przy klawiaturze.
+
+    Nie ma restartu. Zmiana obowiązuje przy następnej próbie połączenia.
+  en: |
+    What needs checking is whether the machine connects to others outside a domain
+    using an account set up in the vendor's service.
+
+    Where it does, those connections will stop coming about. This turns up in small
+    networks without a domain, in sharing between two computers of the same owner,
+    and in reaching a home machine from a company one.
+
+    In a domain environment the change does not show at all - there identities come
+    from a controller and this mechanism is not used.
+
+    Signing in at the machine itself with an account tied to the vendor's service
+    is not covered by this item. It concerns connecting between machines, not
+    signing in at the keyboard.
+
+    There is no restart. The change takes effect at the next connection attempt.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - file-sharing
+    - remote-management
+  what_breaks:
+    pl:
+      - Łączenie między maszynami poza domeną przy użyciu konta z usługi producenta przestanie dochodzić do skutku
+      - Udostępnianie między dwoma komputerami tego samego właściciela bez domeny może przestać działać
+    en:
+      - Connecting between machines outside a domain using an account from the vendor's service stops coming about
+      - Sharing between two computers of the same owner without a domain may stop working
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna pracuje bez domeny i łączy się z innymi stanowiskami przy użyciu konta założonego w usłudze producenta
+    en:
+      - The machine works without a domain and connects to other stations using an account set up in the vendor's service
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\pku2u'
+      $name = 'AllowOnlineID'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\pku2u'
+    $name = 'AllowOnlineID'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\pku2u'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowOnlineID' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-allow-pku2u-authentication-requests-to-this-computer-to-use-online-identities
+
+notes:
+  pl: |
+    Klucz, w którym leży ta wartość, na maszynie bez wdrożonej zasady zwykle nie
+    istnieje. Polecenie naprawcze tworzy go, a wycofanie usuwa go w całości,
+    jeżeli przed zmianą go nie było — tak, żeby po wycofaniu rejestr wyglądał
+    dokładnie jak przed wdrożeniem.
+
+    Punkt bywa mylony z zakazem zakładania na maszynie kont powiązanych z usługą
+    producenta. Są to dwie różne rzeczy i obsługuje je osobna reguła. Tutaj
+    chodzi wyłącznie o to, czy taka tożsamość jest przyjmowana przy łączeniu
+    z zewnątrz.
+  en: |
+    The key this value sits in usually does not exist on a machine where the policy
+    has not been applied. The fix creates it, and the rollback removes it entirely
+    if it was not there before the change - so that after a rollback the registry
+    looks exactly as it did before.
+
+    The item is sometimes confused with a ban on setting up accounts tied to the
+    vendor's service on the machine. These are two different things and a separate
+    rule handles the other. Here it is solely about whether such an identity is
+    accepted when connecting from outside.

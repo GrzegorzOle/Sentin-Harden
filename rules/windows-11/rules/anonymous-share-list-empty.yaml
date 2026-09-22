@@ -1,0 +1,193 @@
+id: win11-anonymous-share-list-empty
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Lista udziałów dostępnych anonimowo pusta
+    en: The list of shares reachable anonymously left empty
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna prowadzi wykaz udziałów plikowych, do których wolno sięgnąć bez
+    podania kim się jest. Wpis na tej liście działa obok uprawnień nadanych
+    samemu udziałowi: dopuszcza połączenie, przy którym pytanie o tożsamość
+    w ogóle nie pada.
+
+    Lista ma być pusta. Każdy wpis na niej to udostępnienie otwarte dla całej
+    sieci, o którym w uprawnieniach udziału nie widać niczego niepokojącego —
+    i właśnie dlatego jest trudny do znalezienia. Przegląd uprawnień pokaże
+    ograniczony dostęp, a maszyna i tak odpowie każdemu, kto zapyta.
+
+    Wpisy takie pojawiają się zwykle nieumyślnie: zostawione po rozwiązywaniu
+    problemu z urządzeniem, dopisane przez instalator starego oprogramowania albo
+    przeniesione razem z obrazem systemu, na którym kiedyś coś testowano.
+  en: |
+    The machine keeps a list of file shares that may be reached without saying who
+    one is. An entry on that list works alongside the permissions given to the
+    share itself: it admits a connection in which the question of identity is never
+    asked.
+
+    The list is to be empty. Every entry on it is a share open to the whole
+    network, about which the share's permissions show nothing alarming - and that
+    is exactly what makes it hard to find. A review of permissions will show
+    restricted access, and the machine will answer anybody who asks anyway.
+
+    Such entries usually appear unintentionally: left behind after troubleshooting
+    a device, added by the installer of some old software, or carried over with a
+    system image on which something was once tested.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, co na liście stoi, zanim się ją opróżni. Na maszynie,
+    na której lista jest już pusta, nie zmienia się nic.
+
+    Jeżeli wpis istnieje, coś z niego korzystało. Znajduje się to zwykle po
+    stronie urządzeń, nie ludzi: skanera odkładającego pliki, urządzenia
+    pomiarowego, systemu rejestrującego obraz. Po opróżnieniu listy urządzenie
+    straci dostęp i zwykle nie zgłosi tego w żaden widoczny sposób — pliki po
+    prostu przestaną się pojawiać.
+
+    Dlatego przed wdrożeniem warto odczytać zawartość listy, a nie tylko ją
+    wyczyścić. Reguła podaje odczytane wpisy w wyniku audytu właśnie po to.
+
+    Rozwiązaniem jest nadanie urządzeniu konta z hasłem, a nie pozostawienie
+    udziału otwartego dla wszystkich.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym uruchomieniu usługi
+    udostępniania albo przy następnym starcie systemu.
+  en: |
+    What needs checking is what stands on the list before it is emptied. On a
+    machine where the list is already empty nothing changes.
+
+    If an entry exists, something was using it. That something is usually on the
+    device side rather than the human one: a scanner dropping files, a measuring
+    instrument, a system recording video. Once the list is emptied the device loses
+    access and will usually not report it in any visible way - the files simply
+    stop appearing.
+
+    This is why it is worth reading the list's contents before applying the change
+    rather than merely clearing it. The rule reports the entries it read in the
+    audit result for exactly that reason.
+
+    The answer is to give the device an account with a password, not to leave a
+    share open to everybody.
+
+    There is no machine restart. The change takes effect once the sharing service
+    restarts, or at the next system start.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Urządzenia korzystające z udziału wpisanego na tę listę stracą do niego dostęp, zwykle bez żadnego komunikatu
+      - Pliki odkładane na stanowisko przez skanery i urządzenia pomiarowe mogą przestać się pojawiać
+    en:
+      - Devices using a share entered on this list lose access to it, usually with no message at all
+      - Files dropped onto the station by scanners and measuring instruments may stop appearing
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Z udziału wpisanego na listę korzysta urządzenie niepotrafiące podać poświadczeń, którego nie da się jeszcze zastąpić
+    en:
+      - A share on the list is used by a device unable to supply credentials that cannot yet be replaced
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value holds a list of entries, not a number. A missing value and a
+      # list with nothing on it mean the same thing here - no share is reachable
+      # anonymously - so both are reported as empty.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      $name = 'NullSessionShares'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'EMPTY' }
+        else {
+          $entries = @($value | Where-Object { $_ -ne '' })
+          if ($entries.Count -eq 0) { 'EMPTY' } else { 'ENTRIES ' + ($entries -join ',') }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: EMPTY
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'NullSessionShares'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = @($current)
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NullSessionShares' -Value @() -Type MultiString
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value @($b.value) -Type MultiString
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-shares-that-can-be-accessed-anonymously
+
+notes:
+  pl: |
+    Reguła zgłasza odczytane wpisy razem z wynikiem, zamiast poprzestać na
+    stwierdzeniu, że punkt jest niespełniony. Bez tej informacji wdrożenie jest
+    ruchem w ciemno: opróżnienie listy odcina coś, czego nie widać, i skutek
+    ujawnia się dopiero po dniach.
+
+    Brak wartości traktuję tu tak samo jak listę pustą, bo znaczą to samo —
+    żaden udział nie jest dostępny anonimowo. Jest to odstępstwo od zasady
+    przyjętej w regułach liczbowych, gdzie brak wartości jest niespełnieniem;
+    odstępstwo wynika z tego, że tutaj nie ma domyślnej zawartości, którą brak
+    wpisu mógłby cicho przywrócić.
+  en: |
+    The rule reports the entries it read together with the result, rather than
+    stopping at a statement that the item is unmet. Without that information
+    applying the change is a move in the dark: emptying the list cuts something off
+    that cannot be seen, and the effect surfaces only days later.
+
+    A missing value is treated here the same as an empty list, because they mean
+    the same thing - no share is reachable anonymously. This departs from the
+    convention used in numeric rules, where a missing value counts as unmet; the
+    departure follows from there being no default content here that a missing entry
+    could quietly restore.

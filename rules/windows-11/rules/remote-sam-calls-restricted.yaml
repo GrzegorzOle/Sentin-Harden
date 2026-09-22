@@ -1,0 +1,201 @@
+id: win11-remote-sam-calls-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Zdalne odpytywanie bazy kont ograniczone do administratorów
+    en: Remote querying of the account database limited to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Baza kont maszyny odpowiada na pytania zadawane przez sieć: jakie konta
+    istnieją, do jakich grup należą, kto jest administratorem. Bez tego punktu
+    odpowiada każdemu uwierzytelnionemu użytkownikowi, a nie tylko osobom,
+    które maszyną zarządzają.
+
+    Jest to podstawowe narzędzie rozpoznania. Napastnik, który zdobył jedno
+    dowolne konto w sieci, odpytuje po kolei wszystkie maszyny i buduje mapę:
+    kto gdzie jest administratorem lokalnym, które konto powtarza się na wielu
+    stanowiskach, gdzie zalogowana jest osoba z wysokimi uprawnieniami. Mapa ta
+    wyznacza całą dalszą drogę ataku i powstaje bez jednego nieudanego logowania,
+    bez alarmu i bez śladu w dzienniku wyglądającego na włamanie.
+
+    Punkt zamyka te odpowiedzi przed wszystkimi poza administratorami. Nie
+    utrudnia ataku — odbiera napastnikowi wiedzę o tym, gdzie atakować.
+  en: |
+    The machine's account database answers questions asked over the network: what
+    accounts exist, what groups they belong to, who is an administrator. Without
+    this item it answers every authenticated user, not only the people who
+    administer the machine.
+
+    This is a basic reconnaissance tool. An attacker who has obtained any one
+    account in the network queries every machine in turn and builds a map: who is a
+    local administrator where, which account repeats across many stations, where
+    somebody with high rights is signed in. That map sets the whole further course
+    of the attack and is drawn without a single failed sign-in, without an alarm,
+    and without a log entry that looks like a break-in.
+
+    The item closes those answers to everybody but administrators. It does not make
+    the attack harder - it takes from the attacker the knowledge of where to
+    attack.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, co na tej maszynie odpytuje bazę kont przez sieć.
+
+    Przestaną działać narzędzia inwentaryzacyjne, systemy monitorowania
+    i skanery zgodności, które łączą się na koncie bez praw administratora
+    lokalnego i pytają o skład grup. Objawem jest odmowa dostępu przy zbieraniu
+    danych — zwykle widoczna dopiero w raporcie narzędzia, a nie na stanowisku.
+
+    Dotyczy to także części narzędzi obsługi informatycznej: rozwiązywanie
+    zgłoszeń przez zdalne sprawdzenie, kto należy do lokalnych administratorów,
+    będzie wymagać konta, które te prawa ma.
+
+    Praca użytkownika nie zmienia się w niczym. Logowanie, udziały plikowe
+    i drukowanie działają bez zmian — punkt dotyczy odpytywania bazy kont,
+    a nie korzystania z maszyny.
+
+    Rozwiązaniem tam, gdzie narzędzie jest potrzebne, jest nadanie jego kontu
+    uprawnień, a nie zdjęcie tego ograniczenia.
+
+    Nie ma restartu. Zmiana obowiązuje od razu.
+  en: |
+    What needs checking is what queries the account database over the network on
+    this machine.
+
+    Inventory tools, monitoring systems and compliance scanners that connect under
+    an account without local administrator rights and ask about group membership
+    will stop working. The symptom is access denied while gathering data - usually
+    visible only in the tool's report, not at the station.
+
+    It also concerns some support tools: resolving a report by checking remotely
+    who belongs to the local administrators will require an account that has those
+    rights.
+
+    A user's work does not change in any way. Signing in, file shares and printing
+    all work unchanged - the item concerns querying the account database, not using
+    the machine.
+
+    Where the tool is needed, the answer is to give its account the rights, not to
+    lift this restriction.
+
+    There is no restart. The change takes effect at once.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Narzędzia inwentaryzacyjne i monitorujące działające na koncie bez praw administratora przestaną odczytywać skład grup lokalnych
+      - Zdalne sprawdzenie, kto należy do lokalnych administratorów, będzie wymagać konta z uprawnieniami
+      - Skanery zgodności mogą zgłaszać niemożność zebrania danych zamiast wyniku
+    en:
+      - Inventory and monitoring tools running under an account without administrator rights stop reading local group membership
+      - Checking remotely who belongs to the local administrators will require an account with rights
+      - Compliance scanners may report an inability to gather data instead of a result
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowisko korzysta z narzędzia inwentaryzacyjnego odpytującego bazę kont na koncie bez praw administratora lokalnego
+    en:
+      - The environment uses an inventory tool querying the account database under an account without local administrator rights
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is a security descriptor in text form, not a number. It is
+      # compared after stripping spaces and case, because the same permission can
+      # be written in more than one way.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'RestrictRemoteSAM'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value -or [string]$value -eq '') { 'MISSING' }
+        else {
+          $normalised = ([string]$value -replace '\s', '').ToUpperInvariant()
+          if ($normalised -eq 'O:BAG:BAD:(A;;RC;;;BA)') { 'ADMINS_ONLY' }
+          else { 'OTHER ' + $value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ADMINS_ONLY
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'RestrictRemoteSAM'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RestrictRemoteSAM' -Value 'O:BAG:BAD:(A;;RC;;;BA)' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-restrict-clients-allowed-to-make-remote-sam-calls
+
+notes:
+  pl: |
+    Reguła porównuje zapis uprawnień jako tekst, po usunięciu spacji i różnic
+    w wielkości liter. To samo uprawnienie da się zapisać na więcej niż jeden
+    sposób i takiego zapisu reguła nie rozpozna — zgłosi go jako „inny" wraz
+    z odczytaną wartością, zamiast orzekać, że punkt jest niespełniony bez
+    podania powodu. Wynik „inny" należy przeczytać, a nie naprawiać odruchowo.
+
+    Rozszerzenie listy poza administratorów jest dopuszczalną decyzją
+    wdrożeniową, ale wymaga świadomego zapisu — dopisane konto zyskuje dokładnie
+    tę widoczność, którą punkt zabiera napastnikowi.
+  en: |
+    The rule compares the permission record as text, after stripping spaces and
+    differences in case. The same permission can be written in more than one way,
+    and such a form the rule will not recognise - it reports it as "other" together
+    with the value read, rather than declaring the item unmet without giving a
+    reason. A result of "other" is to be read, not fixed by reflex.
+
+    Widening the list beyond administrators is a permissible deployment decision,
+    but it calls for a deliberate record - an account added there gains exactly the
+    visibility the item takes from an attacker.

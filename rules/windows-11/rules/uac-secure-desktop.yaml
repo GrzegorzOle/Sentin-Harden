@@ -1,0 +1,160 @@
+id: win11-uac-secure-desktop
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Monit o podniesienie uprawnień na bezpiecznym pulpicie
+    en: Elevation prompt shown on the secure desktop
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Okno z prośbą o podniesienie uprawnień wyświetlone na zwykłym pulpicie jest
+    tylko oknem — takim samym, jakie potrafi narysować dowolny program. Kod
+    działający na prawach użytkownika może je podrobić, przechwycić kliknięcie
+    albo podstawić własne pod prawdziwe i w ten sposób wyłudzić zgodę na coś
+    zupełnie innego, niż widzi użytkownik.
+
+    Bezpieczny pulpit to osobna sesja graficzna, do której zwykłe programy nie
+    mają dostępu: nie narysują tam nic, nie odczytają, co jest wyświetlone, ani
+    nie klikną za użytkownika. Dopiero na nim potwierdzenie znaczy to, co
+    powinno znaczyć.
+  en: |
+    An elevation prompt drawn on the ordinary desktop is just a window - the
+    same kind any program can draw. Code running with user rights can forge it,
+    intercept the click or slide its own in front of the real one, and in that
+    way obtain consent for something entirely different from what the user sees.
+
+    The secure desktop is a separate graphical session that ordinary programs
+    cannot reach: they cannot draw on it, read what is displayed there, or click
+    on the user's behalf. Only there does a confirmation mean what it is
+    supposed to mean.
+
+disruption_description:
+  pl: |
+    Przełączenie na bezpieczny pulpit jest widoczne: ekran przygasa, a przejście
+    trwa moment. Na słabszym sprzęcie i przy wielu monitorach ten moment bywa
+    zauważalny i użytkownicy zgłaszają go jako zacinanie.
+
+    Poważniejszy przypadek dotyczy narzędzi zdalnej pomocy i oprogramowania
+    dostępności: część z nich nie widzi bezpiecznego pulpitu, więc osoba
+    prowadząca zdalnie widzi czarny ekran i nie może potwierdzić monitu za
+    użytkownika. To nie jest awaria, ale zmienia sposób prowadzenia wsparcia.
+  en: |
+    Switching to the secure desktop is visible: the screen dims and the
+    transition takes a moment. On weaker hardware and with several monitors that
+    moment can be noticeable, and users report it as stuttering.
+
+    The more serious case concerns remote assistance tooling and accessibility
+    software: some of it cannot see the secure desktop, so the person working
+    remotely sees a black screen and cannot confirm the prompt for the user.
+    That is not a failure, but it changes how support is delivered.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - remote-desktop
+    - remote-management
+  what_breaks:
+    pl:
+      - Narzędzia zdalnej pomocy mogą pokazywać czarny ekran w momencie monitu o podniesienie uprawnień
+      - Oprogramowanie dostępności bez obsługi bezpiecznego pulpitu przestanie odczytywać treść monitu
+      - Przełączenie pulpitu bywa zauważalne na słabszym sprzęcie i przy kilku monitorach
+    en:
+      - Remote assistance tooling may show a black screen at the moment of the elevation prompt
+      - Accessibility software without secure desktop support stops reading the prompt aloud
+      - The desktop switch can be noticeable on weaker hardware and with several monitors
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Wsparcie prowadzone jest narzędziem zdalnym, które nie potrafi wyświetlić bezpiecznego pulpitu
+      - Użytkownik korzysta z oprogramowania dostępności bez obsługi tego trybu wyświetlania
+    en:
+      - Support is delivered with a remote tool that cannot display the secure desktop
+      - The user relies on accessibility software without support for this display mode
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      $secure = $item.PromptOnSecureDesktop
+      $behaviour = $item.ConsentPromptBehaviorAdmin
+      if ($null -eq $secure -or $null -eq $behaviour) { 'MISSING' }
+      elseif ([int]$secure -eq 1 -and [int]$behaviour -ne 0) { 'PROMPT_ON_SECURE_DESKTOP' }
+      else { 'SECURE=' + $secure + ' BEHAVIOUR=' + $behaviour }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: PROMPT_ON_SECURE_DESKTOP
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path               = $path
+      secure_desktop     = $item.PromptOnSecureDesktop
+      secure_existed     = ($null -ne $item.PromptOnSecureDesktop)
+      consent_behaviour  = $item.ConsentPromptBehaviorAdmin
+      consent_existed    = ($null -ne $item.ConsentPromptBehaviorAdmin)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    Set-ItemProperty -Path $path -Name 'PromptOnSecureDesktop' -Value 1 -Type DWord
+    Set-ItemProperty -Path $path -Name 'ConsentPromptBehaviorAdmin' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.secure_existed) {
+      Set-ItemProperty -Path $b.path -Name 'PromptOnSecureDesktop' -Value $b.secure_desktop -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'PromptOnSecureDesktop' -ErrorAction SilentlyContinue
+    }
+    if ($b.consent_existed) {
+      Set-ItemProperty -Path $b.path -Name 'ConsentPromptBehaviorAdmin' -Value $b.consent_behaviour -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'ConsentPromptBehaviorAdmin' -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/identity-protection/user-account-control/settings-and-configuration
+
+notes:
+  pl: |
+    Punkt sprawdza dwa ustawienia naraz, bo osobno nic nie znaczą: bezpieczny
+    pulpit bez monitu jest pustym ustawieniem, a monit bez bezpiecznego pulpitu
+    da się podrobić. Zachowanie „bez pytania" jest traktowane jako niezgodność
+    niezależnie od pierwszego ustawienia.
+
+    Wymaga włączonej kontroli konta użytkownika — przy wyłączonej te wartości
+    nie mają żadnego wpływu na działanie systemu.
+  en: |
+    The item checks two settings at once, because separately they mean nothing:
+    a secure desktop with no prompt is an empty setting, and a prompt without
+    the secure desktop can be forged. The "elevate without prompting" behaviour
+    counts as a finding regardless of the first setting.
+
+    It requires User Account Control to be enabled - with it off, these values
+    have no effect on how the system behaves.

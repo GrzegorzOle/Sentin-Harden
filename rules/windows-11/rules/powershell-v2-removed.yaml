@@ -1,0 +1,147 @@
+id: win11-powershell-v2-removed
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Features
+  title:
+    pl: Silnik PowerShell w wersji 2 usunięty
+    en: PowerShell version 2 engine removed
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Starszy silnik PowerShell pozostaje w systemie jako funkcja zgodności
+    i można go wywołać jednym przełącznikiem. Rzecz w tym, że nie zna
+    mechanizmów wprowadzonych później: nie rejestruje bloków skryptu, nie
+    zgłasza się do skanowania i nie respektuje trybów ograniczonego języka.
+
+    W praktyce oznacza to, że cały wysiłek włożony w rejestrowanie
+    i ograniczanie PowerShella da się obejść przez dopisanie jednego parametru.
+    Usunięcie silnika zamyka tę furtkę — to punkt, bez którego reguła
+    o rejestrowaniu bloków skryptu jest tylko pozornie wdrożona.
+  en: |
+    The older PowerShell engine stays in the system as a compatibility feature
+    and can be invoked with a single switch. The catch is that it knows nothing
+    of the mechanisms introduced later: it does not log script blocks, does not
+    submit itself for scanning and does not honour restricted language modes.
+
+    In practice this means the whole effort put into logging and constraining
+    PowerShell can be bypassed by adding one parameter. Removing the engine
+    closes that door - it is the item without which the script block logging
+    rule is only apparently in place.
+
+disruption_description:
+  pl: |
+    Usunięcie funkcji wymaga ponownego uruchomienia i jest odczuwalne wyłącznie
+    tam, gdzie ktoś świadomie z niej korzysta. Zdarza się to w dwóch miejscach:
+    w starszych skryptach instalacyjnych wymuszających tę wersję oraz
+    w oprogramowaniu, które osadza silnik PowerShell we własnym procesie
+    i zostało zbudowane przed zmianą.
+
+    Skutek jest natychmiastowy i czytelny — wywołanie z przełącznikiem wersji
+    kończy się błędem — ale w automatyzacji zostanie zauważony dopiero przy
+    najbliższym uruchomieniu zadania, czyli z opóźnieniem.
+  en: |
+    Removing the feature requires a restart and is felt only where somebody
+    deliberately uses it. That happens in two places: in older installation
+    scripts forcing this version, and in software that embeds the PowerShell
+    engine in its own process and was built before the change.
+
+    The effect is immediate and legible - an invocation with the version switch
+    ends in an error - but in automation it will be noticed only at the next run
+    of the task, that is, with a delay.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - updates-and-servicing
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Skrypty wywoływane z przełącznikiem wymuszającym starszą wersję silnika zakończą się błędem
+      - Oprogramowanie osadzające silnik PowerShell we własnym procesie może przestać wykonywać swoje zadania
+      - Starsze narzędzia instalacyjne dostawców sprzętu mogą przerwać instalację na etapie konfiguracji
+    en:
+      - Scripts invoked with the switch forcing the older engine version end in an error
+      - Software embedding the PowerShell engine in its own process may stop performing its tasks
+      - Older vendor installation tools may abort setup at the configuration stage
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa aplikacja, której dostawca wprost wymaga obecności starszego silnika
+      - Automatyzacja stanowiska opiera się na skryptach, których nie da się teraz przepisać
+    en:
+      - The machine runs an application whose vendor explicitly requires the older engine to be present
+      - The station's automation rests on scripts that cannot be rewritten right now
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $feature = Get-WindowsOptionalFeature -Online `
+        -FeatureName 'MicrosoftWindowsPowerShellV2Root' -ErrorAction Stop
+      if ($null -eq $feature) { 'CHECK_ERROR' } else { [string]$feature.State }
+    } catch {
+      # Reading optional features needs elevation. Without it the call fails,
+      # and a failed read must never be reported as the feature being absent.
+      'CHECK_ERROR'
+    }
+  expected: Disabled
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-WindowsOptionalFeature -Online |
+      Where-Object { $_.FeatureName -like 'MicrosoftWindowsPowerShellV2*' } |
+      Select-Object -Property FeatureName, State |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Disable-WindowsOptionalFeature -Online `
+      -FeatureName 'MicrosoftWindowsPowerShellV2Root' -NoRestart
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($feature in @($b)) {
+      if ($feature.State -eq 'Enabled') {
+        Enable-WindowsOptionalFeature -Online -FeatureName $feature.FeatureName -NoRestart | Out-Null
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/powershell/scripting/windows-powershell/install/windows-powershell-system-requirements
+
+notes:
+  pl: |
+    Punkt wyłącza funkcję nadrzędną, która pociąga za sobą sam silnik. Kopia
+    zapasowa zapisuje stan obu składników, bo wycofanie musi przywrócić to, co
+    było włączone, a nie włączyć wszystko.
+
+    Ta reguła i rejestrowanie bloków skryptu tworzą parę: bez niej rejestrowanie
+    da się ominąć jednym przełącznikiem, a raport pokaże zgodność, której
+    w praktyce nie ma.
+  en: |
+    The item disables the parent feature, which pulls the engine itself with it.
+    The backup records the state of both components, because a rollback has to
+    restore what was enabled rather than enable everything.
+
+    This rule and script block logging form a pair: without it the logging can
+    be bypassed with a single switch, and the report shows a compliance that in
+    practice is not there.

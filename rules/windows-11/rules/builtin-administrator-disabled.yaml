@@ -1,0 +1,158 @@
+id: win11-builtin-administrator-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Wbudowane konto administratora wyłączone
+    en: Built-in administrator account disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wbudowane konto administratora ma stały identyfikator, ten sam na każdej
+    maszynie z Windows. Napastnik nie musi więc zgadywać, jak się nazywa — nawet
+    po zmianie nazwy odnajdzie je po identyfikatorze. Do tego konto jest
+    wyłączone z mechanizmu blokady po nieudanych próbach, więc hasło można
+    zgadywać bez ograniczeń.
+
+    Wyłączenie konta odbiera ten stały, znany z góry cel. Praca administracyjna
+    odbywa się wtedy na kontach imiennych, co przy okazji daje coś, czego konto
+    wbudowane nigdy nie da: w dzienniku widać, kto konkretnie wykonał zmianę.
+  en: |
+    The built-in administrator account has a fixed identifier, the same on every
+    Windows machine. An attacker therefore does not have to guess its name -
+    even after renaming, it can be found by the identifier. On top of that, the
+    account is exempt from the lockout mechanism, so its password can be guessed
+    without limit.
+
+    Disabling the account takes away that fixed, known-in-advance target.
+    Administrative work then happens on named accounts, which incidentally gives
+    something the built-in account never can: the log shows who exactly made the
+    change.
+
+disruption_description:
+  pl: |
+    Zasadnicze pytanie brzmi: czy na tej maszynie istnieje inne konto
+    z uprawnieniami administratora, na które da się zalogować. Jeśli nie,
+    wyłączenie wbudowanego konta odcina administrację całkowicie i odzyskanie
+    dostępu wymaga rozruchu z nośnika.
+
+    Drugi przypadek to maszyny stawiane ręcznie albo przeniesione ze starszego
+    systemu, na których wbudowane konto jest kontem codziennej pracy. Tam zmiana
+    wymaga najpierw założenia konta imiennego i przeniesienia na nie profilu —
+    to nie jest operacja na jedno polecenie.
+  en: |
+    The essential question is whether another account with administrator rights
+    exists on this machine and can be signed in to. If not, disabling the
+    built-in account cuts off administration entirely and recovering access
+    requires booting from media.
+
+    The second case is machines built by hand or carried over from an older
+    system, where the built-in account is the everyday working account. There
+    the change first requires creating a named account and moving the profile
+    onto it - not a one-command operation.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - remote-management
+  what_breaks:
+    pl:
+      - Logowanie na wbudowane konto administratora przestanie być możliwe, także lokalnie przy konsoli
+      - Skrypty i zadania uruchamiane w kontekście tego konta zakończą się niepowodzeniem przy starcie
+      - Procedury serwisowe opisane jako logowanie na konto wbudowane wymagają przepisania na konto imienne
+    en:
+      - Signing in to the built-in administrator account stops being possible, including locally at the console
+      - Scripts and tasks running in that account's context fail at start-up
+      - Service procedures written around signing in to the built-in account need rewriting for a named account
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie nie ma innego konta z uprawnieniami administratora, na które można się zalogować
+      - Wbudowane konto jest kontem codziennej pracy i nie ma jeszcze konta imiennego z przeniesionym profilem
+    en:
+      - The machine has no other administrator account that can be signed in to
+      - The built-in account is the everyday working account and no named account with a moved profile exists yet
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $admin = Get-LocalUser -ErrorAction Stop | Where-Object { $_.SID.Value -like '*-500' }
+      if ($null -eq $admin) { 'NOT_APPLICABLE' }
+      elseif ($admin.Enabled) { 'ENABLED' } else { 'DISABLED' }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: DISABLED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $admin = Get-LocalUser | Where-Object { $_.SID.Value -like '*-500' }
+    $others = @(
+      Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction SilentlyContinue |
+        Where-Object { $_.SID.Value -notlike '*-500' }
+    )
+    [pscustomobject]@{
+      sid              = $admin.SID.Value
+      name             = $admin.Name
+      enabled          = [bool]$admin.Enabled
+      other_admins     = $others.Count
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}. Other administrators found: $($others.Count)"
+
+  change_command: |
+    $others = @(
+      Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop |
+        Where-Object { $_.SID.Value -notlike '*-500' }
+    )
+    if ($others.Count -eq 0) {
+      throw 'No other administrator account on this machine - refusing to disable the only one.'
+    }
+    $admin = Get-LocalUser | Where-Object { $_.SID.Value -like '*-500' }
+    Disable-LocalUser -SID $admin.SID
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.enabled) { Enable-LocalUser -SID $b.sid } else { Disable-LocalUser -SID $b.sid }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/accounts-administrator-account-status
+
+notes:
+  pl: |
+    Polecenie zmiany najpierw liczy inne konta w grupie administratorów i odmawia
+    wykonania, gdy nie ma żadnego. To jedyny punkt w tej paczce, który potrafi
+    zatrzymać samego siebie — bo skutkiem błędu byłaby maszyna bez administracji,
+    a wycofanie wymaga zalogowania, którego właśnie by zabrakło.
+
+    Konto rozpoznajemy po końcówce identyfikatora zabezpieczeń, nie po nazwie:
+    nazwa zależy od języka systemu i bywa zmieniana, identyfikator nie.
+  en: |
+    The change command first counts the other accounts in the administrators
+    group and refuses to run when there are none. It is the only item in this
+    pack that can stop itself - because the result of a mistake would be a
+    machine with no administration, and the rollback needs a sign-in that would
+    be exactly what is missing.
+
+    The account is recognised by the ending of its security identifier rather
+    than by name: the name depends on the system language and is sometimes
+    changed, the identifier is not.

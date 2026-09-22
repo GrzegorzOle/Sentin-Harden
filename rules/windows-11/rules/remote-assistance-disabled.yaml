@@ -1,0 +1,154 @@
+id: win11-remote-assistance-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Remote Assistance
+  title:
+    pl: Pomoc zdalna wyłączona
+    en: Remote Assistance disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pomoc zdalna pozwala oddać komuś kontrolę nad pulpitem na podstawie
+    zaproszenia, a nie konta i hasła. Zgoda użytkownika wystarcza, żeby druga
+    osoba widziała ekran i klikała za niego — również wtedy, gdy zaproszenie
+    trafiło do niej w wyniku oszustwa.
+
+    Właśnie na tym opiera się klasyczny telefon od „działu wsparcia
+    producenta". Wyłączenie funkcji odbiera ten kanał: nawet przekonany
+    użytkownik nie ma czym wpuścić obcego, bo mechanizm po prostu nie działa.
+    Zamyka też przy okazji nieużywaną powierzchnię sieciową na maszynie.
+  en: |
+    Remote Assistance lets someone be handed control of the desktop on the
+    strength of an invitation rather than an account and password. The user's
+    consent is enough for another person to see the screen and click on their
+    behalf - including when the invitation reached them through a scam.
+
+    This is exactly what the classic call from "the vendor's support department"
+    rests on. Disabling the feature takes that channel away: even a convinced
+    user has nothing to let a stranger in with, because the mechanism simply
+    does not work. It also closes an unused network surface on the machine.
+
+disruption_description:
+  pl: |
+    Wszystko zależy od tego, czy dział wsparcia w organizacji korzysta właśnie
+    z tego mechanizmu. Jeśli tak, wyłączenie odcina jedyną drogę pomocy zdalnej
+    i zostanie zauważone przy pierwszym zgłoszeniu — zwykle w najgorszym
+    momencie, bo wtedy, gdy ktoś już czegoś potrzebuje.
+
+    Jeśli wsparcie korzysta z własnego narzędzia albo z pulpitu zdalnego, zmiana
+    jest niewidoczna i nikt jej nie odczuje. To rozróżnienie trzeba zrobić przed
+    wdrożeniem, nie po.
+  en: |
+    Everything depends on whether the organisation's support desk uses this
+    particular mechanism. If it does, disabling it cuts off the only route for
+    remote help and will be noticed at the first call - usually at the worst
+    moment, because that is when somebody already needs something.
+
+    If support uses its own tool or Remote Desktop, the change is invisible and
+    nobody feels it. That distinction has to be made before the rollout, not
+    after.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - remote-management
+    - user-interface
+  what_breaks:
+    pl:
+      - Dział wsparcia korzystający z wbudowanej pomocy zdalnej straci dostęp do pulpitu użytkownika
+      - Zaproszenia do sesji pomocy zdalnej wysłane wcześniej przestaną otwierać połączenie
+      - Procedury wsparcia opisane jako wysłanie zaproszenia wymagają zastąpienia innym narzędziem
+    en:
+      - A support desk using the built-in Remote Assistance loses access to the user's desktop
+      - Invitations to assistance sessions sent earlier stop opening a connection
+      - Support procedures written around sending an invitation need replacing with another tool
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Wsparcie użytkowników w organizacji opiera się na wbudowanej pomocy zdalnej i nie ma zamiennika
+      - Maszyna stoi w lokalizacji bez obsługi, gdzie pomoc zdalna jest jedyną drogą interwencji
+    en:
+      - User support in the organisation rests on built-in Remote Assistance and has no replacement
+      - The machine stands in an unstaffed location where Remote Assistance is the only route to intervene
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+      $name = 'fAllowToGetHelp'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+    $name = 'fAllowToGetHelp'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
+      -Name 'fAllowToGetHelp' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access
+
+notes:
+  pl: |
+    Pomoc zdalna i pulpit zdalny to dwie różne funkcje mieszkające w tym samym
+    miejscu rejestru. Ten punkt wyłącza wyłącznie pomoc zdalną — dostęp przez
+    pulpit zdalny pozostaje bez zmian i jest sprawdzany osobno.
+
+    Brak wartości w rejestrze jest raportowany jako niezgodność, a nie jako stan
+    bezpieczny. Nie znaczy to, że pomoc zdalna na pewno działa — znaczy, że nie
+    została wyłączona jawnie, więc zachowanie zależy od domyślnego ustawienia
+    wersji systemu i może się zmienić przy aktualizacji. Tak samo traktują brak
+    wartości pozostałe punkty w tej paczce.
+  en: |
+    Remote Assistance and Remote Desktop are two different features living in
+    the same registry location. This item disables Remote Assistance only -
+    access through Remote Desktop is unaffected and is checked separately.
+
+    A missing registry value is reported as a finding rather than as a safe
+    state. That does not mean Remote Assistance is certainly working - it means
+    it has not been switched off explicitly, so the behaviour depends on the
+    system version's default and may change with an update. The other items in
+    this pack treat a missing value the same way.

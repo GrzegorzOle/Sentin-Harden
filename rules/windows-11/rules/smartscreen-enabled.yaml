@@ -1,0 +1,150 @@
+id: win11-smartscreen-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > File Explorer
+  title:
+    pl: Filtr SmartScreen dla aplikacji i plików włączony
+    en: SmartScreen for applications and files enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    SmartScreen sprawdza reputację pliku w chwili jego uruchomienia, zanim kod
+    zdąży cokolwiek zrobić. Program pobrany z sieci, którego nikt wcześniej nie
+    widział, dostaje ostrzeżenie i wymaga świadomego potwierdzenia — a to
+    wystarcza, żeby zatrzymać najczęstszy scenariusz: użytkownik klikający
+    w plik, który przyszedł z pocztą albo z linku.
+
+    To zabezpieczenie oparte na reputacji, nie na sygnaturze, więc działa także
+    na próbkach, których nikt jeszcze nie sklasyfikował jako złośliwe. Nie
+    zastępuje ochrony antywirusowej — łapie w innym miejscu i w innym momencie.
+  en: |
+    SmartScreen checks a file's reputation at the moment it is started, before
+    the code can do anything. A program fetched from the network that nobody has
+    seen before gets a warning and requires deliberate confirmation - and that
+    is enough to stop the most common scenario: a user clicking a file that
+    arrived by mail or from a link.
+
+    This is reputation-based rather than signature-based protection, so it also
+    works on samples nobody has yet classified as malicious. It does not replace
+    antivirus protection - it catches in a different place and at a different
+    moment.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna dla użytkownika i tym irytująca, że dotyczy właśnie
+    tego, co robi świadomie. Ostrzeżenie pojawi się przy każdym narzędziu spoza
+    głównego obiegu: programie własnym, skrypcie zbudowanym na miejscu,
+    aplikacji małego dostawcy bez podpisu.
+
+    Drugi koszt to zapytanie o reputację wysyłane na zewnątrz. Na stanowisku
+    pracującym w sieci odciętej od internetu sprawdzenie nie dojdzie do skutku,
+    a użytkownik i tak zobaczy ostrzeżenie — bez możliwości jego rozwiania.
+  en: |
+    The change is visible to the user and irritating precisely because it
+    concerns what they do deliberately. A warning appears for every tool outside
+    the mainstream: an in-house program, a script built locally, an application
+    from a small vendor without a signature.
+
+    The second cost is the reputation query sent outside. On a station working
+    in a network cut off from the internet the check cannot complete, and the
+    user sees the warning anyway - with no way of resolving it.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - updates-and-servicing
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Uruchomienie własnych narzędzi bez podpisu będzie wymagało potwierdzenia ostrzeżenia przy każdym razie
+      - W sieci bez dostępu do internetu sprawdzenie reputacji nie dojdzie do skutku i ostrzeżenie zostanie
+      - Instalatory małych dostawców bez ugruntowanej reputacji zostaną zatrzymane przed uruchomieniem
+    en:
+      - Starting in-house tools without a signature requires confirming a warning every time
+      - On a network with no internet access the reputation check cannot complete and the warning remains
+      - Installers from small vendors without established reputation are held back before running
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko pracuje w sieci odciętej od internetu, gdzie sprawdzenie reputacji nigdy się nie powiedzie
+      - Użytkownik uruchamia codziennie narzędzia budowane na miejscu, których nie da się podpisać
+    en:
+      - The station works in a network cut off from the internet, where the reputation check can never succeed
+      - The user runs locally built tools every day that cannot be signed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      $name = 'EnableSmartScreen'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'EnableSmartScreen'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableSmartScreen' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/
+
+notes:
+  pl: |
+    Punkt dotyczy filtru dla aplikacji i plików w systemie, nie ustawienia
+    w przeglądarce — to dwa osobne mechanizmy o tej samej nazwie i włączenie
+    jednego nie mówi nic o drugim.
+  en: |
+    The item concerns the filter for applications and files in the system, not
+    the browser setting - these are two separate mechanisms sharing a name, and
+    enabling one says nothing about the other.

@@ -1,0 +1,170 @@
+id: win11-defender-asr-office-child-processes
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Blokada uruchamiania programów przez aplikacje pakietu biurowego
+    en: Office applications blocked from launching programs
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Edytor tekstu ma wyświetlać dokument, a nie uruchamiać programy. Możliwość
+    uruchomienia czegokolwiek z poziomu dokumentu jest pozostałością po czasach,
+    gdy makra miały automatyzować pracę biurową w dowolny sposób.
+
+    Ta możliwość jest jednocześnie najczęstszym pierwszym krokiem: dokument
+    przychodzi pocztą, użytkownik go otwiera, makro uruchamia interpreter
+    poleceń, a ten pobiera i uruchamia resztę. Reguła przecina ten łańcuch
+    w miejscu, w którym nic legalnego go nie potrzebuje — dokument nadal się
+    otworzy i nadal będzie można go czytać i edytować.
+  en: |
+    A word processor is meant to display a document, not to launch programs. The
+    ability to start anything from within a document is a leftover from the days
+    when macros were to automate office work in any way at all.
+
+    That ability is at the same time the commonest first step: a document arrives
+    by email, the user opens it, a macro starts a command interpreter, and that
+    downloads and runs the rest. The rule cuts the chain at a point where nothing
+    legitimate needs it - the document still opens and can still be read and
+    edited.
+
+disruption_description:
+  pl: |
+    To jest reguła z tej grupy, która najczęściej coś psuje, i dlatego wymaga
+    sprawdzenia.
+
+    Przestaną działać makra uruchamiające inne programy: arkusze wywołujące
+    skrypt, dokumenty otwierające program zewnętrzny do wydruku albo do pobrania
+    danych, szablony uruchamiające narzędzie firmowe. W wielu organizacjach takie
+    rozwiązania istnieją od lat, są napisane wewnętrznie i nikt o nich nie pamięta,
+    dopóki nie przestaną działać.
+
+    Objaw jest mylący: dokument otwiera się normalnie, makro startuje i zatrzymuje
+    się bez komunikatu albo z błędem mówiącym o nieudanym uruchomieniu procesu.
+    Użytkownik zgłosi, że „arkusz przestał działać", a nie że coś zostało
+    zablokowane. Ślad blokady jest w dzienniku Defendera.
+  en: |
+    This is the rule in the group that most often breaks something, and that is
+    why it calls for a check.
+
+    Macros launching other programs stop working: spreadsheets invoking a script,
+    documents opening an external program to print or to fetch data, templates
+    starting an in-house tool. In many organisations such arrangements have
+    existed for years, were written internally, and nobody remembers them until
+    they stop working.
+
+    The symptom is misleading: the document opens normally, the macro starts and
+    halts with no message, or with an error about a process failing to start. The
+    user will report that "the spreadsheet stopped working", not that something
+    was blocked. The trace of the block is in the Defender log.
+
+implementation_consequences:
+  impact_areas:
+    - macros-and-documents
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Makra uruchamiające inne programy przestaną działać
+      - Arkusze i szablony firmowe wywołujące narzędzia zewnętrzne zatrzymają się w połowie
+      - Użytkownik zgłosi awarię dokumentu, a nie blokadę, bo komunikat nie wskazuje przyczyny
+    en:
+      - Macros launching other programs stop working
+      - In-house spreadsheets and templates invoking external tools halt halfway
+      - The user reports a broken document rather than a block, because the message does not name the cause
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - W organizacji używane są arkusze albo dokumenty uruchamiające narzędzia zewnętrzne
+      - Nie sprawdzono, czy któryś z używanych dokumentów wywołuje program spoza pakietu biurowego
+    en:
+      - The organisation uses spreadsheets or documents that launch external tools
+      - It has not been checked whether any document in use invokes a program outside the office suite
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+      $name = 'd4f940ab-401b-4efc-aadc-ad5f3c50688a'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    $name = 'd4f940ab-401b-4efc-aadc-ad5f3c50688a'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'd4f940ab-401b-4efc-aadc-ad5f3c50688a' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference
+
+notes:
+  pl: |
+    Reguła ma tryb pośredni, w którym blokada jest tylko zgłaszana, a czynność
+    przechodzi. Ta reguła go nie używa i wymaga blokady właściwej: tryb
+    zgłaszania jest dobry na czas rozpoznania, ale w raporcie zgodności
+    znaczyłby, że punkt jest spełniony, choć nic nie jest blokowane.
+
+    Sensowna kolejność wdrożenia to najpierw tryb zgłaszania na kilka tygodni,
+    przegląd dziennika Defendera, a dopiero potem blokada. Aplikacja tego nie
+    poprowadzi za nikogo, ale opis ma o tej drodze mówić, zamiast stawiać wybór
+    między wdrożeniem od razu a odpuszczeniem.
+  en: |
+    The rule has an intermediate mode in which a block is merely reported and the
+    action goes through. This rule does not use it and requires an actual block:
+    the reporting mode is good while getting one's bearings, but in a compliance
+    report it would mean the item is satisfied while nothing is being blocked.
+
+    A sensible order of deployment is the reporting mode for a few weeks, a review
+    of the Defender log, and only then the block. The application will not walk
+    anybody through that, but the description should name the route rather than
+    pose a choice between applying immediately and giving up.

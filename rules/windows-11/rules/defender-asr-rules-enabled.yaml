@@ -1,0 +1,173 @@
+id: win11-defender-asr-rules-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Reguły ograniczania powierzchni ataku włączone
+    en: Attack surface reduction rules enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ograniczanie powierzchni ataku to zestaw zakazów opisujących zachowania,
+    które w normalnej pracy nie występują, a w ataku występują prawie zawsze:
+    dokument uruchamiający program, skrypt pobierający i startujący plik
+    wykonywalny, proces sięgający po zawartość pamięci procesu logowania.
+
+    Wartość tego podejścia polega na tym, że nie wymaga rozpoznania konkretnego
+    zagrożenia. Zakaz dotyczy czynności, a nie pliku — więc działa także na
+    rzeczy, których nikt wcześniej nie widział. To ustawienie jest przełącznikiem
+    nadrzędnym: bez niego poszczególne reguły są zapisane, ale nieaktywne.
+  en: |
+    Attack surface reduction is a set of prohibitions describing behaviours that
+    do not occur in normal work and almost always occur in an attack: a document
+    starting a program, a script downloading and launching an executable, a
+    process reaching for the memory of the sign-in process.
+
+    The value of the approach is that it requires no recognition of a specific
+    threat. The prohibition covers an action rather than a file - so it works on
+    things nobody has seen before. This setting is the master switch: without it
+    the individual rules are written down but inactive.
+
+disruption_description:
+  pl: |
+    Włączenie przełącznika nadrzędnego uaktywnia wszystkie zapisane reguły naraz,
+    więc skutek zależy od tego, które z nich są zapisane. To jest powód, dla
+    którego punkt wymaga sprawdzenia: sam w sobie nie robi nic, a uruchamia
+    wszystko, co przygotowano wcześniej.
+
+    Reguły blokują zachowania, nie programy, więc awaria wygląda inaczej, niż
+    się spodziewamy. Program nie odmawia uruchomienia — uruchamia się i przestaje
+    działać w jednym konkretnym momencie, bez sensownego komunikatu. Typowy
+    przykład to dokument z makrem, które miało coś uruchomić: dokument się
+    otworzy, makro ruszy i zatrzyma się bez wyjaśnienia.
+
+    Zdarzenia blokad trafiają do dziennika Defendera i to tam należy szukać, gdy
+    coś przestanie działać po tej zmianie. Warto wiedzieć o tym wcześniej niż
+    w trakcie szukania.
+  en: |
+    Turning the master switch on activates every written rule at once, so the
+    effect depends on which of them are written. That is why the item calls for a
+    check: by itself it does nothing, while it starts everything prepared earlier.
+
+    The rules block behaviours rather than programs, so a failure looks different
+    from what one expects. A program does not refuse to start - it starts and then
+    stops working at one particular moment, with no sensible message. The typical
+    example is a document with a macro meant to launch something: the document
+    opens, the macro runs and halts without explanation.
+
+    Block events go to the Defender log and that is where to look when something
+    stops working after this change. Worth knowing beforehand rather than during
+    the search.
+
+implementation_consequences:
+  impact_areas:
+    - macros-and-documents
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Wszystkie zapisane reguły ograniczania powierzchni ataku zaczynają obowiązywać naraz
+      - Makra i skrypty uruchamiające inne programy zatrzymają się bez czytelnego komunikatu
+      - Awarii trzeba szukać w dzienniku Defendera, bo sam program zwykle nic nie zgłasza
+    en:
+      - Every written attack surface reduction rule takes effect at once
+      - Macros and scripts launching other programs halt without a readable message
+      - Failures have to be looked for in the Defender log, because the program itself usually reports nothing
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Nie wiadomo, które reguły ograniczania powierzchni ataku są zapisane na tej maszynie
+      - W codziennej pracy używane są makra uruchamiające inne programy i nie ma dla nich zamiennika
+    en:
+      - It is not known which attack surface reduction rules are written on this machine
+      - Daily work relies on macros launching other programs and there is no replacement for them
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR'
+      $name = 'ExploitGuard_ASR_Rules'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR'
+    $name = 'ExploitGuard_ASR_Rules'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ExploitGuard_ASR_Rules' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction
+
+notes:
+  pl: |
+    Wycofanie usuwa wyłącznie tę wartość i nigdy nie kasuje zapisanych reguł.
+    Reguły leżą w kluczu podrzędnym i mają własne punkty w tej paczce — kopia
+    tego punktu obejmuje to, co ten punkt zmienia, i nic ponadto.
+
+    Każda reguła ograniczania powierzchni ataku jest w tej paczce osobnym
+    rekordem, mimo że ustawia się je razem. Powód jest taki, że różnią się
+    uciążliwością bardzo mocno: blokada sięgania po pamięć procesu logowania
+    nie przeszkadza nikomu, a blokada uruchamiania programów przez makra bywa
+    końcem pewnego sposobu pracy. Zsumowanie ich w jeden punkt odebrałoby
+    użytkownikowi możliwość przyjęcia jednych i odrzucenia drugich.
+  en: |
+    The rollback removes only this value and never deletes the written rules. The
+    rules live in a subordinate key and have their own items in this pack - the
+    backup for this item covers what this item changes and nothing more.
+
+    Each attack surface reduction rule is a separate record in this pack, even
+    though they are set together. The reason is that they differ enormously in
+    disruption: blocking access to the sign-in process's memory inconveniences
+    nobody, while blocking macros from launching programs can end a way of
+    working. Rolling them into one item would take away the user's ability to
+    accept some and reject others.

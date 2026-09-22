@@ -1,0 +1,159 @@
+id: win11-defender-asr-wmi-persistence
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Blokada trwałości przez subskrypcje zdarzeń mechanizmu zarządzania
+    en: Persistence through management event subscriptions blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wbudowany mechanizm zarządzania systemem pozwala zapisać regułę w postaci
+    „gdy zdarzy się to, wykonaj tamto". Reguła leży w bazie mechanizmu, nie
+    w postaci pliku, i jest wykonywana przez proces systemowy, więc nie widać jej
+    ani na liście programów uruchamianych przy starcie, ani w zadaniach
+    harmonogramu, ani wśród usług.
+
+    Dlatego jest to jeden z ulubionych sposobów na utrzymanie dostępu po
+    ponownym uruchomieniu maszyny: przeżywa restart, nie zostawia pliku, który
+    dałoby się znaleźć, i wygląda jak element zarządzania systemem. Reguła
+    blokuje zakładanie takich subskrypcji, czyli odbiera atakującemu sposób
+    trwania, a nie sposób wejścia.
+  en: |
+    The built-in system management mechanism allows a rule of the form "when this
+    happens, do that" to be stored. The rule lives in the mechanism's database
+    rather than as a file, and is carried out by a system process, so it appears
+    neither in the list of programs started at boot, nor among scheduled tasks,
+    nor among services.
+
+    That makes it one of the favourite ways of keeping access across a restart: it
+    survives a reboot, leaves no file to be found, and looks like a piece of
+    system management. The rule blocks the creation of such subscriptions, taking
+    from an attacker a means of persisting rather than a means of entry.
+
+disruption_description:
+  pl: |
+    Nic. Subskrypcje zdarzeń tego mechanizmu to narzędzie administracyjne
+    używane rzadko i świadomie — na stacji roboczej praktycznie nie występują,
+    a użytkownik nie ma jak ich założyć w toku zwykłej pracy.
+
+    Sprawdzić należy jedną rzecz: czy któreś z zainstalowanych narzędzi
+    zarządzających nie zakłada takiej subskrypcji przy instalacji albo przy
+    aktualizacji. Dotyczy to starszego oprogramowania do inwentaryzacji
+    i monitoringu. Skutek jest wtedy widoczny nie w codziennej pracy, lecz przy
+    najbliższej aktualizacji tego narzędzia, więc łatwo go wtedy nie powiązać
+    z tą zmianą.
+  en: |
+    Nothing. Event subscriptions of this mechanism are an administrative tool used
+    rarely and deliberately - on a workstation they are effectively absent, and a
+    user has no way of creating one in the course of ordinary work.
+
+    One thing is worth checking: whether any installed management tool creates
+    such a subscription at installation or at update time. This concerns older
+    inventory and monitoring software. The effect then shows up not in daily work
+    but at that tool's next update, which makes it easy not to connect with this
+    change.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Narzędzia zarządzające zakładające subskrypcje zdarzeń nie założą ich przy instalacji ani aktualizacji
+      - Własne rozwiązania oparte na regule „gdy zdarzy się to, wykonaj tamto" przestaną się instalować
+    en:
+      - Management tools that create event subscriptions fail to create them at installation or update
+      - In-house arrangements built on a "when this happens, do that" rule stop installing
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa narzędzie monitorujące albo inwentaryzacyjne oparte na subskrypcjach zdarzeń tego mechanizmu
+    en:
+      - The machine runs a monitoring or inventory tool built on this mechanism's event subscriptions
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+      $name = 'e6db77e5-3df2-4cf1-b95a-636979351e5b'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    $name = 'e6db77e5-3df2-4cf1-b95a-636979351e5b'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'e6db77e5-3df2-4cf1-b95a-636979351e5b' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference
+
+notes:
+  pl: |
+    Reguła blokuje zakładanie nowych subskrypcji i nie usuwa istniejących.
+    Jeśli maszyna jest już zajęta, ten punkt niczego na niej nie naprawi —
+    trzeba osobno przejrzeć subskrypcje zapisane wcześniej. Aplikacja tego nie
+    robi i nie powinna tego sugerować spełnieniem punktu.
+
+    To odróżnia ten punkt od pozostałych reguł z grupy, które działają na bieżąco
+    i nie zostawiają za sobą stanu do posprzątania.
+  en: |
+    The rule blocks the creation of new subscriptions and does not remove existing
+    ones. If the machine is already taken, this item fixes nothing on it - the
+    subscriptions written earlier have to be reviewed separately. The application
+    does not do that and should not suggest otherwise by marking the item
+    satisfied.
+
+    That sets this item apart from the other rules in the group, which act as
+    things happen and leave no state behind to clean up.

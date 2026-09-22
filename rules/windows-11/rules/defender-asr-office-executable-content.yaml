@@ -1,0 +1,154 @@
+id: win11-defender-asr-office-executable-content
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Blokada tworzenia plików wykonywalnych przez aplikacje pakietu biurowego
+    en: Office applications blocked from creating executable content
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ta reguła zamyka drugi koniec tego samego łańcucha, co blokada uruchamiania
+    programów. Tamta nie pozwala dokumentowi wystartować procesu; ta nie pozwala
+    mu zapisać na dysku pliku, który dałoby się wystartować później.
+
+    Rozdzielenie ma znaczenie, bo atak rzadko robi obie rzeczy naraz. Częstszy
+    układ to makro, które zapisuje plik do katalogu tymczasowego albo do
+    autostartu, po czym kończy pracę bez niczego podejrzanego; uruchomienie
+    następuje minutę później, przy kolejnym logowaniu albo z zadania
+    harmonogramu, gdy nikt już nie łączy go z otwartym wcześniej dokumentem.
+  en: |
+    This rule closes the far end of the same chain as the block on launching
+    programs. That one stops a document from starting a process; this one stops it
+    from writing to disk a file that could be started later.
+
+    The separation matters, because an attack rarely does both at once. The
+    commoner arrangement is a macro that writes a file to a temporary directory or
+    to startup and then finishes with nothing suspicious about it; execution
+    follows a minute later, at the next sign-in or from a scheduled task, when
+    nobody connects it with the document opened earlier.
+
+disruption_description:
+  pl: |
+    Blokada dotyczy zapisu plików wykonywalnych i skryptów, nie zapisu
+    dokumentów. Zapisanie arkusza, wyeksportowanie go do innego formatu, wydruk
+    do pliku — wszystko to działa bez zmian i użytkownik nie zobaczy różnicy.
+
+    Zaboli tam, gdzie dokument jest w praktyce instalatorem: szablon rozpakowujący
+    przy pierwszym otwarciu dodatek firmowy, makro generujące skrypt i zapisujące
+    go do późniejszego uruchomienia, narzędzie zapisujące plik wsadowy do
+    zaplanowanego zadania. Takie rozwiązania są rzadsze niż makra uruchamiające
+    programy, ale gdy istnieją, to zwykle w jednym dziale i bez dokumentacji.
+  en: |
+    The block covers writing executables and scripts, not writing documents.
+    Saving a spreadsheet, exporting it to another format, printing to a file - all
+    of that works unchanged and the user sees no difference.
+
+    It hurts where a document is in practice an installer: a template that unpacks
+    an in-house add-in on first opening, a macro that generates a script and saves
+    it for later execution, a tool that writes a batch file for a scheduled task.
+    Such arrangements are rarer than macros launching programs, but where they
+    exist they are usually confined to one department and undocumented.
+
+implementation_consequences:
+  impact_areas:
+    - macros-and-documents
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Makra zapisujące na dysku pliki wykonywalne albo skrypty przestaną to robić
+      - Szablony rozpakowujące dodatek przy pierwszym otwarciu nie zainstalują go
+      - Rozwiązania zapisujące plik wsadowy do późniejszego uruchomienia zatrzymają się bez śladu w samym dokumencie
+    en:
+      - Macros writing executables or scripts to disk stop doing so
+      - Templates that unpack an add-in on first opening fail to install it
+      - Arrangements writing a batch file for later execution halt, leaving no trace in the document itself
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dodatki albo narzędzia firmowe rozprowadzane są jako dokument rozpakowujący się przy otwarciu
+      - Używane makra generują skrypty zapisywane na dysku
+    en:
+      - In-house add-ins or tools are distributed as a document that unpacks itself on opening
+      - Macros in use generate scripts written to disk
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+      $name = '3b576869-a4ec-4529-8536-b80a7769e899'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    $name = '3b576869-a4ec-4529-8536-b80a7769e899'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name '3b576869-a4ec-4529-8536-b80a7769e899' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference
+
+notes:
+  pl: |
+    Ten punkt i blokada uruchamiania programów przez pakiet biurowy wyglądają na
+    dwa warianty jednego wymagania, a nie są. Pierwsza zabrania startu procesu,
+    druga zapisu pliku, i obejście jednej polega właśnie na użyciu drugiej drogi.
+    Przyjęcie tylko jednej z nich jest decyzją sensowną, ale trzeba wiedzieć,
+    że zostawia się wtedy drugą połowę otwartą.
+  en: |
+    This item and the block on the office suite launching programs look like two
+    variants of one requirement, and are not. The first forbids starting a
+    process, the second writing a file, and getting round either consists
+    precisely in using the other route. Accepting only one of them is a reasonable
+    decision, but one should know it leaves the other half open.

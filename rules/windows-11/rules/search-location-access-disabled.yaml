@@ -1,0 +1,167 @@
+id: win11-search-location-access-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Search
+  title:
+    pl: Dostęp wyszukiwania do położenia maszyny wyłączony
+    en: Search access to the machine's location turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wyszukiwanie systemowe potrafi sięgnąć po położenie maszyny, żeby dopasować
+    wyniki do miejsca, w którym się znajduje. Położenie ustalane jest z sieci
+    bezprzewodowych w zasięgu, z adresu w sieci i ze sprzętu nawigacyjnego, jeśli
+    maszyna go ma.
+
+    Dla organizacji znaczy to, że położenie stanowiska staje się elementem
+    zapytania wysyłanego na zewnątrz. Zebrane w czasie daje obraz tego, gdzie
+    maszyna bywa: w których biurach, u których klientów, w których miastach.
+    Jest to informacja o organizacji, a nie o maszynie, i nie powstaje z żadnej
+    świadomej decyzji — powstaje przy okazji szukania pliku.
+
+    Osobno liczy się sam fakt, że położenie jest na maszynie ustalane i dostępne.
+    Program działający z uprawnieniami użytkownika może po nie sięgnąć tak samo
+    jak wyszukiwanie.
+  en: |
+    System search can reach for the machine's location in order to fit results to
+    where it is. The location is worked out from wireless networks within range,
+    from the network address, and from navigation hardware if the machine has any.
+
+    For an organisation this means a station's location becomes part of a query
+    sent outside. Gathered over time it gives a picture of where the machine
+    turns up: which offices, which clients, which cities. That is information
+    about the organisation rather than the machine, and it arises from no
+    deliberate decision - it arises while looking for a file.
+
+    The bare fact that a location is worked out on the machine and available
+    counts separately. A program running with the user's rights can reach for it
+    just as search does.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Wyniki wyszukiwania przestają być dopasowywane do
+    miejsca.
+
+    W praktyce znaczy to brak podpowiedzi typu „najbliższy" przy szukaniu
+    w systemie. Na stanowisku biurowym nikt tego nie zauważa, bo takich zapytań
+    się tam nie zadaje.
+
+    Mapy, nawigacja, pogoda i programy, które o położenie proszą osobno, działają
+    bez zmian — ten punkt dotyczy wyłącznie wyszukiwania systemowego, a nie
+    dostępu do położenia w ogóle.
+
+    Nie ma restartu, a zmiana obowiązuje po ponownym zalogowaniu.
+  en: |
+    Nothing stops working. Search results stop being fitted to a place.
+
+    In practice this means no "nearest" suggestions when searching in the system.
+    On an office station nobody notices, because such queries are not asked there.
+
+    Maps, navigation, weather and programs that ask for location separately all
+    work unchanged - this item concerns only system search, not access to location
+    in general.
+
+    There is no restart, and the change takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Wyniki wyszukiwania systemowego przestaną być dopasowywane do miejsca, w którym stoi maszyna
+    en:
+      - System search results stop being fitted to the place the machine is in
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+      $name = 'AllowSearchToUseLocation'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    $name = 'AllowSearchToUseLocation'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowSearchToUseLocation' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-search
+
+notes:
+  pl: |
+    Punkt zamyka jedną drogę do położenia, a nie wszystkie. Program, który prosi
+    użytkownika o zgodę i ją dostaje, nadal położenie pozna — i jest to poprawne
+    zachowanie, bo ta zgoda jest świadoma.
+
+    Wartość tego punktu polega na odcięciu drogi, przy której nikt o zgodę nie
+    pyta, bo czynność wygląda na lokalną. Warto to rozróżnienie utrzymać przy
+    czytaniu raportu, żeby zieleń tutaj nie została odczytana jako „maszyna nie
+    zna swojego położenia".
+  en: |
+    The item closes one road to location, not all of them. A program that asks the
+    user for consent and gets it will still learn the location - and that is
+    correct behaviour, because the consent is deliberate.
+
+    The value of this item lies in cutting the road where nobody asks for consent,
+    because the action looks local. That distinction is worth keeping when reading
+    the report, so green here is not read as "the machine does not know where it
+    is".

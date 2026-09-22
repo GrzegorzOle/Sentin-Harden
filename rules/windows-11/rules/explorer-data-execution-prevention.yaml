@@ -1,0 +1,178 @@
+id: win11-explorer-data-execution-prevention
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > File Explorer
+  title:
+    pl: Ochrona przed wykonaniem danych w powłoce systemu włączona
+    en: Protection against executing data left on in the system shell
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Procesor potrafi oznaczyć obszary pamięci jako przeznaczone na dane i odmówić
+    wykonania czegokolwiek, co w nich leży. Odcina to całą rodzinę ataków
+    polegających na tym, że napastnik podstawia własny kod tam, gdzie program
+    spodziewa się danych, i doprowadza do skoku w to miejsce.
+
+    Istnieje zasada, która tę ochronę w powłoce systemu wyłącza. Powstała dla
+    starych rozszerzeń powłoki — dodatków do menu podręcznego, nakładek na
+    ikony, podglądów plików — które przy włączonej ochronie potrafiły powłokę
+    wywrócić.
+
+    Powłoka jest jednak procesem, który otwiera wszystko, co użytkownik kliknie,
+    i ładuje do siebie kod rozszerzeń pochodzących od dowolnego programu.
+    Wyłączenie w niej tej ochrony znosi ją w najbardziej narażonym procesie na
+    maszynie, żeby ratować zgodność z dodatkami sprzed kilkunastu lat.
+  en: |
+    The processor can mark regions of memory as meant for data and refuse to run
+    anything lying in them. This cuts off a whole family of attacks that work by
+    the attacker placing their own code where a program expects data and causing a
+    jump into it.
+
+    There is a policy that turns this protection off in the system shell. It was
+    made for old shell extensions - additions to context menus, icon overlays,
+    file previews - which could topple the shell when the protection was on.
+
+    The shell, though, is the process that opens everything the user clicks and
+    loads into itself extension code coming from any program at all. Turning the
+    protection off there removes it from the most exposed process on the machine,
+    in order to rescue compatibility with add-ins from over a decade ago.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać na maszynie z aktualnym oprogramowaniem. Ochrona
+    ta jest domyślnie włączona i wyłącza się ją tylko celowo, więc w większości
+    przypadków ten punkt jedynie utrwala stan istniejący.
+
+    Tam, gdzie ochrona została kiedyś wyłączona, przywrócenie jej może wywrócić
+    rozszerzenie powłoki, dla którego ją wyłączono. Objawem jest zamknięcie
+    i ponowne uruchomienie powłoki przy otwarciu określonego folderu albo przy
+    kliknięciu prawym przyciskiem — dokuczliwe, ale nie niszczące, bo powłoka
+    wraca sama.
+
+    Dotyczy to rozszerzeń bardzo starych: dodatków do menu od programów sprzed
+    kilkunastu lat, narzędzi archiwizujących w wiekowych wersjach i nakładek
+    z oprogramowania sprzętowego, które nikt nie aktualizował.
+
+    Nie ma restartu. Zmiana obowiązuje po ponownym zalogowaniu.
+  en: |
+    Nothing stops working on a machine with current software. This protection is
+    on by default and is switched off only deliberately, so in most cases the item
+    merely makes the existing state permanent.
+
+    Where it was switched off at some point, restoring it may topple the shell
+    extension it was switched off for. The symptom is the shell closing and
+    restarting when a particular folder is opened or on a right-click - annoying
+    but not destructive, since the shell comes back by itself.
+
+    This concerns very old extensions: context menu add-ins from programs over a
+    decade old, archiving tools in ancient versions, and overlays from device
+    software nobody has updated.
+
+    There is no restart. The change takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - user-interface
+  what_breaks:
+    pl:
+      - Bardzo stare rozszerzenia powłoki mogą powodować zamknięcie i ponowne uruchomienie powłoki
+      - Dodatki do menu podręcznego sprzed kilkunastu lat mogą przestać się pojawiać
+    en:
+      - Very old shell extensions may cause the shell to close and restart
+      - Context menu add-ins from over a decade ago may stop appearing
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku działa rozszerzenie powłoki, dla którego tę ochronę celowo wyłączono
+    en:
+      - The station runs a shell extension this protection was deliberately switched off for
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+      $name = 'NoDataExecutionPrevention'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    $name = 'NoDataExecutionPrevention'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoDataExecutionPrevention' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/memory/data-execution-prevention
+
+notes:
+  pl: |
+    Wartość zerowa jest tu wymaganiem, bo zasada nazywa wyłączanie ochrony,
+    a nie jej włączanie. Przy czytaniu raportu łatwo odwrócić sens i uznać zero
+    za brak zabezpieczenia.
+
+    Wynik „brak wartości" jest łagodniejszy, niż wygląda: bez tej zasady ochrona
+    i tak działa, bo jest domyślna. Punkt jest niespełniony dlatego, że nic tego
+    nie utrwala — a nie dlatego, że powłoka jest teraz bez ochrony. Jest to
+    różnica warta zrozumienia, zanim ten punkt trafi na początek listy do
+    naprawy.
+  en: |
+    A value of zero is the requirement here, because the policy names the turning
+    *off* of the protection rather than turning it on. The sense is easily
+    inverted when reading the report, taking zero for an absence of protection.
+
+    A result of "no value" is gentler than it looks: without this policy the
+    protection works anyway, being the default. The item is unmet because nothing
+    makes that permanent - not because the shell is unprotected now. That is a
+    difference worth understanding before the item lands at the top of the list to
+    fix.

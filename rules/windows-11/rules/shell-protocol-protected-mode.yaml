@@ -1,0 +1,182 @@
+id: win11-shell-protocol-protected-mode
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > File Explorer
+  title:
+    pl: Tryb chroniony protokołu powłoki włączony
+    en: Protected mode for the shell protocol left on
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System ma własny protokół pozwalający odwołać się do miejsc w powłoce po
+    identyfikatorze zamiast po ścieżce — tak adresuje się panel sterowania,
+    kosz czy foldery specjalne. Odwołanie takie wygląda jak zwykły odsyłacz
+    i może paść z dokumentu, ze strony albo z wiadomości.
+
+    W trybie chronionym protokół sięga wyłącznie do ograniczonego zbioru miejsc
+    i wykonuje ograniczony zbiór czynności. Bez tego trybu otwiera się cała
+    przestrzeń powłoki wraz z folderami, które potrafią coś uruchomić, a nie
+    tylko pokazać. Odsyłacz w dokumencie przestaje wtedy być odsyłaczem do
+    folderu, a staje się poleceniem wykonanym z uprawnieniami użytkownika,
+    który w niego kliknął.
+
+    Tryb chroniony jest zachowaniem domyślnym od kilkunastu lat. Zasada, o której
+    mowa, pozwala wrócić do zachowania sprzed tego czasu — i punkt polega na tym,
+    żeby nie była włączona.
+  en: |
+    The system has a protocol of its own for addressing places in the shell by
+    identifier rather than by path - that is how the control panel, the recycle
+    bin and special folders are referred to. Such a reference looks like an
+    ordinary link and can come from a document, a web page or a message.
+
+    In protected mode the protocol reaches only a limited set of places and
+    performs a limited set of actions. Without that mode the whole shell space
+    opens up, including folders able to run something rather than merely show it.
+    A link in a document then stops being a link to a folder and becomes a command
+    carried out with the rights of the user who clicked it.
+
+    Protected mode has been the default behaviour for over a decade. The policy in
+    question allows a return to the behaviour from before that - and the item
+    consists in it not being turned on.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać na maszynie z aktualnym oprogramowaniem. Tryb
+    chroniony jest domyślny, więc ten punkt w większości przypadków tylko
+    utrwala stan istniejący.
+
+    Tam, gdzie tryb wyłączono, przywrócenie go może zepsuć odsyłacze prowadzące
+    w głąb powłoki. Spotyka się to w starych aplikacjach wewnętrznych, które
+    otwierały w ten sposób okna systemowe, i w skryptach uruchamiających panel
+    sterowania po identyfikatorze. Objawem jest odsyłacz, po którym nic się nie
+    dzieje, albo komunikat o niedostępnej lokalizacji.
+
+    Praca z plikami, foldery sieciowe i zwykłe skróty działają bez zmian —
+    protokół ten obsługuje wyłącznie odwołania po identyfikatorze.
+
+    Nie ma restartu. Zmiana obowiązuje po ponownym zalogowaniu.
+  en: |
+    Nothing stops working on a machine with current software. Protected mode is
+    the default, so in most cases this item merely makes the existing state
+    permanent.
+
+    Where the mode was switched off, restoring it may break links leading deep
+    into the shell. This turns up in old in-house applications that opened system
+    windows this way, and in scripts launching the control panel by identifier.
+    The symptom is a link after which nothing happens, or a message about an
+    unavailable location.
+
+    Working with files, network folders and ordinary shortcuts all work unchanged
+    - this protocol handles only references by identifier.
+
+    There is no restart. The change takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+    - user-interface
+  what_breaks:
+    pl:
+      - Odsyłacze otwierające okna systemowe po identyfikatorze mogą przestać działać w starych aplikacjach wewnętrznych
+      - Skrypty uruchamiające panel sterowania po identyfikatorze mogą zgłaszać niedostępną lokalizację
+    en:
+      - Links opening system windows by identifier may stop working in old in-house applications
+      - Scripts launching the control panel by identifier may report an unavailable location
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowisko korzysta z aplikacji wewnętrznej otwierającej okna systemowe po identyfikatorze
+    en:
+      - The station uses an in-house application that opens system windows by identifier
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+      $name = 'PreXPSP2ShellProtocolBehavior'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $name = 'PreXPSP2ShellProtocolBehavior'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'PreXPSP2ShellProtocolBehavior' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/shell/shell-and-managed-code
+
+notes:
+  pl: |
+    Nazwa wartości w rejestrze odwołuje się do wersji systemu sprzed
+    kilkunastu lat i mówi wprost, czym ta zasada jest: powrotem do zachowania
+    sprzed wprowadzenia trybu chronionego. Zostawiam ją w regule w oryginalnym
+    brzmieniu, bo jest identyfikatorem, po którym da się to ustawienie odszukać
+    — ale w opisie nie powtarzam tej nazwy, żeby nie sugerować, że punkt dotyczy
+    tamtej wersji systemu. Dotyczy tej.
+
+    Trzecia reguła z rodziny dotyczącej powłoki, obok ochrony przed wykonaniem
+    danych i kończenia pracy przy uszkodzeniu sterty. Wszystkie trzy są zapisane
+    przez zaprzeczenie i we wszystkich trzech wymaganą wartością jest zero.
+  en: |
+    The value's name in the registry refers to a system version from over a decade
+    ago and says plainly what the policy is: a return to the behaviour from before
+    protected mode was introduced. It is kept in the rule in its original form,
+    because it is the identifier this setting can be found by - but the
+    description does not repeat that name, so as not to suggest the item concerns
+    that version of the system. It concerns this one.
+
+    The third rule in the family concerning the shell, alongside protection
+    against executing data and stopping on heap corruption. All three are written
+    by negation and in all three the required value is zero.

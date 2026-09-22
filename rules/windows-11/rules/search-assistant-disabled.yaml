@@ -1,0 +1,176 @@
+id: win11-search-assistant-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Search
+  title:
+    pl: Asystent w wyszukiwaniu systemowym wyłączony
+    en: The assistant in system search turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pole wyszukiwania w systemie obsługuje nie tylko pliki na maszynie. Wpisany
+    tekst trafia także do usługi po stronie producenta, która próbuje odgadnąć
+    intencję i podpowiedzieć odpowiedź, wynik z sieci albo czynność do wykonania.
+
+    Znaczy to, że treść wpisywana w pole wyszukiwania systemu opuszcza maszynę.
+    W polu tym ludzie wpisują nazwy plików, nazwy systemów wewnętrznych, numery
+    spraw i nazwiska — bo szukają czegoś u siebie i nie zakładają, że pytanie
+    idzie dalej. Wysyłane są też fragmenty wpisywane omyłkowo, łącznie z tym, co
+    wpadło do pola wyszukiwania zamiast do okna logowania.
+
+    Wyłączenie asystenta zostawia wyszukiwanie tego, co jest na maszynie,
+    i odcina drogę, którą zapytanie wychodziło na zewnątrz.
+  en: |
+    The system's search box handles more than files on the machine. The typed text
+    also goes to a service on the vendor's side, which tries to guess the intent
+    and suggest an answer, a result from the web, or an action to take.
+
+    This means what is typed into the system search box leaves the machine. People
+    type file names, names of internal systems, case numbers and surnames into
+    that box - because they are looking for something of their own and do not
+    assume the question travels further. Fragments typed by mistake are sent too,
+    including whatever landed in the search box instead of the sign-in window.
+
+    Turning the assistant off leaves searching for what is on the machine and cuts
+    the route by which a query went outside.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna i sprawdzenia wymaga to, jak ludzie na tej maszynie
+    szukają.
+
+    Z pola wyszukiwania znikają podpowiedzi, wyniki z sieci i odpowiedzi na
+    pytania zadane zdaniem. Zostaje wyszukiwanie plików, programów i ustawień na
+    maszynie — czyli to, po co pole to powstało, ale mniej niż dotąd.
+
+    Odczują to przede wszystkim osoby przyzwyczajone do wpisywania w to pole
+    wszystkiego, łącznie z adresami stron. Ich nawyk przestanie działać i przez
+    kilka dni będą zgłaszać, że wyszukiwanie „się zepsuło", choć wyszukiwanie
+    plików działa lepiej niż wcześniej, bo wyniki lokalne przestają konkurować
+    z sieciowymi.
+
+    Wyszukiwanie w przeglądarce działa bez zmian. Nie ma restartu, a zmiana
+    obowiązuje po ponownym zalogowaniu.
+  en: |
+    The change is visible and what needs checking is how people on this machine
+    search.
+
+    Suggestions, web results and answers to questions asked in a sentence
+    disappear from the search box. What remains is searching for files, programs
+    and settings on the machine - which is what the box was made for, but less
+    than before.
+
+    It will be felt mainly by people used to typing everything into that box,
+    including web addresses. Their habit stops working and for a few days they
+    will report that search "broke", though searching for files works better than
+    before, since local results no longer compete with web ones.
+
+    Searching in the browser works unchanged. There is no restart, and the change
+    takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Podpowiedzi i wyniki z sieci znikną z pola wyszukiwania systemu
+      - Nawyk wpisywania adresów stron w pole wyszukiwania przestanie działać
+      - Pytania zadawane zdaniem przestaną dostawać odpowiedź
+    en:
+      - Suggestions and web results disappear from the system search box
+      - The habit of typing web addresses into the search box stops working
+      - Questions asked in a sentence stop receiving an answer
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Zespół korzysta z pola wyszukiwania systemu jako głównej drogi do zasobów w sieci
+    en:
+      - The team uses the system search box as the main road to resources on the web
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+      $name = 'AllowCortana'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    $name = 'AllowCortana'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowCortana' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-search
+
+notes:
+  pl: |
+    Zakres tego ustawienia zmieniał się między wydaniami systemu i na nowszych
+    wydaniach część funkcji, które kiedyś wyłączało, przeniesiono gdzie indziej.
+    Punkt pozostaje wymagany i wart wdrożenia, ale nie należy czytać go jako
+    gwarancji, że żadne zapytanie z pola wyszukiwania nie opuści maszyny.
+
+    Pełne zamknięcie tej drogi wymaga wdrożenia go razem z pozostałymi regułami
+    dotyczącymi wyszukiwania. Reguła nie umie sprawdzić, czy wszystkie są
+    wdrożone, i dlatego mówi tutaj wprost, czego sama nie obejmuje.
+  en: |
+    The scope of this setting has changed between releases of the system, and on
+    newer ones some of the functions it once turned off have moved elsewhere. The
+    item remains required and worth applying, but it should not be read as a
+    guarantee that no query from the search box will leave the machine.
+
+    Closing that route fully requires applying it together with the other rules
+    about search. The rule cannot check whether all of them are applied, which is
+    why it states here what it does not itself cover.

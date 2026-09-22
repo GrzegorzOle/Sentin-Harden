@@ -1,0 +1,177 @@
+id: win11-explorer-heap-termination-on-corruption
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > File Explorer
+  title:
+    pl: Powłoka kończy pracę przy wykryciu uszkodzenia sterty
+    en: The shell stops on detecting heap corruption
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sterta to obszar pamięci, z którego program bierze miejsce na dane w trakcie
+    pracy. Jej uszkodzenie — nadpisanie struktur, którymi system zarządza tym
+    obszarem — jest klasycznym punktem wyjścia do przejęcia kontroli nad
+    programem. Napastnik doprowadza do uszkodzenia, a potem wykorzystuje sposób,
+    w jaki system próbuje sobie z nim poradzić.
+
+    System potrafi na wykrycie uszkodzenia zareagować dwojako: zakończyć proces
+    natychmiast albo spróbować pracować dalej. Praca dalej oznacza pozostanie
+    w stanie, w którym struktury pamięci są już pod kontrolą kogoś innego,
+    i właśnie w tym stanie dokonuje się reszta ataku.
+
+    Istnieje zasada wyłączająca natychmiastowe zakończenie w powłoce systemu.
+    Powstała po to, żeby powłoka nie znikała z powodu wadliwego rozszerzenia —
+    ale zamienia ona wykryte uszkodzenie z awarii, którą widać, w sytuację,
+    której nie widzi nikt.
+  en: |
+    The heap is the region of memory a program draws working space from.
+    Corrupting it - overwriting the structures the system manages that region with
+    - is a classic starting point for taking control of a program. The attacker
+    brings about the corruption and then exploits the way the system tries to cope
+    with it.
+
+    The system can react to detected corruption in two ways: end the process at
+    once, or try to carry on. Carrying on means remaining in a state where the
+    memory structures are already under somebody else's control, and it is in that
+    state that the rest of the attack takes place.
+
+    There is a policy that switches the immediate stop off in the system shell. It
+    was made so the shell would not vanish because of a faulty extension - but it
+    turns detected corruption from a failure you can see into a situation nobody
+    sees at all.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać na maszynie z aktualnym oprogramowaniem.
+    Natychmiastowe kończenie pracy przy uszkodzeniu sterty jest zachowaniem
+    domyślnym, więc ten punkt zwykle tylko utrwala stan istniejący.
+
+    Tam, gdzie zachowanie to wyłączono, przywrócenie go zamienia ciche błędy
+    w widoczne: powłoka zamyka się i uruchamia ponownie zamiast pracować dalej
+    z uszkodzoną pamięcią. Wygląda to na pogorszenie i tak bywa zgłaszane, ale
+    jest odwrotnie — awaria nie jest tu skutkiem zmiany, tylko ujawnieniem
+    czegoś, co działo się wcześniej bez śladu.
+
+    Praktycznie dotyczy to maszyn z bardzo starym rozszerzeniem powłoki, dla
+    którego kiedyś tę zasadę włączono. Objawem będzie znikająca i wracająca
+    powłoka przy określonej czynności.
+
+    Nie ma restartu. Zmiana obowiązuje po ponownym zalogowaniu.
+  en: |
+    Nothing stops working on a machine with current software. Stopping at once on
+    heap corruption is the default behaviour, so this item usually just makes the
+    existing state permanent.
+
+    Where that behaviour was switched off, restoring it turns silent errors into
+    visible ones: the shell closes and restarts instead of carrying on with
+    corrupted memory. This looks like a deterioration and tends to be reported as
+    one, but it is the reverse - the crash is not a result of the change but the
+    surfacing of something that was happening before without a trace.
+
+    In practice this concerns machines with a very old shell extension the policy
+    was once turned on for. The symptom will be the shell vanishing and returning
+    during a particular action.
+
+    There is no restart. The change takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - user-interface
+  what_breaks:
+    pl:
+      - Powłoka będzie się zamykać i uruchamiać ponownie tam, gdzie dotąd pracowała dalej mimo uszkodzenia pamięci
+      - Bardzo stare rozszerzenia powłoki mogą stać się przyczyną widocznych awarii zamiast cichych
+    en:
+      - The shell will close and restart where it previously carried on despite corrupted memory
+      - Very old shell extensions may become the cause of visible crashes instead of silent ones
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku działa rozszerzenie powłoki, dla którego to zachowanie celowo wyłączono
+    en:
+      - The station runs a shell extension this behaviour was deliberately switched off for
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+      $name = 'NoHeapTerminationOnCorruption'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    $name = 'NoHeapTerminationOnCorruption'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoHeapTerminationOnCorruption' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/memory/heap-functions
+
+notes:
+  pl: |
+    Tak jak przy ochronie przed wykonaniem danych, zasada jest zapisana przez
+    zaprzeczenie i wartość zerowa oznacza tu zabezpieczenie, a nie jego brak.
+
+    Obie reguły dotyczą tego samego procesu i tych samych rozszerzeń, ale bronią
+    przed czym innym: tamta przed wykonaniem kodu podstawionego w dane, ta przed
+    pracą dalej z pamięcią już naruszoną. Rozwiązanie jednej nie zamyka drugiej.
+  en: |
+    As with protection against executing data, the policy is written by negation
+    and a value of zero means the safeguard here, not its absence.
+
+    Both rules concern the same process and the same extensions, but defend
+    against different things: that one against running code planted in data, this
+    one against carrying on with memory already tampered with. Settling one closes
+    neither the other.

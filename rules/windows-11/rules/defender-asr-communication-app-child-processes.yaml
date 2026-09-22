@@ -1,0 +1,163 @@
+id: win11-defender-asr-communication-app-child-processes
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Blokada uruchamiania programów przez aplikację pocztową pakietu biurowego
+    en: Office communication application blocked from launching programs
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Program pocztowy pakietu biurowego jest na stacji roboczej pierwszym
+    miejscem, w którym ląduje treść od obcych, i jedynym, które otwiera się
+    samo — wiadomość pojawia się w oknie bez niczyjej decyzji. Dlatego
+    uruchomienie procesu potomnego z tego właśnie programu jest zdarzeniem
+    o innej wadze niż takie samo uruchomienie z edytora tekstu.
+
+    Reguła nie dotyczy odbierania wiadomości ani otwierania załączników — dotyczy
+    tego, że program pocztowy startuje inny program. W normalnej pracy nie ma
+    powodu, żeby to robił: wyświetlenie wiadomości, pokazanie kalendarza
+    i zapisanie załącznika mieszczą się w nim samym.
+  en: |
+    The office suite's mail program is on a workstation the first place where
+    content from strangers lands, and the only one that opens by itself - a
+    message appears in the window with nobody deciding. That makes starting a
+    child process from this particular program an event of a different weight from
+    the same start out of a word processor.
+
+    The rule covers neither receiving messages nor opening attachments - it covers
+    the mail program starting another program. In normal work there is no reason
+    for it to: displaying a message, showing a calendar and saving an attachment
+    all happen inside it.
+
+disruption_description:
+  pl: |
+    Jedna rzecz przestaje działać zauważalnie: otwarcie załącznika programem
+    zewnętrznym wprost z okna wiadomości, jeśli program pocztowy robi to przez
+    uruchomienie procesu potomnego. Skutek zależy tu od wersji pakietu i od typu
+    pliku, więc trzeba sprawdzić na miejscu, a nie zakładać.
+
+    Poza tym wymaga sprawdzenia współpraca z dodatkami. Dodatki uruchamiające
+    własny proces — najczęściej te od podpisu elektronicznego, od szyfrowania
+    wiadomości i od systemów obiegu dokumentów — trafiają w tę regułę wprost.
+    Dodatki działające w obrębie samego programu pocztowego działają bez zmian.
+
+    Zapisanie załącznika na dysk i otwarcie go stamtąd działa zawsze, więc droga
+    wyjścia dla użytkownika istnieje, tylko wymaga jednego kroku więcej.
+  en: |
+    One thing stops working noticeably: opening an attachment in an external
+    program straight from the message window, if the mail program does it by
+    starting a child process. The effect depends on the suite version and on the
+    file type, so it has to be checked on site rather than assumed.
+
+    Beyond that, add-ins need checking. Add-ins that start a process of their own -
+    most often those for electronic signatures, message encryption and document
+    workflow systems - run straight into this rule. Add-ins working inside the
+    mail program itself are unaffected.
+
+    Saving the attachment to disk and opening it from there always works, so a way
+    out exists for the user, it just takes one step more.
+
+implementation_consequences:
+  impact_areas:
+    - email-and-attachments
+    - macros-and-documents
+  what_breaks:
+    pl:
+      - Otwarcie załącznika programem zewnętrznym wprost z okna wiadomości może przestać działać
+      - Dodatki do programu pocztowego uruchamiające własny proces przestaną działać
+      - Podpis elektroniczny i szyfrowanie wiadomości oparte na osobnym programie wymagają sprawdzenia
+    en:
+      - Opening an attachment in an external program straight from the message window may stop working
+      - Mail program add-ins that start a process of their own stop working
+      - Electronic signatures and message encryption relying on a separate program need checking
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - W programie pocztowym używany jest dodatek uruchamiający osobny program
+      - Podpisywanie albo szyfrowanie wiadomości odbywa się przez narzędzie zewnętrzne wywoływane z programu pocztowego
+    en:
+      - The mail program uses an add-in that starts a separate program
+      - Signing or encrypting messages goes through an external tool invoked from the mail program
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+      $name = '26190899-1602-49e8-8b27-eb1d0a1ce869'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    $name = '26190899-1602-49e8-8b27-eb1d0a1ce869'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name '26190899-1602-49e8-8b27-eb1d0a1ce869' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference
+
+notes:
+  pl: |
+    Punkt jest osobny od blokady uruchamiania programów przez pozostałe aplikacje
+    pakietu biurowego i ma węższy zakres — obejmuje tylko program pocztowy.
+    Rozdzielenie jest w samym ustawieniu, nie w tej paczce, i wynika z tego, że
+    program pocztowy ma własne, szersze pole zastosowań niż edytor: dodatki,
+    obieg dokumentów, integracje. Kto przyjmuje tamtą regułę, nie przyjmuje tym
+    samym tej.
+  en: |
+    The item is separate from the block on other office applications launching
+    programs and is narrower - it covers only the mail program. The split is in
+    the setting itself, not in this pack, and follows from the mail program having
+    its own, wider field of use than an editor: add-ins, document workflow,
+    integrations. Accepting that rule does not amount to accepting this one.

@@ -1,0 +1,161 @@
+id: win11-defender-asr-script-downloaded-executable
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Blokada uruchamiania pobranych plików wykonywalnych przez skrypty
+    en: Scripts blocked from launching downloaded executable content
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Skrypt, który pobiera plik i od razu go uruchamia, jest samym środkiem
+    ataku sprowadzonym do jednej linijki. Nie potrzebuje luki w oprogramowaniu
+    ani uprawnień administratora — wystarczy, że ktoś go uruchomi, a system zrobi
+    dokładnie to, o co został poproszony.
+
+    Ta droga jest popularna, bo skrypt przechodzi tam, gdzie plik wykonywalny
+    zostałby zatrzymany: jest tekstem, waży kilka kilobajtów, daje się wkleić do
+    okna i daje się zmieniać przy każdej wysyłce. Reguła nie zabrania ani
+    pobierania, ani pisania skryptów — zabrania uruchomienia tego, co skrypt
+    właśnie ściągnął, czyli ostatniego kroku, na którym całość się opiera.
+  en: |
+    A script that downloads a file and runs it at once is the attack itself
+    reduced to a single line. It needs no software flaw and no administrator
+    rights - somebody only has to run it, and the system does exactly what it was
+    asked to do.
+
+    The route is popular because a script gets through where an executable would
+    be stopped: it is text, it weighs a few kilobytes, it can be pasted into a
+    window and can be altered with every send. The rule forbids neither
+    downloading nor writing scripts - it forbids running what the script has just
+    fetched, the last step on which the whole thing rests.
+
+disruption_description:
+  pl: |
+    Wymaga sprawdzenia przede wszystkim po stronie administracyjnej, nie po
+    stronie użytkownika. Kto pracuje na maszynie normalnie, nie zauważy zmiany.
+
+    Zaboli tam, gdzie instalacja czegokolwiek zaczyna się od skryptu pobierającego
+    instalator: skrypty rozruchowe, przygotowanie stanowiska po ponownej
+    instalacji systemu, narzędzia instalowane poleceniem wklejonym ze strony
+    producenta. Taki sposób pracy jest wygodny i rozpowszechniony, a ta reguła
+    dotyczy go wprost.
+
+    Droga wyjścia zwykle istnieje: instalator pobrany osobno i uruchomiony ręcznie
+    działa, bo blokada dotyczy uruchomienia przez skrypt, nie samego pliku.
+    Automatyzację trzeba wtedy rozbić na dwa kroki albo przenieść na narzędzie
+    do dystrybucji oprogramowania.
+  en: |
+    It calls for a check mainly on the administrative side, not on the user's.
+    Whoever works on the machine normally will not notice the change.
+
+    It hurts where installing anything starts with a script that fetches an
+    installer: bootstrap scripts, setting up a workstation after a reinstall,
+    tools installed with a command pasted from the vendor's page. That way of
+    working is convenient and widespread, and this rule bears on it directly.
+
+    A way out usually exists: an installer downloaded separately and run by hand
+    works, because the block is on being launched by a script, not on the file
+    itself. The automation then has to be split into two steps or moved to a
+    software distribution tool.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Skrypty pobierające i uruchamiające instalator zatrzymają się na ostatnim kroku
+      - Przygotowanie stanowiska poleceniem wklejonym ze strony producenta przestanie działać
+      - Automatyzację trzeba rozbić na pobranie i osobne uruchomienie
+    en:
+      - Scripts that fetch and run an installer halt at the last step
+      - Setting up a workstation with a command pasted from a vendor page stops working
+      - Automation has to be split into a download and a separate run
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska przygotowuje się skryptami pobierającymi i uruchamiającymi instalatory
+      - Nie ma narzędzia do dystrybucji oprogramowania i instalacje idą przez skrypty rozruchowe
+    en:
+      - Workstations are set up with scripts that fetch and run installers
+      - There is no software distribution tool and installs go through bootstrap scripts
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+      $name = 'd3e037e1-3eb8-44c8-a917-57927947596d'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    $name = 'd3e037e1-3eb8-44c8-a917-57927947596d'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'd3e037e1-3eb8-44c8-a917-57927947596d' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference
+
+notes:
+  pl: |
+    Reguła dotyczy dwóch starszych języków skryptowych osadzonych w systemie,
+    a nie powłoki używanej dziś do zarządzania. To ograniczenie warto znać, bo
+    zawęża zarówno ochronę, jak i skutki uboczne: nowoczesne skrypty
+    administracyjne pozostają poza zasięgiem tego punktu i poza jego ochroną.
+  en: |
+    The rule covers two older scripting languages embedded in the system, not the
+    shell used for management today. The limitation is worth knowing, because it
+    narrows both the protection and the side effects: modern administrative
+    scripts stay outside this item's reach and outside its protection.

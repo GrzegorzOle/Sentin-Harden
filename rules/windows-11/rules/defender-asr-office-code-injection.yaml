@@ -1,0 +1,151 @@
+id: win11-defender-asr-office-code-injection
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Blokada wstrzykiwania kodu do innych procesów przez aplikacje pakietu biurowego
+    en: Office applications blocked from injecting code into other processes
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wstrzyknięcie kodu polega na tym, że jeden proces umieszcza własne instrukcje
+    w pamięci drugiego i doprowadza do ich wykonania. Od tego momentu czynność
+    wygląda na wykonaną przez proces-gospodarza: to jego nazwa widnieje w wykazie
+    zadań, jego uprawnienia obowiązują i jego reguły zapory go dotyczą.
+
+    Dla atakującego to sposób na zniknięcie. Edytor tekstu łączący się z siecią
+    zwraca uwagę; przeglądarka łącząca się z siecią nie zwraca niczyjej. Reguła
+    zabrania pakietowi biurowemu tej czynności, przez co odbiera mu możliwość
+    przeniesienia się do cudzego procesu — czyli krok, który zwykle następuje
+    zaraz po otwarciu dokumentu i przed wszystkim, co widać później.
+  en: |
+    Code injection means one process placing its own instructions in another's
+    memory and bringing about their execution. From that moment on the action
+    looks as though the host process performed it: its name stands in the task
+    list, its permissions apply and its firewall rules cover it.
+
+    For an attacker this is a way of disappearing. A word processor connecting to
+    the network draws attention; a browser connecting to the network draws nobody's.
+    The rule forbids the office suite this action, taking from it the option of
+    moving into somebody else's process - the step that usually follows right
+    after a document is opened and precedes everything visible later.
+
+disruption_description:
+  pl: |
+    Nic. Pisanie do pamięci innego procesu nie jest czynnością, którą wykonuje
+    się przy pracy z dokumentem, i nie ma sposobu, żeby użytkownik wywołał ją
+    niechcący.
+
+    Z rozwiązań legalnych robią to wyłącznie narzędzia z tej samej półki co
+    debugery i część oprogramowania zabezpieczającego — ale one nie są pakietem
+    biurowym, a reguła dotyczy tylko jego. Dodatki do pakietu działają przez
+    przewidziany do tego mechanizm rozszerzeń i ta droga pozostaje otwarta.
+
+    To jest, obok blokady sięgania po pamięć procesu logowania, druga reguła
+    z tej grupy, którą można przyjąć bez rozpoznania.
+  en: |
+    Nothing. Writing into another process's memory is not something one does while
+    working with a document, and there is no way for a user to trigger it by
+    accident.
+
+    Among legitimate software only tools of the same kind as debuggers and some
+    security products do this - but they are not the office suite, and the rule
+    covers only that. Add-ins to the suite work through the extension mechanism
+    provided for the purpose, and that route stays open.
+
+    Alongside the block on reaching for the sign-in process's memory, this is the
+    second rule in the group that can be accepted without a survey first.
+
+implementation_consequences:
+  impact_areas:
+    - macros-and-documents
+  what_breaks:
+    pl:
+      - Dodatki do pakietu biurowego działające przez wstrzykiwanie kodu, zamiast przez mechanizm rozszerzeń, przestaną działać
+    en:
+      - Office add-ins working by injecting code rather than through the extension mechanism stop working
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Używany dodatek do pakietu biurowego wymaga wstrzykiwania kodu do innych procesów i nie ma zamiennika
+    en:
+      - An office add-in in use requires injecting code into other processes and has no replacement
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+      $name = '75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    $name = '75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name '75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference
+
+notes:
+  pl: |
+    W macierzy ryzyka i uciążliwości ten punkt trafia do lewej górnej ćwiartki:
+    realny zysk przy zerowym koszcie. Takie punkty aplikacja ma pokazywać jako
+    pierwsze i wpuszczać do trybu zbiorczego, bo to one dają się wdrożyć bez
+    rozmowy z nikim.
+  en: |
+    In the risk-and-disruption matrix this item lands in the top left quarter: a
+    real gain at no cost. The application should show such items first and admit
+    them to the bulk mode, because these are the ones that can be applied without
+    talking to anybody.

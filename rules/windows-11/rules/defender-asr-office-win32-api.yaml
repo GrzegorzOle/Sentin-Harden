@@ -1,0 +1,164 @@
+id: win11-defender-asr-office-win32-api
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Blokada wywołań funkcji systemowych z makr w dokumentach
+    en: System function calls from document macros blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Język makr osadzony w pakiecie biurowym pozwala zadeklarować i wywołać
+    dowolną funkcję systemową. Formalnie to tylko możliwość rozszerzenia makra
+    o rzeczy, których sam pakiet nie udostępnia; praktycznie to furtka, przez
+    którą makro robi wszystko, co robi zwykły program.
+
+    Stąd bierze się jej znaczenie w ataku: mając wywołania systemowe, makro nie
+    musi już ani uruchamiać procesu, ani zapisywać pliku — a to właśnie te dwie
+    czynności blokują pozostałe reguły z tej grupy. Może zarezerwować pamięć,
+    wpisać do niej kod i wykonać go w obrębie procesu, który już jest uruchomiony
+    i który nikomu nie wydaje się podejrzany. Ten punkt zamyka obejście dwóch
+    poprzednich.
+  en: |
+    The macro language embedded in the office suite allows any system function to
+    be declared and called. Formally that is merely a way of extending a macro
+    with things the suite itself does not offer; in practice it is the door
+    through which a macro does everything an ordinary program does.
+
+    Hence its importance in an attack: with system calls a macro need neither
+    start a process nor write a file - and those are precisely the two actions the
+    other rules in this group block. It can reserve memory, write code into it and
+    execute it inside a process that is already running and looks suspicious to
+    nobody. This item closes the way round the previous two.
+
+disruption_description:
+  pl: |
+    Zaboli tam, gdzie istnieją starsze makra pisane wewnętrznie. Deklaracje
+    funkcji systemowych były przez lata normalnym sposobem obejścia ograniczeń
+    języka makr: odczyt ustawień systemu, praca z oknami, operacje na plikach
+    poza tym, co dawał pakiet, komunikacja z urządzeniem albo z biblioteką
+    dostawcy.
+
+    Rozstrzygające pytanie brzmi: czy w organizacji używa się makr napisanych
+    kilka lat temu przez kogoś, kto już tu nie pracuje. Jeśli tak — sprawdzenie
+    jest konieczne, bo taki kod zwykle ma deklaracje funkcji systemowych
+    w pierwszych liniach i nikt o tym nie wie, dopóki makro nie przestanie
+    działać.
+
+    Makra napisane wyłącznie w samym języku makr, bez sięgania poza pakiet,
+    działają bez zmian.
+  en: |
+    It hurts where older in-house macros exist. Declaring system functions was for
+    years the normal way round the macro language's limits: reading system
+    settings, working with windows, file operations beyond what the suite offered,
+    talking to a device or to a vendor's library.
+
+    The deciding question is whether the organisation uses macros written some
+    years ago by somebody who no longer works here. If so, a check is necessary,
+    because such code usually carries system function declarations in its first
+    lines and nobody knows about it until the macro stops working.
+
+    Macros written purely in the macro language, without reaching outside the
+    suite, work unchanged.
+
+implementation_consequences:
+  impact_areas:
+    - macros-and-documents
+  what_breaks:
+    pl:
+      - Makra deklarujące funkcje systemowe przestaną działać na pierwszym wywołaniu
+      - Starsze rozwiązania firmowe sięgające po biblioteki spoza pakietu biurowego zatrzymają się
+      - Makra komunikujące się z urządzeniem albo biblioteką dostawcy stracą tę drogę
+    en:
+      - Macros declaring system functions stop working at the first call
+      - Older in-house solutions reaching for libraries outside the office suite halt
+      - Macros talking to a device or a vendor library lose that route
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - W organizacji używane są starsze makra pisane wewnętrznie i nie wiadomo, co jest w ich kodzie
+      - Makra komunikują się z urządzeniem albo biblioteką dostarczoną przez dostawcę
+    en:
+      - The organisation uses older in-house macros and what is in their code is unknown
+      - Macros communicate with a device or with a library supplied by a vendor
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+      $name = '92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    $name = '92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name '92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference
+
+notes:
+  pl: |
+    Ten punkt wypada czytać razem z ustawieniem blokującym makra w dokumentach
+    pobranych z sieci, bo zakresy się uzupełniają: tamto rozstrzyga po
+    pochodzeniu dokumentu, ten po tym, co makro próbuje zrobić. Przyjęcie tylko
+    pierwszego zostawia otwarte makra w dokumentach przyniesionych na nośniku
+    albo wyjętych z archiwum.
+  en: |
+    This item is best read together with the setting that blocks macros in
+    documents downloaded from the network, because the scopes complement each
+    other: that one decides by where the document came from, this one by what the
+    macro tries to do. Accepting only the first leaves open the macros in
+    documents brought in on a drive or taken out of an archive.

@@ -1,0 +1,196 @@
+id: win11-pnp-remote-access-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Installation
+  title:
+    pl: Zdalny dostęp do interfejsu instalacji urządzeń wyłączony
+    en: Remote access to the device installation interface switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Interfejs instalacji urządzeń odpowiada za rozpoznawanie sprzętu
+    i uruchamianie jego sterowników. Działa w jądrze i uruchamia kod
+    z najwyższymi możliwymi uprawnieniami — sterownik nie jest programem
+    użytkownika, tylko częścią systemu.
+
+    Ustawienie, którego dotyczy ten punkt, otwiera ten interfejs na wywołania
+    zdalne. Maszyna zaczyna przyjmować przez sieć polecenia dotyczące
+    wyliczania urządzeń i instalowania sterowników.
+
+    Dla napastnika jest to droga rzadko pilnowana i prowadząca wprost do jądra.
+    Nie trzeba szukać podatności w usłudze sieciowej ani podnosić uprawnień
+    krok po kroku: wystarczy poprosić maszynę o zainstalowanie sterownika.
+    Reszta pracy odbywa się po stronie systemu, z pełnymi prawami, przez
+    mechanizm przewidziany do tego celu.
+
+    Wyłączenie zostawia instalację urządzeń dokładnie tam, gdzie powinna być —
+    na maszynie, do której to urządzenie fizycznie podłączono.
+  en: |
+    The device installation interface is responsible for recognising hardware and
+    starting its drivers. It works in the kernel and runs code with the highest
+    privileges there are - a driver is not a user's program but a part of the system.
+
+    The setting this item concerns opens that interface to remote calls. The machine
+    begins accepting commands over the network about enumerating devices and
+    installing drivers.
+
+    For an attacker that is a route rarely watched and leading straight to the
+    kernel. There is no need to look for a vulnerability in a network service or to
+    raise privileges step by step: asking the machine to install a driver is enough.
+    The rest of the work happens on the system's side, with full rights, through a
+    mechanism meant for the purpose.
+
+    Switching it off leaves device installation exactly where it belongs - on the
+    machine the device is physically attached to.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Wpisywana wartość jest tą, która obowiązuje
+    domyślnie — zdalny dostęp do tego interfejsu jest wyłączony, dopóki ktoś
+    świadomie go nie włączy.
+
+    Dlatego punkt trafia do klasy bez uciążliwości: nie ma restartu, nie ma
+    okna serwisowego, podłączanie urządzeń na miejscu działa bez zmian.
+
+    Odczuwalne jest to wyłącznie tam, gdzie narzędzie do zarządzania sprzętem
+    korzysta z tego interfejsu przez sieć — zwykle starsze rozwiązania do
+    zdalnej inwentaryzacji urządzeń albo do rozprowadzania sterowników. Takie
+    narzędzie przestanie widzieć listę urządzeń na maszynie i zgłosi błąd
+    dostępu.
+
+    Warto sprawdzić to zawczasu, bo objaw po stronie narzędzia bywa mylący:
+    wygląda jak problem z uprawnieniami konta, a nie jak zamknięty interfejs.
+
+    Nie ma restartu.
+  en: |
+    Nothing stops working. The value written is the one that holds by default -
+    remote access to this interface is off until somebody deliberately switches it
+    on.
+
+    That is why the item falls into the no-disruption class: no restart, no
+    maintenance window, and attaching devices on the spot works unchanged.
+
+    It is felt only where a hardware management tool uses this interface over the
+    network - usually older solutions for remote device inventory or for
+    distributing drivers. Such a tool stops seeing the list of devices on the machine
+    and reports an access error.
+
+    Worth checking beforehand, because the symptom on the tool's side can mislead: it
+    looks like a problem with an account's rights rather than a closed interface.
+
+    There is no restart.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - remote-management
+  what_breaks:
+    pl:
+      - Narzędzie do zdalnej inwentaryzacji urządzeń przestanie widzieć listę sprzętu na maszynie
+      - Zdalne rozprowadzanie sterowników przez ten interfejs przestanie być możliwe
+      - Podłączanie i instalowanie urządzeń na miejscu działa bez zmian
+    en:
+      - A remote device inventory tool stops seeing the list of hardware on the machine
+      - Distributing drivers remotely through this interface stops being possible
+      - Attaching and installing devices on the spot works unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Narzędzie do zarządzania sprzętem korzysta z tego interfejsu przez sieć i nie ma zamiennika
+    en:
+      - A hardware management tool uses this interface over the network and there is no replacement
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+      $name = 'AllowRemoteRPC'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    $name = 'AllowRemoteRPC'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowRemoteRPC' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/drivers/install/device-installation-overview
+
+notes:
+  pl: |
+    Gałąź ustawień instalacji urządzeń zbiera kilka punktów benchmarku i część
+    z nich dotyczy zupełnie innych spraw — zgłaszania błędów przy braku
+    sterownika, limitu czasu instalacji, punktów przywracania. Reguła dotyka
+    wyłącznie tej jednej wartości i wycofanie też obejmuje tylko ją.
+
+    Poziom drugi w benchmarku bierze się stąd, że ustawienie jest domyślnie
+    wyłączone i trzeba je było kiedyś włączyć. Nie zmienia to wagi samego
+    ryzyka — droga prowadzi do jądra — a jedynie to, jak często jest otwarta.
+
+    Reguła nie sprawdza, czy usługa przyjmująca wywołania zdalne działa.
+    Rozstrzyga ustawienie: przy wpisanym zerze wywołanie zostanie odrzucone
+    niezależnie od stanu usługi.
+  en: |
+    The device installation settings key gathers several items of the benchmark and
+    some of them concern quite different matters - reporting faults when a driver is
+    missing, the installation timeout, restore points. The rule touches this one
+    value only, and the rollback covers only it too.
+
+    The second level in the benchmark comes from the setting being off by default and
+    having had to be switched on at some point. That does not change the weight of
+    the risk itself - the route leads to the kernel - only how often it is open.
+
+    The rule does not check whether the service accepting remote calls is running.
+    The setting is what settles it: with a zero written, the call will be refused
+    whatever the service's state.

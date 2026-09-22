@@ -1,0 +1,185 @@
+id: win11-non-domain-networks-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Windows Connection Manager
+  title:
+    pl: Zakaz łączenia z siecią spoza domeny przy podłączonej sieci domenowej
+    en: Connecting to a non-domain network forbidden while on a domain network
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt bliźniaczy wobec ograniczenia równoczesnych połączeń, ale rozstrzyga
+    rzecz twardziej. Tamten pyta, którą drogę system ma zostawić, gdy dostępne są
+    dwie. Ten zabrania zestawienia drugiej w ogóle, jeśli maszyna jest już
+    podłączona do sieci domenowej.
+
+    Rzecz w tym, że o wartości drogi nie stanowi kabel ani fale radiowe, tylko to,
+    dokąd prowadzi. Połączenie z siecią firmową jest uwierzytelnione i widoczne
+    dla tych, którzy tę sieć pilnują. Połączenie z siecią przypadkową nie jest ani
+    jednym, ani drugim — a zestawione obok firmowego daje napastnikowi dokładnie
+    ten sam punkt styczny, z tą różnicą, że tym razem nikt go nie widzi.
+
+    Zakaz sprawia, że maszyna pracująca w sieci firmowej zostaje w niej sama.
+    Droga obok przestaje być możliwa do zestawienia, a nie tylko wygaszana po
+    fakcie.
+  en: |
+    A twin of the limit on simultaneous connections, but settling the matter more
+    firmly. That one asks which road the system should keep when two are available.
+    This one forbids setting the second up at all if the machine is already attached
+    to a domain network.
+
+    The thing is that a road's worth is decided neither by a cable nor by radio
+    waves, but by where it leads. A connection to the company network is
+    authenticated and visible to those who watch that network. A connection to a
+    chance network is neither - and set up alongside the company one it gives an
+    attacker exactly the same point of contact, with the difference that this time
+    nobody sees it.
+
+    The ban means a machine working on the company network stays there alone. The
+    road alongside stops being possible to set up, rather than merely being put out
+    after the fact.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy na stanowiskach zdarza się świadome korzystanie
+    z sieci spoza domeny przy jednoczesnym połączeniu z siecią firmową.
+
+    Typowe zastosowanie, które przestanie działać, to łączenie z siecią
+    udostępnianą z telefonu przy słabym łączu firmowym oraz podłączanie się do
+    sieci urządzenia serwisowanego — punktu dostępowego, drukarki, sterownika —
+    bez odpinania się od sieci firmowej. Oba przestaną dochodzić do skutku.
+
+    Objaw bywa mylący: system nie tłumaczy powodu, a próba połączenia po prostu
+    się nie kończy powodzeniem. Zgłoszenie brzmi wtedy „nie mogę się połączyć
+    z siecią", a nie „polityka mi tego zabrania". Warto uprzedzić zespół
+    wsparcia, bo jest to godzina szukania awarii tam, gdzie jej nie ma.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym uruchomieniu usługi
+    zarządzania połączeniami albo po zalogowaniu.
+  en: |
+    What needs checking is whether deliberate use of a non-domain network alongside
+    a connection to the company one happens at the stations.
+
+    The typical uses that will stop working are connecting to a network shared from
+    a phone when the company link is poor, and attaching to the network of a device
+    being serviced - an access point, a printer, a controller - without unhooking
+    from the company network. Neither will come about.
+
+    The symptom can mislead: the system gives no reason, and the attempt to connect
+    simply does not succeed. The report then reads "I cannot connect to the network"
+    rather than "policy forbids it". It is worth warning the support team, because
+    this is an hour of hunting a fault where there is none.
+
+    There is no machine restart. The change takes effect once the connection
+    management service restarts, or after signing in.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - remote-management
+  what_breaks:
+    pl:
+      - Połączenie z siecią udostępnianą z telefonu nie dojdzie do skutku, dopóki maszyna jest w sieci domenowej
+      - Podłączenie się do sieci serwisowanego urządzenia wymaga wcześniejszego odpięcia od sieci firmowej
+      - Próba połączenia kończy się niepowodzeniem bez podania powodu, co bywa brane za awarię sieci
+    en:
+      - A connection to a network shared from a phone will not come about while the machine is on the domain network
+      - Attaching to a serviced device's network requires unhooking from the company network first
+      - The attempt to connect fails with no reason given, which is sometimes taken for a network fault
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko służy do serwisowania urządzeń sieciowych i wymaga połączenia z ich sieciami przy zachowanym dostępie do zasobów firmowych
+      - Sieć firmowa bywa niedostępna na tyle często, że praca opiera się na łączu zapasowym spoza domeny
+    en:
+      - The station is used to service network devices and needs to connect to their networks while keeping access to company resources
+      - The company network is unavailable often enough that work relies on a spare non-domain link
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+      $name = 'fBlockNonDomain'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+    $name = 'fBlockNonDomain'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'fBlockNonDomain' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-wifi
+
+notes:
+  pl: |
+    Punkt ma sens wyłącznie na maszynie należącej do domeny — na stanowisku
+    wolnostojącym nie ma sieci domenowej, więc warunek nigdy nie zachodzi
+    i ustawienie nie zmienia niczego. Reguła sprawdza mimo to obecność wpisu, bo
+    maszyna bywa przyłączana do domeny później, a wpis ma wtedy już obowiązywać.
+
+    Zakaz obejmuje zestawienie nowego połączenia, a nie utrzymanie tego, które
+    już działa. Maszyna podłączona najpierw do sieci spoza domeny, a dopiero
+    potem do firmowej, zachowa obie — kolejność ma znaczenie i nie jest to
+    obejście, tylko zakres punktu.
+  en: |
+    The item makes sense only on a machine belonging to a domain - a standalone
+    station has no domain network, so the condition never arises and the setting
+    changes nothing. The rule checks for the entry all the same, because a machine
+    is sometimes joined to a domain later, and the entry is to be in force by then.
+
+    The ban covers setting a new connection up, not keeping one that already runs. A
+    machine attached first to a non-domain network and only then to the company one
+    will keep both - order matters, and this is not a way around the item but its
+    reach.

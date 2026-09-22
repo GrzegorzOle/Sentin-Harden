@@ -1,0 +1,183 @@
+id: win11-smb1-server-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MS Security Guide
+  title:
+    pl: Serwer SMB w wersji pierwszej wyłączony
+    en: The first-version SMB server switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt bliźniaczy wobec sterownika klienta, ale dotyczy strony odwrotnej:
+    tego, czy maszyna zgadza się rozmawiać pierwszą wersją protokołu z kimś, kto
+    ją o to poprosi.
+
+    Różnica w wadze jest istotna. Klient naraża się dopiero wtedy, gdy uda się go
+    nakłonić do połączenia. Serwer stoi i czeka — wystarczy, że ktoś z sieci
+    nawiąże połączenie, żeby kod obsługujący protokół zaczął przetwarzać jego
+    dane. To właśnie ta strona była wektorem najgłośniejszych fal złośliwego
+    oprogramowania rozchodzącego się po sieci bez udziału użytkownika: sam
+    dostęp do portu wystarczał, żeby przejąć maszynę.
+
+    Wyłączenie serwera odbiera napastnikowi tę powierzchnię. Nowsze wersje
+    protokołu obsługuje inny kod, więc udostępnianie plików działa dalej —
+    przestaje działać wyłącznie ta wersja, której nie da się zabezpieczyć.
+  en: |
+    A twin of the client driver item, but concerning the opposite side: whether the
+    machine agrees to talk the first version of the protocol to anyone who asks.
+
+    The difference in weight matters. A client is exposed only once it can be
+    coaxed into connecting. A server stands and waits - it is enough for somebody on
+    the network to open a connection for the code handling the protocol to start
+    processing their data. It is this side that was the vector of the loudest waves
+    of malicious software spreading across networks with no user involvement:
+    reaching the port was enough to take the machine over.
+
+    Switching the server off takes that surface away from an attacker. Newer
+    versions of the protocol are served by different code, so file sharing keeps
+    working - only the version that cannot be secured stops.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy z udziałów udostępnianych przez tę maszynę korzysta
+    coś, co umie wyłącznie pierwszą wersję protokołu.
+
+    Na stanowisku roboczym udziały bywają rzadkie, więc zmiana zwykle przechodzi
+    bez żadnego objawu. Tam, gdzie są, pytanie dotyczy tego, kto po nie sięga:
+    stary skaner odkładający pliki, sterownik maszyny produkcyjnej, urządzenie
+    kopiujące albo system branżowy potrafią nie znać nowszych wersji. Takie
+    połączenie przestanie dochodzić do skutku, a objawem po ich stronie jest
+    odmowa dostępu albo niedostępna ścieżka.
+
+    Komputery i systemy wspierane dziś rozmawiają nowszą wersją i różnicy nie
+    zauważą.
+
+    Zmiana wymaga ponownego uruchomienia maszyny.
+  en: |
+    What needs checking is whether anything that speaks only the first version of
+    the protocol uses the shares this machine serves.
+
+    On a working station shares tend to be rare, so the change usually passes with
+    no symptom at all. Where they exist, the question is who reaches for them: an
+    old scanner dropping files, a production machine's controller, a copier or a
+    trade system may know no newer version. Such a connection will stop coming
+    about, and the symptom on their side is access denied or an unavailable path.
+
+    Computers and systems supported today talk a newer version and will not notice
+    the difference.
+
+    The change requires the machine to be restarted.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-applications
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Urządzenia i systemy obsługujące wyłącznie pierwszą wersję protokołu stracą dostęp do udziałów tej maszyny
+      - Skanery i urządzenia kopiujące odkładające pliki na udział mogą zacząć zgłaszać odmowę dostępu
+      - Starsze systemy branżowe sięgające po udział tej maszyny przestaną się z nim łączyć
+    en:
+      - Devices and systems supporting only the first version of the protocol lose access to this machine's shares
+      - Scanners and copiers dropping files onto a share may start reporting access denied
+      - Older trade systems reaching for this machine's share stop connecting to it
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Z udziału na tej maszynie korzysta urządzenie obsługujące wyłącznie pierwszą wersję protokołu, którego nie da się jeszcze wymienić
+    en:
+      - A share on this machine is used by a device supporting only the first version of the protocol and not yet replaceable
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Zero switches the server side of the first protocol version off. An
+      # absent value means the default, and the default leaves that side on, so
+      # it is reported as a missing setting rather than as a good state.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      $name = 'SMB1'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'SMB1'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SMB1' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+
+notes:
+  pl: |
+    Paczka niesie trzy reguły dotyczące pierwszej wersji protokołu i nie są to
+    duplikaty: jedna sprawdza składnik systemu, druga sterownik po stronie
+    klienta, ta — stronę serwera. Benchmark wymaga wszystkich trzech, bo każda
+    zamyka inną drogę przywrócenia protokołu do użycia, a zdjęcie składnika bez
+    ustawienia wpisów zostawia stan, który przywraca się jedną instalacją.
+
+    Brak wpisu jest zgłaszany jako niespełnienie, nie jako stan poprawny. Wartość
+    domyślna zostawia tę stronę włączoną, a reguła nie zgaduje, co system zrobi
+    po kolejnej aktualizacji — punkt wymaga wpisu, który to przesądza.
+  en: |
+    The pack carries three rules about the first version of the protocol, and they
+    are not duplicates: one checks the system component, another the driver on the
+    client side, this one the server side. The benchmark requires all three, because
+    each closes a different way of bringing the protocol back into use, and removing
+    the component without setting the entries leaves a state that one installation
+    restores.
+
+    A missing entry is reported as unmet, not as a correct state. The default value
+    leaves this side on, and the rule does not guess what the system will do after
+    the next update - the item calls for an entry that settles it.

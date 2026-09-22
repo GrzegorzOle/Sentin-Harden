@@ -1,0 +1,192 @@
+id: win11-smb1-client-driver-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MS Security Guide
+  title:
+    pl: Sterownik klienta SMB w wersji pierwszej wyłączony
+    en: The first-version SMB client driver switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pierwsza wersja protokołu udostępniania plików pochodzi z czasów, gdy sieci
+    lokalne uważano za zaufane z definicji. Nie potwierdza tożsamości serwera,
+    nie chroni przesyłanych danych przed zmianą i nie ma mechanizmu, którym
+    można by to naprawić bez zmiany protokołu.
+
+    Sterownik klienta jest tą częścią, która sprawia, że maszyna potrafi się
+    takim protokołem posłużyć. Dopóki działa, wystarczy doprowadzić do tego,
+    żeby maszyna spróbowała połączyć się z udziałem — a to wywołuje się zdalnie,
+    choćby odsyłaczem w dokumencie albo obrazkiem wskazującym na cudzy adres.
+    Połączenie dochodzi do skutku, a wraz z nim próba uwierzytelnienia,
+    z której napastnik zbiera materiał do ataku na hasło.
+
+    Wyłączenie sterownika zamyka tę drogę u źródła. Maszyna przestaje umieć
+    rozmawiać pierwszą wersją protokołu, więc nie da się jej do takiej rozmowy
+    nakłonić.
+  en: |
+    The first version of the file sharing protocol dates from when local networks
+    were considered trusted by definition. It does not confirm the server's
+    identity, does not protect the data sent from alteration, and has no mechanism
+    by which this could be fixed short of changing the protocol.
+
+    The client driver is the part that makes the machine able to use such a
+    protocol. As long as it runs, it is enough to make the machine try to connect
+    to a share - and that is triggered remotely, by a link in a document or an
+    image pointing at somebody else's address. The connection comes about, and with
+    it an attempt to authenticate, from which an attacker gathers material for an
+    attack on the password.
+
+    Switching the driver off closes that road at its source. The machine stops
+    being able to talk the first version of the protocol, so it cannot be coaxed
+    into such a conversation.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy w sieci pozostają zasoby obsługujące wyłącznie
+    pierwszą wersję protokołu.
+
+    Spotyka się je przy macierzach dyskowych wycofanych ze wsparcia, przy
+    urządzeniach przemysłowych i skanerach odkładających pliki oraz przy
+    systemach branżowych, których nikt nie aktualizował od lat. Połączenie
+    z takim zasobem przestanie dochodzić do skutku — objawem jest odmowa przy
+    podłączaniu udziału, zwykle z komunikatem o niedostępnej ścieżce sieciowej,
+    a nie o protokole.
+
+    Wszystko, co jest dziś wspierane, obsługuje nowsze wersje protokołu i zmiany
+    nie odczuje. W środowisku biurowym bez starych urządzeń przechodzi ona
+    niezauważona.
+
+    Zmiana wymaga ponownego uruchomienia maszyny, żeby zaczęła obowiązywać.
+  en: |
+    What needs checking is whether resources supporting only the first version of
+    the protocol remain on the network.
+
+    They are met with disk arrays out of support, with industrial devices and
+    scanners dropping files, and with trade systems nobody has updated for years. A
+    connection to such a resource will stop coming about - the symptom being a
+    refusal when attaching a share, usually with a message about an unavailable
+    network path rather than about a protocol.
+
+    Everything supported today speaks newer versions of the protocol and will not
+    feel the change. In an office environment without old devices it passes
+    unnoticed.
+
+    The change requires the machine to be restarted before it takes effect.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-applications
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Połączenia z udziałami obsługiwanymi wyłącznie pierwszą wersją protokołu przestaną dochodzić do skutku
+      - Macierze dyskowe i urządzenia przemysłowe wycofane ze wsparcia mogą stać się nieosiągalne z tej maszyny
+      - Zadania kopii zapasowej kierowane na taki udział zaczną kończyć się błędem o niedostępnej ścieżce
+    en:
+      - Connections to shares served only over the first version of the protocol stop coming about
+      - Disk arrays and industrial devices out of support may become unreachable from this machine
+      - Backup jobs targeting such a share start failing with an error about an unavailable path
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W sieci pozostaje zasób obsługujący wyłącznie pierwszą wersję protokołu, którego nie da się jeszcze zastąpić
+    en:
+      - A resource supporting only the first version of the protocol, and not yet replaceable, remains on the network
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # A value of four means the driver does not start at all. The key without
+      # a start value is reported apart, because it is what a machine looks like
+      # after the component has been removed - a different state from a driver
+      # present and left running.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\MrxSmb10'
+      $name = 'Start'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'NOT_INSTALLED' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'NO_START_VALUE' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(4|NOT_INSTALLED|NO_START_VALUE)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\MrxSmb10'
+    $name = 'Start'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\MrxSmb10'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Start' -Value 4 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3
+
+notes:
+  pl: |
+    W paczce jest druga reguła dotycząca tego samego protokołu — ta, która
+    sprawdza składnik systemu. Nie są to duplikaty: tamta pyta, czy składnik
+    jest zainstalowany, ta — czy sterownik, nawet zainstalowany, wystartuje.
+    Benchmark wymaga obu i każda zamyka inny sposób przywrócenia protokołu do
+    użycia.
+
+    Stan, w którym klucz sterownika istnieje bez wartości startu, jest typowy
+    dla maszyn ze zdjętym składnikiem. Reguła zgłasza go osobno i uznaje za
+    dopuszczalny, bo sterownik nie ma wtedy z czego wystartować — ale odróżnia
+    ten przypadek od zwykłego braku wpisu, żeby raport mówił, co faktycznie
+    zastał.
+  en: |
+    The pack holds a second rule about the same protocol - the one checking the
+    system component. They are not duplicates: that one asks whether the component
+    is installed, this one whether the driver, even installed, will start. The
+    benchmark requires both, and each closes a different way of bringing the
+    protocol back into use.
+
+    A state in which the driver's key exists with no start value is typical of
+    machines whose component has been removed. The rule reports it apart and counts
+    it admissible, because the driver then has nothing to start from - but it tells
+    that case from a plain missing entry, so the report says what it actually
+    found.

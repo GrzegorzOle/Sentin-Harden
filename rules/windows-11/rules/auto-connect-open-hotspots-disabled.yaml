@@ -1,0 +1,179 @@
+id: win11-auto-connect-open-hotspots-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > WLAN Service > WLAN Settings
+  title:
+    pl: Automatyczne łączenie z otwartymi sieciami bezprzewodowymi wyłączone
+    en: Automatic connection to open wireless networks switched off
+  level: 1
+  profile: workstation
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+platform:
+  system: windows-11
+
+description:
+  pl: |
+    System potrafi sam zestawić połączenie z otwartą siecią bezprzewodową
+    zgłoszoną jako punkt dostępowy do publicznego użytku, bez pytania
+    użytkownika i bez żadnego potwierdzenia, że sieć jest tą, za którą się podaje.
+
+    Otwarta sieć nie uwierzytelnia żadnej ze stron i nie szyfruje ruchu na
+    odcinku radiowym. Zestawienie takiej sieci kosztuje napastnika tyle, co
+    włączenie urządzenia z odpowiednią nazwą — a nazwa jest jedyną rzeczą, po
+    której maszyna ją rozpoznaje. Skutkiem jest to, że laptop niesiony przez
+    miasto sam wchodzi do sieci wybranej przez kogoś innego, a użytkownik
+    dowiaduje się o tym najwyżej z ikony.
+
+    Napastnik dostaje wtedy pozycję pośrednika: widzi ruch, który nie jest
+    zabezpieczony wyżej, i może podstawić własne odpowiedzi przy rozpoznawaniu
+    nazw czy pobieraniu treści. Wyłączenie automatu sprawia, że połączenie
+    z siecią, której nikt nie sprawdził, wymaga decyzji człowieka.
+  en: |
+    The system can set up a connection to an open wireless network announced as a
+    public hotspot on its own, without asking the user and with no confirmation at
+    all that the network is the one it claims to be.
+
+    An open network authenticates neither side and does not encrypt traffic over the
+    radio stretch. Setting such a network up costs an attacker no more than
+    switching on a device with the right name - and the name is the only thing by
+    which the machine recognises it. The upshot is that a laptop carried across town
+    walks into a network somebody else chose, and the user learns of it from an icon
+    at most.
+
+    The attacker then holds the position of a middleman: they see traffic that is
+    not secured higher up, and can plant answers of their own when names are
+    resolved or content fetched. Switching the automatic behaviour off means that
+    connecting to a network nobody checked takes a human decision.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje być możliwe. Znika wyłącznie samoczynność — użytkownik
+    nadal może połączyć się z dowolną otwartą siecią, tylko musi ją wybrać
+    i potwierdzić.
+
+    Zmiana nie dotyczy sieci zapamiętanych. Sieć domowa, firmowa czy hotelowa,
+    z którą połączono się wcześniej, dalej zestawia się sama. Dotyczy wyłącznie
+    sieci nowych, zgłoszonych jako publiczne, z którymi maszyna nie miała
+    dotąd do czynienia.
+
+    Dlatego punkt trafia do klasy bez uciążliwości: nie ma restartu, nie ma
+    okna serwisowego, nie ma scenariusza, w którym coś przestaje działać.
+    Pojedynczy użytkownik przyzwyczajony do tego, że w podróży sieć „robi się
+    sama", zauważy różnicę — i to jest cały koszt.
+  en: |
+    Nothing stops being possible. Only the automatic part goes - the user can still
+    connect to any open network at all, they just have to pick it and confirm.
+
+    The change does not concern remembered networks. A home, company or hotel
+    network connected to earlier still sets itself up. It concerns only new networks
+    announced as public that the machine has not dealt with before.
+
+    That is why the item falls into the no-disruption class: no restart, no
+    maintenance window, no scenario in which something stops working. The individual
+    user used to the network "making itself" while travelling will notice the
+    difference - and that is the whole cost.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - user-interface
+  what_breaks:
+    pl:
+      - Połączenie z nową otwartą siecią publiczną wymaga wybrania jej i potwierdzenia przez użytkownika
+    en:
+      - Connecting to a new open public network requires the user to pick it and confirm
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko pracuje w scenariuszu, w którym łączność opiera się na publicznych punktach dostępowych zestawianych bez udziału obsługi
+    en:
+      - The station works in a scenario where connectivity rests on public hotspots set up with nobody attending
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry sits outside the policy branch, in the service's own
+      # configuration, so an absent value means the system default rather than
+      # an unset policy - and that default leaves the automatic behaviour on.
+      $path = 'HKLM:\SOFTWARE\Microsoft\wcmsvc\wifinetworkmanager\config'
+      $name = 'AutoConnectAllowedOEM'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\wcmsvc\wifinetworkmanager\config'
+    $name = 'AutoConnectAllowedOEM'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\wcmsvc\wifinetworkmanager\config'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AutoConnectAllowedOEM' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-wifi
+
+notes:
+  pl: |
+    Wpis leży poza gałęzią zasad, w konfiguracji samej usługi sieci
+    bezprzewodowej. Ma to dwa skutki, o których warto wiedzieć: nie widać go
+    w edytorze zasad lokalnych tak jak zwykłych ustawień i nie wraca do stanu
+    domyślnego po zdjęciu zasady, bo zasady tam nie ma. Cofnięcie zmiany opiera
+    się wyłącznie na kopii zapisanej przez regułę.
+
+    Punkt odnosi się do mechanizmu, który w kolejnych wydaniach Windows tracił
+    kolejne części — usługi udostępniania sieci znajomym już nie ma. Sam wpis
+    pozostaje jednak czytany i nadal rozstrzyga o łączeniu z otwartymi punktami
+    dostępowymi, więc reguła zachowuje sens.
+  en: |
+    The entry sits outside the policy branch, in the wireless service's own
+    configuration. This has two consequences worth knowing: it is not visible in the
+    local policy editor the way ordinary settings are, and it does not return to its
+    default when a policy is lifted, because there is no policy there. Undoing the
+    change rests solely on the backup the rule saves.
+
+    The item concerns a mechanism that lost parts of itself in successive Windows
+    releases - the service for sharing networks with contacts is gone. The entry
+    itself is still read, though, and still settles connecting to open hotspots, so
+    the rule keeps its point.

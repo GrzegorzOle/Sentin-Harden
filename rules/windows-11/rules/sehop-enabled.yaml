@@ -1,0 +1,196 @@
+id: win11-sehop-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MS Security Guide
+  title:
+    pl: Sprawdzanie łańcucha obsługi wyjątków włączone
+    en: Structured exception handling overwrite protection enabled
+
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Program napotykający błąd — dzielenie przez zero, odwołanie do nieistniejącej
+    pamięci — oddaje sterowanie do procedury obsługi wyjątku. Procedury te tworzą
+    łańcuch, a każdy jego element leży na stosie i wskazuje na kolejny oraz na
+    kod do wykonania.
+
+    Napastnik, który potrafi zapisać poza przeznaczonym mu miejscem na stosie,
+    nadpisuje jedno z takich wskazań własnym adresem, po czym wywołuje dowolny
+    błąd. System posłusznie skacze tam, gdzie kazano — a napastnik uzyskuje
+    wykonanie kodu, nie musząc obchodzić żadnego z zabezpieczeń pilnujących
+    zwykłej drogi powrotu z funkcji.
+
+    Sprawdzanie łańcucha przed jego użyciem zamyka tę drogę. System przechodzi
+    łańcuch przed skokiem i sprawdza, czy prowadzi on tam, gdzie powinien — jeśli
+    został podmieniony, proces kończy się zamiast wykonać podstawiony kod.
+    Zabezpieczenie działa również dla programów zbudowanych bez własnej ochrony,
+    bo należy do systemu, nie do kompilatora.
+  en: |
+    A program meeting an error - division by zero, a reference to memory that is not
+    there - hands control to an exception handling routine. These routines form a
+    chain, and each of its elements sits on the stack and points to the next one and
+    to the code to run.
+
+    An attacker able to write past the place allotted to them on the stack
+    overwrites one of those pointers with an address of their own and then raises
+    any error at all. The system obediently jumps where it was told - and the
+    attacker gains code execution without having to get around any of the
+    protections guarding the ordinary way back out of a function.
+
+    Checking the chain before it is used closes that road. The system walks the
+    chain before the jump and checks that it leads where it should - if it has been
+    substituted, the process ends instead of running the planted code. The
+    protection also works for programs built without one of their own, because it
+    belongs to the system rather than to the compiler.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy na maszynie pracuje oprogramowanie budujące łańcuch
+    obsługi wyjątków w sposób nietypowy.
+
+    Zabezpieczenie jest na współczesnym Windows włączone domyślnie i dla
+    przytłaczającej większości programów pozostaje niewidoczne. Kłopot sprawiają
+    wyłącznie programy stare albo tworzące kod w trakcie działania: część starszych
+    maszyn wirtualnych języków skryptowych, narzędzia z własnymi mechanizmami
+    ochrony pamięci i programy zabezpieczone starymi pakerami potrafią zbudować
+    łańcuch, którego sprawdzenie nie przyjmuje.
+
+    Objaw jest jednoznaczny i ostry: program kończy się natychmiast, bez komunikatu
+    własnego, a w dzienniku aplikacji zostaje wpis o awarii. Nie ma stanu
+    pośredniego, w którym coś działa wolniej albo częściowo.
+
+    Zmiana wymaga ponownego uruchomienia maszyny.
+  en: |
+    What needs checking is whether software building its exception handling chain in
+    an unusual way runs on the machine.
+
+    On modern Windows the protection is on by default and stays invisible for the
+    overwhelming majority of programs. Trouble comes only from programs that are old
+    or that build code while running: some older virtual machines of scripting
+    languages, tools with memory protection mechanisms of their own, and programs
+    secured with old packers can build a chain that the check does not accept.
+
+    The symptom is unambiguous and sharp: the program ends at once, with no message
+    of its own, and an entry about a crash is left in the application log. There is
+    no in-between state where something runs slower or partly.
+
+    The change requires the machine to be restarted.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Starsze programy budujące nietypowy łańcuch obsługi wyjątków będą kończone natychmiast po jego użyciu
+      - Narzędzia tworzące kod w trakcie działania i programy zabezpieczone starymi pakerami mogą przestać się uruchamiać
+    en:
+      - Older programs building an unusual exception handling chain are ended at once when it is used
+      - Tools building code while running, and programs secured with old packers, may stop starting
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na maszynie pracuje program branżowy, o którym wiadomo, że nie znosi sprawdzania łańcucha, i nie ma dla niego zamiennika
+    en:
+      - The machine runs a trade program known not to tolerate the chain check, and there is no replacement for it
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry is written the other way round than it reads: zero means the
+      # check is on. An absent value leaves the system default, which is the
+      # check being on, but the item calls for the state to be written down, so
+      # the absence is reported apart.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel'
+      $name = 'DisableExceptionChainValidation'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel'
+    $name = 'DisableExceptionChainValidation'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableExceptionChainValidation' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/windows-services/security-guidelines-for-disabling-system-services-in-windows-server
+
+notes:
+  pl: |
+    Nazwa wpisu mówi o wyłączeniu, a punkt wymaga włączenia — stąd wartość zero
+    jako stan pożądany. Jest to jedno z częstszych miejsc na pomyłkę przy ręcznym
+    wdrażaniu i warto o tym pamiętać, czytając polecenie naprawcze.
+
+    Zabezpieczenie dotyczy przede wszystkim procesów trzydziestodwubitowych.
+    W procesach sześćdziesięcioczterobitowych obsługa wyjątków jest zbudowana
+    inaczej i nie korzysta z łańcucha na stosie, więc opisany atak tam nie
+    działa. Punkt zachowuje wagę dopóty, dopóki na maszynie pracuje choć jeden
+    starszy program — a w praktyce pracuje niemal zawsze.
+
+    Reguła zgłasza brak wpisu jako niespełnienie, choć domyślne zachowanie
+    systemu jest zgodne z wymaganiem. Punkt dotyczy zapisania tego stanu, a nie
+    polegania na wartości domyślnej.
+  en: |
+    The entry's name speaks of disabling while the item calls for enabling - hence
+    zero as the desired state. It is one of the commoner places to slip when
+    applying this by hand, and worth keeping in mind when reading the fix command.
+
+    The protection concerns thirty-two-bit processes above all. In sixty-four-bit
+    processes exception handling is built differently and does not use a chain on
+    the stack, so the attack described does not work there. The item keeps its
+    weight as long as even one older program runs on the machine - and in practice
+    one nearly always does.
+
+    The rule reports a missing entry as unmet, although the system's default
+    behaviour matches the requirement. The item is about writing that state down
+    rather than relying on the default.

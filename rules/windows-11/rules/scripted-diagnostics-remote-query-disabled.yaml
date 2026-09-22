@@ -1,0 +1,174 @@
+id: win11-scripted-diagnostics-remote-query-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Troubleshooting and Diagnostics > Scripted Diagnostics
+  title:
+    pl: Pobieranie treści diagnostycznych z sieci wyłączone
+    en: Fetching diagnostic content from the network switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kreatory rozwiązywania problemów nie są oknami z poradami — są zestawami
+    skryptów, które sprawdzają stan maszyny i same ją zmieniają. Uruchamiane są
+    z uprawnieniami wystarczającymi, żeby przestawić usługę, sterownik czy
+    ustawienie sieci.
+
+    Mechanizm, o który chodzi w tym punkcie, pozwala dociągnąć takie skrypty
+    z sieci zamiast wziąć je z tych, które są na maszynie. Znaczy to, że treść
+    wykonywana z podwyższonymi uprawnieniami przychodzi z zewnątrz w momencie
+    uruchomienia kreatora, a nie została na maszynę wniesiona i sprawdzona
+    wcześniej.
+
+    Nawet przy zaufanym źródle jest to powierzchnia warta zamknięcia: droga,
+    którą na maszynę trafia wykonywalna treść, powinna być jedna i znana.
+    Wyłączenie mechanizmu zostawia kreatory działające na tym, co jest
+    w systemie.
+  en: |
+    Troubleshooting wizards are not windows with advice - they are sets of scripts
+    that examine the machine's state and change it themselves. They run with rights
+    enough to switch a service, a driver or a network setting.
+
+    The mechanism this item is about lets such scripts be fetched from the network
+    instead of taken from those present on the machine. That means content run with
+    raised rights arrives from outside at the moment the wizard starts, rather than
+    having been brought onto the machine and examined beforehand.
+
+    Even with a trusted source this is a surface worth closing: the road by which
+    runnable content reaches a machine should be one and known. Switching the
+    mechanism off leaves the wizards working on what is in the system.
+
+disruption_description:
+  pl: |
+    Kreatory rozwiązywania problemów działają dalej. Zmienia się wyłącznie to,
+    skąd biorą treść: z zestawu obecnego w systemie zamiast z sieci.
+
+    Skutkiem jest brak dostępu do kreatorów nowszych niż te, które przyszły
+    z aktualizacjami systemu, oraz do poprawek wydanych między aktualizacjami.
+    W praktyce oznacza to kreator działający tak, jak działał w dniu instalacji
+    poprawek.
+
+    Nie ma sytuacji, w której coś przestaje być dostępne dla użytkownika —
+    kreatory otwierają się i kończą pracę tak samo. Dlatego punkt trafia do
+    klasy bez uciążliwości.
+
+    Warto odnotować rzecz, która nie jest regresją, ale bywa zaskoczeniem:
+    dla części problemów zestaw lokalny nie zawiera rozwiązania i kreator kończy
+    się bez wyniku. Jest to jego normalne zachowanie także bez tego punktu.
+  en: |
+    Troubleshooting wizards keep working. All that changes is where they take their
+    content from: the set present in the system rather than the network.
+
+    The effect is no access to wizards newer than those that came with system
+    updates, nor to fixes released between updates. In practice this means a wizard
+    working as it did on the day the updates were installed.
+
+    There is no situation in which something stops being available to the user - the
+    wizards open and finish just the same. That is why the item falls into the
+    no-disruption class.
+
+    One thing worth noting is not a regression but is sometimes a surprise: for some
+    problems the local set holds no solution and the wizard ends with no result.
+    That is its normal behaviour without this item as well.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Kreatory rozwiązywania problemów korzystają wyłącznie z treści obecnej w systemie i nie pobiorą nowszej
+      - Poprawki kreatorów wydane między aktualizacjami systemu nie trafią na maszynę
+    en:
+      - Troubleshooting wizards use only the content present in the system and will not fetch a newer one
+      - Fixes to the wizards released between system updates do not reach the machine
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Obsługa stanowisk opiera się na kreatorach dociąganych z sieci jako pierwszej linii rozwiązywania zgłoszeń
+    en:
+      - Support for the stations rests on wizards fetched from the network as the first line of handling reports
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy'
+      $name = 'EnableQueryRemoteServer'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy'
+    $name = 'EnableQueryRemoteServer'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableQueryRemoteServer' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-sdiageng
+
+notes:
+  pl: |
+    Punkt nie wyłącza kreatorów rozwiązywania problemów i nie należy go z tym
+    mylić — dostęp do nich jest sterowany osobnym ustawieniem. Ten dotyczy
+    wyłącznie źródła treści.
+
+    Gałąź zasad jest tu poświęcona jednemu mechanizmowi, więc wycofanie zmiany
+    może bezpiecznie usunąć ją w całości, jeśli przed zmianą jej nie było.
+    Odróżnia to tę regułę od tych, które siedzą w gałęziach wspólnych.
+  en: |
+    The item does not switch the troubleshooting wizards off and should not be
+    confused with that - access to them is steered by a separate setting. This one
+    concerns the source of their content only.
+
+    The policy key here is given over to one mechanism, so undoing the change can
+    safely remove it whole if it was not there before. That sets this rule apart
+    from the ones sitting in shared keys.

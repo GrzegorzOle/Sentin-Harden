@@ -1,0 +1,167 @@
+id: win11-rss-enclosure-download-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > RSS Feeds
+  title:
+    pl: Pobieranie załączników z kanałów informacyjnych wyłączone
+    en: Downloading enclosures from news feeds switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kanał informacyjny dostarcza nagłówki, ale pozycja w nim może nieść załącznik —
+    plik wskazany przez wydawcę i pobierany przez system w tle, bez pytania
+    i bez udziału użytkownika.
+
+    Jest to więc mechanizm, który sam z siebie ściąga na dysk pliki wybrane przez
+    kogoś spoza firmy. Wystarczy, że kanał zostanie przejęty albo że wydawca
+    okaże się niestaranny, żeby na maszynę trafiła treść, której nikt nie zamawiał.
+    Samo pobranie nie uruchamia jeszcze niczego, ale plik na dysku to połowa
+    drogi — reszta bywa kwestią jednego kliknięcia albo innej podatności.
+
+    Osobno liczy się to, że pobieranie dzieje się poza polem widzenia
+    użytkownika. Plik pojawia się w pamięci podręcznej mechanizmu, a nie
+    w katalogu pobranych, więc nikt go nie ogląda i nikt nie kojarzy jego
+    pochodzenia.
+  en: |
+    A news feed delivers headlines, but an item in it can carry an enclosure - a
+    file named by the publisher and fetched by the system in the background, without
+    asking and with no user involvement.
+
+    So it is a mechanism that pulls onto the disk, by itself, files chosen by
+    somebody outside the company. It takes only a feed being taken over, or a
+    publisher proving careless, for content nobody ordered to reach the machine. The
+    download alone starts nothing, but a file on the disk is half the road - the
+    rest is sometimes a matter of one click or of another weakness.
+
+    It counts separately that the fetching happens out of the user's sight. The file
+    appears in the mechanism's cache rather than in the downloads directory, so
+    nobody looks at it and nobody connects it with where it came from.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać w pracy biurowej. Kanały informacyjne są
+    mechanizmem zaszłym, wywodzącym się z przeglądarki wycofanej z systemu,
+    i na stanowiskach praktycznie nie bywają używane.
+
+    Tam, gdzie mimo to działają, pozycje w kanale pozostają dostępne — znika
+    wyłącznie samoczynne pobieranie plików do nich dołączonych. Odsyłacz do
+    takiego pliku dalej da się otworzyć ręcznie.
+
+    Dlatego punkt trafia do klasy bez uciążliwości: nie ma restartu, nie ma okna
+    serwisowego i nie ma scenariusza, w którym użytkownik traci dostęp do czegoś,
+    czego potrzebuje.
+  en: |
+    Nothing stops working in office use. News feeds are a legacy mechanism, derived
+    from a browser withdrawn from the system, and are in practice not used at the
+    stations.
+
+    Where they do work, the items in a feed stay available - all that goes is the
+    automatic fetching of the files attached to them. A link to such a file can
+    still be opened by hand.
+
+    That is why the item falls into the no-disruption class: no restart, no
+    maintenance window, and no scenario in which a user loses access to something
+    they need.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - user-interface
+  what_breaks:
+    pl:
+      - Pliki dołączone do pozycji w kanale informacyjnym przestaną być pobierane samoczynnie
+    en:
+      - Files attached to items in a news feed stop being fetched automatically
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku pracuje narzędzie opierające się na kanałach informacyjnych systemu i pobierające przez nie pliki
+    en:
+      - The station runs a tool resting on the system's news feeds and fetching files through them
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Feeds'
+      $name = 'DisableEnclosureDownload'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Feeds'
+    $name = 'DisableEnclosureDownload'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Feeds'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableEnclosureDownload' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-inetres
+
+notes:
+  pl: |
+    Nazwa gałęzi wskazuje na przeglądarkę wycofaną z Windows 11 i łatwo uznać
+    punkt za bezprzedmiotowy. Tak jednak nie jest: mechanizm kanałów jest
+    składnikiem systemu, a nie przeglądarki, i jego ustawienia dalej leżą w tej
+    gałęzi. Zmiana nazwy nie nastąpiła i reguła musi czytać tę, która jest.
+
+    Wartość jest zapisana odwrotnie do brzmienia punktu — jedynka oznacza
+    wyłączenie pobierania. Jest to typowe dla ustawień nazwanych od czynności,
+    którą blokują.
+  en: |
+    The key's name points at a browser withdrawn from Windows 11, and it is easy to
+    count the item moot. It is not: the feeds mechanism is a system component rather
+    than a browser one, and its settings still sit in that key. No rename happened
+    and the rule has to read the name that is there.
+
+    The value is written the other way round from how the item reads - one means the
+    downloading is off. That is usual for settings named after the action they
+    block.

@@ -1,0 +1,186 @@
+id: win11-sandbox-clipboard-redirection-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Sandbox
+  title:
+    pl: Wspólny schowek piaskownicy z systemem wyłączony
+    en: The sandbox's shared clipboard with the system switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Piaskownica jest osobnym, jednorazowym systemem uruchamianym po to, żeby
+    otworzyć w nim coś, czemu się nie ufa. Cała jej wartość opiera się na jednym
+    założeniu: to, co w środku, nie ma jak wyjść na zewnątrz.
+
+    Wspólny schowek to założenie nadwątla. Jest to kanał przenoszący dane w obie
+    strony, dostępny programowo i niewymagający niczyjej zgody poza pierwszym
+    ustawieniem. Kod uruchomiony w piaskownicy może przez niego wystawić
+    zawartość na maszynę gospodarza, a treść podłożona w schowku po tamtej
+    stronie trafia do programu, który akurat wkleja.
+
+    Groźniejszy jest kierunek odwrotny, niż się wydaje. Użytkownik pracujący
+    w piaskownicy kopiuje do niej rzeczy z maszyny gospodarza, a złośliwy program
+    działający w środku widzi wtedy wszystko, co przez ten schowek przechodzi —
+    łącznie z hasłem wklejonym z menedżera haseł. Wyłączenie kanału przywraca
+    piaskownicy właściwość, dla której się ją uruchamia.
+  en: |
+    A sandbox is a separate, one-off system started in order to open something
+    inside it that is not trusted. Its whole worth rests on one assumption: what is
+    inside has no way out.
+
+    A shared clipboard wears that assumption down. It is a channel carrying data
+    both ways, reachable from a program and needing nobody's consent beyond the
+    first setting. Code running in the sandbox can use it to put content out onto
+    the host machine, and content planted in the clipboard on that side reaches
+    whatever program happens to paste.
+
+    The reverse direction is graver than it seems. A user working in the sandbox
+    copies things into it from the host machine, and a malicious program running
+    inside then sees everything that passes through that clipboard - including a
+    password pasted from a password manager. Switching the channel off restores to
+    the sandbox the trait it is started for.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy i do czego na stanowiskach używa się piaskownicy.
+
+    Na maszynie, na której piaskownica nie jest włączona jako składnik systemu,
+    zmiana nie ma żadnego skutku. Tam, gdzie jest używana, znika wygodne
+    przenoszenie tekstu i plików przez kopiowanie — a jest to zwykle główny
+    sposób, w jaki wnosi się do środka rzecz do obejrzenia.
+
+    Zastąpić to trzeba katalogiem udostępnionym w pliku konfiguracyjnym
+    piaskownicy albo przeniesieniem pliku przez sieć. Oba sposoby działają,
+    ale wymagają przygotowania i są wolniejsze, więc zespół korzystający
+    z piaskownicy codziennie poczuje różnicę.
+
+    Objawem jest wklejanie, które nie daje nic — bez komunikatu i bez wskazania
+    powodu.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje przy następnym uruchomieniu
+    piaskownicy.
+  en: |
+    What needs checking is whether, and for what, the sandbox is used at the
+    stations.
+
+    On a machine where the sandbox is not switched on as a system component the
+    change has no effect at all. Where it is used, the convenient carrying of text
+    and files by copying goes - and that is usually the main way something is
+    brought inside to be looked at.
+
+    It has to be replaced by a directory shared in the sandbox's configuration file,
+    or by moving the file over the network. Both work, but they need preparing and
+    are slower, so a team using the sandbox daily will feel the difference.
+
+    The symptom is a paste that yields nothing - with no message and no reason
+    given.
+
+    There is no machine restart. The change takes effect the next time the sandbox
+    starts.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - user-interface
+  what_breaks:
+    pl:
+      - Kopiowanie tekstu i plików między maszyną a piaskownicą przestanie działać w obie strony
+      - Wnoszenie materiału do zbadania do piaskownicy będzie wymagało katalogu udostępnionego albo przeniesienia przez sieć
+      - Wklejanie w piaskownicy nie da żadnego efektu i nie pojawi się komunikat tłumaczący powód
+    en:
+      - Copying text and files between the machine and the sandbox stops working both ways
+      - Bringing material to be examined into the sandbox will need a shared directory or a transfer over the network
+      - Pasting in the sandbox yields nothing, with no message explaining why
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Zespół bada w piaskownicy próbki wnoszone przez schowek i nie przygotowano innego sposobu przenoszenia materiału
+    en:
+      - A team examines samples in the sandbox brought in through the clipboard, and no other way of moving material has been prepared
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+      $name = 'AllowClipboardRedirection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    $name = 'AllowClipboardRedirection'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowClipboardRedirection' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/
+
+notes:
+  pl: |
+    Ustawienie ma pierwszeństwo przed plikiem konfiguracyjnym piaskownicy.
+    Wpis w pliku włączający schowek nie zadziała, kiedy ten punkt jest wdrożony —
+    warto o tym wiedzieć, bo objawem jest plik konfiguracyjny, który wygląda na
+    ignorowany.
+
+    Reguła sprawdza wpis, a nie to, czy piaskownica jest na maszynie włączona
+    jako składnik. Stanowisko bez piaskownicy również powinno ten wpis mieć:
+    składnik bywa włączany później i ograniczenie ma już wtedy obowiązywać.
+  en: |
+    The setting takes precedence over the sandbox's configuration file. An entry in
+    the file switching the clipboard on will not work while this item is applied -
+    worth knowing, because the symptom is a configuration file that looks ignored.
+
+    The rule checks the entry, not whether the sandbox is switched on as a component
+    on the machine. A station without the sandbox should have the entry as well: the
+    component is sometimes switched on later, and the limit is to be in force by
+    then.

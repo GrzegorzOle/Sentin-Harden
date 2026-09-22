@@ -1,0 +1,172 @@
+id: win11-store-apps-account-optional
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > App runtime
+  title:
+    pl: Aplikacje ze sklepu nie mogą wymagać konta konsumenckiego
+    en: Store applications may not require a consumer account
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Aplikacja ze sklepu potrafi zażądać zalogowania się kontem konsumenckim,
+    zanim w ogóle pozwoli z siebie skorzystać. Dla użytkownika stanowiska
+    firmowego jest to wybór pozorny: albo zakłada konto prywatne po to, żeby
+    otworzyć narzędzie potrzebne do pracy, albo z narzędzia nie korzysta.
+
+    Ten punkt odbiera aplikacji możliwość postawienia takiego żądania. Konto
+    pozostaje możliwe, ale przestaje być warunkiem — kto chce, loguje się
+    kontem firmowym albo nie loguje wcale.
+
+    Znaczenie dla bezpieczeństwa bierze się stąd, że każde takie wymuszone konto
+    to tożsamość poza kontrolą firmy, powiązana ze stanowiskiem firmowym i często
+    zabezpieczona hasłem używanym również prywatnie. Im mniej powodów, żeby
+    takie konto na stanowisku powstało, tym mniej punktów, przez które da się je
+    zaatakować.
+  en: |
+    An application from the store can demand a sign-in with a consumer account
+    before it lets itself be used at all. For the user of a company station this is
+    a false choice: either they set up a private account in order to open a tool
+    they need for work, or they do without the tool.
+
+    This item takes away the application's ability to make such a demand. An account
+    stays possible but stops being a condition - whoever wants to, signs in with a
+    company account or does not sign in at all.
+
+    Its bearing on security comes from this: every such forced account is an
+    identity beyond the company's control, tied to a company station and often
+    guarded by a password used privately as well. The fewer reasons for such an
+    account to come about on a station, the fewer points through which it can be
+    attacked.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Zmiana odbiera aplikacjom możliwość stawiania
+    warunku, a nie użytkownikom możliwość logowania.
+
+    Aplikacja, która o konto prosiła, dalej o nie poprosi — ale pozwoli przejść
+    dalej bez niego. Część funkcji takiej aplikacji może wtedy pozostać
+    niedostępna, co jest zachowaniem zamierzonym i widocznym w samej aplikacji,
+    a nie skutkiem ubocznym.
+
+    Dlatego punkt trafia do klasy bez uciążliwości: nie ma restartu, nie ma
+    okna serwisowego, nie ma scenariusza, w którym coś dotąd działającego
+    przestaje działać.
+  en: |
+    Nothing stops working. The change takes away the applications' ability to set a
+    condition, not the users' ability to sign in.
+
+    An application that asked for an account will still ask - but will let one go on
+    without it. Some of such an application's functions may then stay unavailable,
+    which is intended behaviour visible in the application itself rather than a side
+    effect.
+
+    That is why the item falls into the no-disruption class: no restart, no
+    maintenance window, no scenario in which something that worked stops working.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Aplikacje ze sklepu opierające część funkcji na koncie konsumenckim udostępnią je dopiero po dobrowolnym zalogowaniu
+    en:
+      - Store applications resting part of their functions on a consumer account will offer those only after a voluntary sign-in
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Przyjęty sposób pracy opiera się na aplikacji ze sklepu, która bez wymuszonego konta działa w ograniczonym zakresie
+    en:
+      - The accepted way of working rests on a store application that runs in a limited way without a required account
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'MSAOptional'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'MSAOptional'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MSAOptional' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-appxruntime
+
+notes:
+  pl: |
+    Wpis leży poza zwykłą gałęzią zasad, w gałęzi ustawień systemu wspólnej
+    z kilkunastoma innymi punktami — między innymi z tymi, które sterują
+    kontrolą konta użytkownika. Polecenie wycofania zdejmuje wyłącznie tę jedną
+    wartość i pod żadnym warunkiem nie usuwa gałęzi, bo usunięcie oznaczałoby
+    zdjęcie kilkunastu niezwiązanych ustawień naraz.
+
+    Punkt tworzy parę z zakazem uwierzytelniania kontem konsumenckim, ale
+    rozstrzyga rzecz łagodniej: tamten zamyka logowanie, ten odbiera aplikacjom
+    możliwość jego wymuszenia. Wdrożenie tamtego czyni ten w praktyce zbędnym —
+    benchmark wymaga obu i reguła tego nie podważa.
+  en: |
+    The entry sits outside the usual policy key, in a system settings key shared
+    with a dozen or so other items - among them the ones steering user account
+    control. The rollback command lifts this one value only and under no
+    circumstances removes the key, because removing it would take a dozen unrelated
+    settings down at once.
+
+    The item pairs with the ban on authenticating with a consumer account, but
+    settles the matter more mildly: that one closes signing in, this one takes away
+    the applications' ability to require it. Applying that one makes this one
+    redundant in practice - the benchmark requires both and the rule does not
+    dispute it.

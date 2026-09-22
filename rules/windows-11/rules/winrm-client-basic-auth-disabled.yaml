@@ -1,0 +1,151 @@
+id: win11-winrm-client-basic-auth-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Remote Management
+  title:
+    pl: Uwierzytelnianie podstawowe klienta zarządzania zdalnego wyłączone
+    en: Basic authentication for the remote management client disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt o usłudze pilnuje połączeń przychodzących. Ten pilnuje wychodzących —
+    czyli sytuacji, w której to ta stacja łączy się gdzieś indziej i sama wysyła
+    poświadczenia w postaci zaledwie zakodowanej.
+
+    Różnica jest istotna, bo tu ryzyko ponosi konto administratora używane do
+    zarządzania, a nie konto lokalne maszyny. Przechwycenie jednego takiego
+    połączenia daje hasło działające na wszystkich maszynach, którymi ta osoba
+    zarządza. Wyłączenie wariantu podstawowego po stronie klienta sprawia, że
+    stacja odmawia wysłania hasła w takiej postaci, nawet gdy druga strona o to
+    prosi.
+  en: |
+    The service item guards incoming connections. This one guards outgoing ones -
+    the situation where this workstation connects elsewhere and sends the
+    credentials itself, merely encoded.
+
+    The difference matters, because here the risk falls on the administrator
+    account used for management rather than on the machine's local account.
+    Capturing one such connection yields a password that works on every machine
+    that person administers. Disabling the basic variant on the client side
+    means the workstation refuses to send the password in that form, even when
+    the other end asks for it.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie maszyn, z których ktoś zarządza innymi. Na zwykłej
+    stacji roboczej jest niewidoczna i nie ma czego zepsuć.
+
+    Tam, gdzie zarządzanie zdalne jest prowadzone z tej maszyny, trzeba
+    sprawdzić, do czego się łączy. Połączenia do urządzeń i systemów
+    obsługujących wyłącznie uwierzytelnianie podstawowe przestaną dochodzić do
+    skutku — najczęściej dotyczy to sprzętu sieciowego i systemów spoza
+    ekosystemu Windows.
+  en: |
+    The change concerns only machines from which somebody manages others. On an
+    ordinary workstation it is invisible and there is nothing to break.
+
+    Where remote management is run from this machine, you need to check what it
+    connects to. Connections to devices and systems supporting only basic
+    authentication stop completing - most often this concerns network hardware
+    and systems outside the Windows ecosystem.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - scripting-and-automation
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Połączenia zarządzające z tej stacji do urządzeń obsługujących tylko wariant podstawowy przestaną działać
+      - Skrypty administracyjne uruchamiane stąd na zdalnych maszynach zaczną otrzymywać odmowę uwierzytelnienia
+      - Narzędzia łączące się do systemów spoza ekosystemu Windows mogą wymagać zmiany sposobu logowania
+    en:
+      - Management connections from this workstation to devices supporting only the basic variant stop working
+      - Administrative scripts run from here against remote machines start receiving authentication refusals
+      - Tools connecting to systems outside the Windows ecosystem may need their sign-in method changed
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Z tej maszyny zarządza się urządzeniami obsługującymi wyłącznie uwierzytelnianie podstawowe
+      - Skrypty administracyjne na tej stacji nie mają jeszcze przepisanej metody logowania
+    en:
+      - This machine manages devices that support only basic authentication
+      - Administrative scripts on this workstation have no rewritten sign-in method yet
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
+      $name = 'AllowBasic'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
+    $name = 'AllowBasic'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowBasic' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/winrm/authentication-for-remote-connections
+
+notes:
+  pl: |
+    Druga połowa pary z punktem o usłudze. Wdrożenie samej usługi zostawia
+    otwartą drogę w drugą stronę: maszyna nadal wysyła hasło w słabej postaci,
+    gdy to ona jest stroną łączącą się. Oba punkty ocenia się razem.
+  en: |
+    The second half of a pair with the service item. Rolling out the service
+    alone leaves the other direction open: the machine still sends the password
+    in the weak form when it is the connecting party. Both items are assessed
+    together.

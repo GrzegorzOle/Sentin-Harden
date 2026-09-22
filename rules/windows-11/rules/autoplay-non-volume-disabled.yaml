@@ -1,0 +1,146 @@
+id: win11-autoplay-non-volume-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > AutoPlay Policies
+  title:
+    pl: Autoodtwarzanie dla urządzeń niebędących nośnikami wyłączone
+    en: AutoPlay for devices that are not volumes disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt o autoodtwarzaniu z napędów dotyczy rzeczy, które system widzi jako
+    dysk. Zostaje druga kategoria: urządzenia zgłaszające się inaczej — aparaty,
+    telefony, odtwarzacze, skanery. One także potrafią wskazać systemowi, co
+    uruchomić po podłączeniu.
+
+    Ta droga jest ciekawsza dla napastnika właśnie dlatego, że jest mniej znana.
+    Urządzenie przygotowane tak, by podać się za aparat, omija ograniczenie
+    nałożone na napędy. Wyłączenie tej ścieżki zamyka drugą połowę tego samego
+    problemu — po podłączeniu czegokolwiek nic nie startuje samo.
+  en: |
+    The item about AutoRun from drives covers things the system sees as a disk.
+    A second category remains: devices that announce themselves differently -
+    cameras, phones, media players, scanners. They too can tell the system what
+    to launch on connection.
+
+    That route is the more interesting one for an attacker precisely because it
+    is less well known. A device prepared to pass itself off as a camera bypasses
+    the restriction placed on drives. Disabling this path closes the other half
+    of the same problem - after plugging anything in, nothing starts on its own.
+
+disruption_description:
+  pl: |
+    Zmiana nie odbiera dostępu do żadnego urządzenia. Aparat, telefon i skaner
+    nadal są widoczne, nadal da się z nich skopiować zdjęcia i nadal działa
+    oprogramowanie producenta — z tą różnicą, że użytkownik uruchamia je sam,
+    zamiast dostawać okno podpowiedzi przy podłączeniu.
+
+    Jedyne, co znika, to automatyczne uruchomienie programu wskazanego przez
+    urządzenie. Brak restartu, brak wylogowania, zmiana obowiązuje od następnego
+    podłączenia.
+  en: |
+    The change takes away access to no device. A camera, phone and scanner remain
+    visible, photos can still be copied from them and the manufacturer's software
+    still works - with the difference that the user starts it themselves instead
+    of getting a prompt window on connection.
+
+    The only thing that disappears is the automatic launch of a program named by
+    the device. No restart, no sign-out, the change applies from the next
+    connection onwards.
+
+implementation_consequences:
+  impact_areas:
+    - removable-media
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Podłączenie aparatu lub telefonu przestanie samo otwierać program do importu zdjęć
+      - Oprogramowanie producenta urządzenia trzeba będzie uruchomić ręcznie zamiast czekać na podpowiedź
+    en:
+      - Connecting a camera or phone no longer opens the photo import program by itself
+      - The device manufacturer's software has to be started by hand instead of waiting for a prompt
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowisko obsługuje powtarzalny import z urządzeń i opiera go na automatycznym starcie programu
+    en:
+      - The station handles repetitive imports from devices and relies on the program starting automatically
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+      $name = 'NoAutoplayfornonVolume'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    $name = 'NoAutoplayfornonVolume'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoAutoplayfornonVolume' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-autoplay
+
+notes:
+  pl: |
+    Punkt uzupełniający ten o autoodtwarzaniu z napędów i bezwartościowy bez
+    niego — oba trzeba wdrożyć, żeby zamknąć drogę w całości. Nazwa wartości
+    w rejestrze jest pisana niekonsekwentnie i tak właśnie ją odczytuje system;
+    zapis zgodny z konwencją nie zadziała.
+  en: |
+    An item complementing the one about AutoRun from drives and worthless
+    without it - both have to be rolled out to close the route completely. The
+    registry value name is spelled inconsistently and that is exactly how the
+    system reads it; a conventionally spelled version will not work.

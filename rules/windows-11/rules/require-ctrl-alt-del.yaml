@@ -1,0 +1,151 @@
+id: win11-require-ctrl-alt-del
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Kombinacja klawiszy wymagana przed logowaniem
+    en: Key combination required before signing in
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ekran logowania da się podrobić. Program uruchomiony na maszynie potrafi
+    wyświetlić okno wyglądające dokładnie jak systemowe, przyjąć wpisane hasło
+    i przekazać je dalej — użytkownik nie zauważy niczego poza tym, że musiał
+    się zalogować drugi raz.
+
+    Kombinacja klawiszy obsługiwana wyłącznie przez system tego nie pozwala
+    podrobić: żaden program nie może jej przechwycić ani udać. Naciśnięcie
+    przenosi na prawdziwy ekran logowania, więc hasło wpisywane po niej trafia
+    tam, gdzie powinno. To zabezpieczenie oparte na czymś, czego oprogramowanie
+    nie potrafi naśladować.
+  en: |
+    A sign-in screen can be forged. A program running on the machine can display
+    a window that looks exactly like the system one, accept the typed password
+    and pass it on - the user notices nothing beyond having had to sign in a
+    second time.
+
+    A key combination handled only by the system cannot be forged like that: no
+    program can intercept or imitate it. Pressing it switches to the real
+    sign-in screen, so a password typed afterwards goes where it should. This is
+    a safeguard resting on something software cannot mimic.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać, ale każdy użytkownik odczuje to przy każdym
+    logowaniu i odblokowaniu — a przy zmianie, która nie przynosi im nic
+    widocznego, właśnie to decyduje o liczbie zgłoszeń.
+
+    Poważniejszy przypadek to sprzęt bez pełnej klawiatury: tablety, panele
+    dotykowe, cienkie terminale, stanowiska kioskowe. Tam wywołanie kombinacji
+    bywa niemożliwe albo wymaga klawiatury ekranowej, o której użytkownik nie
+    wie. Na maszynach zdalnych trzeba też pamiętać, że klient pulpitu zdalnego
+    przechwytuje tę kombinację na rzecz maszyny lokalnej.
+  en: |
+    Nothing stops working, but every user feels it at every sign-in and unlock -
+    and with a change that brings them nothing visible, that is precisely what
+    decides the number of support calls.
+
+    The more serious case is hardware without a full keyboard: tablets, touch
+    panels, thin terminals, kiosk stations. There the combination can be
+    impossible to produce or requires an on-screen keyboard the user does not
+    know about. On remote machines it is also worth remembering that the Remote
+    Desktop client captures this combination for the local machine.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - remote-desktop
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Urządzenia bez pełnej klawiatury wymagają klawiatury ekranowej, żeby w ogóle dojść do ekranu logowania
+      - Stanowiska kioskowe i panele dotykowe mogą stać się niemożliwe do odblokowania bez podłączonej klawiatury
+      - Użytkownicy pulpitu zdalnego muszą użyć innej kombinacji, bo domyślna trafia do maszyny lokalnej
+    en:
+      - Devices without a full keyboard need an on-screen keyboard to reach the sign-in screen at all
+      - Kiosk stations and touch panels may become impossible to unlock without an attached keyboard
+      - Remote Desktop users must use a different combination, because the default goes to the local machine
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko jest tabletem lub panelem dotykowym bez podłączonej klawiatury fizycznej
+      - Maszyna pracuje w trybie kiosku, w którym logowanie ma być możliwie proste dla przypadkowej osoby
+    en:
+      - The station is a tablet or touch panel with no physical keyboard attached
+      - The machine runs in kiosk mode, where signing in should be as simple as possible for a casual user
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'DisableCAD'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'DisableCAD'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name 'DisableCAD' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-do-not-require-ctrl-alt-del
+
+notes:
+  pl: |
+    Nazwa ustawienia w rejestrze jest przecząca: zero znaczy „nie wyłączaj
+    wymogu", czyli stan pożądany. Punkt wymaga wartości jawnej, bo bez niej
+    zachowanie zależy od sposobu przygotowania maszyny — na stacjach stawianych
+    z obrazu producenta wymóg bywa wyłączony dla wygody pierwszego uruchomienia.
+  en: |
+    The registry setting is named in the negative: zero means "do not disable
+    the requirement", that is, the desired state. The item insists on an
+    explicit value, because without one the behaviour depends on how the machine
+    was prepared - on workstations built from a manufacturer's image the
+    requirement is sometimes off for the convenience of first boot.

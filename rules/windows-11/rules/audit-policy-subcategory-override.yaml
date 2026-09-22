@@ -1,0 +1,151 @@
+id: win11-audit-policy-subcategory-override
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Szczegółowe zasady inspekcji nadrzędne wobec starszych kategorii
+    en: Detailed audit policy takes precedence over legacy categories
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    W systemie istnieją dwa sposoby opisania, co ma trafiać do dziennika
+    zabezpieczeń: stary, o dziewięciu szerokich kategoriach, i nowy, dzielący je
+    na kilkadziesiąt podkategorii. Bez tego ustawienia stary potrafi nadpisać
+    nowy — a wtedy precyzyjna konfiguracja inspekcji, którą ktoś przygotował,
+    po prostu przestaje obowiązywać.
+
+    Skutek jest zdradliwy, bo nie widać go w konfiguracji: ustawienia
+    szczegółowe nadal tam są i wyglądają na wdrożone, a system pracuje według
+    starych. Włączenie nadrzędności sprawia, że to, co zapisano, jest tym, co
+    faktycznie działa — i dopiero wtedy raport z inspekcji mówi prawdę.
+  en: |
+    The system has two ways of describing what should reach the security log:
+    the old one, with nine broad categories, and the new one, splitting them
+    into several dozen subcategories. Without this setting the old can overwrite
+    the new - and then the precise audit configuration somebody prepared simply
+    stops applying.
+
+    The consequence is treacherous, because it is invisible in the
+    configuration: the detailed settings are still there and look deployed,
+    while the system runs on the old ones. Enabling the precedence makes what
+    was written down the thing that actually runs - and only then does an audit
+    report tell the truth.
+
+disruption_description:
+  pl: |
+    Samo ustawienie niczego nie rejestruje i nie zmienia działania systemu dla
+    użytkownika. Zmienia natomiast to, które zasady inspekcji obowiązują — a to
+    znaczy, że objętość dziennika może skoczyć w obie strony, zależnie od tego,
+    co było skonfigurowane szczegółowo.
+
+    Na maszynie, na której nikt nie ustawiał podkategorii, wdrożenie ograniczy
+    rejestrowanie do wartości domyślnych i może **zmniejszyć** ilość zbieranych
+    zdarzeń. To jest właściwy powód klasy „wymaga sprawdzenia": punkt sam w sobie
+    jest bezpieczny, ale wdrożony bez ustawienia podkategorii potrafi obniżyć
+    poziom rejestrowania zamiast go podnieść.
+  en: |
+    The setting records nothing by itself and does not change how the system
+    behaves for the user. What it does change is which audit policy applies -
+    which means log volume can jump either way, depending on what was configured
+    in detail.
+
+    On a machine where nobody has set the subcategories, the rollout limits
+    logging to default values and may **reduce** the number of events collected.
+    That is the real reason for the "needs review" class: the item is safe in
+    itself, but rolled out without setting the subcategories it can lower the
+    level of logging instead of raising it.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Na maszynie bez ustawionych podkategorii rejestrowanie może zawęzić się do wartości domyślnych
+      - Objętość dziennika zabezpieczeń zmieni się w górę lub w dół, zależnie od wcześniejszej konfiguracji
+      - Systemy zbierające zdarzenia mogą przestać otrzymywać część zdarzeń, na których opierały swoje reguły
+    en:
+      - On a machine with no subcategories set, logging may narrow down to default values
+      - Security log volume changes up or down, depending on the earlier configuration
+      - Event collection systems may stop receiving some of the events their rules relied on
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Inspekcja na tej maszynie jest skonfigurowana wyłącznie starymi kategoriami i nikt nie ustawił podkategorii
+      - System zbierający zdarzenia opiera swoje reguły na zdarzeniach z konfiguracji starszego typu
+    en:
+      - Auditing on this machine is configured only through the old categories and nobody has set subcategories
+      - An event collection system bases its rules on events from the older style of configuration
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'SCENoApplyLegacyAuditPolicy'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'SCENoApplyLegacyAuditPolicy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+      -Name 'SCENoApplyLegacyAuditPolicy' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/advanced-security-auditing
+
+notes:
+  pl: |
+    To punkt włączający, nie rejestrujący: sam nie decyduje, co trafia do
+    dziennika, tylko przesądza, która konfiguracja obowiązuje. Ma sens
+    wyłącznie razem z ustawieniem konkretnych podkategorii inspekcji — bez tego
+    jest przygotowaniem, nie zabezpieczeniem, tak samo jak punkt o wierszu
+    polecenia w zdarzeniach utworzenia procesu.
+  en: |
+    This is an enabling item, not a recording one: it does not decide what
+    reaches the log, only which configuration applies. It makes sense solely
+    together with setting specific audit subcategories - without that it is
+    preparation rather than protection, just like the item about the command
+    line in process creation events.

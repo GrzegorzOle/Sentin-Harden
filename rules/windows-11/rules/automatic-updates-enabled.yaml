@@ -1,0 +1,163 @@
+id: win11-automatic-updates-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update
+  title:
+    pl: Automatyczne pobieranie i instalowanie aktualizacji włączone
+    en: Automatic download and installation of updates enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Większość udanych włamań nie korzysta z niczego nowego. Wykorzystuje błąd
+    załatany pół roku wcześniej na maszynie, na której poprawka nigdy się nie
+    zainstalowała — bo ktoś wyłączył aktualizacje, żeby nie przeszkadzały,
+    i nigdy do tego nie wrócił.
+
+    Żadne ustawienie z tej paczki nie zdejmuje tylu realnych zagrożeń, co
+    aktualny system. Pozostałe punkty utrudniają atak; ten po prostu usuwa
+    dziury, przez które atak wchodzi. Włączenie automatycznych aktualizacji jest
+    jedyną znaną metodą, żeby to działo się bez pamiętania o tym.
+  en: |
+    Most successful break-ins use nothing new. They exploit a flaw patched six
+    months earlier on a machine where the fix never installed - because somebody
+    turned updates off so they would not get in the way, and never came back
+    to it.
+
+    No setting in this pack removes as many real threats as a current system.
+    The other items make an attack harder; this one simply removes the holes the
+    attack comes through. Enabling automatic updates is the only known way of
+    making that happen without having to remember it.
+
+disruption_description:
+  pl: |
+    Aktualizacje wymagają ponownego uruchomienia i robią to w porze, której
+    użytkownik nie wybrał. To najczęstsza przyczyna ich wyłączania i powód,
+    dla którego ten punkt wymaga zaplanowania, mimo oczywistego zysku.
+
+    Druga strona to ryzyko samej poprawki: aktualizacja sterownika albo zmiana
+    w systemie potrafi popsuć sprzęt pomiarowy, oprogramowanie branżowe albo
+    konfigurację, która działała latami. Na stanowisku produkcyjnym wdrożenie
+    ma sens razem z ustaleniem godzin aktywności i okresu wstrzymania, a nie
+    samym włączeniem przełącznika.
+  en: |
+    Updates require a restart and do it at a time the user did not choose. That
+    is the most common reason for turning them off, and the reason this item
+    needs planning despite the obvious gain.
+
+    The other side is the risk in the fix itself: a driver update or a change in
+    the system can break measurement hardware, line-of-business software or a
+    configuration that worked for years. On a production station the rollout
+    makes sense together with setting active hours and a deferral period, not by
+    flipping the switch alone.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - drivers-and-devices
+    - user-interface
+  what_breaks:
+    pl:
+      - Maszyna będzie się uruchamiać ponownie po instalacji aktualizacji, także poza planem użytkownika
+      - Aktualizacja sterownika może zmienić zachowanie sprzętu pomiarowego lub peryferyjnego
+      - Oprogramowanie branżowe przywiązane do konkretnej wersji systemu może przestać działać po aktualizacji
+    en:
+      - The machine restarts after installing updates, including outside the user's plan
+      - A driver update may change the behaviour of measurement or peripheral hardware
+      - Line-of-business software tied to a specific system version may stop working after an update
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko steruje procesem, w którym nieplanowane ponowne uruchomienie przerywa produkcję
+      - Aktualizacje są rozprowadzane z własnego serwera i maszyna nie ma pobierać ich bezpośrednio
+    en:
+      - The station controls a process where an unplanned restart interrupts production
+      - Updates are distributed from an internal server and the machine must not fetch them directly
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+      $name = 'NoAutoUpdate'
+      $value = $null
+      if (Test-Path -Path $path -ErrorAction Stop) {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).$name
+      }
+      # No policy at all means the system default applies, which is automatic
+      # updates. Only an explicit 1 switches them off.
+      if ($null -eq $value -or [int]$value -eq 0) { 'AUTOMATIC' } else { 'DISABLED' }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: AUTOMATIC
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path            = $path
+      no_auto_update  = $item.NoAutoUpdate
+      existed         = ($null -ne $item.NoAutoUpdate)
+      key_existed     = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    if (Test-Path -Path $path) {
+      Remove-ItemProperty -Path $path -Name 'NoAutoUpdate' -ErrorAction SilentlyContinue
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      if (-not (Test-Path -Path $b.path)) { New-Item -Path $b.path -Force | Out-Null }
+      Set-ItemProperty -Path $b.path -Name 'NoAutoUpdate' -Value $b.no_auto_update -Type DWord
+    } elseif (-not $b.key_existed) {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/waas-configure-wufb
+
+notes:
+  pl: |
+    Tak jak punkt o filtrowaniu tokenu kont lokalnych, ten również traktuje brak
+    wpisu jako stan poprawny: automatyczne aktualizacje są zachowaniem domyślnym,
+    a polityka służy wyłącznie do ich wyłączenia. Naprawa usuwa wpis blokujący,
+    zamiast dokładać kolejny.
+
+    Punkt sprawdza wyłącznie to, czy aktualizacje nie są zablokowane. Godziny
+    aktywności, okres wstrzymania i sposób dostarczania poprawek to osobne
+    ustawienia — i to w nich, a nie tutaj, mieści się odpowiedź na obawę
+    o nieplanowany restart.
+  en: |
+    Like the local account token filtering item, this one treats a missing entry
+    as the correct state: automatic updates are the default behaviour, and the
+    policy exists only to switch them off. The remediation removes the blocking
+    entry rather than adding another one.
+
+    The item checks only that updates are not blocked. Active hours, the
+    deferral period and how fixes are delivered are separate settings - and it
+    is there, not here, that the answer to the fear of an unplanned restart
+    belongs.

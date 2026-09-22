@@ -1,0 +1,158 @@
+id: win11-network-selection-ui-hidden
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Wybór sieci niedostępny z ekranu logowania
+    en: Network selection unavailable from the sign-in screen
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przycisk sieci na ekranie logowania pozwala zmienić sieć bez zalogowania.
+    Osoba stojąca przed zablokowaną maszyną może więc przełączyć ją na swoją
+    sieć bezprzewodową — i od tej chwili to ona jest po drugiej stronie każdego
+    połączenia, które maszyna nawiąże.
+
+    Ma to znaczenie przy logowaniu domenowym i przy wszystkim, co ustala się
+    przed sesją użytkownika. Zmiana sieci przed zalogowaniem to najtańszy sposób,
+    żeby postawić się w środku rozmowy, której inaczej nie dałoby się zobaczyć.
+  en: |
+    The network button on the sign-in screen allows changing networks without
+    signing in. A person standing in front of a locked machine can therefore
+    switch it to their own wireless network - and from that moment they are on
+    the other side of every connection the machine makes.
+
+    This matters for domain sign-in and for everything settled before the user
+    session. Changing the network before sign-in is the cheapest way to place
+    oneself in the middle of a conversation that could not otherwise be seen.
+
+disruption_description:
+  pl: |
+    Maszyna nadal łączy się z sieciami, które już zna — zmiana dotyczy wyłącznie
+    możliwości wyboru sieci z ekranu logowania.
+
+    Odczuwalne staje się to na laptopie w nowym miejscu: po restarcie w hotelu
+    albo u klienta nie da się wskazać sieci przed zalogowaniem. Jeśli konto jest
+    domenowe i nie ma zapisanych poświadczeń, a jedyna droga do sieci prowadzi
+    przez ten przycisk, maszyna nie zaloguje się w ogóle. To realny scenariusz
+    i trzeba go sprawdzić przed wdrożeniem, zwłaszcza na sprzęcie wyjeżdżającym
+    poza biuro.
+  en: |
+    The machine still connects to networks it already knows - the change
+    concerns only the ability to choose a network from the sign-in screen.
+
+    It becomes noticeable on a laptop in a new place: after a restart in a hotel
+    or at a client site there is no way to pick a network before signing in. If
+    the account is a domain one with no cached credentials, and the only route to
+    the network leads through that button, the machine will not sign in at all.
+    That is a real scenario and has to be checked before rollout, especially on
+    hardware that leaves the office.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - user-interface
+  what_breaks:
+    pl:
+      - Na ekranie logowania nie da się wybrać ani zmienić sieci bezprzewodowej
+      - Laptop w nowej lokalizacji nie połączy się z siecią przed zalogowaniem użytkownika
+      - Przy koncie domenowym bez zapisanych poświadczeń logowanie w nowej lokalizacji może stać się niemożliwe
+    en:
+      - The sign-in screen offers no way to select or change a wireless network
+      - A laptop in a new location does not connect to a network before a user signs in
+      - With a domain account and no cached credentials, signing in at a new location may become impossible
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna jest laptopem używanym poza biurem i loguje się kontem domenowym
+      - Sieć bezprzewodowa jest jedyną drogą łączności, a profile sieci nie są rozsyłane centralnie
+    en:
+      - The machine is a laptop used outside the office and signs in with a domain account
+      - Wireless is the only connectivity and network profiles are not distributed centrally
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      $name = 'DontDisplayNetworkSelectionUI'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'DontDisplayNetworkSelectionUI'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DontDisplayNetworkSelectionUI' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-windowslogon
+
+notes:
+  pl: |
+    Wycofanie jest natychmiastowe, ale wymaga dostępu do maszyny — a przy
+    laptopie odciętym od sieci w obcej lokalizacji oznacza to dostęp fizyczny.
+    Ten punkt i wyłączenie powłoki zdalnej dzielą tę cechę: sam wpis cofa się
+    od razu, tylko trzeba przy maszynie stanąć.
+
+    Na stacji stacjonarnej podłączonej kablem skutek praktyczny jest zerowy
+    i punkt nadaje się do wdrożenia bez zastanowienia. Cała uciążliwość dotyczy
+    sprzętu przenośnego i tylko tam trzeba ją rozważyć.
+  en: |
+    The rollback is immediate, but it requires access to the machine - and with a
+    laptop cut off from the network at an unfamiliar location that means physical
+    access. This item and disabling the remote shell share that trait: the entry
+    itself reverts at once, one just has to be standing at the machine.
+
+    On a desktop connected by cable the practical effect is nil and the item can
+    be rolled out without a second thought. The whole disruption concerns
+    portable hardware and only there does it need weighing.

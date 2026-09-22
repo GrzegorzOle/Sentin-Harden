@@ -1,0 +1,148 @@
+id: win11-lock-screen-slideshow-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Control Panel > Personalization
+  title:
+    pl: Pokaz slajdów na ekranie blokady wyłączony
+    en: Lock screen slideshow disabled
+
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pokaz slajdów wyświetla na zablokowanym ekranie zdjęcia ze wskazanego
+    katalogu — najczęściej z folderu obrazów użytkownika. Zdjęcia te widzi
+    każdy, kto przechodzi obok biurka, bez podania hasła.
+
+    Brzmi niegroźnie do chwili, w której ktoś trzyma w tym katalogu zrzut ekranu
+    z dokumentem, schemat sieci albo zdjęcie tablicy ze spotkania. Mechanizm nie
+    rozróżnia treści: pokaże, co znajdzie. To jest wyciek danych przez
+    ustawienie wyglądu i dlatego waży więcej niż pozostałe punkty ekranu
+    blokady.
+  en: |
+    The slideshow displays photographs from a chosen folder on the locked screen
+    - most often from the user's pictures folder. Those photographs are seen by
+    anybody walking past the desk, without entering a password.
+
+    It sounds harmless until somebody keeps a screenshot of a document, a network
+    diagram or a photo of a whiteboard in that folder. The mechanism does not
+    distinguish content: it shows what it finds. This is a data leak through an
+    appearance setting, and that is why it weighs more than the other lock screen
+    items.
+
+disruption_description:
+  pl: |
+    Ekran blokady pokaże statyczne tło zamiast zmieniających się zdjęć. Nic poza
+    wyglądem się nie zmienia, nie ma restartu ani wylogowania.
+
+    Użytkownik, który sobie ten pokaz ustawił, zauważy zmianę i może o nią
+    zapytać. To jedyny koszt i warto mieć gotową odpowiedź: rzecz nie
+    w zdjęciach, tylko w tym, że wyświetla je maszyna zablokowana.
+  en: |
+    The lock screen shows a static background instead of changing photographs.
+    Nothing beyond appearance changes, there is no restart and no sign-out.
+
+    A user who set the slideshow up will notice the change and may ask about it.
+    That is the only cost, and it is worth having the answer ready: the point is
+    not the photographs but the fact that a locked machine is displaying them.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl:
+      - Ekran blokady przestanie wyświetlać zmieniające się zdjęcia i pokaże statyczne tło
+    en:
+      - The lock screen stops displaying changing photographs and shows a static background
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna pełni rolę ekranu informacyjnego, a pokaz slajdów jest jej funkcją docelową
+    en:
+      - The machine acts as an information display and the slideshow is its intended function
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+      $name = 'NoLockScreenSlideshow'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+    $name = 'NoLockScreenSlideshow'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoLockScreenSlideshow' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-abovelock
+
+notes:
+  pl: |
+    Ryzyko oceniono wyżej niż przy aparacie na ekranie blokady, choć oba punkty
+    leżą w tej samej sekcji i wyglądają podobnie. Różnica jest rzeczowa:
+    wyłączenie aparatu odbiera funkcję, wyłączenie pokazu slajdów zamyka wyświetlanie
+    cudzych plików osobie stojącej przed zablokowaną maszyną.
+
+    Wyłączenie pokazu nie usuwa katalogu ze zdjęciami ani nie zmienia tła.
+    Wycofanie przywraca poprzedni stan wraz z ustawionym wcześniej katalogiem.
+  en: |
+    The risk is rated higher than for the lock screen camera, even though both
+    items sit in the same section and look alike. The difference is substantive:
+    disabling the camera removes a function, disabling the slideshow stops
+    somebody's files being displayed to a person standing in front of a locked
+    machine.
+
+    Disabling the slideshow neither removes the pictures folder nor changes the
+    background. The rollback restores the previous state along with the folder
+    configured earlier.

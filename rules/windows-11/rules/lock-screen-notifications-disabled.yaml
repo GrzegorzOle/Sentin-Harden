@@ -1,0 +1,155 @@
+id: win11-lock-screen-notifications-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Powiadomienia aplikacji na ekranie blokady wyłączone
+    en: Application notifications on the lock screen disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Powiadomienia na ekranie blokady pokazują treść wiadomości osobie, która
+    nie podała hasła. Widać nadawcę, temat, pierwsze zdanie — a przy kodach
+    jednorazowych widać cały kod, bo mieści się w podglądzie w całości.
+
+    To jest realna droga obejścia drugiego składnika uwierzytelniania:
+    zablokowany telefon albo zablokowany komputer, na którym wyświetla się kod
+    potrzebny do zalogowania gdzie indziej. Wyłączenie podglądu nie zabiera
+    powiadomień, tylko przesuwa je za granicę uwierzytelnienia.
+  en: |
+    Notifications on the lock screen show the content of messages to a person
+    who has not entered a password. The sender, the subject, the first sentence
+    are visible - and with one-time codes the whole code is visible, because it
+    fits into the preview in full.
+
+    This is a genuine route around a second authentication factor: a locked phone
+    or a locked computer displaying the code needed to sign in somewhere else.
+    Disabling the preview does not take notifications away, it moves them behind
+    the authentication boundary.
+
+disruption_description:
+  pl: |
+    Powiadomienia przestaną być widoczne bez odblokowania ekranu. Po zalogowaniu
+    pojawią się wszystkie — nic nie ginie, zmienia się moment, w którym je widać.
+
+    Dla części osób jest to odczuwalna zmiana sposobu pracy: rzut oka na ekran
+    zamiast odblokowania przestaje wystarczać, a przy komputerze blokowanym po
+    kilku minutach oznacza to kilkanaście odblokowań dziennie więcej. To dlatego
+    punkt nie trafia do klasy bez uciążliwości, mimo że technicznie nic nie
+    przestaje działać.
+  en: |
+    Notifications stop being visible without unlocking the screen. After signing
+    in they all appear - nothing is lost, what changes is the moment they become
+    visible.
+
+    For some people this is a perceptible change in how they work: a glance at
+    the screen instead of unlocking it stops being enough, and on a computer that
+    locks after a few minutes it means a dozen or so extra unlocks a day. That is
+    why the item does not fall into the no-disruption class even though
+    technically nothing stops working.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl:
+      - Treść wiadomości i przypomnień przestanie być widoczna bez odblokowania ekranu
+      - Sprawdzenie, czy przyszło coś pilnego, będzie wymagało zalogowania
+      - Na stanowisku blokowanym po kilku minutach liczba odblokowań wzrośnie zauważalnie
+    en:
+      - The content of messages and reminders stops being visible without unlocking the screen
+      - Checking whether anything urgent arrived requires signing in
+      - At a workstation that locks after a few minutes the number of unlocks rises noticeably
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko wymaga reagowania na alarmy widoczne z odległości, bez dotykania komputera
+      - Maszyna wyświetla powiadomienia jako element pracy zespołu, a nie osoby
+    en:
+      - The workstation requires reacting to alerts visible from a distance, without touching the computer
+      - The machine displays notifications as part of a team's work rather than an individual's
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      $name = 'DisableLockScreenAppNotifications'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'DisableLockScreenAppNotifications'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableLockScreenAppNotifications' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-abovelock
+
+notes:
+  pl: |
+    Punkt ma sens dopiero razem z ustawionym czasem blokady ekranu. Na maszynie,
+    która nie blokuje się sama, ekran blokady pojawia się rzadko i podgląd
+    powiadomień nie jest problemem — problemem jest wtedy brak blokady.
+
+    Ustawienie dotyczy całej maszyny, a nie pojedynczego konta. Nie da się nim
+    zostawić podglądu jednemu użytkownikowi, a odebrać pozostałym; to decyzja
+    o stanowisku, nie o osobie.
+  en: |
+    The item makes sense only together with a configured screen lock timeout. On
+    a machine that does not lock by itself the lock screen appears rarely and the
+    notification preview is not the problem - the missing lock is.
+
+    The setting applies to the whole machine rather than an individual account.
+    It cannot be used to leave the preview for one user and take it from the
+    others; this is a decision about a workstation, not about a person.

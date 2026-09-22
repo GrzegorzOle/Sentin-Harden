@@ -1,0 +1,156 @@
+id: win11-consumer-cloud-content-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Cloud Content
+  title:
+    pl: Funkcje konsumenckie z chmury wyłączone
+    en: Consumer cloud features disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Funkcje konsumenckie to mechanizm, przez który system sam z siebie pobiera
+    i instaluje aplikacje, wyświetla sugestie i podmienia kafelki na podstawie
+    treści przysyłanych z sieci. Na maszynie firmowej oznacza to oprogramowanie,
+    którego nikt nie zamawiał i którego nie ma na żadnej liście.
+
+    Z punktu widzenia bezpieczeństwa problem nie polega na tym, że aplikacje są
+    złe. Polega na tym, że zestaw zainstalowanego oprogramowania przestaje być
+    znany, a inwentaryzacja przestaje opisywać maszynę. Nie da się ocenić
+    powierzchni ataku, która zmienia się bez decyzji administratora.
+  en: |
+    Consumer features are the mechanism by which the system downloads and
+    installs applications of its own accord, displays suggestions and swaps
+    tiles based on content sent over the network. On a company machine that
+    means software nobody ordered and which appears on no list.
+
+    From a security point of view the problem is not that the applications are
+    bad. It is that the set of installed software stops being known, and the
+    inventory stops describing the machine. An attack surface that changes
+    without an administrator's decision cannot be assessed.
+
+disruption_description:
+  pl: |
+    Nie zostaje usunięte nic, co jest już zainstalowane. Zmiana dotyczy
+    wyłącznie tego, co system dołoży w przyszłości: nowe aplikacje przestaną
+    pojawiać się same, a menu Start i ekran blokady przestaną pokazywać
+    sugestie i reklamy.
+
+    Użytkownik zauważy brak podpowiedzi i to jest cała odczuwalna zmiana.
+    W praktyce jest ona odbierana jako poprawa, a nie strata — dlatego punkt
+    mieści się w klasie bez uciążliwości mimo widoczności.
+  en: |
+    Nothing already installed is removed. The change concerns only what the
+    system would add in future: new applications stop appearing by themselves,
+    and the Start menu and lock screen stop showing suggestions and
+    advertisements.
+
+    The user notices the absence of suggestions and that is the whole perceptible
+    change. In practice it is received as an improvement rather than a loss -
+    which is why the item falls into the no-disruption class despite being
+    visible.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Menu Start i ekran blokady przestaną pokazywać sugerowane aplikacje i treści
+      - Aplikacje dostarczane automatycznie przez system nie będą się już instalować
+    en:
+      - The Start menu and lock screen stop showing suggested applications and content
+      - Applications delivered automatically by the system stop installing themselves
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna jest stanowiskiem domowym, na którym sugestie systemowe są oczekiwaną funkcją
+    en:
+      - The machine is a home workstation where system suggestions are an expected feature
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
+      $name = 'DisableWindowsConsumerFeatures'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
+    $name = 'DisableWindowsConsumerFeatures'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableWindowsConsumerFeatures' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-experience
+
+notes:
+  pl: |
+    Ustawienie nie odinstalowuje aplikacji dostarczonych wcześniej tą drogą.
+    Jeśli chodzi o ich usunięcie, to osobne zadanie i osobna decyzja —
+    wycofanie tej reguły nie przywróci niczego, co ktoś w międzyczasie skasował
+    ręcznie.
+
+    Punkt wiąże się z inwentaryzacją opisaną w założeniach aplikacji: to od niej
+    zależy, czy ostrzeżenie brzmi „masz to u siebie". Wyłączenie funkcji
+    konsumenckich sprawia, że inwentaryzacja przestaje się dezaktualizować
+    samoczynnie między jednym audytem a drugim.
+  en: |
+    The setting does not uninstall applications delivered earlier by this route.
+    Removing them is a separate task and a separate decision - rolling this rule
+    back will not restore anything somebody has deleted by hand in the meantime.
+
+    The item connects to the inventory described in the application's premises:
+    that is what decides whether a warning says "you have this here". Disabling
+    consumer features stops the inventory going stale by itself between one audit
+    and the next.

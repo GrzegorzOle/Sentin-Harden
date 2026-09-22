@@ -1,0 +1,171 @@
+id: win11-onedrive-file-sync-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > OneDrive
+  title:
+    pl: Synchronizacja plików z magazynem w chmurze wyłączona
+    en: File synchronisation with cloud storage disabled
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Synchronizacja z magazynem w chmurze sprawia, że pliki z tej maszyny
+    opuszczają ją automatycznie, bez osobnej decyzji przy każdym pliku.
+    Katalog, który wygląda jak lokalny, jest w rzeczywistości kopiowany na
+    zewnątrz w tle.
+
+    Z punktu widzenia audytu problemem nie jest sama chmura, tylko to, że kopia
+    danych powstaje poza zakresem, który ta maszyna kontroluje — pod kontem,
+    którego hasło może nie podlegać tej samej polityce, i w miejscu, którego
+    ta reguła nie sprawdza. Dla części danych jest to niedopuszczalne
+    i wtedy mechanizm trzeba wyłączyć, a nie skonfigurować.
+  en: |
+    Synchronisation with cloud storage means files leave this machine
+    automatically, with no separate decision for each file. A folder that looks
+    local is in fact being copied outwards in the background.
+
+    From an audit point of view the problem is not the cloud itself but that a
+    copy of the data arises outside the scope this machine controls - under an
+    account whose password may not be subject to the same policy, and in a place
+    this rule does not check. For some data that is unacceptable, and then the
+    mechanism has to be switched off rather than configured.
+
+disruption_description:
+  pl: |
+    To jest zmiana sposobu pracy, nie ustawienie techniczne, i tak trzeba ją
+    zaplanować. Synchronizacja zatrzyma się, a katalogi przestaną się
+    uzupełniać między urządzeniami.
+
+    Najpoważniejszy skutek dotyczy plików dostępnych na żądanie, czyli takich,
+    które widać w katalogu, ale fizycznie leżą w chmurze. Po wyłączeniu
+    synchronizacji nie da się ich otworzyć, dopóki nie zostaną pobrane —
+    a pobranie wymaga włączonego mechanizmu. Przed zmianą trzeba więc upewnić
+    się, że wszystko potrzebne jest już na dysku, inaczej użytkownik zostaje
+    z katalogiem pełnym plików, których nie może otworzyć.
+  en: |
+    This is a change in how people work, not a technical setting, and it has to
+    be planned as such. Synchronisation stops and folders stop filling in across
+    devices.
+
+    The most serious consequence concerns files available on demand - those
+    visible in a folder but physically held in the cloud. After synchronisation
+    is switched off they cannot be opened until they have been downloaded - and
+    downloading requires the mechanism to be on. So before the change one has to
+    make sure everything needed is already on disk, otherwise the user is left
+    with a folder full of files they cannot open.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Synchronizacja katalogów z chmurą zatrzyma się na tej maszynie
+      - Pliki dostępne na żądanie, niepobrane wcześniej, przestaną się otwierać
+      - Dokumenty zapisane na tej maszynie przestaną pojawiać się na pozostałych urządzeniach użytkownika
+      - Kopia danych w chmurze przestanie się uzupełniać i nie będzie już kopią bieżącą
+    en:
+      - Folder synchronisation with the cloud stops on this machine
+      - Files available on demand that were not downloaded earlier stop opening
+      - Documents saved on this machine stop appearing on the user's other devices
+      - The cloud copy of the data stops updating and is no longer a current copy
+  interruption: logoff
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Magazyn w chmurze jest przyjętym sposobem przechowywania dokumentów w organizacji
+      - Chmura pełni funkcję kopii zapasowej stacji i nie ma innej
+      - Użytkownik ma w katalogu pliki dostępne na żądanie, których jeszcze nie pobrano
+    en:
+      - Cloud storage is the organisation's accepted way of keeping documents
+      - The cloud serves as the workstation's backup and there is no other
+      - The user has files available on demand in the folder that have not been downloaded yet
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive'
+      $name = 'DisableFileSyncNGSC'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive'
+    $name = 'DisableFileSyncNGSC'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableFileSyncNGSC' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/sharepoint/use-group-policy
+
+notes:
+  pl: |
+    Punkt jest poziomu 2 i na maszynie w organizacji korzystającej z chmury
+    kończy się zwykle świadomym odpuszczeniem. To prawidłowy wynik: reguła
+    opisuje decyzję o tym, gdzie mogą znaleźć się dane, a nie błąd konfiguracji.
+    Tam, gdzie chmura jest przyjętym sposobem pracy, wyjątek z uzasadnieniem
+    jest właściwą odpowiedzią.
+
+    Wyłączenie synchronizacji nie kasuje ani plików lokalnych, ani tych
+    w chmurze. Wycofanie przywraca mechanizm, ale synchronizacja rusza od nowa
+    i przy dużych katalogach zajmuje czas — to nie jest powrót natychmiastowy
+    w sensie odczuwalnym przez użytkownika, choć sam wpis cofa się od razu.
+  en: |
+    The item is level 2 and on a machine in an organisation that uses the cloud
+    it usually ends in a deliberate acceptance of the risk. That is a correct
+    outcome: the rule describes a decision about where data may end up, not a
+    configuration error. Where the cloud is the accepted way of working, a
+    documented exception is the right answer.
+
+    Disabling synchronisation deletes neither local files nor those in the cloud.
+    The rollback restores the mechanism, but synchronisation starts afresh and
+    with large folders takes time - this is not an instant return in any sense
+    the user perceives, even though the entry itself reverts at once.

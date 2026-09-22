@@ -1,0 +1,175 @@
+id: win11-hypervisor-code-integrity-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Wymuszanie integralności kodu przez hipernadzorcę włączone
+    en: Hypervisor-enforced code integrity enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Decyzję o tym, czy dany kod wolno wykonać w jądrze, podejmuje zwykle samo
+    jądro. To znaczy, że kod, który już do jądra wszedł, może tę decyzję
+    zmienić — i tak właśnie działa większość sterowników podłożonych przez
+    atakującego.
+
+    Wymuszanie integralności przez hipernadzorcę przenosi tę decyzję poza jądro,
+    do obszaru odizolowanego. Sterownik bez ważnego podpisu nie zostanie
+    uruchomiony niezależnie od tego, kto o to prosi i jakie ma uprawnienia. To
+    jedno z niewielu zabezpieczeń skutecznych wobec przeciwnika, który już
+    wygrał na poziomie jądra.
+  en: |
+    The decision whether given code may run in the kernel is normally made by
+    the kernel itself. Which means code that has already entered the kernel can
+    change that decision - and that is precisely how most attacker-planted
+    drivers work.
+
+    Hypervisor-enforced code integrity moves that decision outside the kernel,
+    into an isolated area. A driver without a valid signature will not be
+    started regardless of who asks or what privileges they hold. It is one of the
+    few protections effective against an adversary who has already won at the
+    kernel level.
+
+disruption_description:
+  pl: |
+    Punkt jest kontynuacją zabezpieczeń opartych na wirtualizacji i dziedziczy
+    ich koszt, ale dokłada własny, znacznie bardziej widoczny.
+
+    Sterowniki niespełniające wymagań przestaną się ładować. Dotyczy to przede
+    wszystkim starszego sprzętu, urządzeń pomiarowych, kluczy zabezpieczających
+    oprogramowanie i sterowników drukarek, które lata temu przeszły mniej
+    rygorystyczną kontrolę. Objaw jest zrozumiały dopiero, gdy wie się, czego
+    szukać: urządzenie znika z systemu bez błędu, a nie odmawia działania.
+
+    Przed wdrożeniem trzeba przejrzeć listę sterowników maszyny. Po restarcie
+    na maszynie z niezgodnym sterownikiem kontrolera dysku system może nie
+    wstać — to ten sam scenariusz co przy zasadzie ładowania sterowników
+    rozruchowych i wymaga tej samej ostrożności.
+  en: |
+    The item continues virtualization-based security and inherits its cost,
+    while adding its own, far more visible one.
+
+    Drivers not meeting the requirements stop loading. This concerns above all
+    older hardware, measurement devices, software protection dongles and printer
+    drivers that passed a less rigorous review years ago. The symptom only makes
+    sense once you know what to look for: the device disappears from the system
+    without an error rather than refusing to work.
+
+    Before rollout the machine's driver list has to be reviewed. After a restart,
+    on a machine with an incompatible disk controller driver, the system may fail
+    to come up - the same scenario as with the boot-start driver load policy, and
+    it calls for the same caution.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - virtualization-and-containers
+    - printing
+  what_breaks:
+    pl:
+      - Sterowniki niespełniające wymagań podpisu przestaną się ładować
+      - Starsze urządzenia pomiarowe, klucze zabezpieczające i drukarki mogą zniknąć z systemu
+      - Urządzenie przestaje działać bez komunikatu wskazującego przyczynę
+      - Przy niezgodnym sterowniku kontrolera dysku system może nie wystartować po restarcie
+    en:
+      - Drivers not meeting the signing requirements stop loading
+      - Older measurement devices, protection dongles and printers may disappear from the system
+      - A device stops working with no message pointing at the cause
+      - With an incompatible disk controller driver the system may fail to start after a restart
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na maszynie pracuje urządzenie ze starszym sterownikiem, którego zgodności nie sprawdzono
+      - Maszyna obsługuje sprzęt pomiarowy albo produkcyjny bez aktualnego wsparcia producenta
+      - Nie ma przygotowanej drogi odzyskiwania na wypadek systemu, który nie wstaje
+    en:
+      - The machine runs a device with an older driver whose compatibility has not been checked
+      - The machine serves measurement or production hardware without current vendor support
+      - No recovery route is prepared in case the system fails to come up
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity'
+      $name = 'Enabled'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity'
+    $name = 'Enabled'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Enabled' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity
+
+notes:
+  pl: |
+    Wycofanie samego wpisu jest łatwe, ale pomaga wyłącznie wtedy, gdy system
+    wstaje. Jeśli nie wstaje, droga powrotna prowadzi przez środowisko
+    odzyskiwania — i dlatego symulacja przed uruchomieniem powinna wprost
+    powiedzieć, że ta zmiana wymaga przygotowanego nośnika odzyskiwania.
+
+    Punkt nie zadziała bez włączonych zabezpieczeń opartych na wirtualizacji.
+    Zapisany osobno wygląda na wdrożony, a nie robi nic — dlatego oba wdraża się
+    razem i razem weryfikuje po restarcie.
+  en: |
+    Reverting the entry itself is easy, but it helps only if the system comes up.
+    If it does not, the way back leads through the recovery environment - which
+    is why the simulation before running should say plainly that this change
+    requires a prepared recovery medium.
+
+    The item does nothing without virtualization-based security enabled. Written
+    on its own it looks deployed while doing nothing - which is why the two are
+    rolled out together and verified together after a restart.

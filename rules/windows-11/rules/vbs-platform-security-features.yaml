@@ -1,0 +1,164 @@
+id: win11-vbs-platform-security-features
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Wymagane zabezpieczenia platformy dla wirtualizacji
+    en: Required platform security features for virtualization
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zabezpieczenia oparte na wirtualizacji chronią to, co jest w pamięci, ale
+    same opierają się na sprzęcie. Jeśli rozruch nie jest weryfikowany, ktoś
+    może podłożyć kod przed nimi. Jeśli urządzenia mają swobodny dostęp do
+    pamięci, mogą ją odczytać z pominięciem procesora — a wtedy izolacja
+    przestaje cokolwiek znaczyć.
+
+    To ustawienie mówi, czego mechanizm ma wymagać od platformy, zanim uzna, że
+    ma sens: weryfikacji rozruchu i ochrony przed bezpośrednim dostępem urządzeń
+    do pamięci. Bez tego warunku izolacja bywa włączona nominalnie, a obchodzona
+    sprzętowo — przez port, do którego wystarczy się podłączyć.
+  en: |
+    Virtualization-based security protects what is in memory, but itself rests
+    on hardware. If the boot is not verified, somebody can plant code ahead of
+    it. If devices have unrestricted access to memory, they can read it bypassing
+    the processor - and then the isolation means nothing.
+
+    This setting states what the mechanism must require of the platform before it
+    considers itself meaningful: boot verification and protection against direct
+    device access to memory. Without that condition the isolation can be
+    nominally on yet bypassed in hardware - through a port one only has to plug
+    into.
+
+disruption_description:
+  pl: |
+    Ustawienie samo w sobie niczego nie uruchamia — zaostrza warunek dla
+    mechanizmu włączanego osobno. Skutek jest więc pośredni, ale dotkliwy:
+    na maszynie, która wymaganego sprzętu nie ma, zabezpieczenia oparte na
+    wirtualizacji po prostu nie wystartują.
+
+    To jest najczęstsza przyczyna sytuacji, w której wszystkie ustawienia
+    wyglądają na wprowadzone, a mechanizm nie działa i nikt nie wie dlaczego.
+    Na starszym sprzęcie bez ochrony przed bezpośrednim dostępem do pamięci
+    warunek jest niemożliwy do spełnienia i trzeba to ustalić przed wdrożeniem,
+    a nie po restarcie.
+  en: |
+    The setting starts nothing by itself - it tightens a condition for a
+    mechanism enabled separately. The consequence is therefore indirect but
+    severe: on a machine lacking the required hardware, virtualization-based
+    security simply does not start.
+
+    This is the most common cause of the situation where every setting looks
+    applied, the mechanism does not run, and nobody knows why. On older hardware
+    without protection against direct memory access the condition cannot be met,
+    and that has to be established before rollout rather than after a restart.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - boot-and-firmware
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Na sprzęcie bez weryfikacji rozruchu albo bez ochrony pamięci mechanizm nie wystartuje mimo włączenia
+      - Maszyna wygląda na skonfigurowaną, a zabezpieczenie nie działa - bez komunikatu w codziennej pracy
+    en:
+      - On hardware without boot verification or memory protection the mechanism does not start despite being enabled
+      - The machine looks configured while the protection is not running - with no message in daily work
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Sprzęt nie obsługuje ochrony przed bezpośrednim dostępem urządzeń do pamięci
+      - Maszyna uruchamia się w trybie zgodności, bez weryfikacji rozruchu
+    en:
+      - The hardware does not support protection against direct device access to memory
+      - The machine boots in compatibility mode, without boot verification
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+      $name = 'RequirePlatformSecurityFeatures'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+    $name = 'RequirePlatformSecurityFeatures'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RequirePlatformSecurityFeatures' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity
+
+notes:
+  pl: |
+    Wartość wymagająca zarówno weryfikacji rozruchu, jak i ochrony pamięci jest
+    ostrzejsza z dwóch dostępnych. Wariant łagodniejszy wymaga samej weryfikacji
+    rozruchu i na sprzęcie, który ochrony pamięci nie ma, jest jedynym
+    możliwym — ale ten punkt uznaje go za niespełniony i tak ma zostać.
+    Dopuszczenie go tutaj oznaczałoby, że raport mówi „spełnione" o maszynie,
+    z której pamięć da się odczytać przez port.
+
+    Na sprzęcie bez wymaganej obsługi prawidłową odpowiedzią jest zapisany
+    wyjątek z uzasadnieniem, a nie obniżenie wymagania w regule.
+  en: |
+    The value requiring both boot verification and memory protection is the
+    stricter of the two available. The milder variant requires boot verification
+    alone and on hardware lacking memory protection is the only one possible -
+    but this item treats it as unmet, and that is how it should stay. Accepting
+    it here would mean the report saying "met" about a machine whose memory can
+    be read through a port.
+
+    On hardware without the required support the correct answer is a recorded
+    exception with a justification, not a lowered requirement in the rule.

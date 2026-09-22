@@ -1,0 +1,174 @@
+id: win11-virtualization-based-security-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Zabezpieczenia oparte na wirtualizacji włączone
+    en: Virtualization-based security enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zabezpieczenia oparte na wirtualizacji wydzielają w maszynie drugi, mniejszy
+    obszar, do którego system operacyjny nie ma dostępu — nawet z uprawnieniami
+    jądra. Tam trafiają rzeczy, których przejęcie kończy sprawę: poświadczenia
+    i decyzje o tym, jaki kod wolno wykonać.
+
+    To zmienia zasadę gry. Dotąd zdobycie uprawnień jądra oznaczało dostęp do
+    wszystkiego w pamięci; po włączeniu tego mechanizmu część zasobów zostaje
+    poza zasięgiem także dla kodu, który wygrał na tym poziomie. To jest
+    podstawa, na której stoi izolacja poświadczeń i wymuszanie integralności
+    kodu — żadne z nich nie działa bez tego punktu.
+  en: |
+    Virtualization-based security carves out a second, smaller area in the
+    machine that the operating system cannot reach - not even with kernel
+    privileges. Into it go the things whose capture ends the game: credentials,
+    and decisions about what code may execute.
+
+    That changes the rules. Until now, obtaining kernel privileges meant access
+    to everything in memory; with this mechanism on, some resources stay out of
+    reach even for code that has won at that level. It is the foundation that
+    credential isolation and code integrity enforcement stand on - neither works
+    without this item.
+
+disruption_description:
+  pl: |
+    To jest zmiana wymagająca zaplanowania, i to z dwóch niezależnych powodów.
+
+    Pierwszy: mechanizm zajmuje procesor i pamięć, a na starszym sprzęcie koszt
+    bywa odczuwalny w codziennej pracy. Drugi, poważniejszy: włączona
+    wirtualizacja na poziomie systemu kłóci się z innymi programami
+    wirtualizacyjnymi. Maszyny wirtualne uruchamiane lokalnie w produktach
+    spoza systemu potrafią przestać startować albo zwolnić do poziomu
+    uniemożliwiającego pracę. Na stanowisku deweloperskim albo testowym jest to
+    zmiana blokująca, nie utrudniająca.
+
+    Wymaga restartu, a na części sprzętu także włączenia wirtualizacji
+    w oprogramowaniu układowym — czyli wizyty przy maszynie.
+  en: |
+    This is a change that needs planning, for two independent reasons.
+
+    First: the mechanism takes processor and memory, and on older hardware the
+    cost can be felt in daily work. Second, and more serious: virtualization
+    enabled at the system level conflicts with other virtualization software.
+    Virtual machines run locally in non-system products can stop starting or slow
+    to the point of being unusable. On a development or test workstation this is
+    a blocking change, not an inconvenient one.
+
+    It requires a restart, and on some hardware also enabling virtualization in
+    the firmware - that is, a visit to the machine.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - boot-and-firmware
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Maszyny wirtualne uruchamiane lokalnie w produktach spoza systemu mogą przestać startować
+      - Na starszym sprzęcie spadek wydajności bywa odczuwalny w codziennej pracy
+      - Sterowniki niezgodne z izolacją mogą przestać się ładować
+      - Na części sprzętu potrzebne jest włączenie wirtualizacji w oprogramowaniu układowym
+    en:
+      - Virtual machines run locally in non-system products may stop starting
+      - On older hardware the performance drop can be felt in daily work
+      - Drivers incompatible with isolation may stop loading
+      - On some hardware virtualization has to be enabled in the firmware first
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na maszynie uruchamia się maszyny wirtualne w produkcie spoza systemu
+      - Sprzęt jest starszy, a wydajność już teraz jest wąskim gardłem
+      - Nie sprawdzono, czy sterowniki tej maszyny są zgodne z izolacją
+    en:
+      - The machine runs virtual machines in a non-system product
+      - The hardware is older and performance is already a bottleneck
+      - It has not been checked whether this machine's drivers are compatible with isolation
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+      $name = 'EnableVirtualizationBasedSecurity'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+    $name = 'EnableVirtualizationBasedSecurity'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableVirtualizationBasedSecurity' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity
+
+notes:
+  pl: |
+    Sprawdzenie czyta żądany stan z polityki, a nie to, czy mechanizm faktycznie
+    wystartował. Na maszynie bez wymaganego sprzętu wartość może być ustawiona,
+    a mechanizm nie działać — polityka mówi wtedy o zamiarze, nie o stanie.
+    Ta reguła sprawdza zamiar, bo to on podlega konfiguracji i to jego brak jest
+    niezgodnością.
+
+    Punkt jest warunkiem dla izolacji poświadczeń i wymuszania integralności
+    kodu, opisanych osobno. Wdrażanie tamtych bez tego nie ma sensu: zapiszą
+    się, ale nie zaczną działać.
+  en: |
+    The check reads the requested state from the policy rather than whether the
+    mechanism actually started. On a machine without the required hardware the
+    value can be set while the mechanism does not run - the policy then speaks of
+    intent, not of state. This rule checks the intent, because that is what is
+    configured and its absence is the non-compliance.
+
+    The item is a prerequisite for credential isolation and code integrity
+    enforcement, described separately. Rolling those out without this one makes
+    no sense: they will be written down but will not start working.

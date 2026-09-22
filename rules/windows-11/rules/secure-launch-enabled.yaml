@@ -1,0 +1,167 @@
+id: win11-secure-launch-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Bezpieczne uruchamianie systemu włączone
+    en: Secure launch enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bezpieczny rozruch weryfikuje łańcuch podpisów od oprogramowania układowego
+    w górę. Ma to jedną słabość: opiera się na tym, że samo oprogramowanie
+    układowe jest uczciwe. Kod podłożony poniżej systemu, w tej warstwie,
+    weryfikuje sam siebie i zawsze wypada dobrze.
+
+    Bezpieczne uruchamianie rozwiązuje to inaczej: przerywa łańcuch i startuje
+    system od nowa, ze stanu wymuszonego przez procesor, z pominięciem tego, co
+    działo się wcześniej. Oprogramowanie układowe przestaje być elementem, któremu
+    trzeba wierzyć. To zamyka klasę ataków, przed którą nie broni nic innego,
+    bo wszystko inne uruchamia się później.
+  en: |
+    Secure Boot verifies a chain of signatures from the firmware upwards. That
+    has one weakness: it rests on the firmware itself being honest. Code planted
+    below the system, in that layer, verifies itself and always comes out well.
+
+    Secure launch solves this differently: it breaks the chain and starts the
+    system afresh, from a state enforced by the processor, disregarding whatever
+    happened before. The firmware stops being something that has to be trusted.
+    This closes off a class of attacks nothing else defends against, because
+    everything else starts later.
+
+disruption_description:
+  pl: |
+    Mechanizm wymaga zgodnego procesora i oprogramowania układowego oraz
+    włączonych zabezpieczeń opartych na wirtualizacji. Na sprzęcie sprzed kilku
+    lat warunek zwykle nie jest spełniony i ustawienie pozostaje bez skutku —
+    wartość jest zapisana, a mechanizm nie działa.
+
+    Tam, gdzie warunki są spełnione, zmiana dokłada się do kosztu wydajnościowego
+    całej rodziny i wydłuża rozruch. Wymaga restartu. Zgłaszane bywają też
+    przypadki niezgodności z konkretnymi wersjami oprogramowania układowego,
+    kończące się maszyną, która nie wstaje — dlatego punkt wdraża się z tą samą
+    ostrożnością co wymuszanie integralności kodu, a nie jako drobne domknięcie
+    tematu.
+  en: |
+    The mechanism requires a compatible processor and firmware, and
+    virtualization-based security enabled. On hardware a few years old the
+    condition is usually unmet and the setting has no effect - the value is
+    written, the mechanism does not run.
+
+    Where the conditions are met, the change adds to the performance cost of the
+    whole family and lengthens the boot. It requires a restart. Incompatibilities
+    with particular firmware versions are also reported, ending with a machine
+    that does not come up - which is why the item is rolled out with the same
+    caution as code integrity enforcement, not as a small finishing touch.
+
+implementation_consequences:
+  impact_areas:
+    - boot-and-firmware
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Rozruch maszyny wydłuży się o dodatkowy etap weryfikacji
+      - Na sprzęcie bez wymaganej obsługi ustawienie pozostanie bez skutku mimo zapisania
+      - Przy niezgodnej wersji oprogramowania układowego maszyna może nie wystartować
+    en:
+      - The machine's boot lengthens by an additional verification stage
+      - On hardware without the required support the setting has no effect despite being written
+      - With an incompatible firmware version the machine may fail to start
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Sprzęt albo oprogramowanie układowe nie obsługują tego mechanizmu
+      - Nie sprawdzono, czy producent maszyny wydał zgodną wersję oprogramowania układowego
+      - Nie ma przygotowanej drogi odzyskiwania na wypadek systemu, który nie wstaje
+    en:
+      - The hardware or firmware does not support this mechanism
+      - It has not been checked whether the vendor has released a compatible firmware version
+      - No recovery route is prepared in case the system fails to come up
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\SystemGuard'
+      $name = 'Enabled'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\SystemGuard'
+    $name = 'Enabled'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\SystemGuard'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Enabled' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/how-hardware-based-root-of-trust-helps-protect-windows
+
+notes:
+  pl: |
+    To ostatni punkt rodziny opartej na wirtualizacji i sam z siebie nie daje
+    nic. Kolejność wdrożenia jest stała: najpierw zabezpieczenia oparte na
+    wirtualizacji z wymaganiami platformy, potem wymuszanie integralności kodu,
+    na końcu ten punkt.
+
+    Raport ma pokazywać wszystkie cztery obok siebie, bo dopiero komplet
+    odpowiada na pytanie, czy mechanizm faktycznie działa. Trzy z czterech
+    włączone to stan, który wygląda dobrze na liście i nie daje ochrony
+    wynikającej z żadnego z nich.
+  en: |
+    This is the last item of the virtualization-based family and on its own it
+    gives nothing. The rollout order is fixed: first virtualization-based
+    security with the platform requirements, then code integrity enforcement,
+    and this item last.
+
+    The report should show all four side by side, because only the full set
+    answers whether the mechanism actually works. Three out of four enabled is a
+    state that looks good on a list and delivers the protection of none of them.

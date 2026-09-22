@@ -1,0 +1,159 @@
+id: win11-defender-asr-adobe-reader-child-processes
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Blokada uruchamiania programów przez czytnik dokumentów PDF
+    en: PDF reader blocked from launching programs
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dokument PDF uchodzi za plik bierny — coś, co się ogląda. W rzeczywistości
+    format dopuszcza osadzony kod, formularze z logiką, załączniki i odwołania
+    uruchamiające zewnętrzne programy, a czytnik to wszystko obsługuje.
+
+    Ta rozbieżność między tym, co ludzie o PDF-ach sądzą, a tym, czym one są,
+    jest właśnie powodem ich popularności w atakach: ostrożność, którą budzi plik
+    wykonywalny w załączniku, nie przenosi się na dokument do podejrzenia. Reguła
+    zabrania czytnikowi uruchamiania programów, przez co dokument zostaje tym,
+    za co uchodzi.
+  en: |
+    A PDF passes for a passive file - something one looks at. In fact the format
+    allows embedded code, forms with logic, attachments and references that start
+    external programs, and the reader supports all of it.
+
+    That gap between what people take PDFs to be and what they are is exactly why
+    they are popular in attacks: the caution an executable attachment provokes
+    does not carry over to a document one is merely going to look at. The rule
+    forbids the reader to launch programs, which leaves the document being what it
+    passes for.
+
+disruption_description:
+  pl: |
+    Nic w codziennej pracy. Otwieranie, czytanie, wyszukiwanie w treści,
+    wypełnianie formularzy, podpisywanie funkcją wbudowaną w czytnik i drukowanie
+    działają bez zmian, bo żadna z tych czynności nie wymaga uruchomienia
+    osobnego programu.
+
+    Jeden przypadek odbiega: otwarcie pliku dołączonego wewnątrz dokumentu PDF
+    programem zewnętrznym. Dołączanie plików do PDF-a jest rzadkie i zwykle
+    pochodzi ze starszych obiegów dokumentów, więc na typowym stanowisku ta
+    droga po prostu nie jest używana.
+  en: |
+    Nothing in daily work. Opening, reading, searching the text, filling in forms,
+    signing with the reader's built-in function and printing all work unchanged,
+    because none of those requires starting a separate program.
+
+    One case differs: opening a file attached inside a PDF in an external program.
+    Attaching files to a PDF is rare and usually comes from older document
+    workflows, so on a typical workstation that route is simply not used.
+
+implementation_consequences:
+  impact_areas:
+    - email-and-attachments
+  what_breaks:
+    pl:
+      - Otwarcie pliku dołączonego wewnątrz dokumentu PDF programem zewnętrznym przestanie działać
+      - Starsze obiegi dokumentów przenoszące załączniki wewnątrz PDF-a wymagają innej drogi
+    en:
+      - Opening a file attached inside a PDF in an external program stops working
+      - Older document workflows carrying attachments inside a PDF need another route
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Obieg dokumentów opiera się na plikach dołączanych wewnątrz dokumentów PDF
+    en:
+      - The document workflow relies on files attached inside PDF documents
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+      $name = '7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c'
+      # A third-party product in charge means these settings are written but
+      # idle, so the honest answer is that the question does not apply here.
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      elseif (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    $name = '7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name '7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference
+
+notes:
+  pl: |
+    Punkt dotyczy czytnika jednego producenta i nie obejmuje ani czytnika
+    wbudowanego w przeglądarkę, ani innych programów otwierających PDF-y.
+    Na maszynie bez tego czytnika ustawienie jest zapisem bez skutku — zapisać
+    je warto mimo to, bo czytnik bywa doinstalowywany później, a wtedy nikt do
+    tego punktu nie wraca.
+  en: |
+    The item covers one vendor's reader and takes in neither the reader built into
+    the browser nor other programs that open PDFs. On a machine without that
+    reader the setting is a record with no effect - worth writing all the same,
+    because the reader tends to get installed later and nobody comes back to this
+    item then.

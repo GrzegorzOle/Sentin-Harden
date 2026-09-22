@@ -1,0 +1,167 @@
+id: win11-defender-scan-archives
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > Scan
+  title:
+    pl: Skanowanie zawartości archiwów
+    en: Archive contents scanned
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Spakowanie pliku zmienia go nie do poznania — i dokładnie po to bywa
+    stosowane. Archiwum przechodzi przez filtry pocztowe, wygląda na zbiór
+    dokumentów i wymaga od zabezpieczenia dodatkowej pracy: trzeba je rozpakować,
+    żeby zobaczyć, co jest w środku.
+
+    Bez tego ustawienia program antywirusowy tej pracy nie wykonuje, więc plik
+    spakowany jest dla niego nieprzezroczysty aż do chwili, gdy użytkownik sam go
+    rozpakuje. Włączenie przesuwa sprawdzenie o ten jeden krok wcześniej —
+    na moment, w którym archiwum trafia na dysk, a nie na moment, w którym ktoś
+    już zdecydował, że chce z niego skorzystać.
+  en: |
+    Packing a file changes it beyond recognition - and that is exactly why it gets
+    done. An archive passes through mail filters, looks like a set of documents
+    and demands extra work from a defence: it has to be unpacked to see what is
+    inside.
+
+    Without this setting the antivirus does not do that work, so a packed file is
+    opaque to it until the user unpacks it themselves. Turning it on moves the
+    check one step earlier - to the moment the archive lands on disk, rather than
+    the moment somebody has already decided to make use of it.
+
+disruption_description:
+  pl: |
+    Nic w codziennej pracy. Archiwa nie są modyfikowane, rozpakowywanie przez
+    użytkownika działa bez zmian, a sprawdzenie odbywa się w pamięci.
+
+    Koszt to czas i obciążenie dysku przy skanowaniu, proporcjonalne do liczby
+    i rozmiaru archiwów. Na stanowisku, na którym trzyma się spakowane kopie
+    projektów albo archiwa dokumentów, różnica bywa wyraźna.
+
+    Jest też granica, o której warto wiedzieć: rozpakowywanie w locie ma limity
+    głębokości zagnieżdżenia i rozmiaru, więc archiwum spakowane wielokrotnie
+    albo bardzo duże i tak zostanie pominięte. Ten punkt zmniejsza lukę, ale jej
+    nie zamyka, i nie należy go czytać jako gwarancji, że nic spakowanego nie
+    przejdzie.
+  en: |
+    Nothing in daily work. Archives are not modified, unpacking by the user works
+    unchanged, and the check happens in memory.
+
+    The cost is time and disk load during a scan, in proportion to the number and
+    size of archives. On a station holding packed copies of projects or document
+    archives the difference can be marked.
+
+    There is also a limit worth knowing about: unpacking on the fly has bounds on
+    nesting depth and size, so an archive packed many times over or a very large
+    one gets skipped anyway. This item narrows the gap but does not close it, and
+    should not be read as a guarantee that nothing packed gets through.
+
+implementation_consequences:
+  impact_areas:
+    - email-and-attachments
+  what_breaks:
+    pl:
+      - Skanowanie trwa dłużej i mocniej obciąża dysk na stanowisku z wieloma archiwami
+      - Archiwa zagnieżdżone głęboko albo bardzo duże i tak pozostaną pominięte
+    en:
+      - Scanning takes longer and loads the disk more on a station with many archives
+      - Deeply nested or very large archives get skipped all the same
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku trzymane są duże zbiory archiwów, a okno na skanowanie jest krótkie
+    en:
+      - The station holds large sets of archives and the scanning window is short
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else {
+        $preference = Get-MpPreference -ErrorAction Stop
+        if ($preference.DisableArchiveScanning) { 'DISABLED' } else { 'ENABLED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'ENABLED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan'
+    $name = 'DisableArchiveScanning'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableArchiveScanning' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/configure-advanced-scan-types-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Wartość tego punktu jest mniejsza, niż sugeruje jego nazwa, i lepiej
+    powiedzieć to wprost. Archiwum, które faktycznie zostanie otwarte, i tak
+    trafi pod ochronę w czasie rzeczywistym przy rozpakowywaniu — ten punkt
+    dokłada wykrycie wcześniejsze, dla plików, których nikt jeszcze nie ruszył.
+
+    Dlatego mieści się w kategorii średniej, a nie wyżej: skraca czas między
+    pojawieniem się pliku a jego wykryciem, zamiast zamykać drogę wejścia.
+  en: |
+    This item's value is smaller than its name suggests, and it is better to say
+    so outright. An archive that actually gets opened comes under real-time
+    protection at unpacking anyway - this item adds an earlier detection, for
+    files nobody has touched yet.
+
+    Hence it sits in the medium category rather than higher: it shortens the time
+    between a file appearing and its being detected, rather than closing a route
+    of entry.

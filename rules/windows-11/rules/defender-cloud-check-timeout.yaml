@@ -1,0 +1,164 @@
+id: win11-defender-cloud-check-timeout
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > MpEngine
+  title:
+    pl: Wydłużony czas oczekiwania na odpowiedź usługi w chmurze
+    en: Extended wait for the cloud service response
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zapytanie o nieznany plik wysłane do usługi producenta ma swój limit czasu.
+    Gdy odpowiedź nie przyjdzie na czas, plik zostaje wpuszczony — nie dlatego,
+    że uznano go za bezpieczny, tylko dlatego, że skończył się czas.
+
+    Domyślny limit jest krótki, bo liczy się płynność pracy. To ustawienie go
+    wydłuża i rozstrzyga w ten sposób jedno konkretne pytanie: czy przy
+    wątpliwości lepiej poczekać kilka sekund dłużej, czy przepuścić. Rzecz
+    dotyczy wyłącznie plików nieznanych — wszystko rozpoznane rozstrzyga się na
+    miejscu i nie czeka na nic.
+  en: |
+    A query about an unknown file sent to the vendor's service has a time limit.
+    When no answer arrives in time, the file is let through - not because it was
+    judged safe, but because the time ran out.
+
+    The default limit is short, because smooth working matters. This setting
+    extends it, and in doing so settles one particular question: when in doubt, is
+    it better to wait a few seconds more or to let through. It bears only on
+    unknown files - everything recognised is settled locally and waits for
+    nothing.
+
+disruption_description:
+  pl: |
+    W praktyce nic. Wydłużenie dotyczy wyłącznie plików, o które program
+    antywirusowy musi zapytać, czyli takich, których nigdy wcześniej nie widział.
+    Na stanowisku z ustabilizowanym zestawem oprogramowania to sytuacja rzadka.
+
+    Gdy już nastąpi, objawia się zauważalnym opóźnieniem przy pierwszym
+    uruchomieniu nowego pliku — rzędu kilku sekund, jednorazowo, bo kolejne
+    uruchomienie idzie już z rozstrzygnięcia zapamiętanego.
+
+    Wyjątkiem jest maszyna odcięta od internetu albo taka, dla której ruch do
+    usługi producenta jest blokowany na zaporze: tam odpowiedź nie przyjdzie
+    nigdy, więc każde zapytanie wyczerpie pełny limit. To jest jedyny przypadek,
+    w którym zmiana jest odczuwalna, i wtedy problemem jest brak łączności, a nie
+    ten punkt.
+  en: |
+    In practice nothing. The extension applies only to files the antivirus has to
+    ask about, that is, ones it has never seen before. On a station with a settled
+    set of software that is a rare situation.
+
+    When it does happen, it shows as a noticeable delay at a new file's first run
+    - a matter of seconds, once, because the next run goes off a remembered
+    verdict.
+
+    The exception is a machine cut off from the internet, or one whose traffic to
+    the vendor's service is blocked at the firewall: there the answer never
+    arrives, so every query uses the full limit. That is the only case in which
+    the change is felt, and then the problem is the lack of connectivity, not this
+    item.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Pierwsze uruchomienie nieznanego pliku może potrwać kilka sekund dłużej
+      - Na maszynie bez łączności z usługą producenta każde zapytanie wyczerpie pełny limit czasu
+    en:
+      - The first run of an unknown file may take a few seconds longer
+      - On a machine with no connectivity to the vendor's service every query uses the full time limit
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna pracuje bez dostępu do usługi producenta, a na stanowisku często uruchamiane są nowe pliki
+    en:
+      - The machine works without access to the vendor's service and new files are run often on it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else { [string][int](Get-MpPreference -ErrorAction Stop).CloudExtendedTimeout }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '50'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\MpEngine'
+    $name = 'MpBafsExtendedTimeout'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\MpEngine'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MpBafsExtendedTimeout' -Value 50 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/configure-cloud-block-timeout-period-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Sprawdzenie wymaga dokładnie wartości maksymalnej, a nie „co najmniej tyle",
+    bo wyżej ustawić się nie da — to górny kraniec zakresu. Gdyby zakres kiedyś
+    się poszerzył, ten punkt trzeba poprawić razem z nim.
+
+    Ten punkt ma sens wyłącznie razem z blokowaniem przy pierwszym kontakcie
+    i z ochroną w chmurze. Sam wydłuża oczekiwanie na odpowiedź, o którą nikt
+    nie pyta.
+  en: |
+    The check requires exactly the maximum value rather than "at least this much",
+    because no higher setting exists - it is the top of the range. Should the
+    range ever widen, this item has to be corrected along with it.
+
+    The item makes sense only alongside blocking at first sight and cloud
+    protection. On its own it extends the wait for an answer nobody is asking for.

@@ -1,0 +1,173 @@
+id: win11-defender-scan-email
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > Scan
+  title:
+    pl: Skanowanie zawartości skrzynek pocztowych
+    en: Mailbox contents scanned
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Skrzynka pocztowa trzymana lokalnie jest jednym plikiem, w którym siedzą
+    setki wiadomości wraz z załącznikami. Bez tego ustawienia program
+    antywirusowy widzi ten plik jako całość i nie zagląda do środka — załącznik
+    zostaje obejrzany dopiero wtedy, gdy ktoś go otworzy i zapisze.
+
+    Włączenie każe rozłożyć skrzynkę na wiadomości i obejrzeć załączniki tam,
+    gdzie leżą. Przesuwa to moment wykrycia z chwili otwarcia na chwilę
+    skanowania, co bywa różnicą wielu dni — zwłaszcza dla wiadomości, które
+    przyszły, zanim zagrożenie w niej zawarte zostało w ogóle rozpoznane.
+  en: |
+    A locally held mailbox is one file holding hundreds of messages together with
+    their attachments. Without this setting the antivirus sees that file as a
+    whole and does not look inside - an attachment gets examined only once
+    somebody opens and saves it.
+
+    Turning it on requires the mailbox to be taken apart into messages and the
+    attachments examined where they lie. This moves detection from the moment of
+    opening to the moment of scanning, which can be a difference of many days -
+    especially for messages that arrived before the threat in them was recognised
+    at all.
+
+disruption_description:
+  pl: |
+    Nic w codziennej pracy. Program pocztowy działa bez zmian, wiadomości nie są
+    modyfikowane, a skanowanie czyta plik skrzynki, zamiast go przepisywać.
+
+    Koszt to czas skanowania. Plik skrzynki bywa duży — kilka albo kilkanaście
+    gigabajtów na stanowisku, na którym pocztę trzyma się lokalnie od lat —
+    a rozłożenie go na wiadomości nie jest operacją tanią.
+
+    Jest jedna sytuacja warta uprzedzenia: gdy skanowanie znajdzie coś
+    w załączniku, obiektem kwarantanny bywa nie pojedyncza wiadomość, lecz
+    większa część skrzynki, bo to jest jednostka, którą da się odseparować.
+    Zdarza się rzadko, ale gdy się zdarzy, użytkownik traci dostęp do
+    korespondencji, a nie do jednego listu. Na stanowisku z pocztą trzymaną
+    lokalnie warto o tym wiedzieć przed włączeniem, a nie po.
+  en: |
+    Nothing in daily work. The mail program works unchanged, messages are not
+    modified, and the scan reads the mailbox file rather than rewriting it.
+
+    The cost is scanning time. A mailbox file can be large - several or a dozen
+    gigabytes on a station where mail has been kept locally for years - and taking
+    it apart into messages is not a cheap operation.
+
+    One situation is worth flagging in advance: when a scan finds something in an
+    attachment, what gets quarantined is sometimes not the single message but a
+    larger part of the mailbox, because that is the unit that can be separated
+    out. It happens rarely, but when it does the user loses access to
+    correspondence rather than to one letter. On a station with mail kept locally
+    this is worth knowing before turning it on, not after.
+
+implementation_consequences:
+  impact_areas:
+    - email-and-attachments
+  what_breaks:
+    pl:
+      - Skanowanie trwa dłużej na stanowisku z dużym plikiem skrzynki pocztowej
+      - Znalezisko w załączniku może objąć kwarantanną większą część skrzynki, nie pojedynczą wiadomość
+    en:
+      - Scanning takes longer on a station with a large mailbox file
+      - A find in an attachment may quarantine a larger part of the mailbox rather than a single message
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Poczta trzymana jest lokalnie w jednym dużym pliku i nie ma z niej kopii zapasowej
+    en:
+      - Mail is kept locally in one large file and there is no backup of it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else {
+        $preference = Get-MpPreference -ErrorAction Stop
+        if ($preference.DisableEmailScanning) { 'DISABLED' } else { 'ENABLED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'ENABLED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan'
+    $name = 'DisableEmailScanning'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableEmailScanning' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/configure-advanced-scan-types-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Punkt dotyczy poczty trzymanej lokalnie. Na stanowisku, na którym skrzynka
+    zostaje na serwerze, a program pocztowy trzyma tylko pamięć podręczną,
+    skanowanie i tak obejmie tę pamięć — ale wykrycie na serwerze nastąpiłoby
+    wcześniej, więc wartość tego punktu jest tam mniejsza.
+
+    Ostrzeżenie o kwarantannie obejmującej większą część skrzynki jest tu
+    ważniejsze niż sam zysk i dlatego stoi w opisie skutków, a nie w uwagach.
+    To jedyny punkt z grupy skanowania, w którym wykrycie może kosztować
+    użytkownika dostęp do jego własnych danych.
+  en: |
+    The item concerns mail kept locally. On a station where the mailbox stays on a
+    server and the mail program holds only a cache, scanning takes in that cache
+    anyway - but detection on the server would have happened earlier, so the
+    item's value is smaller there.
+
+    The warning about quarantine taking in a larger part of the mailbox matters
+    more here than the gain itself, which is why it stands in the consequences
+    rather than in the notes. It is the only item in the scanning group where a
+    detection can cost the user access to their own data.

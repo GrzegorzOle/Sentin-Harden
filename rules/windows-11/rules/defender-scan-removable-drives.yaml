@@ -1,0 +1,159 @@
+id: win11-defender-scan-removable-drives
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > Scan
+  title:
+    pl: Skanowanie nośników wymiennych przy skanowaniu pełnym
+    en: Removable drives scanned during a full scan
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Skanowanie pełne domyślnie pomija nośniki wymienne. Przesłanka jest
+    zrozumiała — nośnik bywa duży, bywa wolny i bywa odłączony w połowie —
+    ale skutek jest taki, że plik leżący na pendrivie nie zostaje obejrzany
+    nigdy, dopóki ktoś go nie otworzy.
+
+    Znaczenie tego punktu bierze się z tego, jak nośniki krążą. Pamięć USB
+    przechodzi między maszynami, także tymi spoza organizacji, i jest jedyną
+    drogą, której nie widzi żadne zabezpieczenie sieciowe. Włączenie skanowania
+    zamyka lukę między „plik jest na maszynie" a „plik został sprawdzony".
+  en: |
+    A full scan skips removable drives by default. The reasoning is
+    understandable - a drive can be large, can be slow and can be unplugged
+    halfway through - but the effect is that a file sitting on a stick is never
+    looked at until somebody opens it.
+
+    The item's importance comes from how such media circulate. A USB stick passes
+    between machines, including ones outside the organisation, and is the one
+    route no network defence sees. Turning scanning on closes the gap between
+    "the file is on the machine" and "the file has been checked".
+
+disruption_description:
+  pl: |
+    Nic w codziennej pracy. Ustawienie dotyczy wyłącznie skanowania pełnego,
+    czyli operacji uruchamianej z harmonogramu albo ręcznie — nie dotyka ani
+    ochrony w czasie rzeczywistym, ani skanowania szybkiego.
+
+    Jedyny koszt to czas: skanowanie pełne potrwa dłużej, jeśli w jego trakcie
+    podłączony jest nośnik, proporcjonalnie do tego, co na nim leży. Odłączenie
+    nośnika w trakcie nie uszkadza niczego — skanowanie pomija to, czego już
+    nie ma.
+
+    Warto wiedzieć o jednym przypadku: przy stale podłączonym dysku zewnętrznym
+    z kopiami zapasowymi każde skanowanie pełne obejmie całą jego zawartość.
+    To nie jest awaria, ale potrafi wydłużyć operację z minut do godzin.
+  en: |
+    Nothing in daily work. The setting bears only on the full scan, that is, an
+    operation started from a schedule or by hand - it touches neither real-time
+    protection nor the quick scan.
+
+    The only cost is time: a full scan takes longer if a drive is attached while
+    it runs, in proportion to what is on it. Unplugging the drive midway damages
+    nothing - the scan skips what is no longer there.
+
+    One case is worth knowing about: with a permanently attached external drive
+    holding backups, every full scan takes in its entire contents. That is not a
+    failure, but it can stretch the operation from minutes into hours.
+
+implementation_consequences:
+  impact_areas:
+    - removable-media
+  what_breaks:
+    pl:
+      - Skanowanie pełne trwa dłużej, gdy w jego trakcie podłączony jest nośnik
+      - Przy stale podłączonym dysku z kopiami zapasowymi operacja może wydłużyć się z minut do godzin
+    en:
+      - A full scan takes longer when a drive is attached while it runs
+      - With a permanently attached backup drive the operation can stretch from minutes into hours
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Do maszyny stale podłączony jest duży dysk zewnętrzny, a okno na skanowanie pełne jest krótkie
+    en:
+      - A large external drive is permanently attached and the window for a full scan is short
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else {
+        $preference = Get-MpPreference -ErrorAction Stop
+        if ($preference.DisableRemovableDriveScanning) { 'DISABLED' } else { 'ENABLED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'ENABLED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan'
+    $name = 'DisableRemovableDriveScanning'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableRemovableDriveScanning' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/configure-advanced-scan-types-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Nazwa ustawienia jest przecząca — wyłącza skanowanie — więc wartość zero
+    oznacza tu włączenie. Sprawdzenie zwraca słowo, nie liczbę, właśnie po to,
+    żeby wynik dało się przeczytać bez pamiętania, w którą stronę liczy się ta
+    wartość.
+  en: |
+    The setting's name is negative - it disables scanning - so a value of zero
+    means turning it on here. The check returns a word rather than a number
+    precisely so the result can be read without remembering which way that value
+    counts.

@@ -1,0 +1,173 @@
+id: win11-defender-cloud-block-level
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > MpEngine
+  title:
+    pl: Podwyższony poziom blokowania przez usługę w chmurze
+    en: Raised cloud blocking level
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy program antywirusowy pyta usługę producenta o nieznany plik, odpowiedź
+    rzadko brzmi „tak" albo „nie". Zwykle jest oceną prawdopodobieństwa, a to
+    ustawienie rozstrzyga, od jakiego progu ocena wystarcza do zablokowania.
+
+    Domyślny próg jest dobrany tak, żeby nie przeszkadzać: blokuje przy ocenie
+    wysokiej, przepuszcza przy niejasnej. Podniesienie progu przesuwa tę granicę
+    w stronę ostrożności — rzeczy wyglądające podejrzanie, ale nierozpoznane,
+    zostają zatrzymane, zamiast czekać na potwierdzenie. Zysk jest największy
+    w pierwszych godzinach życia nowego zagrożenia, kiedy nikt go jeszcze nie
+    nazwał.
+  en: |
+    When an antivirus asks the vendor's service about an unknown file, the answer
+    is rarely "yes" or "no". It is usually an assessment of likelihood, and this
+    setting decides from what threshold the assessment suffices to block.
+
+    The default threshold is chosen so as not to get in the way: it blocks on a
+    high assessment and lets an unclear one through. Raising the threshold shifts
+    that line towards caution - things that look suspicious but are unrecognised
+    get stopped rather than waiting for confirmation. The gain is greatest in a
+    new threat's first hours, while nobody has named it yet.
+
+disruption_description:
+  pl: |
+    Koszt jest przewidywalny i ma jedną postać: zatrzymane zostaną pliki, które
+    są w porządku, ale nikt ich jeszcze nie widział. To nie jest wada ustawienia,
+    tylko jego treść — przesuwamy próg, więc po ostrożnej stronie ląduje więcej
+    rzeczy.
+
+    Uderza to w konkretne przypadki: narzędzie napisane wewnętrznie i
+    nierozprowadzane nigdzie indziej, program niszowy o kilkuset użytkownikach na
+    świecie, świeżo wydana wersja czegokolwiek w pierwszych dniach po premierze,
+    plik wykonywalny zbudowany na miejscu.
+
+    Objaw jest jednoznaczny — komunikat programu antywirusowego z nazwą pliku —
+    więc przyczyna jest od razu widoczna, w przeciwieństwie do reguł ograniczania
+    powierzchni ataku. Odblokowanie wymaga jednak decyzji kogoś, kto ma dostęp do
+    konsoli, i to jest tu właściwy koszt: nie awaria, lecz obsługa zgłoszeń.
+  en: |
+    The cost is predictable and takes one form: files that are fine but that
+    nobody has seen yet get stopped. That is not a flaw of the setting but its
+    substance - we move the threshold, so more things land on the cautious side.
+
+    It hits particular cases: a tool written in-house and distributed nowhere
+    else, a niche program with a few hundred users worldwide, a freshly released
+    version of anything in its first days, an executable built on site.
+
+    The symptom is unambiguous - an antivirus message naming the file - so the
+    cause is visible at once, unlike with the attack surface reduction rules.
+    Unblocking does however take a decision by somebody with console access, and
+    that is the real cost here: not an outage, but handling reports.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Narzędzia pisane wewnętrznie i nierozprowadzane publicznie mogą zostać zablokowane
+      - Świeżo wydane wersje programów bywają zatrzymywane przez pierwsze dni
+      - Odblokowanie pliku wymaga decyzji osoby z dostępem do konsoli
+    en:
+      - Tools written in-house and not distributed publicly may be blocked
+      - Freshly released program versions get stopped for the first few days
+      - Unblocking a file takes a decision by somebody with console access
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na stanowisku buduje się i uruchamia własne pliki wykonywalne
+      - Używane oprogramowanie jest niszowe albo pisane wewnętrznie, a nie ma kto obsługiwać odblokowań
+    en:
+      - The station builds and runs its own executables
+      - Software in use is niche or written in-house, and there is nobody to handle unblocking
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else { [string][int](Get-MpPreference -ErrorAction Stop).CloudBlockLevel }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(2|4|6)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\MpEngine'
+    $name = 'MpCloudBlockLevel'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\MpEngine'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MpCloudBlockLevel' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/specify-cloud-protection-level-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Sprawdzenie przyjmuje każdy poziom od wymaganego wzwyż, a nie tylko ten jeden.
+    Progi wyższe są ostrzejsze, więc zgłaszanie ich jako niezgodności byłoby
+    karaniem za wdrożenie ostrożniejsze niż wymagane. Naprawa ustawia dokładnie
+    poziom wymagany i nigdy nie obniża istniejącego — jeśli ktoś ustawił wyżej,
+    punkt jest spełniony i nie ma czego naprawiać.
+
+    Ustawienie działa wyłącznie razem z włączoną ochroną w chmurze. Na maszynie,
+    która nie pyta usługi producenta o nic, sam próg niczego nie zmienia.
+  en: |
+    The check accepts every level from the required one upwards, not just that one.
+    Higher thresholds are stricter, so reporting them as non-compliance would mean
+    penalising a deployment more cautious than required. The fix sets exactly the
+    required level and never lowers an existing one - if somebody set it higher,
+    the item is satisfied and there is nothing to fix.
+
+    The setting works only alongside cloud protection being on. On a machine that
+    asks the vendor's service nothing, the threshold by itself changes nothing.

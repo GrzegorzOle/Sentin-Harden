@@ -1,0 +1,194 @@
+id: win11-rdp-idle-session-limit
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Session Time Limits
+  title:
+    pl: Bezczynna sesja pulpitu zdalnego kończona po kwadransie
+    en: An idle remote desktop session ended after a quarter of an hour
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sesja pulpitu zdalnego, w której nikt nic nie robi, trwa domyślnie bez
+    końca. Użytkownik zamyka okno klienta albo odchodzi od komputera, a po
+    drugiej stronie zostaje otwarta sesja z jego uprawnieniami.
+
+    Otwarta sesja to nie tylko zajęta pamięć. To działające procesy, ważne
+    bilety dostępu do zasobów sieciowych i poświadczenia w pamięci maszyny,
+    z którą był kontakt. Każda z tych rzeczy jest do wykorzystania przez kogoś,
+    kto dostał się na tę maszynę — i im dłużej sesja stoi, tym dłużej jest
+    dostępna.
+
+    Osobno liczy się to, czego nie widać: nieskończona sesja bezczynna zaciera
+    granicę między „ktoś pracuje" a „ktoś kiedyś się łączył". Lista sesji
+    przestaje cokolwiek mówić o tym, kto jest na maszynie teraz.
+  en: |
+    A remote desktop session in which nobody is doing anything lasts, by default,
+    without end. The user closes the client window or walks away from the
+    computer, and on the other side an open session with their rights remains.
+
+    An open session is not only memory taken up. It is running processes, valid
+    tickets for network resources, and credentials in the memory of the machine
+    that was in contact. Each of those is usable by somebody who has reached that
+    machine - and the longer the session stands, the longer it is available.
+
+    What cannot be seen counts separately: an endless idle session blurs the line
+    between "somebody is working" and "somebody once connected". The session list
+    stops saying anything about who is on the machine now.
+
+disruption_description:
+  pl: |
+    Zmiana jest odczuwalna i wymaga sprawdzenia, jak na tej maszynie pracuje się
+    zdalnie.
+
+    Sesja bezczynna przez kwadrans zostaje zakończona. Znaczy to wylogowanie,
+    a nie rozłączenie — otwarte programy zostają zamknięte, a niezapisana praca
+    przepada tam, gdzie program nie odtwarza jej sam.
+
+    Problemem nie są ludzie, tylko rzeczy liczone bez udziału człowieka. Długi
+    proces uruchomiony w sesji i zostawiony na kilka godzin wygląda dla systemu
+    dokładnie jak bezczynność, bo bezczynność mierzy się ruchem myszy
+    i klawiatury, a nie obciążeniem maszyny. Kopiowanie dużego zbioru,
+    przeliczanie raportu i instalacja zostawiona na noc to trzy przypadki,
+    w których ten punkt potrafi przerwać coś, co działało.
+
+    Kwadrans jest wartością z benchmarku i bywa za krótki. Wydłużenie go jest
+    decyzją do podjęcia świadomie — reguła sprawdza, czy limit w ogóle istnieje
+    i mieści się w kwadransie, a nie czy wynosi dokładnie tyle.
+  en: |
+    The change is felt and requires checking how remote work is done on this
+    machine.
+
+    A session idle for a quarter of an hour is ended. That means a sign-out, not a
+    disconnect - open programs are closed and unsaved work is lost wherever the
+    program does not restore it itself.
+
+    The problem is not people but things computed with no person involved. A long
+    process started in a session and left for several hours looks to the system
+    exactly like idleness, because idleness is measured by mouse and keyboard
+    movement, not by load on the machine. Copying a large set of files, working
+    out a report and an installation left overnight are three cases where this
+    item can interrupt something that was working.
+
+    A quarter of an hour is the benchmark's value and is sometimes too short.
+    Lengthening it is a decision to take deliberately - the rule checks whether a
+    limit exists at all and falls within a quarter of an hour, not whether it is
+    exactly that.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Sesja bezczynna przez kwadrans zostanie wylogowana, a nie rozłączona, więc otwarte programy się zamkną
+      - Długie zadania liczone bez ruchu myszy zostaną przerwane, bo system uzna sesję za bezczynną
+      - Niezapisana praca przepadnie tam, gdzie program nie odtwarza jej sam
+    en:
+      - A session idle for a quarter of an hour is signed out rather than disconnected, so open programs close
+      - Long tasks computed without mouse movement are cut short, because the system counts the session as idle
+      - Unsaved work is lost wherever the program does not restore it itself
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - W sesjach zdalnych uruchamia się długie zadania, przy których nikt nie siedzi
+      - Praca zdalna polega na pozostawianiu otwartej sesji między czynnościami w ciągu dnia
+    en:
+      - Long tasks nobody sits with are run inside remote sessions
+      - Remote work consists of leaving a session open between tasks during the day
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Zero has a meaning of its own here - it is the absence of a limit, not
+      # the shortest one. Reported apart, so a report cannot read it as a very
+      # strict setting.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+      $name = 'MaxIdleTime'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'MISSING' }
+        elseif ([int]$value -eq 0) { 'NO_LIMIT' }
+        elseif ([int]$value -le 900000) { 'WITHIN_LIMIT' }
+        else { 'OVER_LIMIT ' + $value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: WITHIN_LIMIT
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    $name = 'MaxIdleTime'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MaxIdleTime' -Value 900000 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/rds-session-time-limits
+
+notes:
+  pl: |
+    Wartość podawana jest w milisekundach i kwadrans to dziewięćset tysięcy.
+    Sprawdzenie przyjmuje każdą wartość niższą, bo punkt mówi „nie dłużej niż",
+    a nie „dokładnie tyle" — maszyna z limitem pięciominutowym jest spełniona
+    i byłoby błędem zgłaszać ją jako niezgodną.
+
+    Zero jest wyodrębnione osobno, bo znaczy brak limitu, a nie limit najkrótszy
+    z możliwych. Bez tego rozróżnienia porównanie liczbowe uznałoby maszynę bez
+    żadnego ograniczenia za najlepiej ustawioną ze wszystkich — i jest to
+    dokładnie ten rodzaj cichego błędu, który psuje zaufanie do całego raportu.
+  en: |
+    The value is given in milliseconds and a quarter of an hour is nine hundred
+    thousand. The check accepts any lower value, because the item says "no longer
+    than" rather than "exactly this" - a machine with a five-minute limit
+    satisfies it and reporting it as non-compliant would be wrong.
+
+    Zero is singled out separately, because it means the absence of a limit rather
+    than the shortest possible one. Without that distinction a numeric comparison
+    would rate a machine with no limit at all as the best configured of the lot -
+    and that is exactly the kind of quiet error that ruins trust in a whole
+    report.

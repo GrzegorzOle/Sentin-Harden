@@ -1,0 +1,190 @@
+id: win11-rdp-disconnected-session-limit
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Session Time Limits
+  title:
+    pl: Rozłączona sesja pulpitu zdalnego kończona po minucie
+    en: A disconnected remote desktop session ended after a minute
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zamknięcie okna pulpitu zdalnego nie kończy sesji po drugiej stronie, tylko
+    ją rozłącza. Sesja działa dalej ze wszystkim, co w niej otwarte, i czeka, aż
+    ktoś się do niej podłączy z powrotem. Domyślnie czeka bez końca.
+
+    Jest to gorszy wariant sesji bezczynnej, bo nikt o niej nie pamięta.
+    Użytkownik zamknął okno i uważa, że skończył; po stronie maszyny zostaje
+    żywa sesja z jego uprawnieniami, ważnymi biletami dostępu do zasobów
+    sieciowych i poświadczeniami w pamięci. Takich sesji zbiera się przez
+    tygodnie tyle, ile było rozłączeń.
+
+    Ograniczenie czasu oczekiwania zamyka je same z siebie i sprowadza listę
+    sesji do tych, które faktycznie są w użyciu.
+  en: |
+    Closing the remote desktop window does not end the session on the other side;
+    it disconnects it. The session carries on with everything open inside it and
+    waits for somebody to reconnect. By default it waits without end.
+
+    This is the worse variant of an idle session, because nobody remembers it. The
+    user closed the window and reckons they have finished; on the machine's side a
+    live session remains with their rights, valid tickets for network resources
+    and credentials in memory. Over weeks, as many such sessions collect as there
+    were disconnects.
+
+    Limiting the waiting time closes them by themselves and reduces the session
+    list to those actually in use.
+
+disruption_description:
+  pl: |
+    Zmiana jest odczuwalna i sprawdzenia wymaga to, czy ktoś na tej maszynie
+    celowo rozłącza się z pracą w toku.
+
+    Po minucie od rozłączenia sesja zostaje zamknięta, a więc wylogowana.
+    Zniknie z nią to, co było otwarte, i przepadnie praca niezapisana tam, gdzie
+    program nie odtwarza jej sam.
+
+    Uderza to przede wszystkim w sposób pracy polegający na przełączaniu się:
+    rozłączyć się rano w biurze, podłączyć po południu z domu i zastać wszystko
+    tak, jak było. Ten sposób pracy przestaje działać całkowicie, bo minuta nie
+    daje na nic czasu. Jest to sytuacja, w której limit jest po prostu za krótki
+    i warto go świadomie wydłużyć, zamiast punkt odpuścić.
+
+    Drugi przypadek to zerwane łącze. Przypadkowe rozłączenie przy słabym
+    połączeniu kończy się po minucie utratą sesji zamiast powrotem do niej —
+    i przy niestabilnym łączu jest to zauważalne kilka razy dziennie.
+  en: |
+    The change is felt, and what needs checking is whether anybody on this machine
+    deliberately disconnects with work in progress.
+
+    A minute after a disconnect the session is closed, that is, signed out. What
+    was open goes with it, and work unsaved where the program does not restore it
+    itself is lost.
+
+    This hits above all a way of working built on switching: disconnect in the
+    office in the morning, connect from home in the afternoon and find everything
+    as it was. That way of working stops entirely, because a minute allows time
+    for nothing. This is a case where the limit is simply too short and is worth
+    lengthening deliberately rather than passing the item over.
+
+    The second case is a dropped link. An accidental disconnect on a weak
+    connection ends after a minute in a lost session instead of a return to it -
+    and on an unstable link that is noticeable several times a day.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Sesja rozłączona zostanie wylogowana po minucie, więc otwarte programy się zamkną
+      - Praca polegająca na rozłączeniu się w jednym miejscu i powrocie do sesji w innym przestanie być możliwa
+      - Przypadkowe rozłączenie przy słabym łączu skończy się utratą sesji zamiast powrotem do niej
+    en:
+      - A disconnected session is signed out after a minute, so open programs close
+      - Working by disconnecting in one place and returning to the session in another stops being possible
+      - An accidental disconnect on a weak link ends in a lost session instead of a return to it
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Praca polega na powrocie do rozłączonej sesji z innego miejsca tego samego dnia
+      - Łącze do maszyny jest niestabilne i rozłączenia zdarzają się przypadkowo
+    en:
+      - Work consists of returning to a disconnected session from elsewhere the same day
+      - The link to the machine is unstable and disconnects happen by accident
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Zero has a meaning of its own here - it is the absence of a limit, not
+      # the shortest one. Reported apart, so a report cannot read it as a very
+      # strict setting.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+      $name = 'MaxDisconnectionTime'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'MISSING' }
+        elseif ([int]$value -eq 0) { 'NO_LIMIT' }
+        elseif ([int]$value -le 60000) { 'WITHIN_LIMIT' }
+        else { 'OVER_LIMIT ' + $value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: WITHIN_LIMIT
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    $name = 'MaxDisconnectionTime'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MaxDisconnectionTime' -Value 60000 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/rds-session-time-limits
+
+notes:
+  pl: |
+    Ten punkt i limit bezczynności wyglądają na dwa warianty jednego wymagania
+    i nie są nimi. Bezczynność mierzy się w sesji, do której ktoś jest
+    podłączony; ten punkt dotyczy sesji, do której nie jest podłączony nikt.
+    Sesja rozłączona nigdy nie stanie się bezczynna w rozumieniu tamtego punktu,
+    więc samo wdrożenie tamtego zostawia rozłączone sesje otwarte na zawsze.
+
+    Minuta jest wartością z benchmarku i jest ostra. Reguła sprawdza, czy limit
+    istnieje i nie przekracza minuty; świadome wydłużenie go jest decyzją
+    użytkownika i zapisuje się jako wyjątek, a nie jako spełnienie punktu.
+  en: |
+    This item and the idle limit look like two variants of one requirement and are
+    not. Idleness is measured inside a session somebody is connected to; this item
+    concerns a session nobody is connected to. A disconnected session will never
+    become idle in that item's sense, so applying that one alone leaves
+    disconnected sessions open forever.
+
+    A minute is the benchmark's value and it is severe. The rule checks that a
+    limit exists and does not exceed a minute; lengthening it deliberately is the
+    user's decision and is recorded as an exception rather than as satisfying the
+    item.

@@ -1,0 +1,173 @@
+id: win11-rdp-rpc-traffic-encrypted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Security
+  title:
+    pl: Kanał zarządzania pulpitem zdalnym zawsze szyfrowany
+    en: The remote desktop management channel always encrypted
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obok samego obrazu pulpitu i klawiatury usługa pulpitu zdalnego utrzymuje
+    osobny kanał, którym idą wywołania zarządzające sesją: nawiązanie połączenia,
+    przekazanie parametrów, rozłączenie, wylogowanie. Kanał ten domyślnie potrafi
+    działać bez szyfrowania, jeśli druga strona sobie tego zażyczy.
+
+    Łatwo go przeoczyć, bo o szyfrowaniu pulpitu zdalnego myśli się w kategoriach
+    obrazu — a obraz bywa szyfrowany wtedy, gdy ten kanał nie jest. Nieszyfrowany
+    kanał zarządzania pozwala komuś po drodze podejrzeć parametry sesji
+    i ingerować w jej przebieg, nie oglądając przy tym ani jednego piksela
+    pulpitu.
+
+    Wymuszenie szyfrowania odbiera możliwość zejścia na wariant bez ochrony przy
+    nawiązywaniu połączenia.
+  en: |
+    Besides the desktop image and the keyboard, the remote desktop service keeps a
+    separate channel carrying the calls that manage a session: setting up the
+    connection, passing parameters, disconnecting, signing out. By default that
+    channel can run unencrypted if the other side asks for it.
+
+    It is easily overlooked, because encryption of remote desktop is thought about
+    in terms of the image - and the image is sometimes encrypted while this
+    channel is not. An unencrypted management channel lets somebody in the middle
+    watch the session's parameters and interfere with how it runs, without seeing
+    a single pixel of the desktop.
+
+    Requiring encryption removes the option of dropping to the unprotected variant
+    when a connection is being made.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać na maszynach, które łączą się ze sobą
+    współczesnymi wersjami systemu. Szyfrowanie tego kanału jest w nich
+    standardem i wymuszenie go niczego nie zmienia.
+
+    Przestaną łączyć się klienci, którzy szyfrowania tego kanału nie obsługują.
+    Są to programy bardzo stare albo napisane samodzielnie — spotyka się je
+    w sprzęcie przemysłowym, w cienkich klientach kupionych dawno temu i w
+    narzędziach dostawców, które nikt od lat nie aktualizował.
+
+    Objaw jest jednoznaczny: połączenie nie dochodzi do skutku i klient zgłasza
+    błąd przy nawiązywaniu. Nie ma tu stanu pośredniego, w którym coś działa
+    gorzej, więc przyczynę widać od razu.
+
+    Nie ma restartu. Zmiana obowiązuje od następnego połączenia.
+  en: |
+    Nothing stops working between machines connecting to each other with
+    contemporary versions of the system. Encrypting this channel is standard in
+    them and requiring it changes nothing.
+
+    What stops connecting are clients that do not support encryption of this
+    channel. These are very old programs, or ones written in-house - found in
+    industrial equipment, in thin clients bought long ago, and in vendors' tools
+    nobody has updated for years.
+
+    The symptom is unambiguous: the connection does not come about and the client
+    reports an error while establishing it. There is no middle state where
+    something merely works worse, so the cause is visible at once.
+
+    There is no restart. The change applies from the next connection.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - encryption-and-tls
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Bardzo starzy klienci pulpitu zdalnego przestaną nawiązywać połączenie
+      - Cienkie klienty i narzędzia dostawców sprzed lat mogą zgłaszać błąd przy łączeniu
+    en:
+      - Very old remote desktop clients stop establishing a connection
+      - Thin clients and vendors' tools from years back may report an error while connecting
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Do maszyny łączą się cienkie klienty albo narzędzia dostawców, których nie da się zaktualizować
+    en:
+      - Thin clients or vendors' tools that cannot be updated connect to the machine
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+      $name = 'fEncryptRPCTraffic'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    $name = 'fEncryptRPCTraffic'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'fEncryptRPCTraffic' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/rds-rdsh-security
+
+notes:
+  pl: |
+    Punkt czyta się razem z ustawieniem poziomu szyfrowania samego połączenia,
+    ale dotyczy innego kanału i żaden nie zastępuje drugiego. Tamten odpowiada
+    za obraz i klawiaturę, ten za wywołania zarządzające sesją.
+
+    Warto to wiedzieć, bo raport z samym tamtym punktem na zielono łatwo
+    przeczytać jako „pulpit zdalny jest u nas szyfrowany", a jest to wtedy
+    prawda tylko o połowie ruchu.
+  en: |
+    The item is read together with setting the encryption level of the connection
+    itself, but concerns a different channel and neither replaces the other. That
+    one answers for the image and the keyboard, this one for the calls that manage
+    the session.
+
+    Worth knowing, because a report with only that item in green is easily read as
+    "remote desktop is encrypted here", and that is then true of half the traffic.

@@ -1,0 +1,165 @@
+id: win11-rdp-temp-folders-deleted-on-exit
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Temporary Folders
+  title:
+    pl: Foldery tymczasowe sesji zdalnej usuwane po jej zakończeniu
+    en: A remote session's temporary folders removed once it ends
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sesja pulpitu zdalnego dostaje własny folder na pliki tymczasowe. Trafia do
+    niego to, co programy odkładają w trakcie pracy: otwierane załączniki,
+    podglądy dokumentów, pliki rozpakowane z archiwum, fragmenty wydruków.
+
+    Domyślnie folder ten może zostać po zakończeniu sesji. Znaczy to, że na dysku
+    maszyny zostaje ślad po tym, nad czym ktoś pracował zdalnie — w postaci
+    całych plików, nie metadanych. Zbiera się to sesja po sesji i nikt tego nie
+    przegląda, bo katalogi tymczasowe są z definicji tym, czego się nie ogląda.
+
+    Dla kogoś, kto później dostanie się na tę maszynę, jest to gotowy zbiór
+    dokumentów z cudzych sesji, uzyskany bez potrzeby przechwytywania czegokolwiek
+    w locie.
+  en: |
+    A remote desktop session gets a folder of its own for temporary files. Into it
+    goes what programs set aside while working: attachments being opened, document
+    previews, files unpacked from an archive, fragments of print jobs.
+
+    By default that folder can remain after the session ends. This means a trace
+    of what somebody worked on remotely stays on the machine's disk - as whole
+    files, not metadata. It accumulates session by session and nobody reviews it,
+    because temporary directories are by definition what one does not look at.
+
+    For somebody who later reaches that machine it is a ready collection of
+    documents from other people's sessions, obtained without having to intercept
+    anything in flight.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Po zakończeniu sesji katalog tymczasowy zostaje
+    usunięty.
+
+    Jedyny zauważalny skutek dotyczy rozwiązywania problemów: plik, który
+    program zostawił w katalogu tymczasowym i który dało się odzyskać po
+    nieudanej sesji, przestaje być dostępny. Zdarza się to rzadko i dotyczy
+    głównie odzyskiwania niezapisanego dokumentu po awarii programu — ale gdy
+    się zdarzy, bywa jedynym ratunkiem.
+
+    Praca w sesji zdalnej, otwieranie załączników i drukowanie działają bez
+    zmian. Nie ma restartu ani wylogowania, a zmiana dotyczy dopiero sesji
+    kończonych po jej wprowadzeniu.
+  en: |
+    Nothing stops working. Once a session ends, its temporary directory is
+    removed.
+
+    The only noticeable effect concerns troubleshooting: a file a program left in
+    the temporary directory, recoverable after a failed session, stops being
+    available. This happens rarely and mostly concerns recovering an unsaved
+    document after a program crash - but when it happens it is sometimes the only
+    remedy.
+
+    Working in a remote session, opening attachments and printing all work
+    unchanged. There is no restart and no sign-out, and the change concerns only
+    sessions ended after it is made.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+  what_breaks:
+    pl:
+      - Odzyskanie niezapisanego dokumentu z katalogu tymczasowego po awarii programu przestanie być możliwe
+    en:
+      - Recovering an unsaved document from the temporary directory after a program crash stops being possible
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+      $name = 'DeleteTempDirsOnExit'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    $name = 'DeleteTempDirsOnExit'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DeleteTempDirsOnExit' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/rds-rdsh-security
+
+notes:
+  pl: |
+    Ustawienie jest w szablonach zapisane przez zaprzeczenie — zasada nazywa
+    niekasowanie katalogów, więc jej wyłączenie jest utwardzeniem, a wartość
+    jeden oznacza tu kasowanie. Przy czytaniu raportu łatwo odwrócić sens
+    i warto mieć to wypisane.
+
+    Punkt czyta się razem z osobnym katalogiem tymczasowym na sesję. Kasowanie
+    przy wyjściu bez rozdzielenia katalogów zostawia sytuację, w której sesje
+    dzielą jedno miejsce i kasowanie jednej dotyka plików drugiej.
+  en: |
+    The setting is written in the templates by negation - the policy names the
+    *not* deleting of directories, so disabling it is the hardening, and a value of
+    one means deletion here. The sense is easily inverted when reading the report
+    and is worth having written down.
+
+    The item is read together with a separate temporary directory per session.
+    Deleting on exit without separating the directories leaves a situation where
+    sessions share one place and deleting one touches another's files.

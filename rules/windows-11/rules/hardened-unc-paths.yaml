@@ -1,0 +1,173 @@
+id: win11-hardened-unc-paths
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Network Provider
+  title:
+    pl: Utwardzone ścieżki UNC dla udziałów zasad grupy
+    en: Hardened UNC paths for group policy shares
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna pobiera zasady grupy i skrypty logowania z udziałów sieciowych
+    kontrolera domeny. Bez dodatkowych warunków wystarczy, że ktoś podstawi się
+    pod ten udział, żeby maszyna wykonała przysłany skrypt — z uprawnieniami
+    systemu i przy każdym logowaniu.
+
+    Utwardzenie ścieżki nakłada dwa warunki: druga strona musi udowodnić, że
+    jest tym, za kogo się podaje, a treść musi dotrzeć niezmieniona. Podstawienie
+    się pod udział przestaje wystarczać, bo napastnik nie ma czym potwierdzić
+    tożsamości kontrolera.
+  en: |
+    The machine fetches group policy and logon scripts from the domain
+    controller's network shares. With no further conditions, it is enough for
+    somebody to impersonate that share for the machine to run the script sent -
+    with system rights and at every sign-in.
+
+    Hardening the path imposes two conditions: the other side has to prove it is
+    who it claims to be, and the content has to arrive unchanged. Impersonating
+    the share stops being enough, because the attacker has nothing to confirm
+    the controller's identity with.
+
+disruption_description:
+  pl: |
+    Na maszynie poza domeną ustawienie nie ma czego chronić i nie zmienia
+    niczego — ścieżki, których dotyczy, nie są używane.
+
+    W domenie skutek bywa poważny, jeśli warunki nie mogą zostać spełnione:
+    logowanie zatrzymuje się na pobieraniu zasad, a przy braku połączenia
+    z kontrolerem użytkownik widzi opóźnienie albo błąd zamiast pulpitu.
+    Najczęstsza przyczyna to kontroler niespełniający wymogu wzajemnego
+    uwierzytelnienia — czyli konfiguracja starsza niż to ustawienie.
+  en: |
+    On a machine outside a domain the setting has nothing to protect and changes
+    nothing - the paths it concerns are not used.
+
+    In a domain the effect can be serious if the conditions cannot be met:
+    sign-in stalls while fetching policy, and with no connection to the
+    controller the user sees a delay or an error instead of a desktop. The
+    commonest cause is a controller that does not meet the mutual authentication
+    requirement - a configuration older than this setting.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-authentication
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Pobieranie zasad grupy zatrzyma się, jeśli kontroler nie spełni warunku wzajemnego uwierzytelnienia
+      - Skrypty logowania z udziału domeny mogą przestać się wykonywać, wydłużając logowanie
+      - Maszyna łącząca się przez połączenie zdalne bez dostępu do kontrolera zobaczy opóźnienie przy logowaniu
+    en:
+      - Fetching group policy stalls if the controller does not meet the mutual authentication requirement
+      - Logon scripts from a domain share may stop running, lengthening the sign-in
+      - A machine connecting over a remote link with no access to the controller sees a delay at sign-in
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Kontroler domeny nie obsługuje wzajemnego uwierzytelnienia dla tych udziałów
+      - Maszyna loguje się przez łącze, na którym dostęp do kontrolera bywa niedostępny
+    en:
+      - The domain controller does not support mutual authentication for these shares
+      - The machine signs in over a link where the controller is sometimes unreachable
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $missing = @()
+        foreach ($share in @('\\*\NETLOGON', '\\*\SYSVOL')) {
+          $value = $item.$share
+          if ($null -eq $value -or
+              $value -notmatch 'RequireMutualAuthentication\s*=\s*1' -or
+              $value -notmatch 'RequireIntegrity\s*=\s*1') {
+            $missing += $share
+          }
+        }
+        if ($missing.Count -eq 0) { 'HARDENED' } else { 'INCOMPLETE' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: HARDENED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path        = $path
+      netlogon    = $item.'\\*\NETLOGON'
+      sysvol      = $item.'\\*\SYSVOL'
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    $value = 'RequireMutualAuthentication=1, RequireIntegrity=1'
+    Set-ItemProperty -Path $path -Name '\\*\NETLOGON' -Value $value -Type String
+    Set-ItemProperty -Path $path -Name '\\*\SYSVOL' -Value $value -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.key_existed) {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+      foreach ($pair in @(@('\\*\NETLOGON', $b.netlogon), @('\\*\SYSVOL', $b.sysvol))) {
+        if ($null -eq $pair[1]) {
+          Remove-ItemProperty -Path $b.path -Name $pair[0] -ErrorAction SilentlyContinue
+        } else {
+          Set-ItemProperty -Path $b.path -Name $pair[0] -Value $pair[1] -Type String
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/group-policy/ms15-011-ms15-014-hardening-group-policy
+
+notes:
+  pl: |
+    Sprawdzenie wymaga obu warunków naraz i dla obu udziałów. Spełnienie
+    połowy nie jest stanem pośrednim: sam wymóg spójności bez wzajemnego
+    uwierzytelnienia chroni przed zmianą treści, ale nie przed podstawieniem
+    się pod źródło, czyli przed właściwym atakiem.
+
+    Na maszynie poza domeną punkt pozostanie niespełniony, choć nic z tego nie
+    wynika praktycznie. To świadomy wybór — konfiguracja ma być gotowa zanim
+    maszyna trafi do domeny, a nie dopiero wtedy, gdy zacznie mieć znaczenie.
+  en: |
+    The check requires both conditions at once and for both shares. Meeting half
+    of them is not an intermediate state: the integrity requirement alone,
+    without mutual authentication, protects against the content being altered
+    but not against the source being impersonated - that is, against the actual
+    attack.
+
+    On a machine outside a domain the item stays unmet even though nothing
+    practical follows from that. This is a deliberate choice - the configuration
+    should be in place before the machine joins a domain, not only once it
+    starts to matter.

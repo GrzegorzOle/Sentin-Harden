@@ -1,0 +1,137 @@
+id: win11-ipv6-source-routing-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: MSS (Legacy)
+  title:
+    pl: Trasowanie źródłowe IPv6 wyłączone
+    en: IPv6 source routing disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ta sama słabość co przy IPv4, w rodzinie adresów, o której często się
+    zapomina. Nadawca narzuca trasę pakietu, omijając urządzenie, które miało
+    ten ruch filtrować, i kieruje odpowiedź tam, gdzie normalnie by nie trafiła.
+
+    Przeoczenie IPv6 jest tu regułą, nie wyjątkiem: maszyna ma tę rodzinę
+    włączoną domyślnie, ale administrator myśli o sieci w kategoriach adresów
+    czwórkowych. Zabezpieczenie wdrożone wyłącznie dla IPv4 zostawia pełną
+    drogę obok siebie.
+  en: |
+    The same weakness as with IPv4, in the address family that tends to be
+    forgotten. The sender dictates the packet's path, bypassing the device meant
+    to filter that traffic, and directs the answer somewhere it would not
+    normally reach.
+
+    Overlooking IPv6 here is the rule rather than the exception: the machine has
+    the family enabled by default, but the administrator thinks about the
+    network in terms of four-part addresses. A safeguard rolled out for IPv4
+    alone leaves a full route open alongside it.
+
+disruption_description:
+  pl: |
+    Zmiana jest niewidoczna i nie dotyka niczego używanego w normalnej pracy.
+    Trasowanie źródłowe nie występuje w ruchu współczesnych aplikacji.
+
+    Tak jak przy IPv4, ustawienie zaczyna obowiązywać po ponownym uruchomieniu.
+    Oba punkty warto wdrożyć w jednym oknie serwisowym, żeby restart był jeden.
+  en: |
+    The change is invisible and touches nothing used in normal work. Source
+    routing does not occur in the traffic of contemporary applications.
+
+    As with IPv4, the setting takes effect after a restart. Both items are worth
+    rolling out in one maintenance window so that there is only one restart.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Narzędzia diagnostyczne korzystające z trasowania źródłowego w IPv6 przestaną otrzymywać odpowiedzi
+      - Ustawienie zacznie obowiązywać dopiero po ponownym uruchomieniu maszyny
+    en:
+      - Diagnostic tools using IPv6 source routing stop receiving answers
+      - The setting takes effect only after the machine restarts
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie prowadzona jest diagnostyka sieci wymagająca trasowania źródłowego
+    en:
+      - Network diagnostics requiring source routing are being carried out on this machine
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+      $name = 'DisableIPSourceRouting'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+    $name = 'DisableIPSourceRouting'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' `
+      -Name 'DisableIPSourceRouting' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/networking/technologies/network-subsystem/net-sub-performance-tuning-nics
+
+notes:
+  pl: |
+    Klucz rodziny IPv6 nosi tę samą nazwę wartości co czwórkowy, ale leży
+    w osobnej gałęzi usługi. Wdrożenie jednego z tych punktów nie ma żadnego
+    wpływu na drugi — mimo identycznego zapisu w rejestrze.
+
+    Wyłączenie samego IPv6 na karcie sieciowej nie zastępuje tego punktu i nie
+    jest zalecane: część mechanizmów systemu zakłada obecność tej rodziny
+    i traci na jej braku więcej, niż zyskuje.
+  en: |
+    The IPv6 key carries the same value name as the four-part one but sits in a
+    separate service branch. Rolling out one of these items has no effect
+    whatsoever on the other - despite the identical registry entry.
+
+    Disabling IPv6 on the network adapter is not a substitute for this item and
+    is not advisable: parts of the system assume the family is present and lose
+    more by its absence than they gain.

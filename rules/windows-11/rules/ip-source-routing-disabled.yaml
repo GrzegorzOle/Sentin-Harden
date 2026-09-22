@@ -1,0 +1,142 @@
+id: win11-ip-source-routing-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: MSS (Legacy)
+  title:
+    pl: Trasowanie źródłowe IPv4 wyłączone
+    en: IPv4 source routing disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Trasowanie źródłowe pozwala nadawcy pakietu narzucić trasę, którą ten pakiet
+    ma przebyć — i którą ma wrócić odpowiedź. Mechanizm pochodzi z czasów, gdy
+    sieci diagnozowano ręcznie, i dziś nie ma zastosowania, dla którego warto
+    byłoby go utrzymywać.
+
+    Napastnik używa go do dwóch rzeczy: obejścia urządzenia filtrującego ruch,
+    przez narzucenie trasy omijającej, oraz do skierowania odpowiedzi tam, gdzie
+    normalnie by nie trafiła. Odrzucanie takich pakietów odbiera obie możliwości
+    i nie odbiera nic w zamian.
+  en: |
+    Source routing lets the sender of a packet dictate the path it takes - and
+    the path the answer returns by. The mechanism comes from the days when
+    networks were diagnosed by hand and today has no use worth keeping it for.
+
+    An attacker uses it for two things: getting around a filtering device by
+    dictating a path that bypasses it, and directing the answer somewhere it
+    would not normally reach. Rejecting such packets removes both options and
+    takes nothing away in return.
+
+disruption_description:
+  pl: |
+    Zmiana jest niewidoczna. Ruch, którego dotyczy, nie występuje w normalnej
+    pracy sieci — żadna współczesna aplikacja ani usługa systemowa nie korzysta
+    z trasowania źródłowego.
+
+    Wymaga natomiast ponownego uruchomienia, żeby zaczęła obowiązywać. To jedyny
+    koszt tego punktu i jedyny powód, dla którego nie zawsze da się go wdrożyć
+    od razu.
+  en: |
+    The change is invisible. The traffic it concerns does not occur in normal
+    network operation - no contemporary application or system service uses
+    source routing.
+
+    It does require a restart to take effect. That is the only cost of this item
+    and the only reason it cannot always be rolled out on the spot.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Narzędzia diagnostyczne korzystające z trasowania źródłowego przestaną otrzymywać odpowiedzi
+      - Ustawienie zacznie obowiązywać dopiero po ponownym uruchomieniu maszyny
+    en:
+      - Diagnostic tools using source routing stop receiving answers
+      - The setting takes effect only after the machine restarts
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie prowadzona jest diagnostyka sieci wymagająca trasowania źródłowego
+    en:
+      - Network diagnostics requiring source routing are being carried out on this machine
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+      $name = 'DisableIPSourceRouting'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    $name = 'DisableIPSourceRouting'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' `
+      -Name 'DisableIPSourceRouting' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/kerberos/security-considerations-for-trusts
+
+notes:
+  pl: |
+    Wartość druga oznacza odrzucanie wszystkich pakietów z trasowaniem
+    źródłowym, a nie samo ich nieprzekazywanie dalej. To różnica istotna na
+    stacji roboczej, która niczego nie przekazuje — słabsze ustawienie
+    wyglądałoby na wdrożone, nie zmieniając niczego.
+
+    Punkt tworzy parę z odpowiednikiem dla IPv6. Wdrożenie jednego z nich
+    zostawia drugą rodzinę adresów otwartą, a większość maszyn ma dziś obie
+    włączone.
+  en: |
+    A value of two means rejecting every source-routed packet, not merely
+    declining to forward them. That distinction matters on a workstation, which
+    forwards nothing - the weaker setting would look deployed while changing
+    nothing.
+
+    The item forms a pair with its IPv6 counterpart. Rolling out one of them
+    leaves the other address family open, and most machines today have both
+    enabled.

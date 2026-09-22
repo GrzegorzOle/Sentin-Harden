@@ -1,0 +1,148 @@
+id: win11-icmp-redirect-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: MSS (Legacy)
+  title:
+    pl: Przyjmowanie przekierowań ICMP wyłączone
+    en: Acceptance of ICMP redirects disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przekierowanie ICMP to komunikat mówiący maszynie: „do tego adresu jedź inną
+    drogą". Jest przyjmowany bez uwierzytelnienia — wystarczy, że dotrze
+    z sieci lokalnej. Przyjęcie go zmienia trasę w tablicy routingu maszyny.
+
+    Napastnik w tej samej sieci wykorzystuje to do wstawienia się w środek
+    połączenia: wysyła przekierowanie kierujące ruch przez siebie i od tej
+    chwili widzi całą wymianę. Odrzucanie takich komunikatów sprawia, że trasy
+    ustala wyłącznie własna konfiguracja maszyny.
+  en: |
+    An ICMP redirect is a message telling the machine "take another route to
+    that address". It is accepted without authentication - it is enough for it
+    to arrive from the local network. Accepting it changes a route in the
+    machine's routing table.
+
+    An attacker on the same network uses this to place themselves in the middle
+    of a connection: they send a redirect steering traffic through themselves
+    and from that moment see the whole exchange. Rejecting such messages means
+    routes are decided solely by the machine's own configuration.
+
+disruption_description:
+  pl: |
+    W sieci z jedną bramą domyślną — czyli w zdecydowanej większości sieci
+    biurowych i domowych — zmiana jest niewidoczna. Przekierowania w ogóle nie
+    występują, bo nie ma alternatywnej trasy, o której router mógłby poinformować.
+
+    Skutek pojawia się w sieci z kilkoma routerami, gdzie przekierowania służą
+    do korygowania tras. Tam ruch nadal dojdzie, ale drogą dłuższą — przez bramę
+    domyślną zamiast bezpośrednio. Objawia się to opóźnieniem, a nie brakiem
+    łączności.
+  en: |
+    In a network with one default gateway - that is, in the vast majority of
+    office and home networks - the change is invisible. Redirects do not occur
+    at all, because there is no alternative route for a router to announce.
+
+    The effect appears in a network with several routers, where redirects serve
+    to correct routes. There the traffic still arrives, but by a longer path -
+    through the default gateway instead of directly. That shows up as latency,
+    not as a loss of connectivity.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - W sieci z kilkoma routerami ruch pójdzie dłuższą trasą przez bramę domyślną
+      - Opóźnienia do części adresów mogą wzrosnąć bez utraty łączności
+      - Ustawienie zacznie obowiązywać dopiero po ponownym uruchomieniu maszyny
+    en:
+      - In a network with several routers traffic takes the longer path through the default gateway
+      - Latency to some addresses may rise without any loss of connectivity
+      - The setting takes effect only after the machine restarts
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Sieć opiera trasowanie na przekierowaniach ICMP i ma kilka routerów w jednym segmencie
+    en:
+      - The network relies on ICMP redirects for routing and has several routers in one segment
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+      $name = 'EnableICMPRedirect'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    $name = 'EnableICMPRedirect'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' `
+      -Name 'EnableICMPRedirect' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/tcpip-and-nbt-configuration-parameters
+
+notes:
+  pl: |
+    Przyjmowanie przekierowań jest domyślnie włączone i brak wpisu oznacza stan
+    niepożądany. Dlatego sprawdzenie traktuje brak wartości jako niezgodność,
+    a nie jako niemożność odczytu — w tym miejscu domyślne zachowanie systemu
+    jest właśnie tym, co punkt ma zmienić.
+
+    Skuteczność tego ustawienia zależy od zapory: przy ruchu ICMP blokowanym na
+    brzegu sieci przekierowania i tak nie docierają. Punkt zabezpiecza przed
+    napastnikiem wewnątrz segmentu, a tam zapora brzegowa nie pomaga.
+  en: |
+    Accepting redirects is on by default, and a missing entry means the
+    undesired state. The check therefore treats an absent value as a
+    non-compliance rather than an inability to read - here the system's default
+    behaviour is exactly what the item sets out to change.
+
+    How much this setting achieves depends on the firewall: with ICMP traffic
+    blocked at the network edge, redirects never arrive anyway. The item guards
+    against an attacker inside the segment, and there a perimeter firewall does
+    not help.

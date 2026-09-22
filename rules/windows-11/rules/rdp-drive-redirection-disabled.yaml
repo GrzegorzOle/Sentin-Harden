@@ -1,0 +1,152 @@
+id: win11-rdp-drive-redirection-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Device and Resource Redirection
+  title:
+    pl: Przekierowanie dysków w sesji pulpitu zdalnego wyłączone
+    en: Drive redirection in Remote Desktop sessions disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przekierowanie dysków zestawia dyski maszyny łączącej się z maszyną, do
+    której trwa połączenie. Powstaje w ten sposób most między dwoma systemami —
+    działający w obie strony i omijający wszystko, co pilnuje ruchu sieciowego,
+    bo dla sieci to jest po prostu sesja pulpitu zdalnego.
+
+    Most bywa używany w obie strony. Dane wychodzą z maszyny, do której ktoś się
+    zalogował, na jego prywatny dysk; szkodliwy plik z maszyny łączącej się
+    trafia na tę drugą bez przechodzenia przez pocztę ani przeglądarkę.
+    Wyłączenie przekierowania zamyka tę drogę, zostawiając samą sesję.
+  en: |
+    Drive redirection attaches the drives of the connecting machine to the one
+    being connected to. This creates a bridge between two systems - working in
+    both directions and bypassing everything that watches network traffic,
+    because to the network it is simply a Remote Desktop session.
+
+    The bridge is used both ways. Data leaves the machine somebody signed in to
+    for their private disk; a malicious file from the connecting machine reaches
+    the other one without passing through mail or a browser. Disabling
+    redirection closes that route and leaves the session itself.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie maszyn, do których ktoś łączy się pulpitem zdalnym.
+    Na stacji, na której pulpit zdalny jest wyłączony, jest niewidoczna.
+
+    Tam, gdzie połączenia są prowadzone, skutek poczuje się od razu: przeciąganie
+    plików między maszynami przestaje działać, a wraz z nim najszybsza droga
+    przeniesienia czegokolwiek. Zanim punkt zostanie wdrożony, warto mieć
+    przygotowaną inną drogę — udział sieciowy albo katalog wymiany.
+  en: |
+    The change concerns only machines somebody connects to over Remote Desktop.
+    On a workstation with Remote Desktop switched off it is invisible.
+
+    Where connections are made, the effect is felt at once: dragging files
+    between machines stops working, and with it the quickest way of moving
+    anything. Before the item is rolled out it is worth having another route
+    ready - a network share or an exchange folder.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - file-sharing
+  what_breaks:
+    pl:
+      - Kopiowanie plików między maszyną łączącą się a zdalną przestanie być możliwe w sesji
+      - Skrypty uruchamiane w sesji zdalnej i sięgające po dyski maszyny lokalnej zakończą się błędem
+      - Instalatory uruchamiane z dysku maszyny łączącej się przestaną być widoczne po stronie zdalnej
+    en:
+      - Copying files between the connecting machine and the remote one within the session becomes impossible
+      - Scripts run in a remote session that reach for the local machine's drives fail
+      - Installers started from the connecting machine's disk stop being visible on the remote side
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Przenoszenie plików przez sesję pulpitu zdalnego jest ustalonym sposobem pracy i nie ma zamiennika
+      - Serwis zdalny uruchamia narzędzia z dysku maszyny łączącej się
+    en:
+      - Moving files through the Remote Desktop session is the established way of working and has no replacement
+      - Remote support runs tools from the connecting machine's disk
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+      $name = 'fDisableCdm'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    $name = 'fDisableCdm'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'fDisableCdm' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access
+
+notes:
+  pl: |
+    Ustawienie działa po stronie maszyny, do której następuje połączenie, a nie
+    po stronie łączącej się. Wdrożenie go na stacji, z której ktoś zarządza
+    innymi, nie zmieni niczego — most powstaje po stronie zdalnej.
+
+    Zmiana obowiązuje od następnej sesji. Sesje już otwarte zachowują
+    przekierowane dyski do czasu rozłączenia.
+  en: |
+    The setting works on the machine being connected to, not on the connecting
+    one. Rolling it out on a workstation somebody manages others from changes
+    nothing - the bridge is built on the remote side.
+
+    The change applies from the next session. Sessions already open keep their
+    redirected drives until they disconnect.

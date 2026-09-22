@@ -1,0 +1,155 @@
+id: win11-netbios-name-release-ignored
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Żądania zwolnienia nazwy NetBIOS ignorowane
+    en: NetBIOS name release requests ignored
+
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Nazwa NetBIOS jest rejestrowana w sieci i można ją zwolnić żądaniem
+    przysłanym z zewnątrz. W pierwotnym zamyśle miał to robić serwer nazw
+    porządkujący konflikty. W praktyce takie żądanie może wysłać dowolna maszyna
+    w tej samej sieci, bez uwierzytelnienia.
+
+    Skutek jest prosty: stacja przestaje odpowiadać pod swoją nazwą, a nazwa
+    zostaje wolna. To gotowy sposób na odcięcie maszyny od udziałów i usług,
+    a przy odrobinie pracy także na przejęcie jej nazwy i przekierowanie do
+    siebie ruchu, który miał trafić gdzie indziej.
+  en: |
+    A NetBIOS name is registered on the network and can be released by a request
+    sent from outside. Originally this was meant to be done by a name server
+    resolving conflicts. In practice such a request can be sent by any machine on
+    the same network, without authentication.
+
+    The effect is simple: the workstation stops answering under its name, and
+    the name is left free. That is a ready-made way to cut a machine off from
+    shares and services, and with a little work also to take over its name and
+    redirect traffic meant for somewhere else.
+
+disruption_description:
+  pl: |
+    Zmiana każe systemowi ignorować żądania przychodzące z sieci i nie wpływa na
+    nic, co maszyna robi sama z siebie. Rejestracja nazwy, rozgłoszenia
+    i rozwiązywanie nazw działają bez zmian.
+
+    Jedyny opisywany kiedyś skutek uboczny dotyczy sieci z serwerem nazw
+    WINS, który porządkuje konflikty właśnie takim żądaniem. W sieci bez WINS,
+    czyli w praktycznie każdej dzisiejszej, nie ma czego zepsuć. Wymaga restartu,
+    bo ustawienie czyta sterownik przy starcie.
+  en: |
+    The change tells the system to ignore requests arriving from the network and
+    affects nothing the machine does of its own accord. Name registration,
+    broadcasts and name resolution work unchanged.
+
+    The only side effect ever described concerns networks with a WINS name
+    server that resolves conflicts using exactly such a request. In a network
+    without WINS - that is, practically every network today - there is nothing to
+    break. A restart is needed, because the driver reads the setting at startup.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - W sieci z serwerem WINS porządkowanie konfliktów nazw przestanie działać dla tej maszyny
+    en:
+      - In a network with a WINS server, name conflict resolution stops working for this machine
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W sieci działa serwer WINS i to on rozstrzyga konflikty nazw
+    en:
+      - A WINS server is in use on the network and resolves name conflicts
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netbt\Parameters'
+      $name = 'NoNameReleaseOnDemand'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netbt\Parameters'
+    $name = 'NoNameReleaseOnDemand'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netbt\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoNameReleaseOnDemand' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/netbios-over-tcpip-name-resolution
+
+notes:
+  pl: |
+    Punkt nakłada się na wyłączenie rozgłoszeń NetBIOS, opisane osobno.
+    Tam, gdzie NetBIOS nad TCP/IP jest wyłączony na wszystkich kartach, ta
+    wartość nie ma praktycznego znaczenia — ale zostaje wymagana, bo wyłączenie
+    dotyczy karty, a nie systemu, i nowa karta przychodzi z ustawieniem
+    domyślnym.
+
+    Brak wartości liczy się jako niespełniony. Nie zakładamy tu konkretnego
+    zachowania domyślnego — punkt wymaga, żeby decyzja była zapisana, a nie żeby
+    system akurat zachowywał się właściwie.
+  en: |
+    The item overlaps with disabling NetBIOS broadcasts, described separately.
+    Where NetBIOS over TCP/IP is switched off on every adapter this value has no
+    practical significance - but it stays required, because the switch-off
+    applies to the adapter rather than the system, and a new adapter arrives with
+    the default setting.
+
+    A missing value counts as unmet. No particular default behaviour is assumed
+    here - the item requires the decision to be written down, not the system to
+    happen to behave correctly.

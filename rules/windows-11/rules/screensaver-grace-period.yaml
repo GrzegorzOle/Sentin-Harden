@@ -1,0 +1,150 @@
+id: win11-screensaver-grace-period
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Okres karencji przed zablokowaniem wygaszacza ekranu
+    en: Grace period before the screen saver locks
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Po uruchomieniu wygaszacza ekran nie blokuje się natychmiast. System zostawia
+    krótką chwilę, w której ruch myszą wraca do pulpitu bez podania hasła — po
+    to, żeby nie karać kogoś, kto akurat sięgnął po kubek.
+
+    Ta chwila jest jednak dokładnie tym oknem, z którego korzysta osoba
+    przechodząca obok biurka. Skrócenie jej do kilku sekund zostawia margines na
+    pomyłkę, a odbiera go temu, kto czeka, aż właściciel odejdzie na korytarz.
+    Punkt ma sens wyłącznie razem z ustawionym czasem do wygaszenia — sam
+    w sobie nie blokuje niczego.
+  en: |
+    When the screen saver starts, the screen does not lock at once. The system
+    leaves a short moment in which moving the mouse returns to the desktop
+    without a password - so as not to punish somebody who just reached for a mug.
+
+    That moment is, however, exactly the window used by a person walking past
+    the desk. Shortening it to a few seconds leaves a margin for a mistake and
+    takes it away from whoever is waiting for the owner to step into the
+    corridor. The item makes sense only together with a set timeout - on its own
+    it blocks nothing.
+
+disruption_description:
+  pl: |
+    Użytkownik może to zauważyć, ale w sposób, który trudno nazwać uciążliwością:
+    po odejściu na chwilę hasło trzeba wpisać nieco wcześniej niż dotąd. Nic nie
+    przestaje działać, nic nie wymaga restartu.
+
+    Realny koszt pojawia się tylko tam, gdzie karencja była świadomie wydłużona,
+    żeby ludzie nie logowali się po kilkanaście razy dziennie. Wtedy skrócenie
+    oznacza więcej logowań i to jest cała zmiana.
+  en: |
+    The user may notice it, but in a way hard to call disruption: after stepping
+    away briefly, the password has to be typed slightly sooner than before.
+    Nothing stops working, nothing needs a restart.
+
+    A real cost appears only where the grace period was deliberately lengthened
+    so that people would not sign in a dozen times a day. Shortening it then
+    means more sign-ins, and that is the whole change.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Po krótkim odejściu od komputera hasło trzeba będzie podać wcześniej niż dotychczas
+    en:
+      - After briefly stepping away from the computer, the password has to be entered sooner than before
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Karencję wydłużono świadomie na stanowisku, gdzie częste logowanie realnie przeszkadza w pracy
+    en:
+      - The grace period was lengthened deliberately at a workstation where frequent sign-in genuinely gets in the way
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      $name = 'ScreenSaverGracePeriod'
+      $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+      # Absence means the system default of five seconds. The report describes
+      # the machine, so the effective value is what gets reported.
+      if ($null -eq $current) { '5' }
+      elseif ([string]$current -match '^\d+$') { [string]$current }
+      else { 'CHECK_ERROR' }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '5'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'ScreenSaverGracePeriod'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-ItemProperty -Path $path -Name 'ScreenSaverGracePeriod' -Value '5' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/user-profiles-and-logon/screen-saver-grace-period
+
+notes:
+  pl: |
+    Wartość jest tekstowa, nie liczbowa — to pozostałość po starym mechanizmie
+    i częsta przyczyna ustawienia, które wygląda na wprowadzone, a nie działa.
+    Zapis liczbą w polu tekstowym system po prostu zignoruje.
+
+    Brak wartości oznacza domyślne pięć sekund i tak jest raportowany. To
+    odstępstwo od zasady „stan nieskonfigurowany liczymy jako niespełniony",
+    zastosowanej przy zaporze, i jest świadome: tam wartość domyślna dawała się
+    zmienić jednym ustawieniem, tutaj wpisanie tej samej piątki nie zmieniłoby
+    niczego poza wyglądem raportu.
+  en: |
+    The value is textual rather than numeric - a leftover from the old mechanism
+    and a frequent cause of a setting that looks applied but does not work.
+    Written as a number in a text field, the system simply ignores it.
+
+    Absence means the default of five seconds and is reported as such. This
+    departs from the "not configured counts as unmet" principle applied to the
+    firewall, and the departure is deliberate: there the default could be changed
+    by a single setting, whereas here writing down the same five would change
+    nothing but the look of the report.

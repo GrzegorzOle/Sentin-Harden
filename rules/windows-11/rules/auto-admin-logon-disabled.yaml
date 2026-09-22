@@ -1,0 +1,160 @@
+id: win11-auto-admin-logon-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Automatyczne logowanie administratora wyłączone
+    en: Automatic administrator logon disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Automatyczne logowanie oznacza dwie rzeczy naraz i obie są złe. Po pierwsze:
+    kto włączy maszynę, ten pracuje jako zalogowany użytkownik, bez podawania
+    czegokolwiek — także ktoś, kto właśnie wyniósł laptopa z biura. Szyfrowanie
+    dysku niczego tu nie ratuje, bo system sam się odblokowuje.
+
+    Po drugie: żeby zalogować się bez pytania, hasło musi być gdzieś zapisane.
+    Leży w rejestrze, w miejscu czytelnym dla każdego procesu z odpowiednimi
+    uprawnieniami. Jedno ustawienie robi więc z maszyny otwarty terminal i skład
+    haseł jednocześnie.
+  en: |
+    Automatic logon means two things at once and both are bad. First: whoever
+    switches the machine on works as the signed-in user without entering
+    anything - including somebody who has just carried the laptop out of the
+    office. Disk encryption saves nothing here, because the system unlocks
+    itself.
+
+    Second: to sign in without asking, the password has to be stored somewhere.
+    It sits in the registry, in a place readable by any process with the right
+    privileges. A single setting therefore turns the machine into an open
+    terminal and a password store at the same time.
+
+disruption_description:
+  pl: |
+    Na maszynie, która automatycznego logowania nie używa, zmiana nie robi nic.
+    Tam, gdzie było włączone, jest odczuwalna natychmiast i dla konkretnych osób.
+
+    Automatyczne logowanie włącza się zwykle nie z lenistwa, tylko dlatego, że
+    coś musi wystartować bez człowieka: stanowisko pokazujące obraz na ekranie
+    w hali, kasa, maszyna pomiarowa, komputer w kiosku. Po zmianie taka maszyna
+    zatrzyma się na ekranie logowania i nie wróci do pracy sama — po restarcie,
+    po aktualizacji, po zaniku zasilania. To jest realny przestój, nie
+    niewygoda.
+  en: |
+    On a machine that does not use automatic logon the change does nothing.
+    Where it was enabled, it is felt at once and by specific people.
+
+    Automatic logon is usually turned on not out of laziness but because
+    something has to start without a human: a station showing a display on a shop
+    floor, a till, a measurement machine, a kiosk computer. After the change such
+    a machine stops at the sign-in screen and does not return to work by itself -
+    after a restart, after an update, after a power cut. That is real downtime,
+    not inconvenience.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Maszyna przestanie wracać do pracy samodzielnie po restarcie i po zaniku zasilania
+      - Stanowiska bez obsługi - kioski, ekrany informacyjne, komputery pomiarowe - zatrzymają się na ekranie logowania
+      - Zadania startujące razem z sesją użytkownika nie uruchomią się, dopóki ktoś się nie zaloguje
+    en:
+      - The machine stops returning to work on its own after a restart or a power cut
+      - Unattended stations - kiosks, information displays, measurement computers - stop at the sign-in screen
+      - Tasks starting with the user session do not run until somebody signs in
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna pracuje bez obsługi i musi wracać do pracy sama po restarcie
+      - Nie ustalono, co uruchamia się dopiero po zalogowaniu użytkownika
+    en:
+      - The machine works unattended and has to return to work by itself after a restart
+      - It has not been established what only starts once a user has signed in
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      $current = (Get-ItemProperty -Path $path -Name 'AutoAdminLogon' -ErrorAction SilentlyContinue).AutoAdminLogon
+      # Absence is equivalent to the mechanism being off, and that is what the
+      # report says - the machine is described, not the registry.
+      if ($null -eq $current) { '0' }
+      else { ([string]$current).Trim() }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'AutoAdminLogon'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-ItemProperty -Path $path -Name 'AutoAdminLogon' -Value '0' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/identity/ad-ds/manage/component-updates/configure-automatic-logon
+
+notes:
+  pl: |
+    Zmiana wyłącza mechanizm, ale świadomie nie rusza zapisanego hasła.
+    Powód jest ten sam co przy zakresie kopii zapasowej: usuwamy dokładnie to,
+    co opisuje reguła, a nie wszystko, co wygląda podejrzanie obok. Samo hasło
+    bywa też potrzebne do odtworzenia konfiguracji, jeśli decyzja zostanie
+    cofnięta.
+
+    Trzeba jednak powiedzieć wprost, że wyłączenie mechanizmu nie usuwa hasła
+    z rejestru. Dopóki ono tam leży, połowa problemu zostaje — i to ta, o której
+    nikt nie pamięta, bo automatyczne logowanie już przecież „wyłączono".
+  en: |
+    The change switches the mechanism off but deliberately leaves the stored
+    password alone. The reason is the same as with backup scope: we remove
+    exactly what the rule describes, not everything that looks suspicious nearby.
+    The password itself is also sometimes needed to restore the configuration if
+    the decision is reversed.
+
+    It has to be said plainly, though, that switching the mechanism off does not
+    remove the password from the registry. As long as it sits there, half the
+    problem remains - and it is the half nobody remembers, because automatic
+    logon has, after all, "been turned off".

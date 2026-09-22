@@ -1,0 +1,150 @@
+id: win11-system-log-size
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > System
+  title:
+    pl: Maksymalny rozmiar dziennika systemowego
+    en: Maximum size of the system log
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dziennik systemowy notuje rzeczy, których nie widać nigdzie indziej:
+    uruchomienie i zatrzymanie usług, instalację sterowników, błędy dysku,
+    nieoczekiwane wyłączenia maszyny. Przy badaniu włamania to właśnie tutaj
+    zostaje ślad po usłudze założonej po to, żeby przetrwać restart.
+
+    Zapis nie ma wartości, jeśli nie przetrwa do chwili, w której ktoś zada
+    pytanie. Domyślny rozmiar na maszynie z wieloma urządzeniami wystarcza na
+    dni, nie tygodnie.
+  en: |
+    The system log records things visible nowhere else: services starting and
+    stopping, drivers being installed, disk errors, unexpected shutdowns. When
+    investigating a break-in, this is where the trace of a service created to
+    survive a reboot is left.
+
+    A record has no value if it does not survive until somebody asks the
+    question. On a machine with many devices the default size lasts days, not
+    weeks.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie miejsca na dysku systemowym. Nic nie przestaje
+    działać, nikt się nie wylogowuje, nie ma restartu.
+
+    Koszt to kilkadziesiąt megabajtów. Punkt wdraża się razem z dziennikami
+    aplikacji i zabezpieczeń — trzy pliki leżą w tym samym katalogu i to ich
+    suma decyduje o zajętości.
+  en: |
+    The change concerns space on the system disk alone. Nothing stops working,
+    nobody signs out, there is no restart.
+
+    The cost is a few dozen megabytes. The item is rolled out together with the
+    application and security logs - the three files sit in the same folder and
+    it is their sum that determines the space taken.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Plik dziennika systemowego zajmie na dysku systemowym kilkadziesiąt megabajtów
+      - Narzędzia wczytujące cały dziennik będą go otwierać nieco dłużej
+    en:
+      - The system log file takes a few dozen megabytes on the system disk
+      - Tools reading the whole log open it somewhat more slowly
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dysk systemowy jest na tyle mały, że kilkadziesiąt megabajtów zmienia sytuację
+    en:
+      - The system disk is small enough that a few dozen megabytes change the situation
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System'
+      $policy = (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue).MaxSize
+      if ($null -ne $policy) { [string][int]$policy }
+      else {
+        # No policy set - report what the log service is actually using, so the
+        # number in the report describes the machine rather than the policy.
+        $log = Get-WinEvent -ListLog System -ErrorAction Stop
+        [string][int]($log.MaximumSizeInBytes / 1024)
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '32768'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System'
+    $name = 'MaxSize'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MaxSize' -Value 32768 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/wes/windows-event-log
+
+notes:
+  pl: |
+    Dziennik systemowy zapełnia się szybciej niż aplikacji na maszynach
+    z licznymi urządzeniami peryferyjnymi i częstymi zmianami sieci — każde
+    podłączenie i każda zmiana stanu karty zostawia w nim wpis. Ustawienie
+    rozmiaru jest tam realnym wymaganiem, nie formalnością.
+
+    Zakres kopii zapasowej obejmuje wyłącznie zmienianą wartość polityki.
+    Dziennik nie jest kasowany ani obcinany przy zmianie rozmiaru w górę —
+    zmniejszenie rozmiaru już tak, i to jest jedyny wariant, w którym coś
+    przepada.
+  en: |
+    The system log fills faster than the application one on machines with many
+    peripherals and frequent network changes - every connection and every
+    adapter state change leaves an entry. Setting the size there is a real
+    requirement, not a formality.
+
+    The backup scope covers only the policy value being changed. The log is
+    neither cleared nor truncated when the size is increased - reducing the size
+    does truncate it, and that is the only variant in which anything is lost.

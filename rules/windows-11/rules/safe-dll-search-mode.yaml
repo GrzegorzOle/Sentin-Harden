@@ -1,0 +1,150 @@
+id: win11-safe-dll-search-mode
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Bezpieczna kolejność wyszukiwania bibliotek włączona
+    en: Safe DLL search order enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Program proszący o bibliotekę po samej nazwie zdaje się na system, który
+    szuka jej po kolei w kilku katalogach. W kolejności niebezpiecznej katalog
+    bieżący jest przeszukiwany wcześnie — przed katalogiem systemowym. Wystarczy
+    więc położyć plik o właściwej nazwie tam, skąd program zostanie uruchomiony.
+
+    To jest klasyczna droga do wykonania kodu cudzymi rękami, bo biblioteka
+    ładuje się z uprawnieniami programu, który o nią poprosił. Bezpieczna
+    kolejność przesuwa katalog bieżący na koniec, przez co plik podłożony
+    w folderze pobranych albo na udziale przestaje wyprzedzać prawdziwą
+    bibliotekę systemową.
+  en: |
+    A program asking for a library by name alone relies on the system, which
+    searches for it in several folders in turn. In the unsafe order the current
+    folder is searched early - before the system folder. So it is enough to drop
+    a file with the right name where the program will be started from.
+
+    This is the classic route to executing code by somebody else's hand, because
+    the library loads with the privileges of the program that asked for it. The
+    safe order moves the current folder to the end, so that a file planted in the
+    downloads folder or on a share stops outrunning the genuine system library.
+
+disruption_description:
+  pl: |
+    Na współczesnym Windows to jest stan domyślny i wdrożenie zwykle niczego nie
+    zmienia — zapisuje wartość jawnie, żeby przestała zależeć od domyślnego
+    zachowania.
+
+    Zepsuć może wyłącznie program, który świadomie liczył na wcześniejszy
+    katalog bieżący: starsza aplikacja rozpakowywana do jednego folderu razem
+    z własnymi bibliotekami o nazwach kolidujących z systemowymi. Takich jest
+    niewiele, a objaw jest jednoznaczny — program nie startuje i mówi, której
+    biblioteki mu brakuje.
+  en: |
+    On modern Windows this is the default state and the rollout usually changes
+    nothing - it writes the value explicitly so that it stops depending on
+    default behaviour.
+
+    The only thing it can break is a program that deliberately relied on the
+    current folder coming first: an older application unpacked into a single
+    folder together with its own libraries whose names collide with system ones.
+    There are few of those, and the symptom is unambiguous - the program does not
+    start and says which library it is missing.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Starsza aplikacja niosąca własne biblioteki o nazwach systemowych może przestać startować
+    en:
+      - An older application carrying its own libraries with system names may stop starting
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa aplikacja wymagająca, by biblioteki z jej katalogu wyprzedzały systemowe
+    en:
+      - The machine runs an application requiring libraries from its own folder to outrank system ones
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+      $name = 'SafeDllSearchMode'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+    $name = 'SafeDllSearchMode'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+    Set-ItemProperty -Path $path -Name 'SafeDllSearchMode' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/dlls/dynamic-link-library-search-order
+
+notes:
+  pl: |
+    Wartość czytana jest przy starcie systemu, więc zmiana obowiązuje dopiero po
+    restarcie. Raport pokazuje stan, jaki będzie obowiązywał, nie ten, który
+    obowiązuje w tej chwili — to różnica warta odnotowania przy weryfikacji tuż
+    po naprawie.
+
+    Wycofanie nie usuwa klucza, bo klucz jest systemowy i istnieje zawsze;
+    usuwana jest wyłącznie sama wartość, jeżeli wcześniej jej nie było.
+  en: |
+    The value is read when the system starts, so the change takes effect only
+    after a restart. The report shows the state that will apply, not the one
+    applying at this moment - a difference worth noting when verifying right
+    after the fix.
+
+    The rollback does not delete the key, because the key is a system one and
+    always exists; only the value itself is removed, if it was not there before.

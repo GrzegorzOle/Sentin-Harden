@@ -1,0 +1,148 @@
+id: win11-application-log-size
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > Application
+  title:
+    pl: Maksymalny rozmiar dziennika aplikacji
+    en: Maximum size of the application log
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dziennik aplikacji rzadko bywa pierwszym miejscem, do którego się zagląda,
+    i właśnie dlatego zapełnia się niezauważony. Trafiają do niego awarie
+    programów, błędy instalacji i komunikaty usług — czyli to, co pozwala
+    powiedzieć, kiedy maszyna zaczęła zachowywać się inaczej.
+
+    Przy badaniu incydentu ten dziennik odpowiada na pytanie o kontekst:
+    co jeszcze działo się wtedy na maszynie. Domyślny rozmiar wystarcza na kilka
+    dni pracy, a pytanie pada po tygodniach.
+  en: |
+    The application log is rarely the first place anybody looks, which is exactly
+    why it fills up unnoticed. Program crashes, installation errors and service
+    messages go into it - that is, what makes it possible to say when a machine
+    started behaving differently.
+
+    When investigating an incident this log answers the question of context:
+    what else was going on at the time. The default size lasts a few days of
+    work, and the question comes weeks later.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie miejsca na dysku systemowym. Nic nie przestaje
+    działać, nikt się nie wylogowuje, nie ma restartu usługi ani systemu.
+
+    Koszt to kilkadziesiąt megabajtów. Warto go policzyć razem z dziennikiem
+    zabezpieczeń i systemowym, bo trzy punkty zabierają miejsce w tym samym
+    katalogu.
+  en: |
+    The change concerns space on the system disk alone. Nothing stops working,
+    nobody signs out, there is no service or system restart.
+
+    The cost is a few dozen megabytes. Worth counting alongside the security and
+    system logs, because the three items take space in the same folder.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Plik dziennika aplikacji zajmie na dysku systemowym kilkadziesiąt megabajtów
+      - Narzędzia wczytujące cały dziennik będą go otwierać nieco dłużej
+    en:
+      - The application log file takes a few dozen megabytes on the system disk
+      - Tools reading the whole log open it somewhat more slowly
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dysk systemowy jest na tyle mały, że kilkadziesiąt megabajtów zmienia sytuację
+    en:
+      - The system disk is small enough that a few dozen megabytes change the situation
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application'
+      $policy = (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue).MaxSize
+      if ($null -ne $policy) { [string][int]$policy }
+      else {
+        # No policy set - report what the log service is actually using, so the
+        # number in the report describes the machine rather than the policy.
+        $log = Get-WinEvent -ListLog Application -ErrorAction Stop
+        [string][int]($log.MaximumSizeInBytes / 1024)
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '32768'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application'
+    $name = 'MaxSize'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MaxSize' -Value 32768 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/wes/windows-event-log
+
+notes:
+  pl: |
+    Sprawdzenie czyta wartość polityki, a gdy jej nie ma — rozmiar, z którego
+    usługa dzienników faktycznie korzysta. Raport ma opisywać maszynę,
+    niezależnie od tego, skąd ustawienie pochodzi; zmiana zapisuje jednak
+    politykę, żeby przetrwała zmianę wprowadzoną lokalnie w podglądzie zdarzeń.
+
+    Wartość podaje się w kilobajtach i musi być wielokrotnością 64 — inaczej
+    usługa zaokrągli ją w dół po swojemu i raport przestanie zgadzać się
+    z rzeczywistością.
+  en: |
+    The check reads the policy value and, when there is none, the size the log
+    service actually uses. The report is meant to describe the machine
+    regardless of where the setting comes from; the change, however, writes the
+    policy, so that it survives a change made locally in the event viewer.
+
+    The value is given in kilobytes and has to be a multiple of 64 - otherwise
+    the service rounds it down in its own way and the report stops matching
+    reality.

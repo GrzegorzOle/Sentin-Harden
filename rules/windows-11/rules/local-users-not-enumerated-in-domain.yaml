@@ -1,0 +1,172 @@
+id: win11-local-users-not-enumerated-in-domain
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Konta lokalne niewyliczane na maszynie w domenie
+    en: Local accounts not listed on a machine in a domain
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Na maszynie przyłączonej do domeny ekran logowania potrafi wymienić konta
+    lokalne, czyli te założone na samej maszynie, obok kont domenowych.
+
+    Konta lokalne są na takiej maszynie szczególnie warte ukrycia. Zwykle jest
+    ich niewiele, mają nazwy wskazujące na przeznaczenie i nie podlegają temu,
+    czym objęte są konta domenowe: nie obowiązuje ich polityka haseł z domeny,
+    nie widać ich logowań w dzienniku kontrolera i zwykle nikt ich nie przegląda,
+    bo nie figurują w żadnym zestawieniu. Konto serwisowe albo zapasowe konto
+    administratora, założone kiedyś na wypadek awarii domeny, jest dokładnie tym,
+    czego napastnik na takiej maszynie szuka.
+
+    Wyliczanie podaje mu je wprost, razem z nazwą. Wyłączenie wyliczania nie
+    zmienia niczego w samych kontach — przestają być tylko ogłaszane każdemu,
+    kto podejdzie do maszyny.
+  en: |
+    On a machine joined to a domain, the sign-in screen can list local accounts -
+    those created on the machine itself - alongside domain accounts.
+
+    Local accounts are especially worth hiding on such a machine. There are
+    usually few of them, their names point at their purpose, and they are not
+    subject to what covers domain accounts: the domain password policy does not
+    apply to them, their sign-ins do not appear in the controller's log, and
+    usually nobody reviews them, because they figure in no summary. A service
+    account, or a spare administrator account created once against a domain
+    failure, is exactly what an attacker on such a machine looks for.
+
+    Listing hands these over outright, names and all. Turning listing off changes
+    nothing about the accounts themselves - they merely stop being announced to
+    anybody who walks up to the machine.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Ekran logowania pokazuje mniej.
+
+    Zalogowanie się na konto lokalne wymaga wpisania jego nazwy zamiast wskazania
+    go na liście. Konta działają bez zmian, hasła pozostają te same i nic nie
+    traci uprawnień.
+
+    Odczuje to obsługa, która na koncie lokalnym pracuje przy naprawach — i dla
+    niej jest to jedno pole więcej, a nie przeszkoda. Zwykły użytkownik loguje
+    się na konto domenowe i zmiany nie zauważy.
+
+    Nie ma restartu ani wylogowania. Zmiana obowiązuje od najbliższego
+    zablokowania ekranu.
+  en: |
+    Nothing stops working. The sign-in screen shows less.
+
+    Signing in to a local account requires typing its name instead of picking it
+    from a list. The accounts work unchanged, the passwords stay the same and
+    nothing loses any rights.
+
+    It will be felt by support, who work on a local account during repairs - and
+    for them it is one more field, not an obstacle. An ordinary user signs in to a
+    domain account and will not notice the change.
+
+    There is no restart and no sign-out. The change applies from the next time the
+    screen is locked.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Zalogowanie się na konto lokalne wymaga wpisania jego nazwy zamiast wskazania na liście
+      - Obsługa pracująca przy naprawach na koncie lokalnym musi znać jego nazwę na pamięć
+    en:
+      - Signing in to a local account requires typing its name instead of picking it from a list
+      - Support working on a local account during repairs has to know its name by heart
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      $name = 'EnumerateLocalUsers'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'EnumerateLocalUsers'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnumerateLocalUsers' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-windowslogon
+
+notes:
+  pl: |
+    Ustawienie działa wyłącznie na maszynie przyłączonej do domeny i na
+    stanowisku poza domeną nie zmienia niczego. Wartość zostanie zapisana,
+    punkt będzie spełniony, a zachowanie ekranu logowania pozostanie takie
+    samo — bo tam konta lokalne są jedynymi, jakie są.
+
+    Nie jest to powód do pomijania reguły, tylko do przeczytania jej wyniku
+    z tym zastrzeżeniem. Raport mówi wtedy prawdę o zasadzie, a nie o tym,
+    co widać na ekranie tej konkretnej maszyny.
+  en: |
+    The setting works only on a machine joined to a domain and changes nothing on
+    a station outside one. The value will be written, the item satisfied, and the
+    sign-in screen's behaviour will stay the same - because there, local accounts
+    are the only ones there are.
+
+    That is not a reason to skip the rule, only to read its result with that
+    caveat. The report then tells the truth about the policy rather than about
+    what is visible on that particular machine's screen.

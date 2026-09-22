@@ -1,0 +1,169 @@
+id: win11-connected-users-not-enumerated
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Lista zalogowanych użytkowników ukryta na ekranie logowania
+    en: The list of signed-in users hidden on the sign-in screen
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy na maszynie jest więcej niż jedna otwarta sesja, ekran logowania
+    wymienia wszystkie konta, które na niej pracują. Pozwala to przełączyć się
+    do cudzej sesji jednym kliknięciem, po podaniu hasła.
+
+    Lista ta mówi trzy rzeczy naraz komuś, kto stoi przed zablokowaną maszyną:
+    kto z niej korzysta, ile kont ma na niej dostęp i które z nich są akurat
+    otwarte. Jest to gotowy zestaw celów, a na maszynie dzielonej — na przykład
+    w recepcji albo w sali wspólnej — bywa to lista całego zespołu razem
+    z rolami, bo nazwy kont zwykle je zdradzają.
+
+    Ukrycie listy nie odbiera nikomu dostępu do własnej sesji. Odbiera
+    wyłącznie odpowiedź na pytanie, czyje sesje są na tej maszynie otwarte.
+  en: |
+    When a machine holds more than one open session, the sign-in screen lists
+    every account working on it. This allows switching to somebody else's session
+    with one click, once a password is given.
+
+    That list tells three things at once to anybody standing before a locked
+    machine: who uses it, how many accounts have access to it, and which of them
+    are open at that moment. It is a ready set of targets, and on a shared machine
+    - at a reception desk or in a common room, say - it can be a list of the whole
+    team along with their roles, since account names usually give them away.
+
+    Hiding the list takes nobody's access to their own session away. It takes away
+    only the answer to the question of whose sessions are open on this machine.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Ekran logowania pokazuje mniej.
+
+    Osoba chcąca wrócić do swojej sesji wpisuje nazwę konta zamiast wskazać je
+    na liście. Sesja jest cały czas otwarta i wraca się do niej tak samo jak
+    dotąd — zmienia się droga, a nie skutek.
+
+    Odczują to przede wszystkim maszyny dzielone przez kilka osób w ciągu dnia,
+    bo tam przełączanie między sesjami jest codzienną czynnością. Na stanowisku
+    jednoosobowym zmiana jest niezauważalna, bo lista i tak zawierała jedno
+    konto.
+
+    Nie ma restartu ani wylogowania, a otwarte sesje nie są w żaden sposób
+    naruszone.
+  en: |
+    Nothing stops working. The sign-in screen shows less.
+
+    Somebody wanting to return to their session types the account name instead of
+    picking it from a list. The session stays open throughout and is returned to
+    exactly as before - the route changes, not the outcome.
+
+    It will be felt mainly on machines shared by several people during the day,
+    where switching between sessions is an everyday act. On a single-person
+    station the change goes unnoticed, since the list held one account anyway.
+
+    There is no restart and no sign-out, and open sessions are not disturbed in
+    any way.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Powrót do własnej otwartej sesji wymaga wpisania nazwy konta zamiast wskazania go na liście
+      - Na maszynie dzielonej przełączanie między sesjami staje się o jedno pole dłuższe
+    en:
+      - Returning to one's own open session requires typing the account name instead of picking it from a list
+      - On a shared machine switching between sessions grows longer by one field
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      $name = 'DontEnumerateConnectedUsers'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'DontEnumerateConnectedUsers'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DontEnumerateConnectedUsers' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-windowslogon
+
+notes:
+  pl: |
+    Reguła dotyczy maszyny przyłączonej do domeny i tam ma pełne znaczenie.
+    Poza domeną ustawienie zostanie zapisane i punkt będzie spełniony, ale
+    zachowanie ekranu logowania zmieni się w mniejszym stopniu — warto to
+    wiedzieć, zanim raport zostanie odczytany jako gwarancja.
+
+    Punkt czyta się razem z ukryciem danych konta i z wyłączeniem wyliczania
+    kont lokalnych. Trzy różne ustawienia odpowiadają za trzy różne fragmenty
+    tego samego ekranu i spełnienie jednego nie zamyka pozostałych.
+  en: |
+    The rule concerns a machine joined to a domain and there it has its full
+    meaning. Outside a domain the setting will be written and the item satisfied,
+    but the sign-in screen's behaviour changes less - worth knowing before the
+    report is read as a guarantee.
+
+    The item is read together with hiding account details and with turning off the
+    listing of local accounts. Three different settings answer for three different
+    parts of the same screen, and satisfying one closes none of the others.

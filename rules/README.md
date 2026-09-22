@@ -57,7 +57,15 @@ Schemat nie sprawdza samej składni — wymusza zasady projektu:
 - Klasy uciążliwe **wymagają** wypełnionego `disruption_description`.
 - Każde pole tekstowe **wymaga obu języków** — brak tłumaczenia nie przejdzie walidacji.
 
-Sprawdzenie: `python tools/validate_rules.py`
+Sprawdzenie:
+
+```bash
+pip install -r requirements.txt     # PyYAML + jsonschema, raz
+python tools/validate_rules.py
+```
+
+Walidacja jest też wpięta w hooka `pre-commit` i uruchamia się automatycznie, gdy commit dotyka
+katalogu `rules/`. Reguła niezgodna ze schematem zatrzymuje się przed wypchnięciem, nie po.
 
 ## Polecenia — zasady
 

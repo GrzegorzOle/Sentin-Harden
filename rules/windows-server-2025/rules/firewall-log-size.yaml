@@ -1,0 +1,188 @@
+id: win2025-firewall-log-size
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security > Logging
+  title:
+    pl: Maksymalny rozmiar dziennika zapory we wszystkich profilach
+    en: Maximum firewall log size on all profiles
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt wymaga, żeby dziennik zapory miał rozmiar pozwalający zapisowi
+    przetrwać do chwili, w której zacznie być potrzebny.
+
+    Rozmiar domyślny jest bardzo mały. Na stanowisku roboczym plik obraca
+    się w ciągu godzin, na serwerze wystawionym do sieci bywa, że w ciągu
+    minut — ruchu odrzucanego jest tam znacznie więcej, bo znacznie więcej
+    osób i programów próbuje się do tej maszyny połączyć.
+
+    Zapis potrzebny jest zawsze z opóźnieniem. Pytanie „co się tu działo"
+    pada po awarii, po zgłoszeniu albo po wykryciu czegoś gdzie indziej,
+    a więc godziny albo dni po zdarzeniu. Dziennik, który obrócił się
+    w międzyczasie, nie odpowiada na nic.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: pewność, że
+    zapis jego działań zniknie sam, bez niczyjej ingerencji. Rozpoznanie
+    prowadzone powoli nie wymaga wtedy zacierania śladów — wystarczy
+    poczekać, aż plik się obróci.
+
+    Punkt jest warunkiem, żeby rejestrowanie w ogóle cokolwiek dawało,
+    i dlatego waży tyle, ile samo rejestrowanie.
+  en: |
+    The item takes that the firewall's log have a size letting the record survive until the
+    moment it starts being needed.
+
+    The default size is very small. At a working station the file turns over within hours;
+    on a server put up to the network it at times does so within minutes - there is far more
+    refused traffic there, since far more people and programs try to connect to that
+    machine.
+
+    The record is always needed with a delay. The question "what went on here" comes after a
+    failure, after a report or after something being found elsewhere, and so hours or days
+    after the event. A log that has turned over meanwhile answers nothing.
+
+    What an attacker gains while the item goes unmet: the certainty that the record of their
+    doings will vanish of itself, with nobody's hand in it. Reconnaissance carried out
+    slowly then takes no covering of tracks - it is enough to wait for the file to turn
+    over.
+
+    The item is the condition for logging yielding anything at all, and hence it weighs as
+    much as the logging itself.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie miejsca na dysku. Nic nie przestaje działać,
+    nikt się nie wylogowuje, nie ma restartu.
+
+    Koszt to kilkanaście megabajtów na profil, a więc najwyżej kilkadziesiąt
+    megabajtów łącznie. Na serwerze jest to wielkość, której zwykle się nie
+    zauważa — ale zauważa się ją na maszynie wirtualnej z dyskiem
+    systemowym wymierzonym co do gigabajta, a takich w środowiskach
+    serwerowych bywa sporo.
+
+    Policzyć to warto razem z powiększonym dziennikiem zabezpieczeń, bo
+    oba punkty zabierają miejsce w tym samym miejscu i oba wdraża się
+    zwykle w tym samym przebiegu.
+
+    Rozmiar jest wspólny dla wpisów o połączeniach odrzuconych
+    i nawiązanych. Przy włączonych obu rodzajach ten sam plik wystarcza na
+    krócej — a na serwerze rejestrowanie połączeń nawiązanych potrafi
+    zapełnić go bardzo szybko.
+  en: |
+    The change concerns disk space alone. Nothing stops working, nobody signs out, there is
+    no restart.
+
+    The cost is a dozen or so megabytes per profile, and so at most a few dozen megabytes
+    altogether. On a server that is a size usually not noticed - but it is noticed on a
+    virtual machine with a system disk measured out to the gigabyte, and there are a good
+    many of those in server settings.
+
+    It is worth counting alongside the enlarged security log, since both items take space in
+    the same place and both are usually rolled out in the same pass.
+
+    The size is shared by entries about refused connections and connections made. With both
+    kinds switched on the same file lasts for less time - and on a server the logging of
+    connections made can fill it very quickly.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak znanych regresji — zmienia się wyłącznie zajętość dysku systemowego
+      - Pliki dziennika zapory zajmą po kilkanaście megabajtów na profil
+      - Na maszynie wirtualnej z ciasno wymierzonym dyskiem warto to policzyć przed zmianą
+      - Przy rejestrowaniu połączeń nawiązanych ten sam plik wystarcza na krócej
+    en:
+      - No known regressions - only the taken-up system disk space changes
+      - The firewall's log files take a dozen or so megabytes per profile
+      - On a virtual machine with a tightly measured disk it is worth counting before the change
+      - With connections made being logged the same file lasts for less time
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dysk systemowy jest wymierzony tak ciasno, że kilkadziesiąt megabajtów zmienia sytuację
+    en:
+      - The system disk is measured so tightly that a few dozen megabytes change the situation
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        # The report carries the smallest of the three, because the weakest
+        # profile decides how far back the record actually reaches.
+        $sizes = @($profiles | ForEach-Object { [int]$_.LogMaxSizeKilobytes })
+        [string](($sizes | Measure-Object -Minimum).Minimum)
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '16384'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile |
+      Select-Object -Property Name, LogMaxSizeKilobytes |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-NetFirewallProfile -Profile Domain, Private, Public -LogMaxSizeKilobytes 16384
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($p in @($b)) {
+      Set-NetFirewallProfile -Profile $p.Name -LogMaxSizeKilobytes $p.LogMaxSizeKilobytes
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    Sprawdzenie zgłasza najmniejszą z trzech wartości, a nie każdą
+    z osobna. Uśrednianie byłoby tu mylące, bo o tym, jak daleko wstecz
+    sięga zapis, decyduje profil najsłabszy.
+
+    Na serwerze profil aktywny bywa niezmienny przez lata, ale zmienia się
+    przy przełączeniu na łącze zapasowe i przy zmianie karty sieciowej —
+    czyli dokładnie w chwilach, w których dziennik jest najbardziej
+    potrzebny. Dlatego wymaganie obejmuje wszystkie trzy profile.
+
+    Powiększenie dziennika nie włącza rejestrowania. Jeżeli zapis jest
+    wyłączony, ten punkt daje wyłącznie pusty plik o większym limicie —
+    czyta się go razem z punktem o rejestrowaniu połączeń odrzuconych.
+  en: |
+    The check reports the smallest of the three values rather than each apart. Averaging
+    would mislead here, since how far back the record reaches is decided by the weakest
+    profile.
+
+    On a server the active profile is at times unchanging for years, but it changes at a
+    switch to a spare link and at a change of network adapter - that is, at exactly the
+    moments the log is most needed. Hence the requirement takes in all three profiles.
+
+    Enlarging the log does not switch logging on. Where the recording is off, this item
+    gives only an empty file with a larger limit - it is read together with the item on the
+    logging of refused connections.

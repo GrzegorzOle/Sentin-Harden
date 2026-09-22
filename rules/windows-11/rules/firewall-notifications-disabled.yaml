@@ -1,0 +1,150 @@
+id: win11-firewall-notifications-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security > Settings
+  title:
+    pl: Powiadomienia zapory wyłączone we wszystkich profilach
+    en: Firewall notifications disabled in all profiles
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Okno „system Windows zablokował niektóre funkcje tego programu" pyta
+    użytkownika o decyzję, do której nie ma podstaw: czy wpuścić do sieci
+    program, którego nazwy widzi po raz pierwszy. Pytanie pada w najgorszym
+    możliwym momencie — w trakcie pracy, którą użytkownik chce dokończyć —
+    więc odpowiedź brzmi „zezwól" niezależnie od tego, co jest w okienku.
+
+    Wyłączenie powiadomień zdejmuje tę decyzję z osoby, która nie ma jak jej
+    podjąć. Program nie zostaje wpuszczony przypadkiem, a reguła powstaje tam,
+    gdzie ktoś ją rozważy. Wartością nie jest samo zamknięcie okienka, tylko to,
+    że lista dozwolonych programów przestaje rosnąć bez niczyjej wiedzy.
+  en: |
+    The "Windows has blocked some features of this program" box asks the user
+    for a decision they have no basis for: whether to let a program whose name
+    they are seeing for the first time onto the network. The question comes at
+    the worst possible moment - in the middle of work the user wants to finish -
+    so the answer is "allow" regardless of what the box says.
+
+    Disabling notifications takes that decision away from somebody who has no
+    way of making it. A program is not let in by accident, and the rule gets
+    created where somebody will weigh it. The value is not in closing the box
+    but in the list of permitted programs no longer growing without anybody's
+    knowledge.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje dodatkowo zablokowane — blokada i tak następuje, zmienia się
+    tylko to, czy użytkownik się o niej dowie. Po zmianie program po prostu nie
+    działa i nie mówi dlaczego.
+
+    To jest realny koszt tej reguły. Zgłoszenie „nie działa mi ten program"
+    trafi do pomocy technicznej bez wskazówki, że sprawa dotyczy zapory. Na
+    stanowiskach, gdzie użytkownik sam instaluje narzędzia, oznacza to więcej
+    zgłoszeń i dłuższe ich rozwiązywanie — chyba że reguły przychodzą z polityki
+    i powiadomienie i tak nie miałoby komu pomóc.
+  en: |
+    Nothing extra is blocked - the block happens either way, what changes is
+    whether the user learns about it. After the change the program simply does
+    not work and does not say why.
+
+    That is the real cost of this rule. A "this program doesn't work for me"
+    report reaches the help desk with no hint that the firewall is involved. On
+    workstations where users install their own tools that means more tickets and
+    slower resolution - unless rules arrive from a policy, in which case the
+    notification would have had nobody to help anyway.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - user-interface
+  what_breaks:
+    pl:
+      - Zablokowany program przestaje działać bez żadnego komunikatu na ekranie
+      - Użytkownik nie może już sam dopuścić programu do sieci jednym kliknięciem
+      - Zgłoszenia do pomocy technicznej nie zawierają informacji, że przyczyną jest zapora
+    en:
+      - A blocked program stops working with no message on screen
+      - The user can no longer let a program onto the network with a single click
+      - Help desk tickets no longer carry the information that the firewall is the cause
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Użytkownicy sami instalują narzędzia sieciowe i nie ma kto dopisywać dla nich reguł
+      - Maszyna jest stanowiskiem deweloperskim, na którym nowe usługi nasłuchują codziennie
+    en:
+      - Users install network tools themselves and there is nobody to write rules for them
+      - The machine is a development workstation where new services start listening daily
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        $noisy = @($profiles | Where-Object { $_.NotifyOnListen -ne 'False' })
+        if ($noisy.Count -eq 0) { 'ALL_SILENT' } else { 'NOTIFIES_IN_' + ($noisy.Name -join '_') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_SILENT
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile |
+      Select-Object -Property Name, NotifyOnListen |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-NetFirewallProfile -Profile Domain, Private, Public -NotifyOnListen False
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($p in @($b)) {
+      Set-NetFirewallProfile -Profile $p.Name -NotifyOnListen $p.NotifyOnListen
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    Ryzyko oceniono nisko, bo punkt niczego nie zamyka — usuwa drogę, którą
+    użytkownik mógł otworzyć port bez niczyjej wiedzy. To ograniczenie pola
+    manewru, nie zablokowanie ataku.
+
+    Uciążliwość jest za to wyższa niż w pozostałych punktach zapory i płynie
+    z braku komunikatu, a nie z blokady. Reguła ma sens tam, gdzie ktoś inny
+    dopisuje reguły zapory; na maszynie bez takiej obsługi zabiera jedyną
+    dostępną ścieżkę i zostawia użytkownika z programem, który milczy.
+  en: |
+    The risk is rated low because the item closes nothing - it removes a route
+    by which a user could open a port without anybody's knowledge. That is
+    narrowing the room for manoeuvre, not blocking an attack.
+
+    The disruption, by contrast, is higher than in the other firewall items, and
+    it comes from the missing message rather than from a block. The rule makes
+    sense where somebody else writes firewall rules; on a machine with no such
+    support it takes away the only available path and leaves the user with a
+    program that says nothing.

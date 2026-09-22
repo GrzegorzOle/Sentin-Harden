@@ -1,0 +1,142 @@
+id: win11-firewall-logging-successful-connections
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security > Logging
+  title:
+    pl: Rejestrowanie nawiązanych połączeń we wszystkich profilach
+    en: Logging of successful connections in all profiles
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Odrzucone pakiety mówią, co nie przeszło. Przy badaniu incydentu ważniejsze
+    bywa jednak to, co przeszło: z jakim adresem ta maszyna się porozumiewała,
+    jak długo i jak często. To jedyne źródło tej wiedzy dostępne bez urządzenia
+    zbierającego ruch w sieci.
+
+    Zapis nawiązanych połączeń pozwala odpowiedzieć na pytanie, czy dane wyszły
+    i dokąd. Program działający w tle i odpytujący obcy adres co kilka minut
+    wygląda w tym pliku dokładnie tak, jak wygląda — czyli podejrzanie — i jest
+    to widoczne bez żadnego dodatkowego narzędzia.
+  en: |
+    Dropped packets say what did not get through. When investigating an
+    incident, what did get through often matters more: which address this
+    machine talked to, for how long and how often. It is the only source of that
+    knowledge available without a device capturing traffic on the network.
+
+    A record of successful connections makes it possible to answer whether data
+    left and where it went. A program running in the background and querying a
+    foreign address every few minutes looks in this file exactly as it is -
+    suspicious - and it is visible without any additional tool.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane i użytkownik niczego nie zauważy. Kosztem jest
+    objętość, i to znacznie większa niż przy odrzuconych pakietach: nawiązanych
+    połączeń jest na zwykłej stacji kilka tysięcy dziennie.
+
+    Przy domyślnym rozmiarze dziennika zapory plik obróci się w ciągu godzin,
+    więc punkt bez powiększenia dziennika daje niewiele. To ta sama zależność co
+    przy inspekcji tworzenia procesów — najpierw miejsce, potem zapis.
+  en: |
+    Nothing is blocked and the user notices nothing. The cost is volume, and far
+    more of it than with dropped packets: on an ordinary workstation there are
+    several thousand successful connections a day.
+
+    At the default firewall log size the file turns over within hours, so the
+    item achieves little without enlarging the log. This is the same dependency
+    as with process creation auditing - space first, recording second.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Plik dziennika zapory rośnie o kilka tysięcy wierszy dziennie i przy domyślnym rozmiarze obraca się w ciągu godzin
+      - Obciążenie zapisem staje się mierzalne na maszynie nawiązującej wiele krótkich połączeń
+      - Przeglądanie dziennika ręcznie przestaje być wykonalne bez filtrowania
+    en:
+      - The firewall log grows by several thousand lines a day and at the default size turns over within hours
+      - The write load becomes measurable on a machine making many short connections
+      - Browsing the log by hand stops being feasible without filtering
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zapory ma domyślny rozmiar i nie został wcześniej powiększony
+      - Maszyna nawiązuje połączenia w pętli i zapis wpływa na jej wydajność
+    en:
+      - The firewall log is at its default size and has not been enlarged first
+      - The machine makes connections in a loop and the writing affects its performance
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        $silent = @($profiles | Where-Object { $_.LogAllowed -ne 'True' })
+        if ($silent.Count -eq 0) { 'ALL_LOGGED' } else { 'SILENT_IN_' + ($silent.Name -join '_') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_LOGGED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile |
+      Select-Object -Property Name, LogAllowed |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-NetFirewallProfile -Profile Domain, Private, Public -LogAllowed True
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($p in @($b)) {
+      Set-NetFirewallProfile -Profile $p.Name -LogAllowed $p.LogAllowed
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    To jedyny punkt z rodziny zapory, który dostaje klasę „wymaga sprawdzenia",
+    i wyłącznie z powodu objętości. Sam w sobie nie blokuje niczego i nie ma jak
+    zepsuć pracy — ale wdrożony bez powiększenia dziennika kasuje zapis
+    odrzuconych pakietów szybciej, niż ktokolwiek zdąży po niego sięgnąć.
+
+    Plik zapory ma jeden rozmiar wspólny dla obu rodzajów wpisów. Włączenie
+    zapisu nawiązanych połączeń realnie skraca więc okres, z którego dostępne
+    są odrzucone.
+  en: |
+    This is the only item of the firewall family rated "needs review", and
+    solely because of volume. It blocks nothing by itself and has no way of
+    breaking anybody's work - but rolled out without enlarging the log it erases
+    the record of dropped packets faster than anyone can reach for it.
+
+    The firewall file has one size shared by both kinds of entry. Turning on the
+    recording of successful connections therefore genuinely shortens the period
+    for which dropped ones are available.

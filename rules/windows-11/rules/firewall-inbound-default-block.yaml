@@ -1,0 +1,146 @@
+id: win11-firewall-inbound-default-block
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security
+  title:
+    pl: Domyślne blokowanie połączeń przychodzących we wszystkich profilach
+    en: Default blocking of inbound connections in all profiles
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zapora ma sens tylko wtedy, gdy jej reguły opisują wyjątki od zakazu, a nie
+    wyjątki od zezwolenia. Przy domyślnym zezwoleniu każda usługa, która
+    kiedykolwiek otworzy port — także taka, o której nikt nie wie — jest
+    dostępna z sieci od pierwszej chwili.
+
+    Domyślne blokowanie odwraca tę logikę: dostępne jest wyłącznie to, co ktoś
+    wypisał. Nowa usługa zainstalowana razem z programem nie staje się
+    automatycznie drogą wejścia, a lista otwartych portów przestaje zależeć od
+    tego, co akurat działa na maszynie.
+  en: |
+    A firewall only makes sense when its rules describe exceptions to a
+    prohibition rather than exceptions to a permission. With a default of allow,
+    every service that ever opens a port - including one nobody knows about - is
+    reachable from the network from the first moment.
+
+    Blocking by default reverses the logic: only what somebody listed is
+    reachable. A new service installed along with a program does not
+    automatically become a way in, and the list of open ports stops depending on
+    whatever happens to be running on the machine.
+
+disruption_description:
+  pl: |
+    Na większości stacji to już jest stan bieżący, bo taka jest wartość domyślna
+    systemu. Wdrożenie zapisuje ją jawnie i w tym przypadku niczego nie zmienia.
+
+    Tam, gdzie domyślne zezwolenie zostało ustawione świadomie, zmiana odetnie
+    wszystko, co nie ma własnej reguły: udziały plików, zdalne zarządzanie,
+    usługi nasłuchujące na nietypowych portach. Objawia się to po stronie
+    łączącej się, a nie na tej maszynie — dlatego warto wcześniej wiedzieć, co
+    się do niej łączy.
+  en: |
+    On most workstations this is already the current state, because it is the
+    system's default. The rollout writes it down explicitly and in that case
+    changes nothing.
+
+    Where the default of allow was set deliberately, the change cuts off
+    everything without a rule of its own: file shares, remote management,
+    services listening on unusual ports. It shows up on the connecting side, not
+    on this machine - which is why it is worth knowing in advance what connects
+    to it.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - file-sharing
+    - remote-management
+  what_breaks:
+    pl:
+      - Usługi nasłuchujące bez własnej reguły zapory przestaną przyjmować połączenia
+      - Udziały plików i zdalne zarządzanie wymagają jawnych reguł, jeśli mają działać
+      - Błąd pojawi się po stronie maszyny łączącej się, a nie w dzienniku tej stacji
+    en:
+      - Services listening without a firewall rule of their own stop accepting connections
+      - File shares and remote management need explicit rules if they are to work
+      - The error appears on the connecting machine, not in this workstation's log
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa usługa przyjmująca połączenia, dla której nie ma reguły zapory
+      - Nie ustalono, co łączy się do tej stacji i na jakich portach
+    en:
+      - The machine runs a service accepting connections for which there is no firewall rule
+      - It has not been established what connects to this workstation and on which ports
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        $open = @($profiles | Where-Object { $_.DefaultInboundAction -ne 'Block' })
+        if ($open.Count -eq 0) { 'ALL_BLOCK' } else { 'OPEN_IN_' + ($open.Name -join '_') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_BLOCK
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile |
+      Select-Object -Property Name, DefaultInboundAction |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultInboundAction Block
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($p in @($b)) {
+      Set-NetFirewallProfile -Profile $p.Name -DefaultInboundAction $p.DefaultInboundAction
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    Stan nieskonfigurowany zachowuje się jak blokowanie, a mimo to punkt uznaje
+    go za niespełniony. Powód jest ten sam co przy wymogu kombinacji klawiszy
+    przed logowaniem: zachowanie domyślne można zmienić jednym ustawieniem
+    i nikt tego nie zauważy, a wartość zapisana jawnie przeżyje taką zmianę.
+
+    Punkt ocenia się razem z włączeniem zapory we wszystkich profilach.
+    Domyślne blokowanie przy wyłączonej zaporze nie znaczy nic — to ustawienie
+    mechanizmu, który nie działa.
+  en: |
+    The not-configured state behaves like blocking, and the item still treats it
+    as unmet. The reason is the same as with the key combination before sign-in:
+    the default behaviour can be changed by a single setting with nobody
+    noticing, while an explicitly written value survives such a change.
+
+    The item is assessed together with the firewall being enabled in all
+    profiles. Blocking by default with the firewall off means nothing - it is a
+    setting on a mechanism that is not running.

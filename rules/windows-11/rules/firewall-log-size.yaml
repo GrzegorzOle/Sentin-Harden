@@ -1,0 +1,132 @@
+id: win11-firewall-log-size
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security > Logging
+  title:
+    pl: Maksymalny rozmiar dziennika zapory we wszystkich profilach
+    en: Maximum firewall log size in all profiles
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Domyślny rozmiar dziennika zapory jest tak mały, że przy włączonym
+    rejestrowaniu plik obraca się w ciągu godzin. Zapis powstaje, ale nie
+    przetrwa do chwili, w której zacznie być potrzebny — a potrzebny bywa
+    zawsze z opóźnieniem.
+
+    Powiększenie dziennika jest warunkiem, żeby dwa poprzednie punkty cokolwiek
+    dawały. Sam zapis bez miejsca na niego to najgorszy wariant z możliwych:
+    kosztuje obciążenie, a nie daje wiedzy, i w raporcie wygląda na wdrożony.
+  en: |
+    The default firewall log size is so small that with logging on the file
+    turns over within hours. The record exists, but does not survive until the
+    moment it starts being needed - and it is always needed with a delay.
+
+    Enlarging the log is the condition for the two preceding items to achieve
+    anything. Recording without room for it is the worst possible variant: it
+    costs load, yields no knowledge, and looks deployed in the report.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie miejsca na dysku. Nic nie przestaje działać, nikt
+    nie musi się wylogowywać, nie ma restartu.
+
+    Koszt to najwyżej kilkanaście megabajtów na profil. Na maszynie z bardzo
+    małym dyskiem systemowym warto to policzyć razem z powiększonym dziennikiem
+    zabezpieczeń, bo oba punkty zabierają miejsce w tym samym miejscu.
+  en: |
+    The change concerns disk space alone. Nothing stops working, nobody has to
+    sign out, there is no restart.
+
+    The cost is at most a dozen or so megabytes per profile. On a machine with a
+    very small system disk it is worth counting alongside the enlarged security
+    log, because both items take space in the same place.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Pliki dziennika zapory zajmą na dysku systemowym po kilkanaście megabajtów na profil
+    en:
+      - The firewall log files take a dozen or so megabytes per profile on the system disk
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dysk systemowy jest na tyle mały, że kilkadziesiąt megabajtów zmienia sytuację
+    en:
+      - The system disk is small enough that a few dozen megabytes change the situation
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        # The report carries the smallest of the three, because the weakest
+        # profile decides how far back the record actually reaches.
+        $sizes = @($profiles | ForEach-Object { [int]$_.LogMaxSizeKilobytes })
+        [string](($sizes | Measure-Object -Minimum).Minimum)
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '16384'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile |
+      Select-Object -Property Name, LogMaxSizeKilobytes |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-NetFirewallProfile -Profile Domain, Private, Public -LogMaxSizeKilobytes 16384
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($p in @($b)) {
+      Set-NetFirewallProfile -Profile $p.Name -LogMaxSizeKilobytes $p.LogMaxSizeKilobytes
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    Sprawdzenie zgłasza najmniejszą z trzech wartości, a nie każdą z osobna.
+    Uśrednianie byłoby tu mylące: o tym, jak daleko wstecz sięga zapis, decyduje
+    profil najsłabszy, a maszyna przenośna pracuje w różnych profilach w ciągu
+    jednego dnia.
+
+    Rozmiar jest wspólny dla wpisów o połączeniach odrzuconych i nawiązanych.
+    Przy włączonych obu rodzajach ten sam plik wystarcza na krócej — punkt
+    wdraża się przed nimi, nie po.
+  en: |
+    The check reports the smallest of the three values rather than each
+    separately. Averaging would mislead here: how far back the record reaches is
+    decided by the weakest profile, and a portable machine works in several
+    profiles within a single day.
+
+    The size is shared by entries about dropped and successful connections. With
+    both kinds enabled the same file lasts for less time - the item is rolled
+    out before them, not after.

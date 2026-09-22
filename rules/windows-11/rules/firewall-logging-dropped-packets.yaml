@@ -1,0 +1,138 @@
+id: win11-firewall-logging-dropped-packets
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security > Logging
+  title:
+    pl: Rejestrowanie odrzuconych pakietów we wszystkich profilach
+    en: Logging of dropped packets in all profiles
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zapora domyślnie blokuje po cichu. Pakiet nie dociera i nie zostaje po nim
+    żaden ślad — z punktu widzenia maszyny nic się nie wydarzyło. To wygodne,
+    dopóki ktoś nie zapyta, czy do tej stacji ktoś próbował się dobrać.
+
+    Zapis odrzuconych pakietów odpowiada na dwa różne pytania. Pierwsze jest
+    dochodzeniowe: kto skanował tę maszynę i kiedy. Drugie jest zwyczajne
+    i pada znacznie częściej: dlaczego ten program nie może się połączyć.
+    Odpowiedź na oba leży w tym samym pliku.
+  en: |
+    The firewall blocks silently by default. The packet does not arrive and
+    leaves no trace - from the machine's point of view nothing happened. That is
+    convenient until somebody asks whether anybody tried to get at this
+    workstation.
+
+    A record of dropped packets answers two different questions. The first is
+    investigative: who scanned this machine and when. The second is ordinary and
+    comes up far more often: why can this program not connect. The answer to
+    both lies in the same file.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie zapisu do pliku dziennika zapory. Nic nie zostaje
+    zablokowane ani odblokowane, użytkownik niczego nie zauważy, nie potrzeba
+    restartu.
+
+    Koszt to miejsce na dysku i niewielkie obciążenie zapisem. Na maszynie
+    w sieci, w której trwa skanowanie, plik rośnie szybko — dlatego punkt ocenia
+    się razem z rozmiarem dziennika zapory, tak samo jak inspekcja z rozmiarem
+    dziennika zabezpieczeń.
+  en: |
+    The change concerns only writing to the firewall's log file. Nothing is
+    blocked or unblocked, the user notices nothing, no restart is needed.
+
+    The cost is disk space and a small write load. On a machine in a network
+    where scanning is going on the file grows quickly - which is why this item
+    is assessed together with the firewall log size, just as auditing is
+    assessed together with the security log size.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Plik dziennika zapory zaczyna rosnąć i zajmuje miejsce na dysku systemowym
+      - W sieci, w której trwa skanowanie, dziennik zapełnia się w ciągu godzin
+    en:
+      - The firewall log file starts growing and takes space on the system disk
+      - In a network where scanning is going on the log fills within hours
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dysk systemowy jest na tyle mały, że kilkadziesiąt megabajtów zmienia sytuację
+    en:
+      - The system disk is small enough that a few dozen megabytes change the situation
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        $silent = @($profiles | Where-Object { $_.LogBlocked -ne 'True' })
+        if ($silent.Count -eq 0) { 'ALL_LOGGED' } else { 'SILENT_IN_' + ($silent.Name -join '_') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_LOGGED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile |
+      Select-Object -Property Name, LogBlocked |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-NetFirewallProfile -Profile Domain, Private, Public -LogBlocked True
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($p in @($b)) {
+      Set-NetFirewallProfile -Profile $p.Name -LogBlocked $p.LogBlocked
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    Dziennik zapory jest zwykłym plikiem tekstowym, a nie wpisem w dzienniku
+    zdarzeń. Nie trafia więc automatycznie do systemów zbierających zdarzenia
+    i po incydencie trzeba go zabrać osobno — warto o tym wiedzieć, zanim
+    okaże się, że maszyny już nie ma.
+
+    Punkt tworzy parę z rejestrowaniem połączeń nawiązanych. Odrzucone pokazują
+    próby, nawiązane — co faktycznie wyszło i weszło. Przy badaniu wycieku
+    danych ważniejsze bywa to drugie.
+  en: |
+    The firewall log is an ordinary text file, not an entry in the event log. It
+    therefore does not reach event collection systems automatically and after an
+    incident has to be collected separately - worth knowing before it turns out
+    the machine is already gone.
+
+    The item forms a pair with logging successful connections. Dropped packets
+    show the attempts, successful ones show what actually went out and came in.
+    When investigating a data leak the latter often matters more.

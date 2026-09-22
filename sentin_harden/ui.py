@@ -12,13 +12,15 @@ import html
 from datetime import datetime
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QFont
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMainWindow,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QTableView,
@@ -32,24 +34,64 @@ from .audit import AuditResult, AuditRunner, Outcome, summarise
 from .i18n import Language, ui
 from .ruleset import DISRUPTION_ORDER, RISK_ORDER, Rule, RuleBase, Target, load
 
-RISK_COLOURS = {
+# Two colour sets. The table follows the system theme, so its colours have to
+# work on a dark background as well - the dark-red used on paper turns into an
+# unreadable smudge there. The detail panel is always a light document, so it
+# uses the print set regardless of the system theme.
+RISK_COLOURS_ON_LIGHT = {
     "critical": "#b3261e",
-    "high": "#c05621",
-    "medium": "#8a6d1f",
-    "low": "#5a6472",
+    "high": "#b1580f",
+    "medium": "#7a5f12",
+    "low": "#4d5766",
 }
 
-OUTCOME_COLOURS = {
+RISK_COLOURS_ON_DARK = {
+    "critical": "#ff7a6e",
+    "high": "#ffab5c",
+    "medium": "#e6c95f",
+    "low": "#a5b0c0",
+}
+
+OUTCOME_COLOURS_ON_LIGHT = {
     Outcome.PASS: "#2e7d32",
     Outcome.FAIL: "#b3261e",
-    Outcome.ERROR: "#8a6d1f",
-    Outcome.NOT_APPLICABLE: "#5a6472",
+    Outcome.ERROR: "#7a5f12",
+    Outcome.NOT_APPLICABLE: "#4d5766",
 }
+
+OUTCOME_COLOURS_ON_DARK = {
+    Outcome.PASS: "#6bcf76",
+    Outcome.FAIL: "#ff7a6e",
+    Outcome.ERROR: "#e6c95f",
+    Outcome.NOT_APPLICABLE: "#a5b0c0",
+}
+
+
+def dark_theme() -> bool:
+    """True when the system palette is dark."""
+    return QApplication.palette().color(QPalette.Window).lightness() < 128
+
+
+def risk_colour(risk: str) -> str:
+    table = RISK_COLOURS_ON_DARK if dark_theme() else RISK_COLOURS_ON_LIGHT
+    return table.get(risk, "#a5b0c0" if dark_theme() else "#4d5766")
+
+
+def outcome_colour(outcome: Outcome) -> str:
+    table = OUTCOME_COLOURS_ON_DARK if dark_theme() else OUTCOME_COLOURS_ON_LIGHT
+    return table.get(outcome, "#a5b0c0" if dark_theme() else "#4d5766")
 
 
 class ScanWorker(QThread):
-    """Runs the audit off the interface thread so the window stays responsive."""
+    """Runs the audit off the interface thread so the window stays responsive.
 
+    It walks the rules itself instead of calling ``run_target``, because a single
+    test command can take seconds - long enough for a silent window to look
+    frozen. Reporting after every rule is what makes the progress bar move.
+    """
+
+    # (rules done, rules total, the rule about to be checked)
+    progress = Signal(int, int, object)
     finished_with = Signal(object)
 
     def __init__(self, target: Target) -> None:
@@ -58,7 +100,15 @@ class ScanWorker(QThread):
 
     def run(self) -> None:
         runner = AuditRunner()
-        self.finished_with.emit(runner.run_target(self._target))
+        rules = self._target.rules
+        total = len(rules)
+        results: list[AuditResult] = []
+        for index, rule in enumerate(rules):
+            # Announced before the command runs, so the name on the status bar
+            # is the rule the user is actually waiting for.
+            self.progress.emit(index, total, rule)
+            results.append(runner.run_rule(rule))
+        self.finished_with.emit(results)
 
 
 class ResultsModel(QAbstractTableModel):
@@ -138,11 +188,17 @@ class ResultsModel(QAbstractTableModel):
             if column == 3:
                 return self._language.text(self._base.label("audit_result", item.outcome.value))
 
+        if role == Qt.ToolTipRole and column == 0:
+            # Titles are longer in Polish than in English and the column is the
+            # first thing a narrow window squeezes; the tooltip keeps the full
+            # text reachable instead of ending at an ellipsis.
+            return self._language.text(rule.title, fallback=rule.identifier)
+
         if role == Qt.ForegroundRole:
             if column == 1:
-                return QColor(RISK_COLOURS.get(rule.risk, "#000000"))
+                return QColor(risk_colour(rule.risk))
             if column == 3:
-                return QColor(OUTCOME_COLOURS.get(item.outcome, "#000000"))
+                return QColor(outcome_colour(item.outcome))
 
         if role == Qt.FontRole and column in (1, 3):
             font = QFont()
@@ -161,6 +217,15 @@ class DetailPanel(QTextBrowser):
         self._language = language
         self._current: AuditResult | None = None
         self.setOpenExternalLinks(True)
+        # A fixed light document rather than a themed widget. Under a dark system
+        # theme Qt forces light text, which turned the command box - deliberately
+        # light so it reads like a console listing - into white on near-white.
+        # This pane is also what the printed report will look like, so keeping it
+        # paper-coloured in both themes is the consistent choice.
+        self.setStyleSheet(
+            "QTextBrowser{background:#ffffff;color:#1a1d21;"
+            "border:1px solid #c9ced6;padding:6px;}"
+        )
         self.show_result(None)
 
     def show_result(self, item: AuditResult | None) -> None:
@@ -210,10 +275,13 @@ class DetailPanel(QTextBrowser):
         lang = self._language
         out: list[str] = [
             "<style>"
-            "body{font-family:'Segoe UI',sans-serif;font-size:10.5pt;}"
-            "h2{margin:0 0 4px 0;font-size:13pt;}"
+            "body{font-family:'Segoe UI',sans-serif;font-size:10.5pt;"
+            "color:#1a1d21;background:#ffffff;}"
+            "h2{margin:0 0 4px 0;font-size:13pt;color:#1a1d21;}"
             "h3{margin:14px 0 4px 0;font-size:10pt;text-transform:uppercase;color:#5a6472;}"
-            "pre{background:#f4f5f7;border:1px solid #d8dbe0;padding:8px;white-space:pre-wrap;}"
+            "pre{background:#f4f5f7;color:#1a1d21;border:1px solid #d8dbe0;"
+            "padding:8px;white-space:pre-wrap;font-family:Consolas,'Courier New',monospace;"
+            "font-size:9.5pt;}"
             "li{margin-bottom:3px;}"
             "</style>"
         ]
@@ -224,11 +292,11 @@ class DetailPanel(QTextBrowser):
         risk = html.escape(self._label("risk_category", rule.risk))
         disruption = html.escape(self._label("disruption", rule.disruption))
         outcome = html.escape(self._label("audit_result", item.outcome.value))
-        risk_colour = RISK_COLOURS.get(rule.risk, "#000000")
-        outcome_colour = OUTCOME_COLOURS.get(item.outcome, "#000000")
+        risk_ink = RISK_COLOURS_ON_LIGHT.get(rule.risk, "#4d5766")
+        outcome_ink = OUTCOME_COLOURS_ON_LIGHT.get(item.outcome, "#4d5766")
         out.append(
-            f"<p><b style='color:{risk_colour}'>{risk}</b> &nbsp;|&nbsp; {disruption}"
-            f" &nbsp;|&nbsp; <b style='color:{outcome_colour}'>{outcome}</b></p>"
+            f"<p><b style='color:{risk_ink}'>{risk}</b> &nbsp;|&nbsp; {disruption}"
+            f" &nbsp;|&nbsp; <b style='color:{outcome_ink}'>{outcome}</b></p>"
         )
 
         benchmark = rule.data.get("benchmark", {})
@@ -357,7 +425,22 @@ class MainWindow(QMainWindow):
         self.table.setSelectionMode(QTableView.SingleSelection)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        # The title column is the only one worth stretching; the three short
+        # ones size to their contents. Stretching the last section instead gave
+        # all the slack to "Wynik" and cut the titles down to an ellipsis.
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, self.model.columnCount()):
+            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        # A muted highlight instead of the saturated system blue, which the
+        # risk colouring disappeared into. It has to be opaque: a translucent
+        # one is painted over the text, not under it, and dulls exactly the
+        # column the user is reading.
+        highlight = "#3a4763" if dark_theme() else "#cfdcf0"
+        self.table.setStyleSheet(
+            f"QTableView::item:selected{{background:{highlight};}}"
+        )
         self.table.selectionModel().selectionChanged.connect(self._selection_changed)
 
         right = QVBoxLayout()
@@ -369,8 +452,9 @@ class MainWindow(QMainWindow):
         splitter = QSplitter()
         splitter.addWidget(self.table)
         splitter.addWidget(right_widget)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 4)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 5)
+        splitter.setSizes([520, 660])
 
         layout = QVBoxLayout()
         layout.addLayout(top)
@@ -379,6 +463,14 @@ class MainWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
 
+        # Kept in the status bar next to the message that names the current
+        # rule: together they answer "is anything happening?" without stealing
+        # space from the table.
+        self.progress = QProgressBar()
+        self.progress.setFixedWidth(220)
+        self.progress.setTextVisible(True)
+        self.progress.setVisible(False)
+        self.statusBar().addPermanentWidget(self.progress)
         self.statusBar().showMessage("")
 
     def _detect_system(self) -> None:
@@ -430,12 +522,30 @@ class MainWindow(QMainWindow):
 
         self.scan_button.setEnabled(False)
         self.statusBar().showMessage(ui("scanning", self.language))
+        self.progress.setRange(0, len(self.target.rules))
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
 
         self._worker = ScanWorker(self.target)
+        self._worker.progress.connect(self._scan_progress)
         self._worker.finished_with.connect(self._scan_finished)
         self._worker.start()
 
+    def _scan_progress(self, done: int, total: int, rule: Rule) -> None:
+        self.progress.setValue(done)
+        self.statusBar().showMessage(
+            ui(
+                "scanning_rule",
+                self.language,
+                done=done + 1,
+                total=total,
+                title=self.language.text(rule.title, fallback=rule.identifier),
+            )
+        )
+
     def _scan_finished(self, results: list[AuditResult]) -> None:
+        self.progress.setValue(self.progress.maximum())
+        self.progress.setVisible(False)
         self.model.set_results(results)
         self.scan_button.setEnabled(True)
         if self.model.rowCount():

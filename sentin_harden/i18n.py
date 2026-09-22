@@ -58,6 +58,10 @@ UI_TEXT: dict[str, dict[str, str]] = {
     "window_title": {"pl": "Sentin-Harden", "en": "Sentin-Harden"},
     "scan": {"pl": "Skanuj", "en": "Scan"},
     "scanning": {"pl": "Sprawdzanie…", "en": "Scanning…"},
+    "scanning_rule": {
+        "pl": "Sprawdzanie {done}/{total}: {title}",
+        "en": "Checking {done}/{total}: {title}",
+    },
     "copy": {"pl": "Kopiuj polecenie", "en": "Copy command"},
     "copied": {"pl": "Skopiowano do schowka", "en": "Copied to clipboard"},
     "filter_risk": {"pl": "Ryzyko", "en": "Risk"},

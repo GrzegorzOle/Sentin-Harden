@@ -1,0 +1,179 @@
+id: win11-firewall-log-path-per-profile
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security > Logging
+  title:
+    pl: Osobny plik dziennika zapory dla każdego profilu sieci
+    en: A separate firewall log file for each network profile
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zapora prowadzi dziennik osobno w każdym z trzech profili sieci, ale domyślnie
+    wszystkie trzy piszą do jednego pliku. Ustalenie osobnych ścieżek rozdziela
+    te zapisy.
+
+    Ma to znaczenie przy czytaniu dziennika po zdarzeniu. Profil sieci jest
+    informacją o tym, gdzie maszyna wtedy stała — w sieci firmowej, w sieci
+    zaufanej czy w obcej. Wpis o odrzuconym połączeniu znaczy co innego
+    w każdym z tych przypadków, a połączone w jeden plik zapisy tę różnicę
+    gubią: trzeba ją odtwarzać z czasu i z innych źródeł.
+
+    Rozdzielenie plików nie zdejmuje żadnego ryzyka samo z siebie i tak je
+    oceniam. Jego wartość ujawnia się wtedy, gdy dziennik faktycznie się czyta —
+    czyli w chwili, w której jest już za późno, żeby go przestawiać.
+  en: |
+    The firewall keeps a log apart in each of the three network profiles, but by
+    default all three write to one file. Settling separate paths keeps those records
+    apart.
+
+    This matters when reading the log after an event. The network profile is a piece
+    of information about where the machine stood at the time - on the company
+    network, on a trusted one, or on a stranger's. An entry about a refused
+    connection means something different in each of those cases, and records joined
+    into one file lose that difference: it has to be reconstructed from timestamps
+    and other sources.
+
+    Splitting the files removes no risk by itself, and I judge it as such. Its worth
+    shows when the log is actually read - which is the moment when it is already too
+    late to rearrange it.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Zmienia się wyłącznie to, do którego pliku trafiają
+    zapisy zapory.
+
+    Zmiana jest niewidoczna dla użytkownika i nie dotyczy niczego, z czym on
+    pracuje. Zauważą ją narzędzia zbierające dzienniki: reguła zbierania
+    wskazująca dotychczasowy plik przestanie obejmować ruch z profili, które
+    dostały własną ścieżkę. Poprawienie takiej reguły jest czynnością po stronie
+    systemu zbierającego, nie po stronie maszyny.
+
+    Dlatego punkt trafia do klasy bez uciążliwości: nie ma restartu, nie ma
+    okna serwisowego, a jedyny skutek dotyczy konfiguracji, którą i tak trzeba
+    utrzymywać.
+  en: |
+    Nothing stops working. All that changes is which file the firewall's records go
+    into.
+
+    The change is invisible to the user and concerns nothing they work with. What
+    will notice are log-gathering tools: a collection rule naming the previous file
+    will stop covering traffic from the profiles that got a path of their own.
+    Correcting such a rule is a task on the gathering system's side, not the
+    machine's.
+
+    That is why the item falls into the no-disruption class: no restart, no
+    maintenance window, and the one effect concerns configuration that has to be
+    kept up anyway.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Reguła zbierania dzienników wskazująca dotychczasowy plik przestanie obejmować część ruchu zapory
+      - Skrypty i raporty czytające jeden plik dziennika zapory będą musiały objąć trzy
+    en:
+      - A log collection rule naming the previous file stops covering part of the firewall's traffic
+      - Scripts and reports reading one firewall log file will have to cover three
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zbieranie dzienników opiera się na jednej ścieżce i nie da się go jeszcze przestawić na trzy
+    en:
+      - Log gathering rests on a single path and cannot yet be switched to three
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Each profile is expected to write to a file of its own under the system's
+      # firewall log directory. The comparison ignores letter case, since the
+      # path is not case sensitive, and names the profiles that differ.
+      $expected = @{
+        Domain  = "$env:SystemRoot\System32\logfiles\firewall\domainfw.log"
+        Private = "$env:SystemRoot\System32\logfiles\firewall\privatefw.log"
+        Public  = "$env:SystemRoot\System32\logfiles\firewall\publicfw.log"
+      }
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        $wrong = @()
+        foreach ($p in $profiles) {
+          $want = $expected[[string]$p.Name]
+          if ($null -eq $want) { continue }
+          $have = [string]$p.LogFileName
+          if ($have.Trim().ToUpperInvariant() -ne $want.ToUpperInvariant()) { $wrong += [string]$p.Name }
+        }
+        if ($wrong.Count -eq 0) { 'ALL_SEPARATE' } else { 'OTHER_IN_' + ($wrong -join '_') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_SEPARATE
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile -ErrorAction Stop |
+      Select-Object Name, LogFileName |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-NetFirewallProfile -Profile Domain -LogFileName "$env:SystemRoot\System32\logfiles\firewall\domainfw.log"
+    Set-NetFirewallProfile -Profile Private -LogFileName "$env:SystemRoot\System32\logfiles\firewall\privatefw.log"
+    Set-NetFirewallProfile -Profile Public -LogFileName "$env:SystemRoot\System32\logfiles\firewall\publicfw.log"
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($entry in @($b)) {
+      Set-NetFirewallProfile -Profile $entry.Name -LogFileName $entry.LogFileName
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    Zmiana ścieżki nie przenosi zapisów zgromadzonych dotąd. Dotychczasowy plik
+    zostaje tam, gdzie był, i trzeba go zachować osobno, jeśli ma pozostać
+    w zasięgu — reguła go nie rusza, bo byłoby to przenoszenie danych bez
+    wiedzy właściciela maszyny.
+
+    Punkt ma sens dopiero razem z regułami włączającymi zapis odrzuconych
+    i przyjętych połączeń oraz ustalającymi rozmiar pliku. Sam rozdziela
+    zapisy, których bez tamtych po prostu nie ma.
+
+    Katalog docelowy jest tworzony przez usługę zapory przy pierwszym zapisie,
+    więc polecenie naprawcze go nie zakłada.
+  en: |
+    Changing the path does not move records gathered so far. The previous file stays
+    where it was and has to be kept separately if it is to remain within reach - the
+    rule does not touch it, because that would be moving data without the machine
+    owner's knowledge.
+
+    The item makes sense only together with the rules switching on the recording of
+    refused and accepted connections and settling the file's size. On its own it
+    separates records that, without those, are simply not there.
+
+    The target directory is created by the firewall service at the first write, so
+    the fix command does not set it up.

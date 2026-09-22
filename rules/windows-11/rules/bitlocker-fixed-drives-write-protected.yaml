@@ -1,0 +1,194 @@
+id: win11-bitlocker-fixed-drives-write-protected
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > BitLocker Drive Encryption > Fixed Data Drives
+  title:
+    pl: Zapis na niezaszyfrowanych dyskach stałych zabroniony
+    en: Writing to unencrypted fixed drives forbidden
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zaszyfrowanie dysku systemowego zabezpiecza tylko ten dysk. Maszyna z drugim
+    dyskiem albo z osobną partycją na dane — a tak wygląda znaczna część stacji
+    roboczych — trzyma tam pliki, do których wystarczy wyjąć nośnik i podłączyć
+    go gdzie indziej.
+
+    Punkt zamyka to od strony zapisu: na dysk stały, który nie jest zaszyfrowany,
+    nie da się nic odłożyć. Odczyt pozostaje możliwy, więc dotychczasowe dane są
+    dalej dostępne, ale nic nowego już tam nie trafi.
+
+    Napastnik o fizycznym dostępie do komputera — po kradzieży, po wyniesieniu
+    sprzętu do serwisu, po wymianie dysku — traci dostęp do wszystkiego, co
+    powstało po wdrożeniu. Dla laptopa, który wychodzi poza budynek, jest to
+    różnica między utratą sprzętu a utratą danych.
+  en: |
+    Encrypting the system drive secures that drive only. A machine with a second
+    disk or a separate data partition - and that is what a good share of
+    workstations look like - keeps files there that need only the drive taken out
+    and plugged in elsewhere.
+
+    The item closes this from the writing side: nothing can be put onto a fixed
+    drive that is not encrypted. Reading stays possible, so data already there
+    remains available, but nothing new will land there.
+
+    An attacker with physical access to the computer - after a theft, after the
+    hardware goes out for service, after a disk swap - loses access to everything
+    created after the rollout. For a laptop that leaves the building this is the
+    difference between losing hardware and losing data.
+
+disruption_description:
+  pl: |
+    Jest to zmiana, która potrafi zatrzymać pracę na maszynie natychmiast, i tak
+    ją klasyfikuję. Wdrożenie bez wcześniejszego zaszyfrowania dysków na danych
+    jest błędem, którego skutek widać w pierwszej minucie.
+
+    Każdy dysk stały poza systemowym, który nie jest zaszyfrowany, stanie się
+    tylko do odczytu. Programy zapisujące tam dane — bazy, maszyny wirtualne,
+    katalogi projektów, pamięci podręczne narzędzi — zaczną zgłaszać błędy
+    zapisu, często niejasne, bo nie spodziewają się dysku chronionego przed
+    zapisem.
+
+    Kolejność wdrożenia jest więc odwrotna do naturalnej: najpierw szyfruje się
+    dyski na danych, dopiero potem wdraża ten punkt. Zrobione odwrotnie kończy
+    się maszyną, na której nie da się pracować, a zaszyfrowanie dysku wymaga
+    wtedy najpierw wycofania punktu.
+
+    Objawem jest odmowa zapisu na dysku, który ma miejsce i jest sprawny.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym zalogowaniu.
+  en: |
+    This is a change that can halt work on the machine at once, and I classify it as
+    such. Applying it without first encrypting the data drives is a mistake whose
+    effect shows in the first minute.
+
+    Every fixed drive besides the system one that is not encrypted becomes
+    read-only. Programs writing data there - databases, virtual machines, project
+    directories, tools' caches - start reporting write errors, often unclear ones,
+    since they do not expect a write-protected disk.
+
+    The order of the rollout is therefore the reverse of the natural one: the data
+    drives are encrypted first, and only then is this item applied. Done the other
+    way round it ends with a machine that cannot be worked on, and encrypting the
+    disk then requires undoing the item first.
+
+    The symptom is a refused write to a disk that has room and is healthy.
+
+    There is no machine restart. The change takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - virtualization-and-containers
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Dyski stałe poza systemowym, które nie są zaszyfrowane, staną się tylko do odczytu
+      - Bazy danych, maszyny wirtualne i katalogi projektów trzymane na takim dysku przestaną przyjmować zapis
+      - Programy zgłoszą niejasne błędy zapisu, bo nie spodziewają się dysku chronionego przed zapisem
+    en:
+      - Fixed drives besides the system one that are not encrypted become read-only
+      - Databases, virtual machines and project directories kept on such a disk stop taking writes
+      - Programs report unclear write errors, since they do not expect a write-protected disk
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dyski na danych nie zostały jeszcze zaszyfrowane, a na maszynie pracują programy zapisujące tam dane
+      - Nie ustalono, gdzie trafiają klucze odzyskiwania do szyfrowanych dysków
+    en:
+      - The data drives have not yet been encrypted and programs writing data there run on the machine
+      - It has not been settled where recovery keys for encrypted drives are kept
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE'
+      $name = 'FDVDenyWriteAccess'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE'
+    $name = 'FDVDenyWriteAccess'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'FDVDenyWriteAccess' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/data-protection/bitlocker/
+
+notes:
+  pl: |
+    Punkt tworzy parę z zakazem zapisu na niezaszyfrowanych nośnikach wymiennych
+    i dzieli z nim gałąź zasad. Uciążliwość jest jednak wyraźnie wyższa tutaj:
+    nośnik wymienny da się odłożyć, dysku stałego nie — maszyna z dyskiem na
+    danych chronionym przed zapisem przestaje nadawać się do pracy.
+
+    Na maszynie z jednym dyskiem punkt nie ma skutku praktycznego, bo dysk
+    systemowy nie jest dyskiem stałym w rozumieniu tego ustawienia. Reguła mimo
+    to sprawdza wpis: dysk bywa dołożony później i ograniczenie ma już wtedy
+    obowiązywać.
+
+    Wycofanie zdejmuje pojedynczą wartość i nie usuwa gałęzi, chyba że przed
+    zmianą jej nie było — w gałęzi leżą również ustawienia dysku systemowego.
+  en: |
+    The item pairs with the ban on writing to unencrypted removable media and shares
+    its policy key. The disruption, though, is markedly higher here: a removable
+    medium can be set aside, a fixed disk cannot - a machine whose data disk is
+    write-protected stops being fit to work on.
+
+    On a machine with one disk the item has no practical effect, because the system
+    drive is not a fixed drive in this setting's sense. The rule checks the entry
+    all the same: a disk is sometimes added later, and the limit is to be in force
+    by then.
+
+    Undoing it lifts a single value and does not remove the key unless it was not
+    there before the change - the system drive's settings sit in that key too.

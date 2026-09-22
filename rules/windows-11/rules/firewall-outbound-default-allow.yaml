@@ -1,0 +1,164 @@
+id: win11-firewall-outbound-default-allow
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security
+  title:
+    pl: Domyślne zachowanie dla połączeń wychodzących ustalone wprost
+    en: The default behaviour for outbound connections settled explicitly
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zapora rozstrzyga osobno o ruchu przychodzącym i wychodzącym, i osobno
+    w każdym z trzech profili sieci. Dla ruchu wychodzącego benchmark wymaga
+    zachowania domyślnego, czyli przepuszczania — ale wymaga, żeby było ono
+    zapisane, a nie pozostawione nieustalonym.
+
+    Różnica między „przepuszczaj" a „nieustalone" wygląda na formalną i taka
+    w istocie jest w codziennej pracy maszyny: obie wartości dają ten sam ruch.
+    Znaczenie ma jednak to, że wartość nieustalona może zostać nadpisana przez
+    zasadę przyniesioną z zewnątrz albo przez narzędzie, które zapisze w tym
+    miejscu własne rozstrzygnięcie. Wartość zapisana wprost tego nie przyjmie
+    bez świadomej zmiany.
+
+    Punkt jest więc porządkowy, a nie obronny — i tak go oceniam. Jego wartość
+    polega na tym, że po wdrożeniu stan zapory jest w całości opisany, a nie
+    częściowo domyślny.
+  en: |
+    The firewall settles inbound and outbound traffic apart, and apart in each of
+    the three network profiles. For outbound traffic the benchmark calls for the
+    default behaviour - letting it through - but calls for that to be written down
+    rather than left unsettled.
+
+    The difference between "let through" and "unsettled" looks formal, and in the
+    machine's everyday work it indeed is: both values give the same traffic. What
+    matters is that an unsettled value can be overwritten by a policy brought from
+    outside, or by a tool writing a ruling of its own in that place. A value written
+    explicitly will not take that without a deliberate change.
+
+    So the item is one of order rather than defence - and I judge it as such. Its
+    worth lies in the firewall's state being described whole after it is applied,
+    rather than partly by default.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać i nic się nie zmienia w ruchu sieciowym. Wartość
+    wpisywana jest tą, która i tak obowiązuje — zmienia się wyłącznie to, że
+    przestaje być domyślna, a zaczyna być zapisana.
+
+    Dlatego punkt trafia do klasy bez uciążliwości: nie ma restartu, nie ma
+    okna serwisowego i nie ma scenariusza, w którym cokolwiek na maszynie
+    zachowa się inaczej niż przed zmianą.
+
+    Jedyna rzecz warta odnotowania dotyczy środowisk, w których ktoś świadomie
+    planuje blokowanie ruchu wychodzącego. Wdrożenie tego punktu nie stoi temu
+    na przeszkodzie, ale zapisuje przeciwne rozstrzygnięcie — wtedy trzeba je
+    zmienić razem z wprowadzeniem reguł wychodzących, a nie zostawić w sprzeczności.
+  en: |
+    Nothing stops working and nothing changes in the network traffic. The value
+    written is the one in force anyway - all that changes is that it stops being a
+    default and starts being written down.
+
+    That is why the item falls into the no-disruption class: no restart, no
+    maintenance window, and no scenario in which anything on the machine behaves
+    differently from before.
+
+    The one thing worth noting concerns environments where somebody deliberately
+    plans to block outbound traffic. Applying this item does not stand in the way of
+    that, but it writes down the opposite ruling - which then has to be changed
+    together with introducing outbound rules, rather than left in contradiction.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Nic nie przestaje działać; ustalona wartość jest tą, która obowiązywała dotąd domyślnie
+    en:
+      - Nothing stops working; the value settled is the one that held by default until now
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Wdraża się właśnie blokowanie ruchu wychodzącego i zapisanie przepuszczania stałoby z tym w sprzeczności
+    en:
+      - Blocking outbound traffic is being rolled out and writing "let through" down would contradict it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # All three profiles are read at once and the weaker outcome is reported,
+      # together with the names of the profiles it came from, so the report says
+      # where the state differs rather than merely that it does.
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        $blocking = @($profiles | Where-Object { $_.DefaultOutboundAction -eq 'Block' })
+        $unset = @($profiles | Where-Object { $_.DefaultOutboundAction -eq 'NotConfigured' })
+        if ($blocking.Count -gt 0) { 'BLOCKING_IN_' + ($blocking.Name -join '_') }
+        elseif ($unset.Count -gt 0) { 'NOT_CONFIGURED_IN_' + ($unset.Name -join '_') }
+        else { 'ALL_ALLOW' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_ALLOW
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile -ErrorAction Stop |
+      Select-Object Name, DefaultOutboundAction |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Allow
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($entry in @($b)) {
+      Set-NetFirewallProfile -Profile $entry.Name -DefaultOutboundAction $entry.DefaultOutboundAction
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    Reguła czyta wszystkie trzy profile naraz i zgłasza słabszy wynik, tak jak
+    pozostałe reguły zapory w tej paczce. Jest to świadome zawężenie: benchmark
+    prowadzi osobny punkt dla każdego profilu, ale rozdzielenie ich dałoby trzy
+    rekordy o identycznej treści, a użytkownikowi i tak nie pozwoliłoby wdrożyć
+    jednego bez pozostałych.
+
+    Wartość nieustalona jest zgłaszana jako niespełnienie, mimo że zachowanie
+    maszyny jest wtedy takie samo jak wymagane. Punkt dotyczy zapisania stanu,
+    a nie zachowania — i na tym polega cała jego treść.
+  en: |
+    The rule reads all three profiles at once and reports the weaker outcome, as the
+    other firewall rules in this pack do. That is a deliberate narrowing: the
+    benchmark keeps a separate item per profile, but splitting them would give three
+    records with identical content, and would not let the user apply one without the
+    others anyway.
+
+    An unsettled value is reported as unmet although the machine's behaviour is then
+    the same as the one required. The item is about writing the state down rather
+    than about the behaviour - and that is its whole content.

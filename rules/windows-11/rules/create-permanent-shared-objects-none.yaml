@@ -1,0 +1,173 @@
+id: win11-create-permanent-shared-objects-none
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Tworzenie trwałych obiektów współdzielonych nieprzyznane nikomu
+    en: Creating permanent shared objects granted to no one
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obiekty, przez które procesy się porozumiewają, znikają normalnie wtedy, gdy
+    zniknie ostatni proces z nich korzystający. Obiekt trwały nie znika — zostaje
+    w przestrzeni nazw jądra także po zakończeniu tego, kto go utworzył.
+
+    Konto z tym uprawnieniem może więc zostawić po sobie obiekt, który przeżyje
+    jego proces i będzie tam czekał na kolejne. Dwa zastosowania są oczywiste:
+    zająć nazwę, pod którą spodziewa się zgłosić składnik systemu, oraz zostawić
+    kanał, przez który późniejszy proces odbierze polecenia. Żadne normalne
+    oprogramowanie tego nie potrzebuje, więc uprawnienie nie ma być przyznane
+    nikomu.
+  en: |
+    The objects processes communicate through normally disappear once the last
+    process using them is gone. A permanent object does not disappear - it stays
+    in the kernel namespace even after whoever created it has finished.
+
+    An account with this right can therefore leave behind an object that outlives
+    its process and waits there for the next one. Two uses are obvious: claiming
+    the name a system component expects to register under, and leaving a channel
+    through which a later process picks up instructions. No normal software needs
+    this, so the right is to be granted to nobody.
+
+disruption_description:
+  pl: |
+    Nic. Uprawnienie nie jest przyznawane domyślnie i nie korzysta z niego żaden
+    składnik systemu ani żadne typowe oprogramowanie. Obiekty trwałe tworzy samo
+    jądro, a jądro nie potrzebuje do tego wpisu na liście.
+
+    Punkt sprowadza się do sprawdzenia, czy lista jest pusta. Na maszynie
+    skonfigurowanej standardowo przechodzi bez żadnego działania.
+  en: |
+    Nothing. The right is not granted by default and no system component or
+    typical software uses it. Permanent objects are created by the kernel itself,
+    and the kernel needs no list entry for that.
+
+    The item comes down to checking that the list is empty. On a machine
+    configured as standard it passes with no action taken.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Na maszynie skonfigurowanej standardowo nie przestaje działać nic
+      - Konta dopisane do listy ręcznie stracą to uprawnienie
+    en:
+      - On a machine configured as standard nothing stops working
+      - Accounts added to the list by hand lose the right
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Uprawnienie zostało przyznane konkretnemu kontu i nie wiadomo, jakie oprogramowanie z niego korzysta
+    en:
+      - The right was granted to a specific account and it is not known what software relies on it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreatePermanentPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreatePermanentPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreatePermanentPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreatePermanentPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreatePermanentPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-permanent-shared-objects
+
+notes:
+  pl: |
+    Reguła tworzy parę z tworzeniem obiektów globalnych. Tamta ogranicza, kto
+    może utworzyć obiekt widoczny we wszystkich sesjach; ta ogranicza, kto może
+    utworzyć obiekt, który nie znika. Nadużycia są pokrewne i w obu przypadkach
+    sprowadzają się do zajęcia nazwy przed składnikiem uprzywilejowanym, ale
+    uprawnienia są rozdzielne i przyznanie jednego nie daje drugiego.
+
+    Kategoria ryzyka jest średnia, bo samo uprawnienie niczego nie otwiera —
+    ułatwia krok w dłuższym ciągu. Ocena idzie za tym, co zyskuje atakujący,
+    a nie za tym, jak groźnie brzmi nazwa uprawnienia.
+  en: |
+    The rule pairs with creating global objects. That one limits who may create an
+    object visible in every session; this one limits who may create an object that
+    does not disappear. The abuses are related and both come down to claiming a
+    name ahead of a privileged component, but the rights are separate and granting
+    one does not confer the other.
+
+    The risk category is medium, because the right by itself opens nothing - it
+    eases one step in a longer sequence. The assessment follows what the attacker
+    gains, not how alarming the name of the right sounds.

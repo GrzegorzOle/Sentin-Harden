@@ -1,0 +1,195 @@
+id: win11-security-log-management-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Zarządzanie inspekcją i dziennikiem zabezpieczeń zastrzeżone dla administratorów
+    en: Managing auditing and the security log restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uprawnienie łączy dwie rzeczy, które w innych systemach bywają rozdzielone:
+    prawo ustawiania inspekcji na plikach i kluczach rejestru oraz prawo
+    czyszczenia dziennika zabezpieczeń.
+
+    Druga z nich jest tą groźną. Dziennik zabezpieczeń to jedyny zapis
+    mówiący, kto się logował, co uruchamiał i kiedy. Konto, które może go
+    wyczyścić, usuwa nie pojedynczy wpis, tylko całą historię naraz — a wraz
+    z nią ślad własnych działań. Ograniczenie tej możliwości do administratorów
+    nie czyni jej niemożliwą, ale sprawia, że sięgnięcie po nią wymaga konta,
+    które i tak podlega osobnej kontroli.
+  en: |
+    The right joins two things that other systems sometimes keep apart: the
+    ability to set auditing on files and registry keys, and the ability to clear
+    the security log.
+
+    The second is the dangerous one. The security log is the only record of who
+    signed in, what they ran and when. An account able to clear it removes not a
+    single entry but the whole history at once - and with it the trail of its own
+    actions. Restricting this to administrators does not make it impossible, but
+    it means reaching for it requires an account that is under separate scrutiny
+    anyway.
+
+disruption_description:
+  pl: |
+    Na maszynie skonfigurowanej standardowo uprawnienie i tak mają wyłącznie
+    administratorzy i zmiana nic nie robi.
+
+    Sprawdzenia wymaga maszyna, z której dziennik zabezpieczeń jest pobierany
+    zdalnie przez system zbierania zdarzeń. Konto takiego kolektora bywa
+    dopisywane do tej listy, a po zmianie straci dostęp — objawem jest luka
+    w zdalnym zbiorze zdarzeń, podczas gdy na samej maszynie dziennik wygląda
+    normalnie. To jest dokładnie ten rodzaj awarii, którego nie widać tam, gdzie
+    się zmiany dokonało.
+
+    Warto zauważyć, że ta sama zmiana potrafi zepsuć narzędzie, którego zadaniem
+    jest zauważanie problemów. Wdrażaj ją, wiedząc, czym ta maszyna jest
+    monitorowana.
+  en: |
+    On a machine configured as standard only administrators hold the right anyway
+    and the change does nothing.
+
+    A check is due on a machine whose security log is collected remotely by an
+    event collection system. Such a collector's account is sometimes added to this
+    list and after the change loses access - the symptom being a gap in the remote
+    event store while on the machine itself the log looks normal. That is exactly
+    the kind of failure invisible from where the change was made.
+
+    Worth noting that this same change can break the tool whose job is to notice
+    problems. Deploy it knowing what monitors this machine.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - remote-management
+  what_breaks:
+    pl:
+      - Konto systemu zbierania zdarzeń dopisane do tej listy straci dostęp do dziennika zabezpieczeń
+      - Objawem jest luka w zdalnym zbiorze zdarzeń, niewidoczna na samej maszynie
+      - Narzędzia ustawiające inspekcję na plikach z konta innego niż administrator przestaną działać
+    en:
+      - An event collection system account added to this list loses access to the security log
+      - The symptom is a gap in the remote event store, invisible on the machine itself
+      - Tools setting file auditing from a non-administrator account stop working
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zabezpieczeń tej maszyny jest pobierany zdalnie na koncie dopisanym do tej listy
+      - Nie ustalono, czym ta maszyna jest monitorowana i na jakim koncie działa kolektor
+    en:
+      - This machine's security log is collected remotely under an account added to this list
+      - It has not been established what monitors this machine and which account the collector uses
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeSecurityPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeSecurityPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeSecurityPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeSecurityPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeSecurityPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/manage-auditing-and-security-log
+
+notes:
+  pl: |
+    Uprawnienie nie daje prawa odczytu dziennika zabezpieczeń — odczyt zdalny
+    przez system zbierania zdarzeń da się przyznać inaczej, bez wpisu na tej
+    liście. To ważne przy planowaniu: kolektor, który tylko czyta, można
+    utrzymać przy działaniu i jednocześnie wdrożyć ten punkt. Reguła tego nie
+    zrobi za nikogo, bo wykracza to poza jedno ustawienie, ale opis ma o tej
+    możliwości mówić, zamiast stawiać wybór między monitoringiem a punktem.
+
+    Czyszczenie dziennika zabezpieczeń zostawia po sobie wpis o wyczyszczeniu
+    w nowym, pustym dzienniku. Nie odtwarza to utraconej treści, ale sprawia, że
+    samo wyczyszczenie nie jest niewidoczne — pod warunkiem że ktoś ten zapis
+    zbiera poza maszyną.
+  en: |
+    The right does not confer read access to the security log - remote reading by
+    an event collection system can be granted another way, without an entry on
+    this list. That matters when planning: a collector that only reads can be kept
+    working while this item is applied. The rule will not do that for anybody,
+    because it reaches beyond a single setting, but the description ought to name
+    the possibility rather than pose a choice between monitoring and the item.
+
+    Clearing the security log leaves behind an entry recording the clearance in
+    the new, empty log. That does not recover the lost content, but it does mean
+    the clearing itself is not invisible - provided somebody collects that record
+    off the machine.

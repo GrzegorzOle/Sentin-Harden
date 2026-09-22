@@ -1,0 +1,182 @@
+id: win11-deny-batch-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania w trybie wsadowym dla grupy Goście
+    en: Deny batch job sign-in for the Guests group
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Logowanie w trybie wsadowym to sposób, w jaki uruchamia się zadania
+    zaplanowane. Konto z tym prawem nie musi mieć otwartej sesji ani nikogo przy
+    klawiaturze — zadanie startuje samo, o ustalonej porze albo po zdarzeniu.
+
+    To czyni z niego wygodną drogę do utrzymania się w systemie. Zadanie
+    zaplanowane przeżywa restart, nie rzuca się w oczy na liście procesów
+    i wygląda jak element administracji. Jawna odmowa dla grupy gości zamyka tę
+    drogę kontu, które z założenia nie należy do nikogo konkretnego — i zamyka ją
+    także wtedy, gdy ktoś później to konto włączy.
+  en: |
+    Batch sign-in is how scheduled tasks are started. An account with this right
+    needs no open session and nobody at the keyboard - the task starts by itself,
+    at a set time or after an event.
+
+    That makes it a convenient way of staying in the system. A scheduled task
+    survives a restart, does not stand out in a process list and looks like a
+    piece of administration. An explicit denial for the guests group closes this
+    route to an account that by design belongs to nobody in particular - and
+    closes it even if somebody enables that account later.
+
+disruption_description:
+  pl: |
+    Nic. Zadania zaplanowane działają na kontach użytkowników, kontach usługowych
+    albo na koncie systemu, a nie na koncie gościa — praktycznego zastosowania
+    dla gościa w tej roli po prostu nie ma.
+
+    Zmiana nie dotyka istniejących zadań i nie wymaga ich przeglądania. Zadanie
+    już zaplanowane na innym koncie pozostaje bez zmian, bo odmowa obejmuje
+    wyłącznie grupę gości.
+  en: |
+    Nothing. Scheduled tasks run under user accounts, service accounts or the
+    system account, not the guest one - there is simply no practical use for a
+    guest in this role.
+
+    The change does not touch existing tasks and requires no review of them. A
+    task already scheduled under another account is unaffected, because the denial
+    covers the guests group only.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Zadanie zaplanowane na koncie gościa albo na koncie dopisanym do tej grupy przestanie startować
+    en:
+      - A task scheduled under the guest account, or under an account added to that group, stops starting
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa zadanie zaplanowane uruchamiane na koncie należącym do grupy gości
+    en:
+      - The machine runs a scheduled task started under an account belonging to the guests group
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyBatchLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: S-1-5-32-546
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyBatchLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyBatchLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyBatchLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    if (-not ($members -contains '*S-1-5-32-546')) { $members += '*S-1-5-32-546' }
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyBatchLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyBatchLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-as-a-batch-job
+
+notes:
+  pl: |
+    Punkt domyka zestaw odmów razem z logowaniem lokalnym, sieciowym, zdalnym
+    i usługowym. Każde z tych praw opisuje inną drogę wejścia i żadne nie
+    zastępuje pozostałych — konto odcięte od pulpitu nadal uruchomi zadanie
+    zaplanowane, jeśli nikt mu tego osobno nie zabronił.
+
+    Naprawa dokłada wpis do listy zastanej, zamiast ją zastępować. Odmowa
+    dopisana wcześniej przez kogoś innego chroni przed czymś, czego ta reguła nie
+    zna, a jej skasowanie byłoby cichym obniżeniem zabezpieczenia przy okazji
+    jego podnoszenia.
+  en: |
+    The item completes the set of denials alongside local, network, remote and
+    service sign-in. Each of those rights describes a different way in and none
+    substitutes for the others - an account cut off from the desktop will still
+    run a scheduled task unless separately forbidden.
+
+    The fix adds its entry to the list it finds rather than replacing it. A denial
+    added earlier by somebody else protects against something this rule knows
+    nothing about, and clearing it would be a quiet lowering of protection in the
+    course of raising it.

@@ -1,0 +1,184 @@
+id: win11-deny-service-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania jako usługa dla grupy Goście
+    en: Deny service sign-in for the Guests group
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usługa startuje razem z systemem, przed zalogowaniem kogokolwiek, i działa
+    bez względu na to, czy przy maszynie ktoś siedzi. Konto, na którym usługa
+    ma działać, musi mieć prawo logowania w tym trybie.
+
+    Z punktu widzenia kogoś, kto chce zostać w systemie na dłużej, usługa jest
+    lepsza od zadania zaplanowanego: startuje wcześniej, restartuje się sama po
+    awarii i jest naturalnym miejscem na kod działający stale. Odmowa dla grupy
+    gości sprawia, że konto bez właściciela nie nadaje się do tej roli, nawet
+    jeśli ktoś wcześniej nadał mu inne uprawnienia.
+  en: |
+    A service starts with the system, before anybody signs in, and runs whether
+    or not somebody is sitting at the machine. The account a service is to run
+    under must hold the right to sign in in that mode.
+
+    From the point of view of somebody wanting to stay in the system, a service
+    beats a scheduled task: it starts earlier, restarts itself after a failure and
+    is the natural home for code that runs continuously. A denial for the guests
+    group makes an ownerless account unsuitable for that role, even if somebody
+    granted it other rights earlier.
+
+disruption_description:
+  pl: |
+    Nic. Usługi działają na koncie systemu, usługi lokalnej, usługi sieciowej
+    albo na dedykowanym koncie usługowym — konto gościa nie jest używane w tej
+    roli w żadnej typowej konfiguracji.
+
+    Zmiana nie zatrzymuje żadnej działającej usługi i nie wymaga przeglądu listy
+    usług. Odmowa obejmuje wyłącznie grupę gości, więc usługa działająca na
+    jakimkolwiek innym koncie startuje dalej bez zmian.
+  en: |
+    Nothing. Services run under the system account, the local service, the network
+    service or a dedicated service account - the guest account is not used in this
+    role in any typical configuration.
+
+    The change stops no running service and requires no review of the service
+    list. The denial covers the guests group only, so a service running under any
+    other account keeps starting unchanged.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Usługa skonfigurowana do działania na koncie z grupy gości nie wystartuje po restarcie
+    en:
+      - A service configured to run under an account in the guests group fails to start after a restart
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa usługa uruchamiana na koncie należącym do grupy gości
+    en:
+      - The machine runs a service started under an account belonging to the guests group
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyServiceLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: S-1-5-32-546
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyServiceLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyServiceLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyServiceLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    if (-not ($members -contains '*S-1-5-32-546')) { $members += '*S-1-5-32-546' }
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyServiceLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyServiceLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-as-a-service
+
+notes:
+  pl: |
+    Odmowa działa na etapie startu usługi, a nie przy jej konfigurowaniu.
+    Przypisanie usłudze konta z grupy gości nadal się powiedzie — usługa po
+    prostu nie wystartuje, a w dzienniku systemowym pojawi się błąd logowania.
+    Komunikat jest czytelny, ale pojawia się dopiero po restarcie maszyny, więc
+    skutek bywa odroczony.
+
+    Brak wiersza w eksporcie liczy się jako niespełnienie, mimo że domyślnie ta
+    lista bywa pusta. Odmowa ma wartość dopiero wtedy, gdy jest zapisana
+    wprost — pusta lista nie obroni się przed kontem dodanym do grupy gości
+    jutro.
+  en: |
+    The denial applies when the service starts, not when it is configured.
+    Assigning a guests-group account to a service still succeeds - the service
+    simply does not start, and a sign-in error appears in the system log. The
+    message is clear, but appears only after the machine restarts, so the effect
+    can be delayed.
+
+    A missing line in the export counts as unmet, even though this list is often
+    empty by default. A denial is worth something only once written down
+    explicitly - an empty list will not defend against an account added to the
+    guests group tomorrow.

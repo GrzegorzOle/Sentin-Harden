@@ -1,0 +1,153 @@
+id: win11-ntlm-session-security-client
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Minimalne zabezpieczenie sesji klienta opartych na NTLM
+    en: Minimum session security for NTLM-based clients
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sam wybór silnego poziomu uwierzytelniania nie wystarcza, bo o tym, co
+    faktycznie zostanie użyte, rozstrzyga negocjacja między stronami. Strona
+    słabsza narzuca poziom obu — i napastnik siedzący w środku połączenia
+    korzysta z tego, podszywając się pod stronę, która „nie umie" nic lepszego.
+
+    To ustawienie ustala próg, poniżej którego klient nie zejdzie niezależnie
+    od tego, o co poprosi druga strona: wymaga szyfrowania sesji i najsilniejszego
+    z dostępnych sposobów potwierdzania spójności. Sesja, której nie da się
+    zestawić na tym poziomie, po prostu nie powstaje.
+  en: |
+    Choosing a strong authentication level is not enough by itself, because what
+    is actually used is settled by negotiation between the parties. The weaker
+    party sets the level for both - and an attacker sitting in the middle of the
+    connection exploits that, posing as a party that "cannot do" anything
+    better.
+
+    This setting establishes a floor the client will not go below whatever the
+    other side asks for: it requires session encryption and the strongest
+    available way of confirming integrity. A session that cannot be established
+    at that level simply does not come into being.
+
+disruption_description:
+  pl: |
+    Na maszynie łączącej się wyłącznie do współczesnych systemów zmiana jest
+    niewidoczna — wymagany poziom jest tam obsługiwany od lat.
+
+    Skutek dotyka starszych urządzeń i systemów: serwerów plików na
+    przestarzałym oprogramowaniu, urządzeń wielofunkcyjnych z udziałem
+    skanowania, sterowników maszyn. Tam połączenie nie zostanie zestawione
+    w ogóle, a komunikat błędu zwykle nie wskaże powodu. Dlatego warto najpierw
+    wiedzieć, z czym ta maszyna się łączy.
+  en: |
+    On a machine that connects only to contemporary systems the change is
+    invisible - the required level has been supported there for years.
+
+    The effect hits older devices and systems: file servers on outdated
+    software, multifunction devices with a scanning share, machine controllers.
+    There the connection is not established at all, and the error message
+    usually does not indicate why. It is therefore worth knowing first what this
+    machine connects to.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - file-sharing
+    - printing
+  what_breaks:
+    pl:
+      - Połączenia do serwerów plików na starszym oprogramowaniu nie zostaną zestawione
+      - Udział skanowania na urządzeniu wielofunkcyjnym może przestać przyjmować połączenia z tej maszyny
+      - Sterowniki maszyn i urządzenia przemysłowe z własną implementacją protokołu mogą odmówić połączenia
+    en:
+      - Connections to file servers running older software are not established
+      - A scanning share on a multifunction device may stop accepting connections from this machine
+      - Machine controllers and industrial devices with their own protocol implementation may refuse to connect
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna łączy się do urządzenia lub serwera, który nie obsługuje szyfrowania sesji
+      - Nie ustalono jeszcze, z jakimi systemami ta stacja wymienia pliki
+    en:
+      - The machine connects to a device or server that does not support session encryption
+      - It has not yet been established which systems this workstation exchanges files with
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'
+      $name = 'NTLMMinClientSec'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { [string][int]$item.$name }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '537395200'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'
+    $name = 'NTLMMinClientSec'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0' `
+      -Name 'NTLMMinClientSec' -Value 537395200 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-minimum-session-security-for-ntlm-ssp-based-including-secure-rpc-clients
+
+notes:
+  pl: |
+    Wartość jest sumą dwóch niezależnych wymagań zapisanych w jednej liczbie.
+    Dlatego nie należy jej „zaokrąglać" ani wpisywać wartości zbliżonej —
+    zmiana jednego bitu wyłącza całe wymaganie, a raport nadal pokaże liczbę
+    wyglądającą na wdrożoną.
+
+    Punkt tworzy parę z odpowiednikiem serwerowym. Klient chroni połączenia
+    wychodzące z tej maszyny, serwer — przychodzące do niej. Wdrożenie jednego
+    zostawia drugi kierunek na dotychczasowym poziomie.
+  en: |
+    The value is the sum of two independent requirements written into one
+    number. It should therefore not be "rounded" or replaced with something
+    close - changing a single bit switches a whole requirement off, while the
+    report still shows a number that looks deployed.
+
+    The item forms a pair with its server counterpart. The client protects
+    connections leaving this machine, the server those arriving at it. Rolling
+    out one leaves the other direction at its previous level.

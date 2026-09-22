@@ -1,0 +1,149 @@
+id: win11-ntlm-session-security-server
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Minimalne zabezpieczenie sesji serwera opartych na NTLM
+    en: Minimum session security for NTLM-based servers
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Odpowiednik punktu klienckiego dla ruchu przychodzącego. Stacja robocza
+    pełni rolę serwera częściej, niż się wydaje: przy każdym udziale plików,
+    przy zdalnym zarządzaniu, przy każdym połączeniu, w którym to ona odpowiada.
+
+    Bez progu po tej stronie napastnik nawiązuje połączenie, deklaruje niski
+    poziom zabezpieczeń i maszyna się na to godzi. Ustalenie progu odbiera mu
+    wybór: sesja bez szyfrowania i bez silnego potwierdzania spójności nie
+    zostanie przyjęta, niezależnie od tego, o co poprosi strona łącząca się.
+  en: |
+    The counterpart of the client item for inbound traffic. A workstation acts
+    as a server more often than it seems: at every file share, at remote
+    management, at every connection where it is the one answering.
+
+    Without a floor on this side, an attacker opens a connection, declares a low
+    security level and the machine goes along with it. Setting the floor takes
+    that choice away: a session without encryption and without strong integrity
+    confirmation is not accepted, whatever the connecting party asks for.
+
+disruption_description:
+  pl: |
+    Skutek dotyczy tego, co łączy się do tej maszyny. Na stacji bez
+    udostępnionych zasobów zmiana jest niewidoczna — nie ma połączeń
+    przychodzących, które mogłyby zostać odrzucone.
+
+    Tam, gdzie udziały istnieją, trzeba wiedzieć, kto z nich korzysta. Starsze
+    urządzenie zapisujące skany do katalogu na tej maszynie albo sterownik
+    maszyny pobierający stąd pliki przestanie się łączyć, a błąd zgłosi się po
+    ich stronie — czyli tam, gdzie nikt nie będzie szukał przyczyny.
+  en: |
+    The effect concerns whatever connects to this machine. On a workstation with
+    no shared resources the change is invisible - there are no inbound
+    connections that could be refused.
+
+    Where shares do exist, it has to be known who uses them. An older device
+    writing scans to a folder on this machine, or a machine controller fetching
+    files from here, stops connecting, and the error appears on their side -
+    that is, where nobody will look for the cause.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - file-sharing
+    - printing
+  what_breaks:
+    pl:
+      - Urządzenia zapisujące pliki na udziale tej maszyny mogą przestać się łączyć
+      - Starsze systemy pobierające stąd dane zgłoszą błąd połączenia po swojej stronie
+      - Narzędzia zdalnego zarządzania w starszych wersjach stracą dostęp do tej maszyny
+    en:
+      - Devices writing files to this machine's share may stop connecting
+      - Older systems fetching data from here report a connection error on their own side
+      - Older versions of remote management tools lose access to this machine
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Do udziału na tej maszynie łączy się urządzenie nieobsługujące szyfrowania sesji
+      - Nie ustalono jeszcze, co korzysta z zasobów udostępnionych przez tę stację
+    en:
+      - A device that does not support session encryption connects to a share on this machine
+      - It has not yet been established what uses the resources this workstation publishes
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'
+      $name = 'NTLMMinServerSec'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { [string][int]$item.$name }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '537395200'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'
+    $name = 'NTLMMinServerSec'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0' `
+      -Name 'NTLMMinServerSec' -Value 537395200 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-minimum-session-security-for-ntlm-ssp-based-including-secure-rpc-servers
+
+notes:
+  pl: |
+    Oba punkty tej pary warto wdrażać razem, w jednym oknie, i obserwować skutki
+    po obu stronach. Rozdzielenie ich w czasie utrudnia powiązanie zgłoszenia ze
+    zmianą, bo objawy wyglądają identycznie, a przyczyna leży w innym miejscu.
+
+    Punkt zestawia się z poziomem uwierzytelniania menedżera LAN i wymogiem
+    podpisywania SMB: tamte decydują, czego maszyna używa, ten — poniżej czego
+    nie zejdzie pod naciskiem drugiej strony.
+  en: |
+    Both items of this pair are worth rolling out together, in one window, and
+    watching the effects on both sides. Separating them in time makes it harder
+    to connect a support call with the change, because the symptoms look
+    identical while the cause sits elsewhere.
+
+    The item pairs with the LAN Manager authentication level and the SMB signing
+    requirement: those decide what the machine uses, this one what it will not
+    drop below under pressure from the other side.

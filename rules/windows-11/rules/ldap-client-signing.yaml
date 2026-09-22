@@ -1,0 +1,152 @@
+id: win11-ldap-client-signing
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Wymagania podpisywania klienta LDAP
+    en: LDAP client signing requirements
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zapytania do katalogu idą przez sieć i bez podpisu można je po drodze
+    podmienić. Odpowiedź jest dla maszyny źródłem wiedzy o tym, kto do jakiej
+    grupy należy i gdzie leżą zasoby — więc podmieniona odpowiedź jest sposobem
+    na kierowanie decyzjami maszyny bez dotykania jej samej.
+
+    Wymóg podpisywania sprawia, że każde zapytanie i każda odpowiedź niosą
+    potwierdzenie spójności. Napastnik w środku połączenia nadal widzi ruch, ale
+    nie może go zmienić tak, żeby druga strona tego nie zauważyła.
+  en: |
+    Directory queries travel over the network and, unsigned, can be altered on
+    the way. The answer is the machine's source of knowledge about who belongs
+    to which group and where resources live - so a substituted answer is a way
+    of steering the machine's decisions without touching the machine itself.
+
+    A signing requirement means every query and every answer carries an
+    integrity confirmation. An attacker in the middle of the connection still
+    sees the traffic but cannot change it without the other side noticing.
+
+disruption_description:
+  pl: |
+    Na maszynie poza domeną zmiana nie ma czego dotknąć — zapytania do katalogu
+    nie występują.
+
+    W domenie skutek zależy od tego, czy kontroler podpisywanie obsługuje. Jeśli
+    tak, a to norma od lat, wdrożenie jest niewidoczne. Jeśli nie, zapytania
+    przestaną dochodzić do skutku, a objawi się to opóźnieniem logowania albo
+    brakiem dostępu do zasobów, których nazwy pochodzą z katalogu.
+  en: |
+    On a machine outside a domain the change has nothing to touch - directory
+    queries do not occur.
+
+    In a domain the effect depends on whether the controller supports signing.
+    If it does, and it has been the norm for years, the rollout is invisible. If
+    it does not, queries stop completing, which shows up as a slow sign-in or as
+    missing access to resources whose names come from the directory.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Zapytania do katalogu nie dojdą do skutku, jeśli serwer nie obsługuje podpisywania
+      - Aplikacje odpytujące katalog własnym kodem mogą stracić dostęp bez czytelnego komunikatu
+      - Logowanie w domenie może się wydłużyć, jeśli zapytania kończą się odrzuceniem
+    en:
+      - Directory queries do not complete if the server does not support signing
+      - Applications querying the directory with their own code may lose access with no clear message
+      - Domain sign-in may take longer if queries end in rejection
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W sieci działa serwer katalogowy nieobsługujący podpisywania
+      - Aplikacja odpytująca katalog korzysta z własnej implementacji protokołu bez obsługi podpisu
+    en:
+      - The network runs a directory server that does not support signing
+      - An application querying the directory uses its own protocol implementation with no signing support
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LDAP'
+      $name = 'LDAPClientIntegrity'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string][int]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[12]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LDAP'
+    $name = 'LDAPClientIntegrity'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LDAP'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'LDAPClientIntegrity' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-ldap-client-signing-requirements
+
+notes:
+  pl: |
+    Sprawdzenie uznaje wartość wymuszającą podpis oraz mocniejszą od niej.
+    Odrzuca wyłącznie stan, w którym podpisywanie jest zupełnie pominięte —
+    czyli ten, w którym odpowiedź da się podmienić bez śladu.
+
+    Na maszynie poza domeną punkt pozostanie niespełniony, mimo że nic z tego
+    praktycznie nie wynika. Tak jak przy utwardzonych ścieżkach UNC, chodzi
+    o to, żeby konfiguracja była gotowa przed przyłączeniem do domeny.
+  en: |
+    The check accepts the value that enforces signing and anything stronger. It
+    rejects only the state in which signing is skipped altogether - the one in
+    which an answer can be substituted without a trace.
+
+    On a machine outside a domain the item stays unmet even though nothing
+    practical follows. As with the hardened UNC paths, the point is for the
+    configuration to be in place before the machine joins a domain.

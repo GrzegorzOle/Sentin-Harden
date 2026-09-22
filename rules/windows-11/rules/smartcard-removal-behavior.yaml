@@ -1,0 +1,151 @@
+id: win11-smartcard-removal-behavior
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Zachowanie po wyjęciu karty inteligentnej
+    en: Behaviour on smart card removal
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Logowanie kartą opiera się na założeniu, że karta jest przy osobie, a nie
+    przy komputerze. Jeśli wyjęcie karty niczego nie zmienia, założenie przestaje
+    obowiązywać: użytkownik odchodzi z kartą w kieszeni, a sesja zostaje otwarta
+    na jego koncie.
+
+    Zablokowanie stacji przy wyjęciu karty przywraca ten związek. Karta staje
+    się kluczem, który zabiera się ze sobą, i to samo urządzenie, które
+    potwierdza tożsamość przy wejściu, kończy sesję przy wyjściu — bez
+    polegania na pamięci użytkownika.
+  en: |
+    Card-based sign-in rests on the assumption that the card is with the person,
+    not with the computer. If removing the card changes nothing, that assumption
+    stops holding: the user walks away with the card in their pocket and the
+    session stays open on their account.
+
+    Locking the workstation on card removal restores the connection. The card
+    becomes a key you take with you, and the same device that confirms identity
+    on the way in ends the session on the way out - without relying on the
+    user's memory.
+
+disruption_description:
+  pl: |
+    Na maszynie, na której nikt nie loguje się kartą, ustawienie nie ma czego
+    wyzwolić i wdrożenie jest niewidoczne. Nie wymaga restartu ani wylogowania.
+
+    Tam, gdzie karty są używane, zmiana jest odczuwalna, ale w sposób, który
+    użytkownik rozumie od razu: wyjęcie karty blokuje ekran, jak zamknięcie
+    drzwi. Sesja nie jest kończona, więc otwarte dokumenty pozostają na swoim
+    miejscu i wracają po ponownym zalogowaniu.
+  en: |
+    On a machine where nobody signs in with a card the setting has nothing to
+    trigger on and the rollout is invisible. It needs no restart or sign-out.
+
+    Where cards are used, the change is felt, but in a way the user grasps
+    immediately: removing the card locks the screen, like closing a door. The
+    session is not ended, so open documents stay where they are and come back at
+    the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Wyjęcie karty w trakcie pracy zablokuje ekran i wymusi ponowne zalogowanie
+      - Stanowisko z czytnikiem używanym do innych celów zablokuje się przy każdym wyjęciu karty
+    en:
+      - Removing the card while working locks the screen and forces a new sign-in
+      - A station whose reader is used for other purposes locks at every card removal
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Czytnik na tym stanowisku służy do odczytu innych kart niż logowanie
+      - Stanowisko pracuje bez nadzoru w trybie, w którym zablokowanie ekranu przerywa proces
+    en:
+      - The reader on this station is used for cards other than sign-in
+      - The station runs unattended in a mode where a locked screen interrupts the process
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      $name = 'ScRemoveOption'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { ([string]$item.$name).Trim() }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[123]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'ScRemoveOption'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The value is text, not a number, despite looking like one - writing it as
+    # a number leaves an entry the system quietly ignores.
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+      -Name 'ScRemoveOption' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value ([string]$b.value) -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-smart-card-removal-behavior
+
+notes:
+  pl: |
+    Sprawdzenie uznaje blokadę stacji oraz dwa mocniejsze warianty: wylogowanie
+    i rozłączenie sesji zdalnej. Wszystkie kończą dostęp po wyjęciu karty —
+    różnią się tym, co dzieje się z otwartą pracą. Odrzucany jest wyłącznie
+    wariant, w którym nic się nie dzieje.
+
+    Naprawa ustawia blokadę, bo to jedyny wariant, który zamyka dostęp, nie
+    niszcząc niezapisanej pracy. Wylogowanie jest bezpieczniejsze, ale kosztem,
+    który użytkownik zapamięta i który skłoni go do zostawiania karty
+    w czytniku — czyli do obejścia całego mechanizmu.
+  en: |
+    The check accepts locking the workstation and two stronger variants: signing
+    out and disconnecting a remote session. All of them end access once the card
+    is removed - they differ in what happens to work in progress. Only the
+    variant in which nothing happens is rejected.
+
+    The remediation sets locking, because it is the only variant that closes
+    access without destroying unsaved work. Signing out is safer, but at a cost
+    the user remembers and which pushes them towards leaving the card in the
+    reader - that is, towards defeating the whole mechanism.

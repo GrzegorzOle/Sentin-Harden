@@ -1,0 +1,156 @@
+id: win11-restrict-ntlm-outgoing
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Ograniczenie wychodzącego ruchu NTLM do serwerów zdalnych
+    en: Restriction of outgoing NTLM traffic to remote servers
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uwierzytelnianie NTLM ma wadę, której nie da się naprawić ustawieniami:
+    maszyna wysyła odpowiedź wyliczoną z hasła do serwera, z którym się łączy,
+    nie sprawdzając wcześniej, czy to właściwy serwer. Napastnik, który skłoni
+    ją do połączenia u siebie — wystarczy skrót do udziału albo obraz w
+    dokumencie — dostaje materiał do złamania hasła albo do przekazania dalej.
+
+    Ten punkt pozwala najpierw zobaczyć skalę zjawiska, a potem je zatrzymać.
+    Rejestrowanie pokazuje, do których serwerów maszyna faktycznie używa NTLM;
+    dopiero z tą wiedzą da się przejść do blokowania bez psucia pracy.
+  en: |
+    NTLM authentication has a flaw no setting can repair: the machine sends a
+    response computed from the password to the server it connects to, without
+    first checking that it is the right server. An attacker who gets it to
+    connect to them - a shortcut to a share or an image in a document is enough
+    - receives material to crack the password or to relay onwards.
+
+    This item makes it possible first to see the scale of what is happening and
+    then to stop it. The audit mode shows which servers the machine actually
+    uses NTLM with; only with that knowledge can blocking follow without
+    breaking people's work.
+
+disruption_description:
+  pl: |
+    W trybie rejestrowania nic nie przestaje działać — powstają wyłącznie wpisy
+    w dzienniku. To dlatego punkt jest wykonalny na maszynie produkcyjnej bez
+    wcześniejszych ustaleń.
+
+    Tryb blokowania jest inną decyzją i zwykle boli: bez NTLM maszyna musi mieć
+    działające uwierzytelnianie oparte na biletach, a to wymaga rozpoznania
+    nazw serwerów i właściwej konfiguracji. Połączenia do serwerów wskazywanych
+    adresem zamiast nazwą przestają działać zawsze, bo dla nich bilet nie
+    powstaje.
+  en: |
+    In audit mode nothing stops working - only log entries appear. That is why
+    this item is feasible on a production machine with no prior groundwork.
+
+    Blocking mode is a different decision and usually hurts: without NTLM the
+    machine needs working ticket-based authentication, and that requires servers
+    to resolve by name and to be configured accordingly. Connections to servers
+    addressed by number rather than by name stop working in every case, because
+    no ticket can be issued for them.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - file-sharing
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - W trybie rejestrowania przybywa wpisów w dzienniku operacyjnym uwierzytelniania
+      - Po przejściu do blokowania połączenia do serwerów wskazywanych adresem przestaną działać
+      - Urządzenia i systemy bez obsługi uwierzytelniania opartego na biletach stracą dostęp
+    en:
+      - In audit mode the authentication operational log gains entries
+      - After moving to blocking, connections to servers addressed by number stop working
+      - Devices and systems with no ticket-based authentication lose access
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna łączy się do zasobów wskazywanych adresem, a nie nazwą
+      - Rozważane jest od razu blokowanie, bez wcześniejszego okresu rejestrowania
+    en:
+      - The machine connects to resources addressed by number rather than by name
+      - Blocking is being considered straight away, with no preceding audit period
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'
+      $name = 'RestrictSendingNTLMTraffic'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { [string][int]$item.$name }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[12]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'
+    $name = 'RestrictSendingNTLMTraffic'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Audit, not deny: blocking without knowing which servers rely on NTLM cuts
+    # access off, and the list only exists once the audit has run for a while.
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0' `
+      -Name 'RestrictSendingNTLMTraffic' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-restrict-ntlm-outgoing-ntlm-traffic-to-remote-servers
+
+notes:
+  pl: |
+    Sprawdzenie uznaje zarówno rejestrowanie, jak i blokowanie, bo oba są
+    stanami wdrożonymi — różnią się dojrzałością wdrożenia, nie kierunkiem.
+    Naprawa ustawia wariant rejestrujący, bo blokowanie bez znajomości listy
+    serwerów odcina dostęp, a listę daje dopiero rejestrowanie.
+
+    Wpisy trafiają do osobnego dziennika operacyjnego uwierzytelniania, nie do
+    dziennika zabezpieczeń. Warto o tym wiedzieć, zanim zacznie się ich szukać
+    tam, gdzie ich nie ma.
+  en: |
+    The check accepts both auditing and blocking, because both are deployed
+    states - they differ in the maturity of the rollout, not in direction. The
+    remediation sets the auditing variant, because blocking without knowing the
+    list of servers cuts access off, and only the auditing produces that list.
+
+    The entries go to a separate authentication operational log, not to the
+    security log. That is worth knowing before anyone starts looking for them
+    where they are not.

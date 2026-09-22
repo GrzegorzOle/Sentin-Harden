@@ -1,0 +1,195 @@
+id: win11-smb-server-idle-session-timeout
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Bezczynne sesje plikowe zawieszane po najwyżej 15 minutach
+    en: Idle file sessions suspended after fifteen minutes at most
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna udostępniająca pliki utrzymuje otwarte sesje tych, którzy się do niej
+    podłączyli. Sesja bezczynna, w której nikt niczego nie odczytuje ani nie
+    zapisuje, trwa dalej i zajmuje miejsce w wykazie połączeń.
+
+    Sesja otwarta jest sesją uwierzytelnioną. Napastnik, który zdobył dostęp do
+    maszyny klienta albo do jej połączenia, zastaje gotowe połączenie z zasobem —
+    bez konieczności podawania poświadczeń, bo podano je wcześniej. Zamykanie
+    sesji bezczynnych skraca czas, w którym takie gotowe wejście istnieje.
+
+    Drugim skutkiem jest porządek: wykaz połączeń przestaje zawierać sesje,
+    z których nikt nie korzysta od godzin. Przegląd tego, kto faktycznie sięga
+    po zasoby maszyny, staje się wtedy możliwy — wcześniej tonie w sesjach
+    zapomnianych.
+  en: |
+    A machine sharing files keeps open the sessions of those who have connected to
+    it. An idle session, in which nobody is reading or writing anything, carries on
+    and takes up a place in the list of connections.
+
+    An open session is an authenticated session. An attacker who has gained access
+    to a client machine or to its connection finds a ready connection to the
+    resource - with no need to supply credentials, because they were supplied
+    earlier. Closing idle sessions shortens the time such a ready way in exists.
+
+    The second effect is tidiness: the list of connections stops containing
+    sessions nobody has used for hours. A review of who actually reaches for the
+    machine's resources then becomes possible - before, it drowned in forgotten
+    sessions.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy z zasobów tej maszyny korzystają urządzenia albo
+    zadania trzymające połączenie otwarte bez ruchu.
+
+    Sesja zawieszona nie jest sesją zerwaną — klient nawiązuje ją ponownie sam,
+    przy pierwszej próbie odczytu, i użytkownik zwykle niczego nie zauważa.
+    Kłopot pojawia się tam, gdzie klient tego nie umie: przy starszych
+    urządzeniach i przy programach trzymających plik otwarty przez wiele godzin.
+
+    Objawem bywa błąd zapisu w programie, który miał otwarty plik na udziale,
+    albo zadanie przerwane po dłuższej przerwie w przetwarzaniu.
+
+    Praca biurowa tego nie odczuwa. Plik otwierany, edytowany i zapisywany
+    w ciągu kilkunastu minut mieści się w limicie, a każdy ruch na sesji liczy
+    czas od nowa.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym uruchomieniu usługi
+    udostępniania albo przy następnym starcie systemu.
+  en: |
+    What needs checking is whether devices or jobs that hold a connection open
+    without traffic use this machine's resources.
+
+    A suspended session is not a broken one - the client re-establishes it by
+    itself at the first attempt to read, and the user usually notices nothing. The
+    trouble appears where the client cannot do that: with older devices and with
+    programs holding a file open for many hours.
+
+    The symptom tends to be a write error in a program that had a file open on a
+    share, or a job broken off after a longer pause in processing.
+
+    Office work does not feel it. A file opened, edited and saved within a quarter
+    of an hour fits inside the limit, and every piece of traffic on the session
+    restarts the count.
+
+    There is no machine restart. The change takes effect once the sharing service
+    restarts, or at the next system start.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+  what_breaks:
+    pl:
+      - Programy trzymające plik otwarty na udziale przez wiele godzin bez zapisu mogą zgłosić błąd przy kolejnym zapisie
+      - Starsze urządzenia niepotrafiące nawiązać sesji ponownie stracą dostęp do zasobów maszyny
+    en:
+      - Programs holding a file open on a share for many hours without writing may report an error at the next write
+      - Older devices unable to re-establish a session lose access to the machine's resources
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Z zasobów maszyny korzysta urządzenie albo zadanie trzymające połączenie otwarte godzinami bez ruchu i niepotrafiące nawiązać go ponownie
+    en:
+      - The machine's resources are used by a device or job holding a connection open for hours without traffic and unable to re-establish it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is read as a 64-bit number, because the registry keeps it
+      # unsigned and the largest possible value stands for "never suspend".
+      # Reading it as a 32-bit number would turn that into minus one.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      $name = 'AutoDisconnect'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'MISSING' }
+        else {
+          $minutes = [int64]$value
+          if ($minutes -ge 4294967295 -or $minutes -lt 0) { 'NEVER' }
+          elseif ($minutes -le 15) { 'WITHIN_LIMIT' }
+          else { 'OVER_LIMIT ' + $minutes }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: WITHIN_LIMIT
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'AutoDisconnect'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AutoDisconnect' -Value 15 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/microsoft-network-server-amount-of-idle-time-required-before-suspending-session
+
+notes:
+  pl: |
+    Reguła zgłasza osobno przypadek, w którym sesje nie są zawieszane nigdy.
+    Wartość oznaczająca „nigdy" jest w rejestrze największą możliwą liczbą
+    i porównanie liczbowe uznałoby ją po prostu za przekroczenie limitu. Wynik
+    „nigdy" mówi jednak co innego niż limit ustawiony na godzinę i raport
+    powinien te dwa przypadki rozróżniać.
+
+    Punkt dotyczy maszyny jako udostępniającej zasoby, czyli tej strony, która
+    sesje przyjmuje. Na typowym stanowisku roboczym, które niczego nie
+    udostępnia, jest spełniony i bez skutku jednocześnie — stąd klasa wymagająca
+    sprawdzenia, bo to, czy skutek wystąpi, zależy od roli maszyny, a nie od
+    samego ustawienia.
+  en: |
+    The rule reports apart the case in which sessions are never suspended. The
+    value meaning "never" is the largest possible number in the registry, and a
+    numeric comparison would count it simply as the limit exceeded. A result of
+    "never" says something different from a limit set to an hour, though, and a
+    report ought to tell the two apart.
+
+    The item concerns the machine as a sharer of resources, that is, the side that
+    accepts sessions. On a typical working station that shares nothing it is met
+    and without effect at the same time - hence the needs-review class, since
+    whether an effect appears depends on the machine's role rather than on the
+    setting itself.

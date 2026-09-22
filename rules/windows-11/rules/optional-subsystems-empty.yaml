@@ -1,0 +1,188 @@
+id: win11-optional-subsystems-empty
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Lista opcjonalnych środowisk uruchomieniowych pusta
+    en: The list of optional runtime environments left empty
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Oprócz podstawowego środowiska uruchomieniowego system potrafi wystartować
+    środowiska dodatkowe, pozwalające uruchamiać programy napisane pod inne
+    interfejsy. Lista takich środowisk jest wpisana w rejestr i czytana przy
+    starcie maszyny.
+
+    Każde dodatkowe środowisko to osobna droga do uruchomienia kodu, z własnym
+    sposobem sprawdzania uprawnień i własnym zestawem błędów. Środowiska te są
+    zwykle znacznie starsze od reszty systemu i nie podlegają temu samemu
+    utwardzaniu — mechanizmy chroniące pamięć i ograniczające przywileje nie
+    zawsze sięgają do nich w tej samej postaci.
+
+    Dla napastnika jest to droga obok tej, którą pilnuje się na co dzień. Lista
+    ma być pusta, bo na stanowisku roboczym żadne z tych środowisk nie jest
+    potrzebne, a każde obecne poszerza powierzchnię, której nikt nie ogląda.
+  en: |
+    Besides the main runtime environment, the system can start additional ones that
+    allow programs written for other interfaces to run. The list of such
+    environments is written in the registry and read when the machine starts.
+
+    Every additional environment is a separate road to running code, with a way of
+    checking permissions of its own and a set of flaws of its own. These
+    environments are usually far older than the rest of the system and are not
+    subject to the same hardening - the mechanisms protecting memory and limiting
+    privileges do not always reach them in the same form.
+
+    For an attacker it is a road running alongside the one watched day to day. The
+    list is to be empty, because no such environment is needed at a working station
+    and every one present widens a surface nobody looks at.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać na maszynie z aktualnym oprogramowaniem. Lista jest
+    domyślnie pusta i punkt ten zwykle tylko utrwala stan istniejący.
+
+    Jeżeli wpis istnieje, coś go wprowadziło — i wtedy opróżnienie listy odetnie
+    program, który z tego środowiska korzysta. W praktyce spotyka się to przy
+    oprogramowaniu przeniesionym z innych platform i przy narzędziach
+    deweloperskich, które instalują własne środowisko przy starcie systemu.
+
+    Objawem jest program, który przestaje się uruchamiać, zwykle z błędem
+    o nieodnalezionym interfejsie albo z komunikatem systemu o nieobsługiwanym
+    pliku wykonywalnym.
+
+    Dlatego przed wdrożeniem warto odczytać zawartość listy. Reguła podaje
+    odczytane wpisy razem z wynikiem.
+
+    Zmiana wymaga ponownego uruchomienia maszyny, żeby zaczęła obowiązywać —
+    lista jest czytana przy starcie.
+  en: |
+    Nothing stops working on a machine with current software. The list is empty by
+    default and this item usually just makes the existing state permanent.
+
+    If an entry exists, something put it there - and then emptying the list will
+    cut off the program that uses that environment. In practice this is met with
+    software ported from other platforms and with developer tools that install an
+    environment of their own at system start.
+
+    The symptom is a program that stops starting, usually with an error about an
+    interface not found or a system message about an unsupported executable.
+
+    This is why it is worth reading the list's contents before applying the change.
+    The rule reports the entries it read together with the result.
+
+    The change requires the machine to be restarted before it takes effect - the
+    list is read at start-up.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Programy uruchamiane przez dodatkowe środowisko przestaną się uruchamiać po restarcie maszyny
+      - Narzędzia deweloperskie instalujące własne środowisko przy starcie systemu mogą zgłaszać nieodnaleziony interfejs
+    en:
+      - Programs run through an additional environment stop starting once the machine restarts
+      - Developer tools installing an environment of their own at system start may report an interface not found
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku działa program wymagający dodatkowego środowiska uruchomieniowego wpisanego na tę listę
+    en:
+      - The station runs a program requiring an additional runtime environment entered on this list
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value holds a list of entries, not a number. A missing value and a
+      # list with nothing on it mean the same thing here - no additional
+      # environment is started - so both are reported as empty.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems'
+      $name = 'Optional'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'EMPTY' }
+        else {
+          $entries = @($value | Where-Object { $_ -ne '' })
+          if ($entries.Count -eq 0) { 'EMPTY' } else { 'ENTRIES ' + ($entries -join ',') }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: EMPTY
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems'
+    $name = 'Optional'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = @($current)
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Optional' -Value @() -Type MultiString
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value @($b.value) -Type MultiString
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/system-settings-optional-subsystems
+
+notes:
+  pl: |
+    Opróżnienie listy nie usuwa z dysku plików środowiska, którego dotyczy wpis.
+    Powstrzymuje wyłącznie jego uruchamianie przy starcie maszyny. Jest to
+    różnica istotna przy ocenie skutku: wycofanie polega na przywróceniu wpisu,
+    a nie na ponownej instalacji czegokolwiek.
+
+    Klucz sąsiaduje z wpisem opisującym środowisko podstawowe. Polecenie naprawcze
+    zmienia wyłącznie wartość opcjonalną i nie dotyka wpisu obowiązkowego —
+    zmiana tego drugiego uniemożliwiłaby start maszyny.
+  en: |
+    Emptying the list does not remove from disk the files of the environment an
+    entry refers to. It only stops it being started when the machine starts. The
+    distinction matters when judging the effect: the rollback consists in restoring
+    the entry, not in reinstalling anything.
+
+    The key neighbours the entry describing the main environment. The fix changes
+    the optional value alone and does not touch the mandatory entry - changing that
+    one would leave the machine unable to start.

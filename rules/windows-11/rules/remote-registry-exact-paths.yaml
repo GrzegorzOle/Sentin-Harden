@@ -1,0 +1,196 @@
+id: win11-remote-registry-exact-paths
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Lista gałęzi rejestru dostępnych zdalnie ograniczona do trzech pozycji
+    en: The list of registry keys reachable remotely limited to three entries
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna pozwala odczytać przez sieć wskazane gałęzie rejestru także wtedy, gdy
+    ogólny dostęp do rejestru jest zamknięty. Lista tych gałęzi jest wpisana
+    w rejestr i obejmuje wyłącznie je same, bez tego, co pod nimi leży.
+
+    Gałęzie z tej listy są czytane przez narzędzia sprawdzające wersję systemu
+    i zainstalowane role. Rzecz w tym, że lista jest wykazem wyjątków od zamknięcia
+    rejestru — a wyjątek dopisany kiedyś do rozwiązania problemu zostaje tam na
+    lata i otwiera przez sieć dokładnie to, co wskazuje.
+
+    Punkt sprowadza listę do trzech pozycji przewidzianych przez benchmark.
+    Wszystko ponadto jest otwarciem, którego nikt nie pamięta, a które działa.
+  en: |
+    The machine allows given registry keys to be read over the network even when
+    general access to the registry is closed. The list of those keys is written in
+    the registry and covers them alone, without what lies beneath them.
+
+    Keys on this list are read by tools checking the system version and the roles
+    installed. The point is that the list is a record of exceptions to the
+    registry's closure - and an exception added once to solve a problem stays there
+    for years and opens over the network exactly what it names.
+
+    The item reduces the list to the three entries the benchmark provides for.
+    Anything beyond that is an opening nobody remembers and which works.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, co na liście stoi ponad trzema pozycjami wzorcowymi
+    i co z tego korzysta.
+
+    Skrócenie listy odetnie narzędzia odczytujące przez sieć gałąź, która z niej
+    zniknie. Są to zwykle systemy inwentaryzacyjne, narzędzia monitorujące
+    i skanery, sięgające po dane o wersji oprogramowania albo o konfiguracji
+    konkretnego produktu. Objawem jest brak danych w raporcie narzędzia, a nie
+    błąd na stanowisku.
+
+    Praca użytkownika nie zmienia się w niczym.
+
+    Reguła podaje odczytaną listę razem z wynikiem właśnie po to, żeby dało się
+    ocenić skutek przed zmianą. Wpis, który trzeba zachować, jest decyzją
+    wdrożeniową — ale ma być decyzją, a nie pozostałością.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym uruchomieniu usługi
+    zdalnego rejestru albo przy następnym starcie systemu.
+  en: |
+    What needs checking is what stands on the list beyond the three model entries,
+    and what uses it.
+
+    Shortening the list will cut off tools reading over the network a key that
+    disappears from it. These are usually inventory systems, monitoring tools and
+    scanners reaching for data about a software version or about a particular
+    product's configuration. The symptom is missing data in the tool's report, not
+    an error at the station.
+
+    A user's work does not change in any way.
+
+    The rule reports the list it read together with the result precisely so the
+    effect can be judged before the change. An entry that has to be kept is a
+    deployment decision - but it is to be a decision, not a leftover.
+
+    There is no machine restart. The change takes effect once the remote registry
+    service restarts, or at the next system start.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Narzędzia odczytujące przez sieć gałąź usuniętą z listy przestaną zbierać z tej maszyny dane
+      - Skanery i systemy inwentaryzacyjne mogą zgłaszać brak danych zamiast wyniku
+    en:
+      - Tools reading over the network a key removed from the list stop gathering data from this machine
+      - Scanners and inventory systems may report missing data instead of a result
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Z gałęzi spoza listy wzorcowej korzysta narzędzie zarządzające, którego nie da się jeszcze przestawić na inny sposób odczytu
+    en:
+      - A key outside the model list is used by a management tool that cannot yet be switched to another way of reading
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The list is compared as a set, without regard to order or letter case,
+      # because neither carries meaning here. A list that differs is reported
+      # together with its contents rather than as a bare failure.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedExactPaths'
+      $name = 'Machine'
+      $expected = @(
+        'System\CurrentControlSet\Control\ProductOptions',
+        'System\CurrentControlSet\Control\Server Applications',
+        'SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+      )
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = @($item.$name | Where-Object { $null -ne $_ -and $_ -ne '' })
+        $left = ($value | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join '|'
+        $right = ($expected | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join '|'
+        if ($left -eq $right) { 'EXACT_MATCH' }
+        elseif ($value.Count -eq 0) { 'EMPTY' }
+        else { 'OTHER ' + ($value -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: EXACT_MATCH
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedExactPaths'
+    $name = 'Machine'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = @($current)
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedExactPaths'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    $value = @(
+      'System\CurrentControlSet\Control\ProductOptions',
+      'System\CurrentControlSet\Control\Server Applications',
+      'SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    )
+    Set-ItemProperty -Path $path -Name 'Machine' -Value $value -Type MultiString
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value @($b.value) -Type MultiString
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-remotely-accessible-registry-paths
+
+notes:
+  pl: |
+    Gałąź, w której leży ta lista, jest czytelna wyłącznie dla administratorów.
+    Uruchomienie audytu bez podniesionych uprawnień kończy się stanem „nie udało
+    się sprawdzić", a nie wynikiem negatywnym — i jest to zachowanie właściwe.
+    Punkt, którego nie dało się sprawdzić, nie jest punktem niespełnionym.
+
+    Lista obejmuje wyłącznie wskazane gałęzie, bez tego, co pod nimi. Osobna
+    lista — obejmująca gałęzie wraz z zawartością — jest przedmiotem odrębnego
+    punktu benchmarku i odrębnej reguły. Nazwy obu są mylące o tyle, że różnią
+    się właśnie tym jednym słowem.
+  en: |
+    The key this list sits in is readable by administrators only. Running the audit
+    without raised privileges ends in a "could not be checked" state rather than a
+    negative result - and that is the right behaviour. An item that could not be
+    checked is not an item unmet.
+
+    The list covers the named keys alone, without what lies beneath them. A
+    separate list - covering keys together with their contents - is the subject of
+    a separate benchmark item and a separate rule. The two names are misleading
+    inasmuch as they differ by that one word.

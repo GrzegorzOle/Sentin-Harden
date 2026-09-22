@@ -1,0 +1,176 @@
+id: win11-system-objects-case-insensitivity
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Nazwy obiektów systemowych rozpatrywane bez rozróżniania wielkości liter
+    en: System object names treated without distinguishing letter case
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System nadaje nazwy obiektom, którymi zarządza: plikom, urządzeniom,
+    znacznikom synchronizacji, kanałom. Część systemu rozpatruje te nazwy bez
+    rozróżniania wielkości liter, część — z rozróżnianiem. Bez tego punktu
+    środowiska uruchomieniowe inne niż podstawowe mogą stosować rozróżnianie.
+
+    Powstaje wtedy różnica, którą da się wykorzystać: obiekt o nazwie zapisanej
+    inaczej pod względem wielkości liter jest dla jednej części systemu tym samym
+    obiektem, a dla drugiej innym. Napastnik zakłada obiekt o nazwie różniącej
+    się tylko tym i doprowadza do sytuacji, w której sprawdzenie uprawnień
+    dotyczy jednego obiektu, a użycie — drugiego.
+
+    Jest to klasa błędów trudna do wykrycia w przeglądzie kodu, bo obie nazwy
+    wyglądają jak ta sama. Punkt usuwa różnicę u źródła, zamiast kazać każdemu
+    programowi pamiętać o niej z osobna.
+  en: |
+    The system gives names to the objects it manages: files, devices,
+    synchronisation markers, pipes. Part of the system treats those names without
+    distinguishing letter case, part with. Without this item runtime environments
+    other than the main one may apply the distinction.
+
+    A difference then arises that can be exploited: an object whose name differs
+    only in case is the same object to one part of the system and a different one
+    to another. An attacker creates an object whose name differs only in that and
+    brings about a situation where the permission check concerns one object and the
+    use concerns another.
+
+    It is a class of flaw hard to catch in a code review, because both names look
+    like the same name. The item removes the difference at its source, instead of
+    asking every program to remember it separately.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać w typowej pracy. Podstawowe środowisko systemu i tak
+    nie rozróżnia wielkości liter, więc dla programów uruchamianych na stanowisku
+    zmiana jest bez znaczenia.
+
+    Skutek może pojawić się tam, gdzie na maszynie działa środowisko uruchomieniowe
+    przeniesione z systemu rozróżniającego wielkość liter — narzędzia programistyczne,
+    warstwy zgodności, oprogramowanie przeniesione z innej platformy. Jeżeli taki
+    program opiera się na tym, że dwie nazwy różniące się wielkością liter oznaczają
+    dwa różne obiekty, przestanie działać poprawnie.
+
+    W praktyce spotyka się to rzadko i zwykle przy narzędziach deweloperskich, a nie
+    przy oprogramowaniu biurowym. Objawem bywa konflikt nazw albo nadpisanie pliku,
+    który miał być osobny.
+
+    Zmiana wymaga ponownego uruchomienia maszyny, żeby zaczęła obowiązywać.
+  en: |
+    Nothing stops working in ordinary use. The system's main environment does not
+    distinguish case anyway, so for programs run at a station the change means
+    nothing.
+
+    An effect may appear where a runtime environment carried over from a
+    case-distinguishing system runs on the machine - developer tooling,
+    compatibility layers, software ported from another platform. If such a program
+    relies on two names differing in case meaning two different objects, it will
+    stop working correctly.
+
+    In practice this is met rarely and usually with developer tools rather than
+    office software. The symptom tends to be a name clash or a file overwritten
+    that was meant to be separate.
+
+    The change requires the machine to be restarted before it takes effect.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Narzędzia przeniesione z systemu rozróżniającego wielkość liter mogą mylić dwa obiekty o nazwach różniących się tylko wielkością liter
+      - Środowiska zgodności używane przez programistów mogą zgłaszać konflikty nazw albo nadpisywać pliki, które miały być osobne
+    en:
+      - Tools ported from a case-distinguishing system may confuse two objects whose names differ only in case
+      - Compatibility environments used by developers may report name clashes or overwrite files that were meant to be separate
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku działa środowisko uruchomieniowe wymagające rozróżniania wielkości liter w nazwach obiektów
+    en:
+      - The station runs a runtime environment that requires letter case to be distinguished in object names
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel'
+      $name = 'ObCaseInsensitive'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel'
+    $name = 'ObCaseInsensitive'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ObCaseInsensitive' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/system-objects-require-case-insensitivity-for-non-windows-subsystems
+
+notes:
+  pl: |
+    Punkt wymaga ponownego uruchomienia maszyny, więc nie należy do klasy
+    nadającej się do zastosowania hurtem mimo braku widocznych skutków. Cofnięcie
+    również wymaga restartu — zapisałem to w polu o odwracalności.
+
+    Reguła czyta wartość obowiązującą całą maszynę i nie sprawdza, czy na
+    stanowisku w ogóle działa jakiekolwiek środowisko uruchomieniowe, którego
+    to dotyczy. Wynik mówi o ustawieniu, nie o tym, czy ma ono co robić.
+  en: |
+    The item requires the machine to be restarted, so it does not belong to the
+    class fit for bulk application despite the absence of visible effects. Undoing
+    it also requires a restart - recorded in the reversibility field.
+
+    The rule reads a value covering the whole machine and does not check whether
+    any runtime environment this concerns runs at the station at all. The result
+    speaks of the setting, not of whether it has anything to do.

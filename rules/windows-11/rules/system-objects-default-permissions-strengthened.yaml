@@ -1,0 +1,177 @@
+id: win11-system-objects-default-permissions-strengthened
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Wzmocnione uprawnienia domyślne wewnętrznych obiektów systemu
+    en: Strengthened default permissions on the system's internal objects
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System utrzymuje wewnętrzny katalog obiektów, których programy używają do
+    porozumiewania się między sobą: znaczników synchronizacji, obszarów pamięci
+    dzielonej, kolejek zdarzeń. Obiekty te powstają w locie i dostają uprawnienia
+    domyślne, których nikt świadomie nie nadaje.
+
+    Bez tego punktu uprawnienia domyślne pozwalają dowolnemu procesowi sięgnąć po
+    obiekt utworzony przez inny proces. Napastnik wykorzystuje to, zakładając
+    obiekt o nazwie, której spodziewa się program uprzywilejowany, i podstawiając
+    mu własną treść — albo przejmując obiekt już istniejący i zmieniając to, co
+    program przez niego przekazuje.
+
+    Punkt wzmacnia uprawnienia domyślne tak, żeby obiekt należał do tego, kto go
+    założył. Nie zmienia to niczego w programach nadających uprawnienia świadomie;
+    działa wyłącznie tam, gdzie nikt o uprawnieniach nie pomyślał.
+  en: |
+    The system keeps an internal catalogue of objects programs use to talk to one
+    another: synchronisation markers, areas of shared memory, event queues. These
+    objects come into being on the fly and get default permissions that nobody
+    deliberately grants.
+
+    Without this item the default permissions let any process reach for an object
+    created by another. An attacker exploits this by creating an object under a
+    name a privileged program expects and planting their own content in it - or by
+    taking over an existing object and changing what the program passes through it.
+
+    The item strengthens the default permissions so that an object belongs to
+    whoever created it. This changes nothing in programs that set permissions
+    deliberately; it works only where nobody gave permissions a thought.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać w typowej pracy. Wzmocnione uprawnienia są
+    zachowaniem domyślnym od wielu wydań systemu i punkt ten zwykle tylko
+    utrwala stan istniejący.
+
+    Skutek może pojawić się przy bardzo starym oprogramowaniu, w którym dwa
+    procesy działające na różnych kontach porozumiewają się przez obiekt założony
+    bez nadania uprawnień. Po wzmocnieniu uprawnień drugi proces nie sięgnie po
+    obiekt pierwszego. Objawem jest zawieszenie programu w oczekiwaniu albo błąd
+    o braku dostępu do zasobu o nazwie, która niczego nie mówi użytkownikowi.
+
+    Dotyczy to głównie oprogramowania przemysłowego i branżowego sprzed
+    kilkunastu lat, w którym część pracuje jako usługa, a część jako program
+    użytkownika.
+
+    Zmiana wymaga ponownego uruchomienia maszyny, żeby zaczęła obowiązywać.
+  en: |
+    Nothing stops working in ordinary use. Strengthened permissions have been the
+    default behaviour for many releases of the system, and this item usually just
+    makes the existing state permanent.
+
+    An effect may appear with very old software in which two processes running
+    under different accounts talk through an object created without permissions
+    being set. Once permissions are strengthened, the second process will not reach
+    the first one's object. The symptom is a program hanging while it waits, or an
+    error about no access to a resource whose name tells the user nothing.
+
+    This concerns mainly industrial and trade software over a decade old, in which
+    one part runs as a service and another as a user program.
+
+    The change requires the machine to be restarted before it takes effect.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Bardzo stare oprogramowanie, w którym usługa i program użytkownika porozumiewają się przez obiekt bez nadanych uprawnień, może przestać działać
+      - Objawem bywa zawieszenie programu w oczekiwaniu albo błąd o braku dostępu do zasobu o nieczytelnej nazwie
+    en:
+      - Very old software in which a service and a user program talk through an object with no permissions set may stop working
+      - The symptom tends to be a program hanging while it waits, or an error about no access to a resource with an unreadable name
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku działa oprogramowanie branżowe, którego części porozumiewają się przez obiekty systemowe bez nadanych uprawnień
+    en:
+      - The station runs trade software whose parts talk through system objects with no permissions set
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+      $name = 'ProtectionMode'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+    $name = 'ProtectionMode'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ProtectionMode' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/system-objects-strengthen-default-permissions-of-internal-system-objects
+
+notes:
+  pl: |
+    Klucz, w którym leży ta wartość, zarządza rozruchem systemu i sąsiaduje
+    z ustawieniami, których nieostrożna zmiana potrafi uniemożliwić start
+    maszyny. Polecenie naprawcze zmienia wyłącznie jedną nazwaną wartość i nie
+    dotyka niczego obok — ale przy ręcznej pracy w tym miejscu warto o tym
+    pamiętać.
+
+    Wycofanie przywraca poprzedni stan, lecz również dopiero po restarcie.
+    Do czasu ponownego uruchomienia maszyna pracuje na ustawieniu sprzed zmiany,
+    niezależnie od tego, co pokazuje rejestr.
+  en: |
+    The key this value sits in governs the system's start-up and neighbours
+    settings whose careless change can leave the machine unable to start. The fix
+    changes one named value only and touches nothing beside it - but it is worth
+    remembering while working by hand in this place.
+
+    The rollback restores the previous state, but likewise only after a restart.
+    Until the machine is restarted it runs on the setting from before the change,
+    whatever the registry shows.

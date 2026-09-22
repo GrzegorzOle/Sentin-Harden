@@ -1,0 +1,194 @@
+id: win11-smb-server-name-hardening
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Weryfikacja nazwy, pod którą klient łączy się z zasobami maszyny
+    en: Verification of the name a client connects to the machine's resources by
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Klient łączący się z udziałem plikowym podaje nazwę, pod którą spodziewa się
+    zastać maszynę. Bez tego punktu maszyna nie sprawdza, czy podana nazwa
+    rzeczywiście jest jej nazwą — przyjmuje połączenie niezależnie od tego, pod
+    jaki adres klient w istocie trafił.
+
+    Otwiera to atak polegający na przekierowaniu: napastnik doprowadza do tego,
+    żeby maszyna klienta, chcąc połączyć się z serwerem plików, trafiła do niego,
+    a on przekazuje to połączenie dalej — do prawdziwego serwera, podając się za
+    klienta. Uwierzytelnienie przechodzi, bo odpowiedzi klienta są prawdziwe,
+    tylko kierowane nie tam, gdzie klient sądzi.
+
+    Weryfikacja nazwy przerywa ten łańcuch. Maszyna przyjmuje połączenie tylko
+    wtedy, gdy nazwa, na którą klient się uwierzytelnił, jest jej własną nazwą —
+    a w ataku z przekierowaniem nie jest.
+  en: |
+    A client connecting to a file share supplies the name it expects to find the
+    machine under. Without this item the machine does not check whether the name
+    supplied is really its own - it accepts the connection regardless of which
+    address the client actually reached.
+
+    This opens an attack based on redirection: the attacker arranges for a client
+    machine wanting to connect to a file server to reach them instead, and they
+    pass the connection on - to the real server, posing as the client.
+    Authentication succeeds, because the client's answers are genuine, only
+    directed somewhere other than the client believes.
+
+    Verifying the name breaks that chain. The machine accepts a connection only
+    when the name the client authenticated against is its own - and in a
+    redirection attack it is not.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, pod iloma nazwami maszyna jest osiągalna w sieci.
+
+    Maszyna dostępna wyłącznie pod własną nazwą nie odczuje niczego. Kłopot
+    pojawia się tam, gdzie zasoby udostępnia się pod nazwą dodatkową: aliasem
+    w usłudze nazw, nazwą klastra, wpisem wskazującym na maszynę pod inną nazwą
+    niż jej własna. Połączenia kierowane pod taką nazwę zostaną odrzucone,
+    jeżeli nazwa nie została maszynie przypisana.
+
+    Objawem jest odmowa dostępu do udziału podanego przez alias, przy
+    jednoczesnym działaniu tego samego udziału podanego przez nazwę właściwą —
+    objaw charakterystyczny i łatwy do rozpoznania, jeśli się go spodziewać.
+
+    Wdrożenie w środowisku korzystającym z aliasów wymaga uprzedniego dopisania
+    ich do nazw, pod którymi maszyna się rozpoznaje. Jest to osobna czynność
+    i tego reguła nie robi.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym uruchomieniu usługi
+    udostępniania albo przy następnym starcie systemu.
+  en: |
+    What needs checking is how many names the machine is reachable by on the
+    network.
+
+    A machine reachable only under its own name will feel nothing. The trouble
+    appears where resources are shared under an additional name: an alias in the
+    name service, a cluster name, an entry pointing at the machine under a name
+    other than its own. Connections directed at such a name will be refused if the
+    name has not been assigned to the machine.
+
+    The symptom is access denied to a share addressed by the alias while the same
+    share addressed by the proper name works - a distinctive symptom, easy to
+    recognise if it is expected.
+
+    Applying this in an environment that uses aliases requires them to be added
+    first to the names the machine recognises itself by. That is a separate task
+    and the rule does not do it.
+
+    There is no machine restart. The change takes effect once the sharing service
+    restarts, or at the next system start.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-authentication
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Połączenia z udziałami maszyny podanymi przez alias w usłudze nazw zostaną odrzucone, jeśli alias nie jest maszynie przypisany
+      - Skróty i zadania odwołujące się do maszyny nazwą inną niż jej własna przestaną działać
+    en:
+      - Connections to the machine's shares addressed by an alias in the name service are refused if the alias is not assigned to the machine
+      - Shortcuts and jobs referring to the machine by a name other than its own stop working
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zasoby maszyny są udostępniane pod nazwą dodatkową, której nie dopisano do nazw rozpoznawanych przez maszynę
+    en:
+      - The machine's resources are shared under an additional name that has not been added to the names the machine recognises
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Two settings satisfy the item: accepting the name when the client gives
+      # one, and demanding it always. They are reported under one token, because
+      # the item is met by either, and the stricter one is a deployment choice.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      $name = 'SmbServerNameHardeningLevel'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'MISSING' }
+        elseif ([int]$value -ge 1) { 'VERIFIED' }
+        else { 'NOT_VERIFIED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: VERIFIED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'SmbServerNameHardeningLevel'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SmbServerNameHardeningLevel' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/microsoft-network-server-server-spn-target-name-validation-level
+
+notes:
+  pl: |
+    Naprawa ustawia wariant łagodniejszy: weryfikuj nazwę, gdy klient ją poda.
+    Wariant ostrzejszy — żądaj nazwy zawsze — również spełnia punkt i reguła go
+    nie podważa, dlatego oba wyniki zgłaszam jednym znacznikiem. Wybrałem
+    łagodniejszy, bo ostrzejszy odcina klientów, którzy nazwy nie podają,
+    a takie wciąż się zdarzają.
+
+    Punkt broni maszyny jako udostępniającej zasoby. Symetryczna obrona po
+    stronie klienta — przed połączeniem się z serwerem podstawionym — leży
+    w regułach o podpisywaniu ruchu plikowego, a nie tutaj.
+  en: |
+    The fix sets the milder variant: verify the name when the client supplies one.
+    The stricter variant - demand a name always - also meets the item and the rule
+    does not dispute it, which is why both results are reported under one token.
+    The milder one was chosen because the stricter cuts off clients that supply no
+    name, and such clients still occur.
+
+    The item defends the machine as a sharer of resources. The matching defence on
+    the client side - against connecting to a substituted server - lies in the
+    rules about signing file traffic, not here.

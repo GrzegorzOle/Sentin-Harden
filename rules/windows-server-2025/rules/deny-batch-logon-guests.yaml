@@ -1,0 +1,243 @@
+id: win2025-deny-batch-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania w trybie wsadowym dla grupy Goście
+    en: Deny batch job sign-in for the Guests group
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Logowanie w trybie wsadowym jest drogą, którą wchodzi zadanie
+    harmonogramu. Nie ma tu nikogo przy klawiaturze: system loguje konto
+    wskazane w definicji zadania, wykonuje polecenie i wylogowuje je
+    z powrotem.
+
+    Droga ta jest pod pewnym względem gorsza od pozostałych i właśnie to
+    czyni ją wartą zamknięcia. Zadanie harmonogramu nie wymaga niczyjej
+    obecności, uruchamia się samo i powtarza w nieskończoność. Konto,
+    które może się tak zalogować, ma w praktyce dostęp trwały,
+    niezależny od tego, czy ktokolwiek siedzi przy maszynie.
+
+    Na serwerze waży to więcej niż na stanowisku roboczym z powodu
+    ciągłości pracy. Serwer działa bez przerwy, więc zadanie
+    harmonogramu może uruchamiać się co minutę przez miesiące i nikt tego
+    nie zauważy — nie ma kogoś, kto codziennie patrzy na tę maszynę.
+
+    Zapis odmowy ma pierwszeństwo nad zgodą i obowiązuje niezależnie od
+    tego, czy konto gościa jest włączone. Jest to zabezpieczenie
+    trwalsze niż samo wyłączenie konta.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    utrwalenia obecności na serwerze zadaniem uruchamianym cyklicznie
+    na koncie, którego nikt nie pilnuje.
+  en: |
+    A batch sign-in is the road a scheduled task comes in by. There is nobody at the keyboard
+    here: the system signs in the account named in the task's definition, carries the command
+    out and signs it back out.
+
+    That road is in one respect worse than the rest, and that is just what makes it worth
+    shutting. A scheduled task takes nobody's presence, starts of itself and repeats without
+    end. An account that can sign in so has in practice lasting access, free of whether anybody
+    sits at the machine.
+
+    On a server that weighs more than at a working station by reason of unbroken work. A server
+    works without pause, so a scheduled task may start every minute for months and nobody will
+    notice - there is no one looking at this machine daily.
+
+    A record of denial takes precedence over consent and holds whether the guest account is
+    switched on or not. It is a safeguard lasting longer than the switching off of the account
+    alone.
+
+    What an attacker gains while the item goes unmet: the means of fixing their presence on the
+    server with a task started on a cycle under an account nobody watches.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać i nikt niczego nie zauważy. Zadania
+    harmonogramu na serwerze pracują na kontach usługowych, na koncie
+    systemu albo na kontach domenowych — żadne z nich do grupy Goście
+    nie należy.
+
+    Naprawa dopisuje grupę do wykazu odmowy i zachowuje wpisy już
+    obecne. Jest to zabezpieczenie celowe: prawo zapisuje się w całości,
+    więc pominięcie tego kroku przywróciłoby komuś dostęp po cichu.
+
+    Warto przy okazji wiedzieć, jak wygląda objaw, gdyby zadanie jednak
+    zostało tą zmianą zatrzymane. Harmonogram nie zgłasza wtedy błędu
+    aplikacji, tylko odnotowuje przy zadaniu kod niepowodzenia
+    logowania, a samo zadanie wygląda w konsoli na uruchomione. Jest to
+    jeden z niewielu objawów w tej grupie, który łatwo przeoczyć.
+
+    Na serwerze pracującym normalnie sytuacja ta nie występuje.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working and nobody notices anything. Scheduled tasks on a server work under
+    service accounts, under the system's account or under domain accounts - none of which
+    belongs to the Guests group.
+
+    The mending adds the group to the list of denial and keeps the entries present already.
+    That is a deliberate safeguard: the right is recorded whole, so passing that step over
+    would quietly give somebody access back.
+
+    It is worth knowing along the way what the symptom looks like should a task be halted by
+    this change after all. The scheduler then reports no application error but notes at the
+    task a code of failed sign-in, while the task itself looks in the console as though it
+    ran. It is one of the few symptoms in this group easy to overlook.
+
+    On a server working normally that case does not arise.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Brak znanych regresji — zadania harmonogramu pracują na kontach spoza tej grupy
+      - Naprawa zachowuje wpisy już obecne w wykazie odmowy
+      - Zatrzymane zadanie nie zgłasza błędu aplikacji, tylko kod niepowodzenia logowania
+      - Odmowa obowiązuje niezależnie od tego, czy konto gościa jest włączone
+    en:
+      - No known regressions - scheduled tasks work under accounts outside this group
+      - The mending keeps the entries present already in the list of denial
+      - A halted task reports no application error but a code of failed sign-in
+      - The denial holds whether the guest account is switched on or not
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyBatchLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: S-1-5-32-546
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyBatchLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyBatchLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyBatchLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    # The right is replaced wholesale, so whoever is already denied has to be
+    # carried over - otherwise the change would quietly grant somebody access.
+    if (-not ($members -contains '*S-1-5-32-546')) { $members += '*S-1-5-32-546' }
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyBatchLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyBatchLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-as-a-batch-job
+
+notes:
+  pl: |
+    Tryb wsadowy to droga zadań harmonogramu. Odmowa w tym wykazie nie
+    dotyczy logowania interaktywnego ani sieciowego — te są osobnymi
+    punktami i każdy trzeba domknąć z osobna.
+
+    Objaw zatrzymanego zadania jest nietypowy: harmonogram odnotowuje
+    kod niepowodzenia logowania, a zadanie wygląda w konsoli na
+    uruchomione. Warto o tym wiedzieć przy diagnozowaniu po zmianie
+    zasad.
+
+    Sprawdzenie pyta o obecność grupy w wykazie. Naprawa zachowuje wpisy
+    dotychczasowe, a grupa wskazywana jest identyfikatorem.
+  en: |
+    The batch mode is the road of scheduled tasks. A denial in this list does not bear on
+    interactive or network sign-in - those are separate items and each has to be shut on its
+    own.
+
+    A halted task's symptom is unusual: the scheduler notes a code of failed sign-in while the
+    task looks in the console as though it ran. That is worth knowing at a diagnosis after a
+    change of policies.
+
+    The check asks after the group's presence in the list. The mending keeps the entries so
+    far, and the group is pointed to by identifier.

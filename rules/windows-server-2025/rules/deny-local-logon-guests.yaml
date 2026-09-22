@@ -1,0 +1,243 @@
+id: win2025-deny-local-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania lokalnego dla grupy Goście
+    en: Deny local sign-in for the Guests group
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt zamyka grupie Goście drogę logowania przy konsoli maszyny.
+
+    Na serwerze konsola jest drogą szczególną i nie należy jej mylić
+    z monitorem stojącym obok. Konsola serwera to także sesja przez
+    kartę zarządzającą, sesja przez konsolę hosta wirtualizacji i sesja
+    uzyskana przy starcie z nośnika. Wszystkie one są tym samym
+    logowaniem lokalnym.
+
+    Wspólną cechą tych dróg jest to, że omijają sieć, a wraz z nią
+    zaporę, segmentację i wszystko, co zbudowano po stronie sieciowej.
+    Serwer strzeżony poprawnie od strony sieci bywa zupełnie odsłonięty
+    od strony konsoli zarządzającej, bo ta należy do innej warstwy
+    i bywa pod opieką innego zespołu.
+
+    Zapis odmowy jest trwalszy niż wyłączenie konta. Wyłączenie można
+    cofnąć jednym poleceniem i bywa cofane przy odtwarzaniu maszyny
+    z obrazu; odmowa obowiązuje niezależnie od stanu konta i ma
+    pierwszeństwo nad każdą zgodą.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: drogę
+    wejścia przy konsoli zarządzającej z pominięciem całej ochrony
+    sieciowej, w chwili gdy konto gościa zostanie włączone.
+  en: |
+    The item shuts to the Guests group the road of signing in at the machine's console.
+
+    On a server the console is a road apart and is not to be mistaken for the monitor standing
+    beside it. A server's console is also a session through a management card, a session
+    through the virtualisation host's console and a session got at a start from media. All of
+    those are the same local sign-in.
+
+    What those roads share is that they pass the network by, and with it the firewall, the
+    segmenting and everything built on the network side. A server rightly guarded from the
+    network side is at times wholly exposed from the side of the management console, since
+    that belongs to another layer and is at times in another team's care.
+
+    A record of denial lasts longer than a switching off of the account. A switching off can be
+    undone with one command and is at times undone at the restoring of a machine from an
+    image; a denial holds whatever the account's state and takes precedence over every
+    consent.
+
+    What an attacker gains while the item goes unmet: a road in at the management console
+    passing all network guarding by, at the moment the guest account is switched on.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać i nikt niczego nie zauważy. Do konsoli
+    serwera loguje się administrator, a konta administracyjne do grupy
+    Goście nie należą.
+
+    Naprawa dopisuje grupę do wykazu odmowy i zachowuje wpisy już
+    obecne, żeby nie przywrócić komuś dostępu po cichu.
+
+    Skutek praktyczny jest na serwerze bliski zeru, bo logowanie
+    lokalne na koncie gościa nie jest scenariuszem, który ktokolwiek
+    planuje. Wartość punktu polega na tym, że zamyka drogę, która
+    mogłaby się otworzyć sama — po odtworzeniu maszyny z obrazu,
+    po instalacji, która włączy konto, po zmianie zasad z innej
+    maszyny.
+
+    Jest to zabezpieczenie na przyszłość, a nie naprawa stanu obecnego,
+    i tak należy je czytać.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working and nobody notices anything. It is an administrator who signs in at
+    a server's console, and administrative accounts do not belong to the Guests group.
+
+    The mending adds the group to the list of denial and keeps the entries present already, so
+    as not to give somebody access back quietly.
+
+    The practical effect on a server is near nil, since a local sign-in under the guest account
+    is no scenario anybody plans. The item's worth lies in its shutting a road that might open
+    of itself - after a machine is restored from an image, after an installation that switches
+    the account on, after a change of policies from another machine.
+
+    It is a safeguard for the future rather than a mending of the present state, and is to be
+    read as such.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - boot-and-firmware
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Brak znanych regresji — do konsoli serwera loguje się administrator, nie gość
+      - Naprawa zachowuje wpisy już obecne w wykazie odmowy
+      - Odmowa obowiązuje niezależnie od tego, czy konto gościa jest włączone
+      - Punkt zamyka drogę, która mogłaby otworzyć się po odtworzeniu maszyny z obrazu
+    en:
+      - No known regressions - it is an administrator who signs in at a server's console, not a guest
+      - The mending keeps the entries present already in the list of denial
+      - The denial holds whether the guest account is switched on or not
+      - The item shuts a road that might open after a machine is restored from an image
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyInteractiveLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: S-1-5-32-546
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyInteractiveLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyInteractiveLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyInteractiveLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    # The right is replaced wholesale, so whoever is already denied has to be
+    # carried over - otherwise the change would quietly grant somebody access.
+    if (-not ($members -contains '*S-1-5-32-546')) { $members += '*S-1-5-32-546' }
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyInteractiveLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyInteractiveLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-locally
+
+notes:
+  pl: |
+    Logowanie lokalne na serwerze obejmuje sesje przez kartę
+    zarządzającą i przez konsolę hosta wirtualizacji, nie tylko dostęp
+    do monitora. Jest to rozróżnienie istotne, bo tamte drogi omijają
+    całą ochronę sieciową.
+
+    Sprawdzenie pyta o obecność grupy w wykazie, a nie o zgodność wykazu
+    z wzorcem. Odmowa dla innych kont jest zapisem sensownym i punkt jej
+    nie kwestionuje.
+
+    Naprawa zachowuje wpisy dotychczasowe. Grupa wskazywana jest
+    identyfikatorem, bo nazwa grupy wbudowanej jest tłumaczona razem
+    z systemem.
+  en: |
+    Local sign-in on a server takes in sessions through a management card and through the
+    virtualisation host's console, not only reaching the monitor. That distinction matters,
+    since those roads pass all network guarding by.
+
+    The check asks after the group's presence in the list rather than after the list's
+    agreement with a pattern. A denial for other accounts is a sensible record and the item
+    does not question it.
+
+    The mending keeps the entries so far. The group is pointed to by identifier, since a
+    built-in group's name is translated along with the system.

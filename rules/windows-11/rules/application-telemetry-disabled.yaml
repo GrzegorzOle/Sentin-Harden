@@ -1,0 +1,190 @@
+id: win11-application-telemetry-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Application Compatibility
+  title:
+    pl: Wysyłanie danych o uruchamianych programach wyłączone
+    en: Sending data about started programs switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ten składnik zgłasza producentowi systemu, jakie programy są na maszynie
+    uruchamiane: ścieżki plików wykonywalnych, wersje, nazwy wydawców, sposób
+    uruchomienia. Jest to inny zestaw danych niż spis zainstalowanych programów
+    — tamten mówi, co na maszynie leży, ten mówi, czego się faktycznie używa.
+
+    Różnica jest istotna. Wykaz uruchamianych programów opisuje sposób pracy:
+    które narzędzia są w codziennym obrocie, o jakich porach, jakiego
+    oprogramowania branżowego używa organizacja. Trafia tam także to, czego
+    nikt nie zamierzał wysyłać — ścieżki do zasobów sieciowych, nazwy narzędzi
+    wewnętrznych, czasem nazwy plików w wierszu polecenia.
+
+    Napastnik na maszynie czyta z tego samego źródła i dostaje wykaz tego, co
+    jest w użyciu, bez uruchamiania czegokolwiek własnego. Jest to rozpoznanie
+    bez hałasu — a im ciszej przebiega, tym później zostaje zauważone.
+
+    Wartość dla utrzymania zgodności aplikacji jest realna, ale ogólna: służy
+    producentowi, nie tej maszynie. Dlatego benchmark umieszcza ten punkt
+    w poziomie drugim.
+  en: |
+    This component reports to the system's maker which programs are started on the
+    machine: executables' paths, versions, publishers' names, the way they are
+    launched. It is a different set of data from the inventory of installed programs
+    - that one says what lies on the machine, this one says what is actually used.
+
+    The difference matters. A register of started programs describes a way of
+    working: which tools are in daily circulation, at what hours, what trade software
+    an organisation uses. Into it also goes what nobody meant to send - paths to
+    network resources, names of internal tools, sometimes file names from a command
+    line.
+
+    An attacker on the machine reads from the same source and gets a register of what
+    is in use without running anything of their own. It is reconnaissance without
+    noise - and the quieter it runs, the later it is noticed.
+
+    The worth for keeping applications compatible is real but general: it serves the
+    maker, not this machine. That is why the benchmark places the item at the second
+    level.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Wysyłka odbywa się w tle, bez okna i bez
+    powiadomienia, a jej wyłączenie nie zmienia zachowania żadnego programu.
+
+    Dlatego punkt trafia do klasy bez uciążliwości: nie ma restartu, nie ma
+    okna serwisowego i nie ma scenariusza, w którym użytkownik zauważy różnicę.
+
+    Warto natomiast wiedzieć, że punkt dotyczy węższego mechanizmu niż ogólny
+    poziom danych diagnostycznych. Ustawienie poziomu diagnostyki na najniższy
+    ogranicza wysyłkę, ale tego strumienia nie zamyka — dlatego punkt jest
+    osobny, a nie zbędny obok tamtego.
+
+    Nie ma restartu. Zmiana obowiązuje od następnego zebrania danych.
+  en: |
+    Nothing stops working. The sending happens in the background, with no window and
+    no notification, and switching it off changes no program's behaviour.
+
+    That is why the item falls into the no-disruption class: no restart, no
+    maintenance window, and no scenario in which the user notices a difference.
+
+    What is worth knowing is that the item concerns a narrower mechanism than the
+    general level of diagnostic data. Setting the diagnostics level to its lowest
+    limits what is sent but does not close this stream - which is why the item is
+    separate rather than redundant beside that one.
+
+    There is no restart. The change takes effect from the next collection of data.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Nic nie przestaje działać na maszynie; znika wyłącznie wysyłka danych w tle
+      - Producent systemu przestaje dostawać z tej maszyny dane o uruchamianych programach
+    en:
+      - Nothing on the machine stops working; only the background sending of data disappears
+      - The system's maker stops receiving data from this machine about started programs
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna bierze udział w programie sprawdzania zgodności prowadzonym z producentem systemu
+    en:
+      - The machine takes part in a compatibility programme run with the system's maker
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is the reverse of the setting's name in the editor: zero means
+      # the sending is switched off.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat'
+      $name = 'AITEnable'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat'
+    $name = 'AITEnable'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AITEnable' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/configure-windows-diagnostic-data-in-your-organization
+
+notes:
+  pl: |
+    Nazwa wpisu opisuje włączenie, a nie wyłączenie, więc wartością wymaganą
+    jest zero. Jest to odwrotność sąsiedniego wpisu w tej samej gałęzi, gdzie
+    wymagana jest jedynka. Dwa punkty obok siebie, dwa przeciwne kierunki —
+    warto sprawdzić wartość, zamiast wnioskować z nazwy.
+
+    Punkt nie zastępuje ograniczenia poziomu danych diagnostycznych i odwrotnie.
+    Strumienie są osobne, więc obie reguły są potrzebne, choć opisują podobny
+    rodzaj wysyłki.
+
+    Poziom drugi w benchmarku bierze się stąd, że zysk jest ograniczony do
+    utrudnienia rozpoznania. Nie jest to punkt zamykający drogę wejścia, tylko
+    odbierający napastnikowi gotowy materiał.
+  en: |
+    The entry's name describes switching on, not off, so the required value is zero.
+    It is the reverse of the neighbouring entry in the same key, where a one is
+    required. Two items side by side, two opposite directions - worth checking the
+    value rather than inferring it from the name.
+
+    The item does not replace limiting the level of diagnostic data, nor the other
+    way round. The streams are separate, so both rules are needed, though they
+    describe a similar kind of sending.
+
+    The second level in the benchmark comes from the gain being limited to hampering
+    reconnaissance. It is not an item closing a way in, but one taking ready-made
+    material away from an attacker.

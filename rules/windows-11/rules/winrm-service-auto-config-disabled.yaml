@@ -1,0 +1,196 @@
+id: win11-winrm-service-auto-config-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Remote Management (WinRM) > WinRM Service
+  title:
+    pl: Automatyczne wystawienie usługi zdalnego zarządzania wyłączone
+    en: Automatic exposure of the remote management service turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zasada każe usłudze zdalnego zarządzania samodzielnie otworzyć nasłuch na
+    wszystkich pasujących adresach maszyny i przyjmować połączenia. Wystawienie
+    dzieje się bez udziału człowieka, przy starcie maszyny, na każdym
+    interfejsie, który pasuje do zadanego zakresu.
+
+    Zdalne zarządzanie jest z założenia drogą do wykonania polecenia na maszynie
+    z uprawnieniami, na których się połączono. Wystawienie go automatycznie
+    znaczy, że każda maszyna, która znajdzie się w pasującej sieci, zaczyna
+    przyjmować takie połączenia — także wtedy, gdy trafi do sieci, w której nie
+    miała być, na przykład po podłączeniu laptopa w hotelu albo u klienta.
+
+    Wyłączenie zasady nie odbiera możliwości zdalnego zarządzania. Odbiera
+    automatyzm: nasłuch powstaje wtedy, gdy ktoś go świadomie skonfiguruje, a nie
+    dlatego, że adres maszyny pasował do wzorca.
+  en: |
+    The policy has the remote management service open a listener by itself on
+    every matching address of the machine and accept connections. The exposure
+    happens with no person involved, at machine start, on every interface
+    matching the given range.
+
+    Remote management is by design a route to running a command on the machine
+    with the rights the connection was made under. Exposing it automatically means
+    every machine that finds itself on a matching network starts accepting such
+    connections - including when it reaches a network it was never meant to be on,
+    a laptop plugged in at a hotel or at a client's site, say.
+
+    Turning the policy off does not take remote management away. It takes away the
+    automatism: a listener comes into being when somebody deliberately configures
+    one, rather than because the machine's address matched a pattern.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy maszyna jest zarządzana zdalnie, i jest to jedyne
+    pytanie, które tu rozstrzyga.
+
+    Tam, gdzie zdalne zarządzanie jest w użyciu, wyłączenie tej zasady zrywa je
+    przy następnym uruchomieniu maszyny. Narzędzia do zdalnego uruchamiania
+    poleceń, zbierania stanu i wdrażania konfiguracji przestaną się łączyć,
+    a objaw jest jednoznaczny: połączenie odrzucone, brak nasłuchu.
+
+    Boli to najmocniej tam, gdzie zdalne zarządzanie jest jedyną drogą do
+    maszyny — w serwerowni bez konsoli, przy stanowiskach w innej lokalizacji
+    i wszędzie, gdzie nikt nie podejdzie do sprzętu fizycznie. Utrata dostępu
+    do maszyny, do której nie da się dojść, jest kosztowniejsza od wszystkiego,
+    co ten punkt zdejmuje.
+
+    Na zwykłym stanowisku biurowym, którym nikt zdalnie nie zarządza, zmiana
+    jest niewidoczna i zamyka nasłuch, którego nikt nie używał.
+  en: |
+    What needs checking is whether the machine is managed remotely, and that is
+    the only question that settles this.
+
+    Where remote management is in use, turning the policy off breaks it at the
+    machine's next start. Tools for running commands remotely, collecting state
+    and deploying configuration stop connecting, and the symptom is unambiguous: a
+    refused connection, no listener.
+
+    It hurts most where remote management is the only road to the machine - in a
+    server room with no console, for stations in another location, and anywhere
+    nobody will walk up to the hardware. Losing access to a machine that cannot be
+    reached is costlier than anything this item removes.
+
+    On an ordinary office station nobody manages remotely, the change is invisible
+    and closes a listener nobody was using.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Narzędzia do zdalnego uruchamiania poleceń i zbierania stanu przestaną się łączyć z maszyną
+      - Nasłuch zniknie po ponownym uruchomieniu maszyny, a nie natychmiast po zmianie
+      - Maszyna bez konsoli, zarządzana wyłącznie zdalnie, stanie się nieosiągalna
+    en:
+      - Tools for running commands remotely and collecting state stop connecting to the machine
+      - The listener disappears at the machine's next start rather than immediately after the change
+      - A machine with no console, managed only remotely, becomes unreachable
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna jest zarządzana zdalnie tą właśnie usługą i nie ma do niej innej drogi
+      - Stanowisko stoi w innej lokalizacji, do której nikt nie podejdzie fizycznie
+    en:
+      - The machine is managed remotely through this very service and there is no other road to it
+      - The station stands in another location nobody will reach physically
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+      $name = 'AllowAutoConfig'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+    $name = 'AllowAutoConfig'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowAutoConfig' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/winrm/installation-and-configuration-for-windows-remote-management
+
+notes:
+  pl: |
+    Reguła jest w paczce jedyną, która potrafi odciąć osobę zarządzającą od
+    maszyny, i dlatego jej opis skutków mówi o tym wprost, zamiast poprzestać na
+    ogólnym ostrzeżeniu. Przy maszynie bez konsoli sprawdzenie, czy istnieje
+    druga droga dostępu, należy zrobić przed zmianą, a nie po.
+
+    Punkt nie zatrzymuje samej usługi i nie zamyka nasłuchu natychmiast —
+    znosi jego automatyczne odtwarzanie. Bieżące połączenia i bieżący nasłuch
+    działają do ponownego uruchomienia maszyny, więc skutek bywa zauważony
+    dopiero po restarcie, kiedy nikt już nie wiąże go z tą zmianą.
+
+    Paczka ma kilka innych reguł dotyczących tej usługi — uwierzytelnianie
+    podstawowe, ruch nieszyfrowany, uruchamianie na cudzych poświadczeniach.
+    Tamte opisują, jak usługa ma działać; ta rozstrzyga, czy ma się wystawić
+    sama.
+  en: |
+    The rule is the only one in the pack able to cut an administrator off from the
+    machine, which is why its description of consequences states that outright
+    rather than settling for a general warning. On a machine with no console,
+    checking that a second route of access exists belongs before the change, not
+    after.
+
+    The item does not stop the service itself and does not close the listener at
+    once - it removes its automatic re-creation. Current connections and the
+    current listener work until the machine restarts, so the effect is sometimes
+    noticed only after a reboot, when nobody connects it with this change any
+    more.
+
+    The pack has several other rules about this service - basic authentication,
+    unencrypted traffic, running under somebody else's credentials. Those describe
+    how the service should work; this one settles whether it should expose itself.

@@ -1,0 +1,159 @@
+id: win11-setup-log-retention
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > Setup
+  title:
+    pl: Zachowanie dziennika instalacji po zapełnieniu
+    en: Behaviour of the setup log once it fills up
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie rozstrzyga, co system robi z dziennikiem, gdy ten sięgnie
+    maksymalnego rozmiaru: nadpisać najstarsze wpisy czy odłożyć pełny dziennik
+    jako osobny plik i zacząć nowy. Archiwizowanie nie gubi zdarzeń, ale zostawia
+    na dysku pliki, których nikt nie sprząta.
+
+    Dziennik instalacji jest ze wszystkich czterech najspokojniejszy: zapisuje
+    się do niego przy instalacji składników systemu i przy aktualizacjach, więc
+    kilka razy w miesiącu. Zapełnienie grozi mu najmniej i właśnie dlatego
+    ustawienie bywa tu pomijane.
+
+    Zostawia się je mimo to, bo kosztuje zero, a rachunek jest ten sam co przy
+    pozostałych dziennikach: żaden kanał rejestrowania nie powinien móc zatrzymać
+    maszyny przez to, że skończyło mu się miejsce.
+  en: |
+    The setting decides what the system does with the log once it reaches its
+    maximum size: overwrite the oldest entries, or set the full log aside as a
+    separate file and start a new one. Archiving loses no events but leaves files
+    on the disk that nobody clears.
+
+    The setup log is the quietest of the four: it is written to when system
+    components are installed and during updates, so a few times a month. It is the
+    least at risk of filling, and that is exactly why the setting tends to be
+    skipped here.
+
+    It is applied all the same, because it costs nothing and the reckoning is the
+    same as for the other logs: no recording channel should be able to stop the
+    machine by running out of room.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać, a przy typowym użyciu maszyny nie zmienia się
+    zupełnie nic, bo ten dziennik rzadko dochodzi do swojego rozmiaru.
+
+    Gdyby jednak doszedł, nadpisane zostaną najstarsze wpisy o instalacjach
+    składników. Traci się wtedy możliwość odtworzenia, kiedy dany składnik został
+    dodany — informacja przydatna przy dochodzeniu, skąd na maszynie wzięło się
+    coś, czego nikt nie instalował świadomie.
+
+    Nie ma restartu ani wylogowania.
+  en: |
+    Nothing stops working, and in typical use of the machine nothing changes at
+    all, because this log rarely reaches its size.
+
+    Were it to, the oldest entries about component installations would be
+    overwritten. What is then lost is the ability to reconstruct when a given
+    component was added - information useful when establishing how something
+    nobody deliberately installed got onto the machine.
+
+    There is no restart and no sign-out.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Najstarsze wpisy o instalacji składników systemu mogą zostać nadpisane, jeśli dziennik się zapełni
+    en:
+      - The oldest entries about system component installations may be overwritten if the log fills
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is kept as text, not a number, so it is compared as text.
+      # Reading it numerically would turn an absent value into a zero and
+      # report a machine with no policy at all as satisfying the item.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup'
+      $name = 'Retention'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup'
+    $name = 'Retention'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Retention' -Value '0' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/wes/windows-event-log
+
+notes:
+  pl: |
+    Reguła jest przykładem punktu, którego wartość polega na kompletności,
+    a nie na skutku. Cztery dzienniki mają zachowywać się tak samo i wyjątek
+    zrobiony dla najspokojniejszego z nich musiałby być pamiętany przy każdej
+    późniejszej zmianie.
+
+    Punkt nadaje się do zastosowania hurtem bez czytania czegokolwiek.
+  en: |
+    The rule is an example of an item whose value lies in completeness rather than
+    in effect. Four logs should behave the same way, and an exception made for the
+    quietest of them would have to be remembered at every later change.
+
+    The item is fit to be applied in bulk without reading anything.

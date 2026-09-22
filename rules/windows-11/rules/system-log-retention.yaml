@@ -1,0 +1,175 @@
+id: win11-system-log-retention
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > System
+  title:
+    pl: Zachowanie dziennika systemu po zapełnieniu
+    en: Behaviour of the system log once it fills up
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie rozstrzyga, co system robi z dziennikiem, gdy ten sięgnie
+    maksymalnego rozmiaru: nadpisać najstarsze wpisy czy zapisać pełny dziennik
+    do osobnego pliku i zacząć nowy. Archiwizowanie nie gubi zdarzeń, ale
+    odkłada na dysku pliki, których nikt nie sprząta — a maszyna, która zapełni
+    sobie dysk własnymi dziennikami, przestaje działać, nie tylko rejestrować.
+
+    Dziennik systemu rejestruje zdarzenia samego systemu i sterowników:
+    uruchomienia usług, błędy sprzętu, problemy z siecią. Rośnie równiej niż
+    dziennik aplikacji, ale potrafi wystrzelić przy psującym się sprzęcie, bo
+    uszkodzony dysk albo karta sieciowa zapisują ten sam błąd setki razy na
+    godzinę.
+
+    Jest to dokładnie ta sytuacja, w której archiwizowanie dokłada awarię do
+    awarii: maszyna z padającym dyskiem zaczyna dodatkowo zapełniać go opisem
+    własnej usterki.
+  en: |
+    The setting decides what the system does with the log once it reaches its
+    maximum size: overwrite the oldest entries, or save the full log to a separate
+    file and start a new one. Archiving loses no events, but leaves files on the
+    disk that nobody clears - and a machine that fills its own disk with its own
+    logs stops working, not merely recording.
+
+    The system log records events from the system itself and from drivers:
+    services starting, hardware errors, network problems. It grows more evenly
+    than the application log, but can shoot up on failing hardware, because a
+    damaged disk or network card writes the same error hundreds of times an hour.
+
+    That is exactly the situation where archiving adds one failure to another: a
+    machine with a dying disk starts filling it up with an account of its own
+    fault.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Dziennik nadpisuje najstarsze wpisy.
+
+    Traci się możliwość prześledzenia, kiedy sprzęt zaczął się psuć. Jest to
+    jedyny realny koszt tego punktu i dotyka rzadko, ale dotkliwie: przy
+    diagnozie dysku albo pamięci pytanie „od kiedy to trwa" bywa ważniejsze od
+    samego błędu.
+
+    Przy przekazywaniu zdarzeń na serwer zbierający nie traci się nic. Bez niego
+    historia sięga tyle, ile mieści dziennik — a przy psującym się sprzęcie
+    mieści bardzo niewiele, bo błędy sypią się gęsto.
+
+    Nie ma restartu ani wylogowania.
+  en: |
+    Nothing stops working. The log overwrites its oldest entries.
+
+    What is lost is the ability to trace when hardware started failing. That is
+    the only real cost of this item and it bites rarely but hard: when diagnosing
+    a disk or memory, the question "how long has this been going on" is sometimes
+    more important than the error itself.
+
+    With events forwarded to a collecting server nothing is lost. Without that the
+    history reaches as far as the log holds - and on failing hardware it holds
+    very little, because the errors come thick.
+
+    There is no restart and no sign-out.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Nie da się prześledzić, od kiedy sprzęt zgłasza błędy, jeśli dziennik zdążył się zapełnić
+      - Bez przekazywania zdarzeń na serwer zbierający historia sięga tyle, ile mieści dziennik
+    en:
+      - Tracing how long hardware has been reporting errors fails if the log has filled
+      - Without forwarding events to a collecting server the history reaches only as far as the log holds
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is kept as text, not a number, so it is compared as text.
+      # Reading it numerically would turn an absent value into a zero and
+      # report a machine with no policy at all as satisfying the item.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System'
+      $name = 'Retention'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System'
+    $name = 'Retention'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Retention' -Value '0' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/wes/windows-event-log
+
+notes:
+  pl: |
+    Przy psującym się sprzęcie ten punkt i rozmiar dziennika działają przeciwko
+    sobie w sposób, który warto rozumieć. Gęsty strumień błędów zapełnia dziennik
+    w godziny, więc nadpisywanie zjada wtedy właśnie te wpisy, które opisują
+    początek usterki — a początek jest tym, czego szuka diagnoza.
+
+    Nie jest to powód do archiwizowania, tylko do przekazywania zdarzeń poza
+    maszynę. Reguła nie umie sprawdzić, czy przekazywanie działa, i jest to jej
+    znane ograniczenie.
+  en: |
+    On failing hardware this item and the log size work against each other in a
+    way worth understanding. A thick stream of errors fills the log within hours,
+    so overwriting then eats exactly the entries describing the start of the fault
+    - and the start is what a diagnosis looks for.
+
+    That is not a reason to archive but a reason to forward events off the
+    machine. The rule cannot check whether forwarding works, and that is a known
+    limitation of it.

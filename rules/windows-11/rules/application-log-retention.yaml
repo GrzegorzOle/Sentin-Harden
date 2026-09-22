@@ -1,0 +1,177 @@
+id: win11-application-log-retention
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > Application
+  title:
+    pl: Zachowanie dziennika aplikacji po zapełnieniu
+    en: Behaviour of the application log once it fills up
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie rozstrzyga, co system robi z dziennikiem, gdy ten sięgnie
+    maksymalnego rozmiaru. Możliwości są dwie: nadpisywać najstarsze wpisy albo
+    zapisać pełny dziennik do osobnego pliku i zacząć nowy.
+
+    Archiwizowanie wygląda na bezpieczniejsze, bo nie gubi żadnego zdarzenia.
+    Koszt ujawnia się dopiero z czasem: pliki archiwum odkładają się na dysku
+    i nikt ich nie sprząta, bo powstają same. Maszyna, która zapełni sobie dysk
+    własnymi dziennikami, przestaje nie tylko rejestrować, ale też działać —
+    i jest to awaria poważniejsza niż utrata najstarszych wpisów.
+
+    Dziennik aplikacji zbiera zdarzenia z programów, więc rośnie nierówno: jeden
+    wadliwy program potrafi zapisać w godzinę tyle, ile reszta maszyny przez
+    miesiąc. Jest to kanał najbardziej narażony na zalanie i archiwizowanie
+    akurat tutaj najszybciej kończy się pełnym dyskiem.
+  en: |
+    The setting decides what the system does with the log once it reaches its
+    maximum size. There are two options: overwrite the oldest entries, or save the
+    full log to a separate file and start a new one.
+
+    Archiving looks safer, because it loses no event. The cost shows only with
+    time: archive files pile up on the disk and nobody clears them, because they
+    appear by themselves. A machine that fills its own disk with its own logs
+    stops not only recording but working - and that is a graver failure than
+    losing the oldest entries.
+
+    The application log gathers events from programs, so it grows unevenly: one
+    faulty program can write in an hour as much as the rest of the machine does in
+    a month. It is the channel most exposed to flooding, and archiving here is the
+    quickest to end in a full disk.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Dziennik nadpisuje najstarsze wpisy zamiast
+    odkładać archiwa.
+
+    Traci się możliwość sięgnięcia do zdarzeń sprzed zapełnienia dziennika. Przy
+    dzienniku aplikacji jest to zwykle bez znaczenia, bo diagnozuje się nim rzeczy
+    świeże — awarii programu sprzed trzech miesięcy i tak nikt nie będzie badał.
+
+    Jeśli zdarzenia są przekazywane na serwer zbierający, nie traci się nic: wpis
+    znika z maszyny, ale został już odebrany gdzie indziej. Bez takiego
+    przekazywania nadpisany wpis przepada bezpowrotnie i warto to wiedzieć, zanim
+    zajdzie potrzeba sięgnięcia wstecz.
+
+    Nie ma restartu ani wylogowania.
+  en: |
+    Nothing stops working. The log overwrites its oldest entries instead of
+    setting archives aside.
+
+    What is lost is the ability to reach events from before the log filled up.
+    With the application log this usually does not matter, because it is used to
+    diagnose fresh things - nobody will investigate a program crash from three
+    months ago anyway.
+
+    If events are forwarded to a collecting server, nothing is lost: the entry
+    disappears from the machine but has already been received elsewhere. Without
+    such forwarding an overwritten entry is gone for good, and that is worth
+    knowing before the need to look back arises.
+
+    There is no restart and no sign-out.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Zdarzenia sprzed zapełnienia dziennika przestaną być dostępne na maszynie
+      - Bez przekazywania zdarzeń na serwer zbierający nadpisany wpis przepada bezpowrotnie
+    en:
+      - Events from before the log filled up stop being available on the machine
+      - Without forwarding events to a collecting server an overwritten entry is gone for good
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is kept as text, not a number, so it is compared as text.
+      # Reading it numerically would turn an absent value into a zero and
+      # report a machine with no policy at all as satisfying the item.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application'
+      $name = 'Retention'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application'
+    $name = 'Retention'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Retention' -Value '0' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/wes/windows-event-log
+
+notes:
+  pl: |
+    Reguła ma sens wyłącznie razem z ustawieniem rozmiaru dziennika. Ta mówi, co
+    się stanie po zapełnieniu; tamta decyduje, kiedy zapełnienie nastąpi.
+    Nadpisywanie w małym dzienniku znaczy, że historia sięga kilku godzin.
+
+    Wartość jest w rejestrze przechowywana jako tekst, nie liczba, i reguła
+    porównuje ją jako tekst. Zapis naprawczy również wpisuje tekst — wpisanie
+    liczby utworzyłoby wartość innego typu, której system w tym miejscu nie
+    czyta, a raport pokazałby punkt jako spełniony.
+  en: |
+    The rule makes sense only together with the log size setting. This one says
+    what happens once the log fills; that one decides when filling happens.
+    Overwriting in a small log means the history reaches back a few hours.
+
+    The value is kept in the registry as text, not a number, and the rule compares
+    it as text. Remediation writes text as well - writing a number would create a
+    value of a different type, which the system does not read here, while the
+    report would show the item as satisfied.

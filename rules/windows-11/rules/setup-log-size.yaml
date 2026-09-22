@@ -1,0 +1,160 @@
+id: win11-setup-log-size
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > Setup
+  title:
+    pl: Maksymalny rozmiar dziennika instalacji
+    en: Maximum size of the setup log
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dziennik instalacji notuje, co i kiedy zostało na maszynie zainstalowane
+    albo zaktualizowane: składniki systemu, poprawki, role. Domyślny rozmiar
+    jest mały, bo kanał jest spokojny.
+
+    Wartość tego zapisu ujawnia się dopiero przy dochodzeniu. Pytanie „skąd na
+    tej maszynie wziął się ten składnik i kiedy" pada wtedy, gdy znalazło się
+    coś, czego nikt nie instalował świadomie — a odpowiedź leży właśnie tutaj
+    i nigdzie indziej. Zbyt mały dziennik znaczy, że odpowiedź sięga ostatnich
+    kilku aktualizacji, czyli kilku tygodni.
+
+    Powiększenie nie zwiększa bezpieczeństwa maszyny. Zwiększa szansę na to, że
+    po zdarzeniu da się ustalić jego przebieg — i to jest cała wartość tego
+    punktu, uczciwie ograniczona.
+  en: |
+    The setup log notes what was installed or updated on the machine and when:
+    system components, fixes, roles. The default size is small, because the
+    channel is a quiet one.
+
+    The value of that record shows only during an investigation. The question
+    "where did this component on the machine come from, and when" is asked once
+    something nobody deliberately installed has been found - and the answer lies
+    exactly here and nowhere else. Too small a log means the answer reaches back
+    over the last few updates, that is, a few weeks.
+
+    Enlarging it does not make the machine safer. It raises the chance that after
+    an event its course can be established - and that is the whole value of this
+    item, honestly bounded.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Dziennik może zająć więcej miejsca na dysku.
+
+    Więcej miejsca znaczy tutaj trzydzieści dwa megabajty zamiast domyślnego
+    kilku, i to jako górna granica, do której ten dziennik i tak rzadko dorasta.
+    Na maszynie z dyskiem mierzonym w setkach gigabajtów jest to różnica
+    niemierzalna.
+
+    Nie ma restartu ani wylogowania, a istniejące wpisy nie są w żaden sposób
+    naruszone. Zmiana obowiązuje od razu.
+  en: |
+    Nothing stops working. The log may take up more space on the disk.
+
+    More space means thirty-two megabytes here instead of the default few, and
+    that as an upper bound this log rarely grows into anyway. On a machine with a
+    disk measured in hundreds of gigabytes the difference is unmeasurable.
+
+    There is no restart and no sign-out, and existing entries are not disturbed in
+    any way. The change takes effect at once.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dziennik instalacji może zająć na dysku do trzydziestu dwóch megabajtów zamiast kilku
+    en:
+      - The setup log may take up to thirty-two megabytes on the disk instead of a few
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup'
+      $name = 'MaxSize'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '32768'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup'
+    $name = 'MaxSize'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MaxSize' -Value 32768 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/wes/windows-event-log
+
+notes:
+  pl: |
+    Sprawdzenie przyjmuje każdą wartość wyższą, bo punkt mówi „nie mniej niż".
+    Maszyna z dziennikiem większym od wymaganego jest spełniona i zgłaszanie jej
+    jako niezgodnej byłoby błędem.
+
+    Ten punkt domyka czwarty dziennik obok już opisanych w paczce: aplikacji,
+    zabezpieczeń i systemu. Rozmiar sam z siebie nic nie znaczy — czyta się go
+    razem z zachowaniem dziennika po zapełnieniu, bo dopiero obie te rzeczy
+    razem mówią, jak daleko wstecz sięga historia.
+  en: |
+    The check accepts any higher value, because the item says "no less than". A
+    machine with a log larger than required satisfies it, and reporting it as
+    non-compliant would be wrong.
+
+    This item completes the fourth log alongside those already in the pack:
+    application, security and system. The size means nothing by itself - it is
+    read together with the log's behaviour once full, because only the two
+    together say how far back the history reaches.

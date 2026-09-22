@@ -1,0 +1,188 @@
+id: win11-security-log-retention
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > Security
+  title:
+    pl: Zachowanie dziennika zabezpieczeń po zapełnieniu
+    en: Behaviour of the security log once it fills up
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie rozstrzyga, co system robi z dziennikiem, gdy ten sięgnie
+    maksymalnego rozmiaru: nadpisać najstarsze wpisy czy zapisać pełny dziennik
+    do osobnego pliku i zacząć nowy.
+
+    W dzienniku zabezpieczeń stawka jest wyższa niż w pozostałych, bo to on
+    zawiera ślad logowań, podniesień uprawnień i zmian w kontach. Działa tu
+    jednak także zależność w drugą stronę: na maszynie z włączonym zatrzymaniem
+    systemu przy niemożności zapisu audytu zapełniony dziennik nie tylko
+    przestaje rejestrować, ale zatrzymuje całą maszynę. Nadpisywanie zamyka tę
+    drogę — wpisów ubywa najstarszymi, ale system nie ma powodu stanąć.
+
+    Archiwizowanie na samej maszynie niewiele tu daje, bo archiwum leżące obok
+    dziennika nie jest dowodem: ktoś, kto na tę maszynę wszedł, usunie je razem
+    z dziennikiem. Dowód powstaje dopiero po przekazaniu zdarzeń gdzie indziej.
+  en: |
+    The setting decides what the system does with the log once it reaches its
+    maximum size: overwrite the oldest entries, or save the full log to a separate
+    file and start a new one.
+
+    The stakes are higher in the security log than in the others, because it is
+    the one holding the record of sign-ins, elevations and changes to accounts.
+    There is also a dependency the other way: on a machine set to halt when audit
+    records cannot be written, a full log not only stops recording but stops the
+    whole machine. Overwriting closes that route - entries go, oldest first, but
+    the system has no reason to stop.
+
+    Archiving on the machine itself achieves little here, because an archive lying
+    next to the log is no evidence: somebody who got into the machine will delete
+    it along with the log. Evidence comes into being only once events have been
+    passed elsewhere.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Dziennik nadpisuje najstarsze wpisy.
+
+    Koszt jest tu realny i większy niż przy pozostałych dziennikach: traci się
+    ślad logowań i zmian uprawnień sprzed zapełnienia. Przy audycie pytanie „kto
+    się logował na tę maszynę trzy miesiące temu" jest pytaniem typowym, a nie
+    wyjątkowym — i to właśnie na nie po nadpisaniu nie ma odpowiedzi.
+
+    Rozwiązaniem nie jest jednak archiwizowanie na maszynie, tylko przekazywanie
+    zdarzeń na serwer zbierający. Wdrożenie tego punktu bez przekazywania jest
+    decyzją, którą warto podjąć świadomie: skraca okno dowodowe w zamian za to,
+    że maszyna nie stanie z powodu pełnego dziennika.
+
+    Nie ma restartu ani wylogowania.
+  en: |
+    Nothing stops working. The log overwrites its oldest entries.
+
+    The cost is real here and larger than with the other logs: the record of
+    sign-ins and rights changes from before the filling is lost. In an audit the
+    question "who signed in to this machine three months ago" is a typical one,
+    not an exceptional one - and it is exactly that question which has no answer
+    once entries are overwritten.
+
+    The remedy, though, is not archiving on the machine but forwarding events to a
+    collecting server. Applying this item without forwarding is a decision worth
+    taking deliberately: it shortens the evidentiary window in exchange for the
+    machine not stopping because of a full log.
+
+    There is no restart and no sign-out.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Ślad logowań i zmian uprawnień sprzed zapełnienia dziennika przestanie być dostępny
+      - Bez przekazywania zdarzeń na serwer zbierający okno dowodowe skraca się do pojemności dziennika
+    en:
+      - The record of sign-ins and rights changes from before the filling stops being available
+      - Without forwarding events to a collecting server the evidentiary window shrinks to the log capacity
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia nie są przekazywane poza maszynę, a wymagane jest okno dowodowe dłuższe niż pojemność dziennika
+    en:
+      - Events are not forwarded off the machine and an evidentiary window longer than the log capacity is required
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is kept as text, not a number, so it is compared as text.
+      # Reading it numerically would turn an absent value into a zero and
+      # report a machine with no policy at all as satisfying the item.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security'
+      $name = 'Retention'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security'
+    $name = 'Retention'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Retention' -Value '0' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/wes/windows-event-log
+
+notes:
+  pl: |
+    Punkt czyta się razem z rozmiarem dziennika zabezpieczeń i z zatrzymaniem
+    systemu przy niemożności zapisu audytu. Te trzy ustawienia opisują jedną
+    sytuację z trzech stron: ile się mieści, co się dzieje po zapełnieniu i czy
+    maszyna ma wtedy stanąć.
+
+    Wdrożenie tego punktu bez powiększenia dziennika daje rejestrowanie, które
+    nigdy się nie zatrzymuje, i historię sięgającą kilku dni. Bywa to za mało
+    i jest to argument za rozmiarem, a nie przeciw nadpisywaniu.
+
+    Reguła nie umie sprawdzić, czy zdarzenia są przekazywane poza maszynę,
+    a od tego zależy, czy nadpisywanie cokolwiek kosztuje. Jest to jej znane
+    ograniczenie i dlatego opis skutków mówi o nim wprost, zamiast zakładać
+    jeden albo drugi przypadek.
+  en: |
+    The item is read together with the security log size and with halting the
+    system when audit records cannot be written. Those three settings describe one
+    situation from three sides: how much fits, what happens once it is full, and
+    whether the machine should stop then.
+
+    Applying this item without enlarging the log gives recording that never stops
+    and a history reaching back a few days. That is sometimes too little, and it
+    is an argument about the size rather than against overwriting.
+
+    The rule cannot check whether events are forwarded off the machine, and
+    whether overwriting costs anything depends on that. It is a known limitation,
+    which is why the description of consequences states it outright instead of
+    assuming one case or the other.

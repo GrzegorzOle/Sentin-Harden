@@ -1,0 +1,170 @@
+id: win11-uac-secure-uiaccess-paths
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Podniesienie uprawnień programów dostępowych tylko z lokalizacji chronionych
+    en: Accessibility applications elevated only from protected locations
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Niektóre programy muszą sięgać do okien innych aplikacji: czytniki ekranu,
+    lupy, narzędzia zdalnej pomocy, klawiatury ekranowe. System daje im do tego
+    osobne uprawnienie, bo bez niego nie mogłyby działać — ale to samo
+    uprawnienie pozwala sterować cudzym oknem, także oknem pytającym o zgodę.
+
+    Ustawienie wymaga, żeby program z takim uprawnieniem leżał w katalogu, do
+    którego zwykły użytkownik nie ma prawa zapisu. Sens jest prosty: skoro
+    uprawnienie pozwala obsłużyć okno zgody za człowieka, to nie może go dostać
+    plik, który da się podmienić bez uprawnień administratora.
+  en: |
+    Some programs have to reach into other applications' windows: screen readers,
+    magnifiers, remote assistance tools, on-screen keyboards. The system gives
+    them a separate privilege for it, because without it they could not work - but
+    that same privilege allows driving somebody else's window, including the
+    window asking for consent.
+
+    The setting requires a program holding such a privilege to sit in a directory
+    an ordinary user cannot write to. The reasoning is simple: if the privilege
+    allows handling the consent window on a person's behalf, it cannot go to a
+    file that can be swapped out without administrator rights.
+
+disruption_description:
+  pl: |
+    Nic w typowym przypadku. Narzędzia dostępności wbudowane w system leżą
+    w katalogu systemowym, a oprogramowanie instalowane normalnie trafia do
+    katalogu programów — obie te lokalizacje warunek spełniają.
+
+    Zaboli wyłącznie tam, gdzie takie narzędzie uruchamiane jest z miejsca
+    dostępnego do zapisu dla użytkownika: z katalogu profilu, z pulpitu,
+    z udziału sieciowego albo z nośnika. Dotyczy to zwykle wersji przenośnych
+    narzędzi zdalnej pomocy, czasem programów dostępnościowych używanych bez
+    instalacji.
+
+    Objaw jest tu czytelny: program uruchamia się, ale nie widzi okien innych
+    aplikacji, więc zdalna pomoc pokazuje pusty ekran zamiast pulpitu.
+    Rozwiązaniem jest zainstalowanie narzędzia, a nie wyłączenie ustawienia.
+  en: |
+    Nothing in the typical case. Accessibility tools built into the system sit in
+    the system directory, and software installed normally goes to the programs
+    directory - both locations satisfy the condition.
+
+    It hurts only where such a tool is run from somewhere the user can write: a
+    profile directory, the desktop, a network share or removable media. That
+    usually concerns portable editions of remote assistance tools, sometimes
+    accessibility programs used without installation.
+
+    The symptom here is clear: the program starts but does not see other
+    applications' windows, so remote assistance shows a blank screen instead of
+    the desktop. The answer is to install the tool, not to turn the setting off.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - user-interface
+  what_breaks:
+    pl:
+      - Przenośne wersje narzędzi zdalnej pomocy uruchamiane z profilu albo z nośnika przestaną widzieć cudze okna
+      - Programy dostępnościowe używane bez instalacji stracą dostęp do okien innych aplikacji
+      - Zdalna pomoc pokazuje pusty ekran zamiast pulpitu, bez komunikatu o przyczynie
+    en:
+      - Portable editions of remote assistance tools run from a profile or media stop seeing other windows
+      - Accessibility programs used without installation lose access to other applications' windows
+      - Remote assistance shows a blank screen instead of the desktop, with no message about the cause
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdalna pomoc świadczona jest narzędziem przenośnym uruchamianym bez instalacji
+      - Osoba korzystająca ze stanowiska używa narzędzia dostępnościowego uruchamianego z katalogu profilu
+    en:
+      - Remote assistance is provided with a portable tool run without installation
+      - The person using the station relies on an accessibility tool run from a profile directory
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'EnableSecureUIAPaths'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'EnableSecureUIAPaths'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableSecureUIAPaths' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/user-account-control-only-elevate-uiaccess-applications-that-are-installed-in-secure-locations
+
+notes:
+  pl: |
+    Wymóg dotyczy położenia pliku, a nie jego podpisu — to dwa osobne warunki
+    i benchmark traktuje je jako osobne punkty. Program podpisany, ale leżący
+    w katalogu profilu, tego punktu nie spełnia.
+
+    Klasa „bez uciążliwości" jest tu postawiona świadomie, mimo że opis wymienia
+    przypadki, w których coś przestaje działać. Wszystkie one wymagają
+    uruchamiania narzędzia z miejsca zapisywalnego przez użytkownika, co jest
+    sytuacją rzadką i samą w sobie wątpliwą — a inwentaryzacja z etapu audytu
+    pokaże, czy dotyczy tej maszyny.
+  en: |
+    The requirement is about where the file sits, not about its signature - those
+    are two separate conditions and the benchmark treats them as separate items. A
+    signed program sitting in a profile directory does not satisfy this item.
+
+    The "no disruption" class is set deliberately, even though the description
+    lists cases where something stops working. All of them require running the
+    tool from a location the user can write to, which is rare and questionable in
+    itself - and the inventory from the audit stage will show whether it applies
+    to this machine.

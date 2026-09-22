@@ -1,0 +1,167 @@
+id: win11-uac-uiaccess-secure-desktop
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Pytanie o zgodę zawsze na bezpiecznym pulpicie
+    en: Consent prompt always on the secure desktop
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pytanie o zgodę na podniesienie uprawnień pojawia się na osobnym,
+    odizolowanym pulpicie — po to, żeby żaden inny program nie mógł go
+    narysować, przykryć ani kliknąć za człowieka. Na tym polega cała jego
+    wiarygodność: jeśli okno jest tam, to na pewno jest prawdziwe.
+
+    Istnieje jednak furtka pozwalająca programom dostępowym wyłączyć tę izolację
+    i wyświetlić pytanie na zwykłym pulpicie. Powstała dla narzędzi zdalnej
+    pomocy, które inaczej nie mogłyby pokazać okna zgody drugiej stronie.
+    Ustawienie tę furtkę zamyka: okno wraca na bezpieczny pulpit niezależnie od
+    tego, o co program poprosi.
+  en: |
+    The consent prompt for elevation appears on a separate, isolated desktop - so
+    that no other program can draw over it, cover it or click it on a person's
+    behalf. Its whole credibility rests on this: if the window is there, it is
+    certainly genuine.
+
+    There is, however, a loophole letting accessibility programs switch that
+    isolation off and show the prompt on the ordinary desktop. It was made for
+    remote assistance tools, which otherwise could not show the consent window to
+    the other party. The setting closes the loophole: the window returns to the
+    secure desktop whatever the program asks for.
+
+disruption_description:
+  pl: |
+    Nic w codziennej pracy. Ustawienie nie zmienia tego, kiedy pytanie się
+    pojawia ani o co pyta — zmienia wyłącznie to, gdzie zostaje narysowane,
+    i przywraca zachowanie domyślne.
+
+    Jedyny odczuwalny przypadek to sesja zdalnej pomocy. Gdy na maszynie
+    pojawi się pytanie o zgodę, osoba pomagająca zdalnie zobaczy ciemny albo
+    pusty ekran i straci sterowanie do czasu, aż ktoś przy maszynie odpowie.
+    Nie jest to awaria narzędzia, tylko skutek izolacji, i większość narzędzi
+    zdalnych radzi sobie z tym własnym mechanizmem.
+
+    Warto jednak wiedzieć o tym wcześniej, bo bez tej wiedzy wygląda to na
+    zawieszenie sesji — a wtedy odruchem jest jej zerwanie i ponowne
+    połączenie, co niczego nie naprawia.
+  en: |
+    Nothing in daily work. The setting changes neither when the prompt appears nor
+    what it asks - only where it gets drawn, and it restores the default
+    behaviour.
+
+    The one noticeable case is a remote assistance session. When a consent prompt
+    comes up on the machine, the person helping remotely sees a dark or blank
+    screen and loses control until somebody at the machine answers. That is not a
+    tool failure but a consequence of the isolation, and most remote tools handle
+    it with a mechanism of their own.
+
+    It is worth knowing in advance all the same, because without that knowledge it
+    looks like the session hanging - and the reflex is then to drop it and
+    reconnect, which fixes nothing.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - user-interface
+  what_breaks:
+    pl:
+      - Osoba pomagająca zdalnie widzi pusty ekran, gdy na maszynie pojawi się pytanie o zgodę
+      - Sterowanie zdalne wraca dopiero po odpowiedzi kogoś przy maszynie
+    en:
+      - A person helping remotely sees a blank screen when a consent prompt appears on the machine
+      - Remote control returns only once somebody at the machine answers
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna obsługiwana jest wyłącznie zdalnie i nikt nie może odpowiedzieć na pytanie na miejscu
+    en:
+      - The machine is serviced remotely only and nobody can answer the prompt in person
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'EnableUIADesktopToggle'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'EnableUIADesktopToggle'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableUIADesktopToggle' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/user-account-control-allow-uiaccess-applications-to-prompt-for-elevation-without-using-the-secure-desktop
+
+notes:
+  pl: |
+    Wartość zerowa oznacza tu wymaganie, a nie wyłączenie ochrony — ustawienie
+    nazywa furtkę, więc jego wyłączenie jest utwardzeniem. To jedno z kilku
+    miejsc w tym benchmarku, w których nazwa punktu czyta się odwrotnie do
+    zamierzonego skutku, i dlatego tytuł w tej paczce mówi o skutku, a nie
+    o nazwie ustawienia.
+
+    Punkt ma sens wyłącznie razem z wymaganiem bezpiecznego pulpitu dla samego
+    pytania. Bez niego zamyka furtkę do drzwi, które i tak stoją otworem.
+  en: |
+    A value of zero here means the requirement rather than protection being off -
+    the setting names the loophole, so switching it off is the hardening. This is
+    one of several places in this benchmark where an item's name reads the
+    opposite way from its intended effect, which is why the title in this pack
+    speaks of the effect rather than of the setting's name.
+
+    The item makes sense only alongside the requirement of a secure desktop for
+    the prompt itself. Without it, it shuts a loophole into a door standing open
+    anyway.

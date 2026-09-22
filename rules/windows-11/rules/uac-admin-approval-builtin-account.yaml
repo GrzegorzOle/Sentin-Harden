@@ -1,0 +1,173 @@
+id: win11-uac-admin-approval-builtin-account
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Tryb zatwierdzania przez administratora dla wbudowanego konta administratora
+    en: Admin approval mode for the built-in administrator account
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kontrola konta użytkownika obejmuje wszystkich administratorów poza jednym:
+    wbudowane konto administratora działa domyślnie z pełnymi uprawnieniami od
+    chwili zalogowania i nie pyta o nic. Każdy program uruchomiony na tym koncie
+    dostaje najwyższe uprawnienia bez okna, bez potwierdzenia i bez śladu.
+
+    To jest wyjątek, o którym się nie pamięta, bo konto bywa wyłączone i wraca
+    do użytku dopiero w sytuacjach awaryjnych — czyli dokładnie wtedy, gdy ktoś
+    pracuje w pośpiechu i uruchamia rzeczy, których normalnie by nie uruchomił.
+    Ustawienie znosi ten wyjątek i obejmuje konto wbudowane tą samą zasadą,
+    co pozostałe.
+  en: |
+    User account control covers every administrator but one: the built-in
+    administrator account runs by default with full rights from the moment of
+    signing in and asks nothing. Every program started on that account gets the
+    highest privileges with no window, no confirmation and no trace.
+
+    It is an exception nobody remembers, because the account tends to be disabled
+    and comes back into use only in emergencies - that is, exactly when somebody
+    is working in a hurry and running things they would not normally run. The
+    setting removes the exception and brings the built-in account under the same
+    rule as the rest.
+
+disruption_description:
+  pl: |
+    Na stanowisku, na którym konto wbudowane jest wyłączone, zmiana nie robi nic
+    widocznego — i tak jest w większości przypadków, bo system domyślnie tego
+    konta nie używa.
+
+    Sprawdzić trzeba dwie sytuacje. Pierwsza: konto wbudowane jest używane do
+    pracy, na przykład na maszynie serwisowej albo na stanowisku, które nigdy nie
+    zostało wciągnięte do normalnego zarządzania. Wtedy po zmianie pojawiają się
+    pytania o zgodę, których wcześniej nie było, przy każdej czynności
+    wymagającej uprawnień.
+
+    Druga, poważniejsza: zadania i skrypty uruchamiane na tym koncie bez
+    interakcji. Pytanie o zgodę nie ma komu się pokazać, więc czynność po prostu
+    się nie wykonuje — cicho, bez błędu, który by cokolwiek tłumaczył. Zanim ten
+    punkt zostanie wdrożony, warto sprawdzić, co jest uruchamiane na koncie
+    wbudowanym, bo to najczęstsze źródło niespodzianek po tej zmianie.
+  en: |
+    On a station where the built-in account is disabled the change does nothing
+    visible - and that is the usual case, because the system does not use that
+    account by default.
+
+    Two situations need checking. First: the built-in account is used for work,
+    for instance on a service machine or on a station that was never brought into
+    normal management. After the change, consent questions appear where there were
+    none, at every action requiring privileges.
+
+    Second, and more serious: tasks and scripts run on that account without
+    interaction. There is nobody for the consent question to appear to, so the
+    action simply does not happen - quietly, with no error that would explain
+    anything. Before this item is applied it is worth checking what runs on the
+    built-in account, as that is the commonest source of surprises afterwards.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Zadania i skrypty uruchamiane bez interakcji na koncie wbudowanym mogą przestać się wykonywać
+      - Praca na koncie wbudowanym zaczyna wymagać potwierdzania każdej czynności wymagającej uprawnień
+      - Zatrzymana czynność nie zgłasza błędu tłumaczącego przyczynę
+    en:
+      - Tasks and scripts running without interaction on the built-in account may stop executing
+      - Working on the built-in account starts requiring confirmation of every privileged action
+      - A halted action reports no error explaining the cause
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na koncie wbudowanym uruchamiane są zadania albo skrypty bez udziału człowieka
+      - Konto wbudowane jest podstawowym kontem roboczym na tej maszynie
+    en:
+      - Tasks or scripts run unattended on the built-in account
+      - The built-in account is the primary working account on this machine
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'FilterAdministratorToken'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'FilterAdministratorToken'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'FilterAdministratorToken' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/user-account-control-admin-approval-mode-for-the-built-in-administrator-account
+
+notes:
+  pl: |
+    Kategoria wysoka bierze się z tego, że punkt zamyka wyjątek, a nie dokłada
+    ograniczenie. Wszystkie pozostałe ustawienia kontroli konta użytkownika mogą
+    być wdrożone wzorowo i nie dotyczyć tego jednego konta — a to właśnie na nim
+    pracuje się w sytuacjach awaryjnych, czyli najmniej starannie.
+
+    Zmiana zaczyna obowiązywać po ponownym zalogowaniu na to konto, nie od razu.
+    Ponowny audyt tego punktu odczyta wartość poprawnie mimo to, bo czyta
+    politykę, a nie stan bieżącej sesji.
+  en: |
+    The high category comes from the item closing an exception rather than adding
+    a restriction. Every other user account control setting can be applied
+    perfectly and still not touch this one account - and it is that account people
+    work on in emergencies, that is, least carefully.
+
+    The change takes effect at the next sign-in to that account, not at once. A
+    re-audit of this item reads the value correctly all the same, because it reads
+    the policy rather than the state of the current session.

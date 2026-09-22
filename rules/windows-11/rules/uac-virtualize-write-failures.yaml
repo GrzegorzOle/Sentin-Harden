@@ -1,0 +1,171 @@
+id: win11-uac-virtualize-write-failures
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Przekierowanie nieudanych zapisów starszych programów do profilu użytkownika
+    en: Failed writes by older programs redirected to the user profile
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Programy pisane pod starsze wersje systemu zakładają, że wolno im zapisywać
+    w katalogu programów i we wspólnych gałęziach rejestru. Dzisiaj nie wolno,
+    więc taki zapis kończy się błędem — a program napisany, zanim ten błąd był
+    możliwy, zwykle nie umie go obsłużyć.
+
+    System potrafi przechwycić taki zapis i przekierować go do prywatnej
+    lokalizacji użytkownika. Program dostaje odpowiedź, że zapis się powiódł,
+    i pracuje dalej, a dane lądują tam, gdzie nikomu nie szkodzą. Wartość
+    dla bezpieczeństwa jest pośrednia: to nie jest zapora przed atakiem, tylko
+    sposób na to, żeby nikt nie musiał rozwiązywać problemu zgodności przez
+    rozdanie uprawnień administratora.
+  en: |
+    Programs written for older system versions assume they may write in the
+    programs directory and in shared registry branches. Today they may not, so
+    such a write ends in an error - and a program written before that error was
+    possible usually cannot handle it.
+
+    The system can intercept such a write and redirect it to the user's private
+    location. The program is told the write succeeded and carries on, while the
+    data lands where it harms nobody. The security value is indirect: this is no
+    barrier against an attack, but a way of ensuring nobody has to solve a
+    compatibility problem by handing out administrator rights.
+
+disruption_description:
+  pl: |
+    Nic. Przekierowanie zapisów jest funkcją zgodnościową, więc jego włączenie
+    sprawia, że działa więcej rzeczy, a nie mniej. Programy pisane współcześnie
+    nie zapisują w miejscach chronionych i ta funkcja ich nie dotyczy.
+
+    Jedną rzecz warto wiedzieć, choć nie jest ona skutkiem tej zmiany, tylko
+    jej działania: przekierowane dane trafiają do profilu użytkownika, więc
+    dwie osoby korzystające z tego samego programu na jednej maszynie zobaczą
+    dwa różne zestawy ustawień. Tak samo dane zapisane przez program uruchomiony
+    zwyczajnie będą niewidoczne po uruchomieniu go z uprawnieniami
+    administratora, bo wtedy zapis idzie do miejsca właściwego, a nie do profilu.
+
+    Bywa to mylące przy diagnozowaniu starszego oprogramowania i warto o tym
+    pamiętać, zanim zacznie się szukać przyczyny gdzie indziej.
+  en: |
+    Nothing. Redirecting writes is a compatibility feature, so turning it on makes
+    more things work, not fewer. Programs written today do not write to protected
+    locations and the feature does not concern them.
+
+    One thing is worth knowing, though it is not a consequence of this change but
+    of how it works: redirected data goes into the user profile, so two people
+    using the same program on one machine see two different sets of settings.
+    Likewise, data written by the program run normally will be invisible when it
+    is run with administrator rights, because the write then goes to the proper
+    place rather than to the profile.
+
+    This can mislead when diagnosing older software and is worth remembering
+    before looking for the cause elsewhere.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Dwie osoby korzystające z jednego starszego programu na tej samej maszynie mają osobne ustawienia
+      - Dane zapisane przy zwykłym uruchomieniu nie są widoczne po uruchomieniu programu z uprawnieniami administratora
+    en:
+      - Two people using one older program on the same machine get separate settings
+      - Data written on a normal run is not visible when the program is run with administrator rights
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Starszy program musi zapisywać dane wspólne dla wszystkich osób pracujących na tej maszynie
+    en:
+      - An older program has to write data shared by everybody working on this machine
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'EnableVirtualization'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'EnableVirtualization'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableVirtualization' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/user-account-control-virtualize-file-and-registry-write-failures-to-per-user-locations
+
+notes:
+  pl: |
+    Kategoria niska jest tu postawiona wbrew miejscu, jakie punkt zajmuje
+    w benchmarku, i wymaga wyjaśnienia. Kryterium w tej paczce brzmi: co zyskuje
+    napastnik, gdy punkt pozostaje niespełniony. Odpowiedź brzmi: nic wprost —
+    zyskuje najwyżej tyle, że ktoś rozwiąże problem zgodności najprostszą drogą,
+    czyli nada użytkownikowi uprawnienia administratora.
+
+    To jest realne ryzyko, ale pośrednie, i dlatego punkt trafia do kategorii
+    porządkowej. Przekierowanie zapisów dotyczy wyłącznie programów
+    trzydziestodwubitowych bez deklaracji zgodności; nowsze i tak go nie
+    używają, więc na maszynie z wyłącznie współczesnym oprogramowaniem punkt
+    nie robi nic poza tym, że jest spełniony.
+  en: |
+    The low category is set here against the place the item holds in the
+    benchmark, and calls for an explanation. The criterion in this pack is: what
+    does an attacker gain while the item goes unmet. The answer is: nothing
+    directly - at most that somebody solves the compatibility problem the easiest
+    way, by granting the user administrator rights.
+
+    That is a real risk, but an indirect one, and so the item lands in the
+    housekeeping category. Redirecting writes applies only to 32-bit programs with
+    no compatibility declaration; newer ones do not use it anyway, so on a machine
+    with only modern software the item does nothing beyond being satisfied.

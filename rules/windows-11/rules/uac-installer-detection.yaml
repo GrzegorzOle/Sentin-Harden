@@ -1,0 +1,159 @@
+id: win11-uac-installer-detection
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Wykrywanie instalatorów i pytanie o podniesienie uprawnień
+    en: Installer detection with an elevation prompt
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Starsze instalatory nie deklarują, że potrzebują uprawnień administratora —
+    powstały, zanim deklarowanie było w ogóle możliwe. Uruchomione bez uprawnień
+    kończą się w połowie albo, co gorsza, zapisują część plików gdzie indziej
+    i zgłaszają powodzenie.
+
+    System potrafi rozpoznać taki program po tym, jak wygląda i jak się nazywa,
+    i zapytać o podniesienie uprawnień samodzielnie. Znaczenie dla
+    bezpieczeństwa jest pośrednie, ale realne: instalacja przebiegająca
+    w połowie zostawia system w stanie, którego nikt nie zaplanował — pliki
+    z jednej wersji, wpisy z drugiej, uprawnienia z trzeciej.
+  en: |
+    Older installers do not declare that they need administrator rights - they
+    predate declaring being possible at all. Run without rights they end halfway
+    or, worse, write some files elsewhere and report success.
+
+    The system can recognise such a program by how it looks and what it is called,
+    and ask for elevation on its own. The security significance is indirect but
+    real: an installation that runs halfway leaves the system in a state nobody
+    planned - files from one version, entries from another, permissions from a
+    third.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna w jednym miejscu: pojawiają się pytania o podniesienie
+    uprawnień tam, gdzie wcześniej program startował bez nich.
+
+    Sprawdzenia wymaga automatyzacja. Instalator uruchamiany cicho z zadania
+    harmonogramu albo ze skryptu wdrożeniowego trafi na pytanie, którego nie ma
+    komu zobaczyć, i zatrzyma się. Dotyczy to zwłaszcza starszych pakietów
+    instalacyjnych rozprowadzanych wewnętrznie — nowsze deklarują swoje
+    wymagania same i rozpoznawanie ich nie dotyczy.
+
+    Warto też wiedzieć o rozpoznawaniu mylnym. System rozstrzyga po cechach
+    zewnętrznych, więc program o nazwie zawierającej słowo kojarzone z instalacją
+    może dostać pytanie, choć niczego nie instaluje. Jest to niegroźne, ale bywa
+    mylące dla użytkownika, który tego pytania się nie spodziewa.
+  en: |
+    The change is visible in one place: elevation prompts appear where a program
+    used to start without them.
+
+    Automation needs checking. An installer run silently from a scheduled task or
+    a deployment script meets a prompt there is nobody to see, and stops. This
+    concerns older installation packages distributed internally in particular -
+    newer ones declare their requirements themselves and detection does not apply
+    to them.
+
+    Mistaken detection is also worth knowing about. The system decides by outward
+    features, so a program whose name contains a word associated with installing
+    may get a prompt although it installs nothing. That is harmless, but confusing
+    for a user not expecting the question.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Starsze instalatory uruchamiane cicho z zadania albo ze skryptu zatrzymają się na pytaniu
+      - Programy o nazwie kojarzonej z instalacją mogą dostać pytanie, choć niczego nie instalują
+    en:
+      - Older installers run silently from a task or a script stop at the prompt
+      - Programs whose name suggests installing may get a prompt although they install nothing
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Oprogramowanie wdrażane jest starszymi instalatorami uruchamianymi bez udziału człowieka
+    en:
+      - Software is deployed with older installers run unattended
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'EnableInstallerDetection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'EnableInstallerDetection'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableInstallerDetection' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/user-account-control-detect-application-installations-and-prompt-for-elevation
+
+notes:
+  pl: |
+    Punkt czyta się razem z ustawieniem odmawiającym podniesienia uprawnień
+    użytkownikom standardowym. Przyjęte oba naraz dają wynik, którego nazwa
+    żadnego z nich nie zapowiada: instalator zostanie rozpoznany, poproszony
+    o uprawnienia i od razu odrzucony. To jest zachowanie zamierzone, ale warto,
+    żeby użytkownik zobaczył je przed wdrożeniem, a nie po pierwszym zgłoszeniu.
+  en: |
+    The item is read together with the setting that denies elevation to standard
+    users. Applied together they give a result neither name announces: the
+    installer is detected, asked for rights and refused at once. That is the
+    intended behaviour, but the user should see it before applying rather than
+    after the first report comes in.

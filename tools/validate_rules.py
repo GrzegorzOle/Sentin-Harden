@@ -18,6 +18,7 @@ Exit code 0 means the base has no findings.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -65,6 +66,27 @@ def find_empty_translations(node, trail: str = "") -> list[str]:
     return findings
 
 
+SETTING_PATTERNS = (
+    re.compile(r"Se[A-Za-z]+(?:Privilege|Right)"),
+    re.compile(r"\$path\s*=\s*'([^']+)'\s*\n\s*\$name\s*=\s*'([^']+)'"),
+)
+
+
+def settings_touched(rule) -> set[str]:
+    """Name the settings a rule reads, so two rules cannot silently cover one point.
+
+    Reads the audit command rather than the remediation one: a rule is a duplicate
+    of another when it answers the same question, not when it writes the same value.
+    """
+    command = ((rule.get("audit") or {}).get("test_command")) or ""
+    found = set()
+    for match in SETTING_PATTERNS[0].findall(command):
+        found.add(f"right {match}")
+    for path, name in SETTING_PATTERNS[1].findall(command):
+        found.add(f"registry {path}!{name}")
+    return found
+
+
 def check(base: Path) -> list[str]:
     schema_dir = base / "_schema"
     schema = json.loads((schema_dir / "rule.schema.json").read_text(encoding="utf-8"))
@@ -75,6 +97,7 @@ def check(base: Path) -> list[str]:
 
     findings: list[str] = []
     seen_ids: dict[str, Path] = {}
+    seen_settings: dict[tuple[str, str], str] = {}
     rule_count = 0
 
     targets = sorted(d for d in base.iterdir() if d.is_dir() and not d.name.startswith("_"))
@@ -129,6 +152,15 @@ def check(base: Path) -> list[str]:
             used = set((rule.get("implementation_consequences") or {}).get("impact_areas") or [])
             for unknown in sorted(used - known_areas):
                 findings.append(f"{label}: impact area '{unknown}' is not in the dictionary")
+
+            for setting in sorted(settings_touched(rule)):
+                key = (target.name, setting)
+                if key in seen_settings:
+                    findings.append(
+                        f"{label}: reads {setting}, already covered by {seen_settings[key]}"
+                    )
+                else:
+                    seen_settings[key] = path.name
 
     print(f"Targets: {len(targets)}. Rules: {rule_count}. Impact areas: {len(known_areas)}.")
     for name in sorted(per_target):

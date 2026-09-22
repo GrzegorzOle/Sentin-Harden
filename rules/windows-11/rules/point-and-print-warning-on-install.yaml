@@ -1,0 +1,157 @@
+id: win11-point-and-print-warning-on-install
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers > Point and Print Restrictions
+  title:
+    pl: Ostrzeżenie przy instalacji sterownika drukarki sieciowej
+    en: Warning when installing a network printer driver
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Instalacja sterownika z serwera wydruku może przebiegać po cichu — bez
+    pytania i bez podnoszenia uprawnień. Wtedy samo wskazanie maszynie adresu
+    drukarki wystarcza, żeby uruchomił się na niej cudzy kod z uprawnieniami
+    systemowymi.
+
+    Wymaganie ostrzeżenia i podniesienia uprawnień przerywa ten ciąg
+    w jedynym miejscu, w którym da się go przerwać bez rezygnacji z drukowania
+    przez sieć. Decyzja o wpuszczeniu kodu przestaje zapadać automatycznie
+    i trafia do kogoś, kto ma uprawnienia, żeby ją podjąć.
+  en: |
+    Installing a driver from a print server can proceed silently - without a
+    prompt and without elevation. Then merely pointing the machine at a printer
+    address is enough for somebody else's code to run on it with system
+    privileges.
+
+    Requiring a warning and elevation breaks that sequence at the one place it
+    can be broken without giving up network printing altogether. The decision to
+    admit code stops being made automatically and goes to somebody with the
+    rights to make it.
+
+disruption_description:
+  pl: |
+    Przy pierwszym połączeniu z drukarką pojawi się okno z prośbą o zgodę
+    i o poświadczenia administratora. Dla użytkownika bez takich uprawnień
+    oznacza to, że drukarki nie doda sam.
+
+    Skutek nakłada się na zastrzeżenie instalacji dla administratorów i w
+    praktyce jest przez nie przesłonięty: gdy tamten punkt jest wdrożony,
+    użytkownik i tak nie zainstaluje sterownika. Ten punkt ma znaczenie tam,
+    gdzie tamten świadomie odpuszczono — i wtedy jest jedynym ostrzeżeniem,
+    jakie w ogóle padnie.
+  en: |
+    At the first connection to a printer a window appears asking for consent and
+    for administrator credentials. For a user without such rights it means they
+    will not add the printer themselves.
+
+    The consequence overlaps with restricting installation to administrators and
+    in practice is masked by it: with that item deployed the user will not
+    install a driver anyway. This item matters where that one was deliberately
+    passed over - and then it is the only warning that will be given at all.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Pierwsze połączenie z drukarką sieciową wymaga zgody i poświadczeń administratora
+      - Automatyczne rozsyłanie drukarek przy logowaniu przestanie przebiegać bez udziału człowieka
+    en:
+      - The first connection to a network printer requires consent and administrator credentials
+      - Automatic printer distribution at sign-in stops proceeding without human involvement
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Drukarki są rozsyłane przy logowaniu i instalacja ma przebiegać bez udziału użytkownika
+      - Użytkownicy pracują w zmieniających się lokalizacjach i dodają drukarki sami
+    en:
+      - Printers are distributed at sign-in and installation is meant to proceed without the user
+      - Users work at changing locations and add printers themselves
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+      $name = 'NoWarningNoElevationOnInstall'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    $name = 'NoWarningNoElevationOnInstall'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoWarningNoElevationOnInstall' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/point-and-print-default-behavior-change
+
+notes:
+  pl: |
+    Wartość zero oznacza tutaj wymaganie ostrzeżenia, a nie jego wyłączenie —
+    nazwa ustawienia opisuje zachowanie, którego się zakazuje. To częsta
+    przyczyna pomyłki przy ręcznym ustawianiu i powód, dla którego reguła
+    porównuje wartość, a nie opiera się na opisie z interfejsu.
+
+    Brak wartości liczy się jako niespełniony. Zachowanie domyślne bywa zgodne,
+    ale zależy od poziomu aktualizacji systemu, a raport nie ma stawiać
+    wniosków na tym, którą poprawkę maszyna zdążyła przyjąć.
+  en: |
+    A value of zero here means the warning is required, not disabled - the
+    setting's name describes the behaviour being forbidden. This is a frequent
+    source of mistakes when setting it by hand, and the reason the rule compares
+    the value rather than relying on the wording in the interface.
+
+    A missing value counts as unmet. The default behaviour may match, but it
+    depends on the system's update level, and the report is not meant to rest its
+    conclusions on which patch the machine has managed to take.

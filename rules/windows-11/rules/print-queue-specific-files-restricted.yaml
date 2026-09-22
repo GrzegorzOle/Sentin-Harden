@@ -1,0 +1,154 @@
+id: win11-print-queue-specific-files-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Pliki właściwe dla kolejki wydruku ograniczone do katalogu sterowników
+    en: Queue-specific files restricted to the driver folder
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Poza samym sterownikiem serwer wydruku może przysłać dodatkowe pliki
+    związane z konkretną kolejką: profile kolorów, konfiguracje, biblioteki
+    pomocnicze. Domyślnie maszyna przyjmuje je i kopiuje na dysk.
+
+    To jest ta sama droga co przy sterowniku, tylko mniej widoczna, bo takie
+    pliki nie przechodzą przez mechanizm podpisów sterowników. Ograniczenie
+    ich do katalogu sterowników odbiera możliwość położenia pliku tam, skąd
+    zostanie wczytany przez coś innego — a właśnie na tym polegało obejście
+    zabezpieczeń instalacji sterowników.
+  en: |
+    Besides the driver itself, a print server can send additional files tied to
+    a particular queue: colour profiles, configurations, helper libraries. By
+    default the machine accepts them and copies them to disk.
+
+    This is the same route as with the driver, only less visible, because such
+    files do not pass through the driver signing mechanism. Restricting them to
+    the driver folder removes the ability to place a file where something else
+    will load it from - and that is exactly what the bypass of driver
+    installation protections relied on.
+
+disruption_description:
+  pl: |
+    Wydruk działa bez zmian, bo pliki właściwe dla kolejki nadal są przyjmowane
+    — zmienia się wyłącznie to, gdzie wolno je zapisać.
+
+    Zepsuć może starsze rozwiązanie wydruku, które świadomie kładzie pliki poza
+    katalogiem sterowników: część systemów z dodatkową obsługą kolorów albo
+    oprogramowanie produkcyjne z własnym mechanizmem konfiguracji. Takich
+    przypadków jest niewiele i objaw jest zwykle zawężony do jednej funkcji,
+    a nie do drukowania jako takiego.
+  en: |
+    Printing works unchanged, because queue-specific files are still accepted -
+    what changes is only where they may be written.
+
+    It can break an older printing solution that deliberately places files
+    outside the driver folder: some systems with extended colour handling, or
+    production software with its own configuration mechanism. Such cases are few
+    and the symptom is usually narrowed to one function rather than to printing
+    as a whole.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Starsze rozwiązania wydruku zapisujące pliki poza katalogiem sterowników mogą stracić część funkcji
+      - Dodatkowa obsługa kolorów albo konfiguracji własnej producenta może przestać działać
+    en:
+      - Older printing solutions writing files outside the driver folder may lose some functions
+      - Extended colour handling or a vendor's own configuration may stop working
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa rozwiązanie wydruku produkcyjnego z własnym mechanizmem plików pomocniczych
+    en:
+      - The machine runs a production printing solution with its own helper file mechanism
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      $name = 'CopyFilesPolicy'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    $name = 'CopyFilesPolicy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'CopyFilesPolicy' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/manage-print-spooler-service
+
+notes:
+  pl: |
+    Punkt bywa pomijany, bo brzmi technicznie i nie kojarzy się z niczym
+    groźnym. W praktyce domyka drogę, którą obchodzono pozostałe ograniczenia
+    drukowania — i wdrożony bez nich daje niewiele, a pominięty przy nich
+    zostawia wyjście.
+
+    Zmiana obowiązuje po restarcie usługi bufora wydruku, tak jak pozostałe
+    punkty tej rodziny. Wdraża się je razem, jednym restartem, zamiast
+    czterokrotnie przerywać kolejkę.
+  en: |
+    The item tends to be skipped, because it sounds technical and brings nothing
+    alarming to mind. In practice it closes the route used to work around the
+    other printing restrictions - deployed without them it gives little, omitted
+    alongside them it leaves a way out.
+
+    The change takes effect after a spooler service restart, like the other items
+    of this family. They are rolled out together, with one restart, instead of
+    interrupting the queue four times.

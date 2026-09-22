@@ -1,0 +1,167 @@
+id: win11-spooler-remote-rpc-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Zdalny punkt końcowy bufora wydruku wyłączony
+    en: Remote endpoint of the print spooler disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bufor wydruku nasłuchuje na połączenia z sieci, żeby inne maszyny mogły
+    dodawać do niego zadania i zarządzać kolejką. Na serwerze wydruku ma to
+    sens. Na stacji roboczej, do której nikt nie drukuje, jest to usługa
+    przyjmująca dane z sieci bez żadnego powodu.
+
+    Właśnie ten punkt końcowy był drogą wejścia w najgłośniejszych błędach
+    bufora wydruku z ostatnich lat. Wyłączenie go nie chroni przed konkretną
+    luką, tylko odbiera dostęp do kodu, w którym takie luki się znajdowały
+    i najpewniej jeszcze znajdą. Sam wydruk na tej maszynie działa dalej, bo
+    korzysta z kanału lokalnego.
+  en: |
+    The print spooler listens for network connections so that other machines can
+    submit jobs and manage the queue. On a print server that makes sense. On a
+    workstation nobody prints to, it is a service accepting data from the network
+    for no reason at all.
+
+    That very endpoint was the way in for the loudest print spooler flaws of
+    recent years. Disabling it protects against no particular vulnerability - it
+    removes access to the code in which such flaws were found and most likely
+    will be again. Printing from this machine keeps working, because it uses the
+    local channel.
+
+disruption_description:
+  pl: |
+    Wydruk z tej maszyny — na drukarkę lokalną, sieciową i przez serwer
+    wydruku — działa bez zmian. Zmienia się wyłącznie to, że inne maszyny nie
+    mogą już dodawać zadań do bufora tej stacji.
+
+    Na stacji roboczej nie ma czego zepsuć, bo nikt do niej nie drukuje. Punkt
+    wymaga restartu usługi bufora, co kończy zadania będące akurat w kolejce —
+    to jedyna rzecz warta sprawdzenia przed uruchomieniem.
+  en: |
+    Printing from this machine - to a local printer, a network printer and
+    through a print server - works unchanged. What changes is only that other
+    machines can no longer submit jobs to this workstation's spooler.
+
+    On a workstation there is nothing to break, because nobody prints to it. The
+    item requires a spooler service restart, which ends any jobs currently in the
+    queue - the one thing worth checking before running it.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Inne maszyny nie będą mogły dodawać zadań do bufora wydruku tej stacji
+      - Drukarka udostępniona z tej maszyny przestanie być dostępna dla innych
+      - Restart usługi bufora kończy zadania znajdujące się w kolejce
+    en:
+      - Other machines cannot submit jobs to this workstation's print spooler
+      - A printer shared from this machine stops being available to others
+      - Restarting the spooler service ends jobs currently in the queue
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna udostępnia drukarkę innym stanowiskom
+      - Maszyna pełni rolę serwera wydruku dla innych stanowisk w sieci
+    en:
+      - The machine shares a printer with other workstations
+      - The machine acts as a print server for other workstations on the network
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      $name = 'RegisterSpoolerRemoteRpcEndPoint'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    $name = 'RegisterSpoolerRemoteRpcEndPoint'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RegisterSpoolerRemoteRpcEndPoint' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/manage-print-spooler-service
+
+notes:
+  pl: |
+    Wartość dwa oznacza wyłączenie punktu końcowego, a jeden — jego włączenie.
+    Kolejność jest odwrotna do intuicyjnej i to kolejna w tej paczce wartość,
+    przy której ręczne ustawianie bywa mylące.
+
+    Zmiana nabiera skutku po restarcie usługi bufora wydruku. Ponowny audyt tuż
+    po naprawie pokaże już nową wartość, choć usługa nadal pracuje ze starą —
+    to samo rozróżnienie, co przy ustawieniach czytanych przy starcie systemu.
+
+    Punkt jest łagodniejszą wersją całkowitego wyłączenia bufora, opisanego
+    osobno. Tam maszyna traci możliwość drukowania w ogóle, tutaj traci
+    wyłącznie nasłuch z sieci — i dlatego ten mieści się w klasie bez
+    uciążliwości, a tamten nie.
+  en: |
+    A value of two means the endpoint is disabled and one means it is enabled.
+    The order is the reverse of the intuitive one, and it is another value in
+    this pack where setting it by hand tends to mislead.
+
+    The change takes effect after a spooler service restart. A re-audit right
+    after the fix will already show the new value while the service still runs
+    with the old one - the same distinction as with settings read at system
+    startup.
+
+    The item is a milder version of disabling the spooler entirely, described
+    separately. There the machine loses the ability to print at all, here it
+    loses only the network listener - which is why this one falls into the
+    no-disruption class and that one does not.

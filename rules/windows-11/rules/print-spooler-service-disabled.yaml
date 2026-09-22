@@ -1,0 +1,175 @@
+id: win11-print-spooler-service-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: System Services
+  title:
+    pl: Usługa bufora wydruku wyłączona
+    en: Print spooler service disabled
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bufor wydruku to usługa działająca z uprawnieniami systemowymi, przyjmująca
+    dane i ładująca cudzy kod w postaci sterowników. Historia jej błędów jest
+    długa i regularnie uzupełniana, a każdy kolejny wygląda tak samo: zwykły
+    użytkownik albo maszyna z sieci uzyskuje uprawnienia systemowe.
+
+    Pozostałe punkty drukowania zwężają tę powierzchnię. Ten jeden usuwa ją
+    w całości — i tylko on daje pewność, że następny błąd w tym kodzie nie
+    będzie dotyczył tej maszyny. Cena jest wprost proporcjonalna: maszyna
+    przestaje drukować.
+  en: |
+    The print spooler is a service running with system privileges, accepting
+    data and loading somebody else's code in the form of drivers. Its history of
+    flaws is long and regularly extended, and each new one looks the same: an
+    ordinary user or a machine on the network obtains system privileges.
+
+    The other printing items narrow that surface. This one removes it entirely -
+    and only it gives certainty that the next flaw in that code will not concern
+    this machine. The price is directly proportional: the machine stops printing.
+
+disruption_description:
+  pl: |
+    Maszyna przestanie drukować. Nie „może mieć problem z drukowaniem" —
+    przestanie, całkowicie i natychmiast po zatrzymaniu usługi. Dotyczy to
+    drukarek lokalnych, sieciowych i wydruku do pliku, bo ten ostatni też
+    przechodzi przez bufor.
+
+    Znika też część funkcji, których nikt nie wiąże z drukowaniem: zapis do
+    pliku w formacie dokumentu przenośnego z poziomu aplikacji, podgląd
+    wydruku, a w niektórych programach eksport przez sterownik wirtualny.
+    To jest najczęstsze zaskoczenie przy tej zmianie.
+
+    Punkt ma sens na maszynie, która z definicji nie drukuje: serwerze,
+    stanowisku w strefie zamkniętej, maszynie wirtualnej w roli usługowej.
+    Na stacji roboczej człowieka jest to zmiana blokująca pracę.
+  en: |
+    The machine stops printing. Not "may have printing problems" - it stops,
+    completely and immediately once the service is stopped. This covers local
+    printers, network printers and printing to a file, because the latter also
+    goes through the spooler.
+
+    Some functions nobody associates with printing disappear too: saving to a
+    portable document file from within an application, print preview, and in some
+    programs export through a virtual driver. That is the most common surprise
+    with this change.
+
+    The item makes sense on a machine that by definition does not print: a
+    server, a workstation in a closed zone, a virtual machine in a service role.
+    On a person's workstation it is a work-blocking change.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - user-interface
+  what_breaks:
+    pl:
+      - Drukowanie przestanie działać całkowicie, na drukarki lokalne i sieciowe
+      - Zapis do pliku w formacie dokumentu przenośnego przez sterownik wirtualny przestanie być dostępny
+      - Podgląd wydruku i eksport przez sterownik wirtualny znikną z aplikacji
+      - Dodanie drukarki przestanie być możliwe, także przez administratora
+    en:
+      - Printing stops working entirely, to local and network printers alike
+      - Saving to a portable document file through a virtual driver stops being available
+      - Print preview and export through a virtual driver disappear from applications
+      - Adding a printer becomes impossible, including for an administrator
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Z maszyny drukuje człowiek, choćby okazjonalnie i na jedną drukarkę
+      - Aplikacje na maszynie zapisują dokumenty przez sterownik wirtualny
+      - Nie ustalono, czy któryś program korzysta z bufora poza samym drukowaniem
+    en:
+      - A person prints from the machine, even occasionally and to one printer
+      - Applications on the machine save documents through a virtual driver
+      - It has not been established whether any program uses the spooler beyond printing itself
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Spooler'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'NOT_APPLICABLE' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).Start
+        if ($null -eq $value) { 'CHECK_ERROR' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '4'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Spooler'
+    $current = (Get-ItemProperty -Path $path -Name 'Start' -ErrorAction SilentlyContinue).Start
+    [pscustomobject]@{
+      path    = $path
+      name    = 'Start'
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Stop-Service -Name 'Spooler' -Force -ErrorAction SilentlyContinue
+    Set-Service -Name 'Spooler' -StartupType Disabled
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    if ([int]$b.value -lt 4) { Start-Service -Name 'Spooler' -ErrorAction SilentlyContinue }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/manage-print-spooler-service
+
+notes:
+  pl: |
+    Sprawdzenie czyta wartość uruchamiania z rejestru, a nie stan usługi
+    w danej chwili. Usługa zatrzymana, ale ustawiona na uruchamianie
+    automatyczne, wróci po restarcie — i to właśnie konfiguracja, a nie stan
+    bieżący, odpowiada na pytanie, czy maszyna jest zabezpieczona.
+
+    Brak klucza usługi raportuje jako nieistotne dla tej maszyny. To jedyny
+    przypadek w paczce drukowania, w którym punkt może nie mieć zastosowania:
+    na instalacji z usuniętą rolą drukowania nie ma czego wyłączać i wynik
+    „niespełniony" byłby wtedy nieprawdziwy.
+
+    Wycofanie przywraca poprzedni tryb uruchamiania i podnosi usługę, jeśli
+    wcześniej była uruchamiana. Kolejki wydruku sprzed zmiany nie wracają —
+    zostały skasowane przy zatrzymaniu usługi i nie da się ich objąć kopią.
+  en: |
+    The check reads the startup value from the registry rather than the
+    service's state at a given moment. A service that is stopped but set to
+    start automatically will come back after a restart - and it is the
+    configuration, not the current state, that answers whether the machine is
+    protected.
+
+    A missing service key is reported as not applicable to this machine. It is
+    the only case in the printing pack where the item may not apply: on an
+    installation with the printing role removed there is nothing to disable, and
+    an "unmet" verdict would then be untrue.
+
+    The rollback restores the previous startup mode and brings the service up if
+    it was started before. Print queues from before the change do not come back -
+    they were discarded when the service stopped and cannot be covered by a
+    backup.

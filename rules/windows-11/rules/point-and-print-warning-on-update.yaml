@@ -1,0 +1,156 @@
+id: win11-point-and-print-warning-on-update
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers > Point and Print Restrictions
+  title:
+    pl: Ostrzeżenie przy aktualizacji sterownika drukarki sieciowej
+    en: Warning when updating a network printer driver
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Aktualizacja sterownika jest drugą połową tej samej drogi co instalacja
+    i bywa pomijana, bo brzmi jak czynność serwisowa. Serwer wydruku może
+    jednak w dowolnej chwili ogłosić nowszą wersję sterownika, a maszyna
+    pobierze ją i uruchomi.
+
+    Różnica wobec instalacji jest taka, że tu nikt niczego nie podłącza —
+    wystarczy drukarka dodana kiedyś, dawno, i zaufana od tamtej pory. Kod
+    trafia na maszynę przy okazji zwykłego wydruku. Wymaganie ostrzeżenia
+    zamyka drogę, która pozostaje otwarta nawet po ograniczeniu samej
+    instalacji.
+  en: |
+    Updating a driver is the second half of the same route as installing one and
+    tends to be overlooked, because it sounds like maintenance. A print server,
+    however, can announce a newer driver version at any moment, and the machine
+    will fetch and run it.
+
+    The difference from installation is that here nobody connects anything - a
+    printer added long ago and trusted ever since is enough. The code reaches the
+    machine in the course of an ordinary print job. Requiring a warning closes a
+    route that stays open even after installation itself has been restricted.
+
+disruption_description:
+  pl: |
+    Aktualizacja sterownika przestanie przebiegać cicho i poprosi o zgodę oraz
+    o poświadczenia administratora. Dla użytkownika oznacza to okno w chwili,
+    w której chciał tylko wydrukować dokument.
+
+    Skutek jest uciążliwszy niż przy instalacji, bo pojawia się nieoczekiwanie
+    i w trakcie pracy, a nie przy świadomym dodawaniu drukarki. W środowisku,
+    w którym serwer wydruku aktualizuje sterowniki regularnie, prośba potrafi
+    wracać. To warto sprawdzić przed wdrożeniem, bo decyduje o liczbie zgłoszeń.
+  en: |
+    A driver update stops proceeding silently and asks for consent and
+    administrator credentials. For the user that means a window at the moment
+    they only wanted to print a document.
+
+    The consequence is more of a nuisance than with installation, because it
+    appears unexpectedly and mid-work rather than during a deliberate printer
+    setup. In an environment where the print server updates drivers regularly the
+    prompt can keep coming back. Worth checking before rollout, because it
+    decides the number of tickets.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Aktualizacja sterownika drukarki wymaga zgody i poświadczeń administratora
+      - Prośba pojawia się w trakcie wydruku, a nie przy dodawaniu drukarki
+      - Przy serwerze aktualizującym sterowniki regularnie prośba wraca wielokrotnie
+    en:
+      - A printer driver update requires consent and administrator credentials
+      - The prompt appears during printing rather than while adding a printer
+      - With a server that updates drivers regularly the prompt comes back repeatedly
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwer wydruku aktualizuje sterowniki często, a użytkownicy nie mają uprawnień administracyjnych
+      - Drukowanie jest krytyczne czasowo i przerwa na prośbę o zgodę jest nie do przyjęcia
+    en:
+      - The print server updates drivers often and users have no administrative rights
+      - Printing is time critical and a pause for a consent prompt is unacceptable
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+      $name = 'UpdatePromptSettings'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    $name = 'UpdatePromptSettings'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'UpdatePromptSettings' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/point-and-print-default-behavior-change
+
+notes:
+  pl: |
+    Punkt tworzy parę z ostrzeżeniem przy instalacji i sam w sobie zostawia
+    dziurę: bez niego ograniczenie instalacji chroni przed pierwszym
+    sterownikiem, ale nie przed drugim, podanym jako jego aktualizacja.
+
+    Tak jak przy instalacji, wartość zero oznacza wymaganie ostrzeżenia,
+    a nie jego brak.
+  en: |
+    The item pairs with the warning on installation and on its own leaves a gap:
+    without it, restricting installation protects against the first driver but
+    not against a second one presented as its update.
+
+    As with installation, a value of zero means the warning is required, not
+    absent.

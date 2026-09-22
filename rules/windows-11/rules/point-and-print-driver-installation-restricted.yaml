@@ -1,0 +1,165 @@
+id: win11-point-and-print-driver-installation-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Instalacja sterowników drukarek zastrzeżona dla administratorów
+    en: Printer driver installation restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podłączenie drukarki sieciowej powoduje pobranie i zainstalowanie jej
+    sterownika. Sterownik drukarki to kod działający z uprawnieniami
+    systemowymi — czyli najwyższymi na maszynie.
+
+    Bez tego ograniczenia zwykły użytkownik może więc doprowadzić do wykonania
+    dowolnego kodu na poziomie systemu, wskazując maszynie „drukarkę", którą
+    kontroluje ktoś inny. Nie trzeba do tego żadnej luki: mechanizm działa
+    dokładnie tak, jak go zaprojektowano. To jedna z najkrótszych dróg od konta
+    bez uprawnień do pełnej kontroli nad stacją i dlatego punkt ma najwyższą
+    kategorię ryzyka w całej paczce drukowania.
+  en: |
+    Connecting a network printer causes its driver to be downloaded and
+    installed. A printer driver is code running with system privileges - the
+    highest on the machine.
+
+    Without this restriction an ordinary user can therefore bring about the
+    execution of arbitrary code at system level by pointing the machine at a
+    "printer" somebody else controls. No vulnerability is needed: the mechanism
+    works exactly as designed. It is one of the shortest routes from an
+    unprivileged account to full control of the workstation, which is why the
+    item carries the highest risk category in the whole printing pack.
+
+disruption_description:
+  pl: |
+    Użytkownik bez uprawnień administracyjnych nie zainstaluje już sterownika
+    drukarki samodzielnie. Podłączenie nowej drukarki zakończy się prośbą
+    o poświadczenia administratora zamiast cichą instalacją.
+
+    Uderza to w dwa scenariusze: dodanie drukarki w nowym biurze albo u klienta
+    oraz pierwszy wydruk po zmianie serwera wydruku. W organizacji z rozsyłanymi
+    centralnie drukarkami zmiana bywa niezauważalna, bo sterowniki są już na
+    miejscu. Tam, gdzie ludzie dodają drukarki sami, oznacza zgłoszenie do
+    pomocy technicznej przy każdej nowej drukarce.
+  en: |
+    A user without administrative rights will no longer install a printer driver
+    themselves. Connecting a new printer ends with a prompt for administrator
+    credentials instead of a silent installation.
+
+    This hits two scenarios: adding a printer at a new office or a client site,
+    and the first print job after a print server change. In an organisation with
+    centrally distributed printers the change can go unnoticed, because the
+    drivers are already in place. Where people add printers themselves, it means
+    a help desk ticket for every new printer.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Użytkownik bez uprawnień administracyjnych nie doda drukarki wymagającej nowego sterownika
+      - Podłączenie drukarki kończy się prośbą o poświadczenia administratora
+      - Pierwszy wydruk po zmianie serwera wydruku może wymagać interwencji
+    en:
+      - A user without administrative rights cannot add a printer requiring a new driver
+      - Connecting a printer ends with a prompt for administrator credentials
+      - The first print job after a print server change may need intervention
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Użytkownicy dodają drukarki samodzielnie w zmieniających się lokalizacjach i nie ma kto im pomóc
+      - Sterowniki nie są rozsyłane centralnie, a praca zależy od wydruku na miejscu
+    en:
+      - Users add printers themselves at changing locations and there is nobody to help them
+      - Drivers are not distributed centrally and work depends on printing on site
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+      $name = 'RestrictDriverInstallationToAdministrators'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    $name = 'RestrictDriverInstallationToAdministrators'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RestrictDriverInstallationToAdministrators' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/point-and-print-default-behavior-change
+
+notes:
+  pl: |
+    Ten punkt jest w paczce drukowania najważniejszy i wdraża się go pierwszy.
+    Pozostałe ustawienia tej rodziny — ostrzeżenia przy instalacji
+    i aktualizacji — mają znaczenie dopiero wtedy, gdy instalacja w ogóle jest
+    dostępna dla zwykłego użytkownika. Przy tym punkcie wdrożonym są dopełnieniem,
+    a nie zabezpieczeniem samodzielnym.
+
+    Wartość jest stanem domyślnym na zaktualizowanym systemie, ale bywa cofana
+    ręcznie po pierwszym zgłoszeniu z pomocy technicznej. Zapis jawny pozwala to
+    zauważyć w raporcie, zamiast zakładać, że skoro tak było, to nadal jest.
+  en: |
+    This is the most important item in the printing pack and the first to be
+    rolled out. The other settings of this family - warnings on installation and
+    on update - matter only once installation is available to an ordinary user at
+    all. With this item deployed they are a complement, not a protection in their
+    own right.
+
+    The value is the default state on an updated system, but it tends to get
+    reverted by hand after the first help desk ticket. An explicit entry makes
+    that visible in the report instead of assuming that what was once so still
+    is.

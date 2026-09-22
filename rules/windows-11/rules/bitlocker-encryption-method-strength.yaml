@@ -1,0 +1,220 @@
+id: win11-bitlocker-encryption-method-strength
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > BitLocker Drive Encryption
+  title:
+    pl: Metoda i siła szyfrowania dysków ustalona wprost
+    en: The drive encryption method and strength settled explicitly
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Szyfrowanie dysku można prowadzić na kilka sposobów różniących się dwiema
+    rzeczami: długością klucza i trybem pracy szyfru.
+
+    Długość klucza rozstrzyga o odporności na złamanie siłowe i jest
+    rozstrzygnięciem prostym — dłuższy klucz kosztuje niewiele i daje zapas na
+    lata. Tryb pracy jest mniej oczywisty, a ważniejszy w praktyce: tryb
+    przeznaczony do szyfrowania nośników blokowych utrudnia zmianę zawartości
+    dysku w sposób przewidywalny dla napastnika. Bez tego ktoś z dostępem do
+    zaszyfrowanego dysku może zmieniać jego zawartość, nie znając klucza —
+    nie odczyta danych, ale potrafi je uszkodzić w wybranych miejscach albo
+    podłożyć swoje bloki.
+
+    Ustalenie metody wprost odbiera też systemowi możliwość wybrania słabszej
+    przy włączaniu szyfrowania na maszynie, która akurat tak jest ustawiona.
+    Wartość zapisana obowiązuje wszędzie tak samo.
+  en: |
+    Disk encryption can be done in several ways differing in two things: the key's
+    length and the cipher's mode of operation.
+
+    The key's length settles resistance to brute force and is a simple ruling - a
+    longer key costs little and gives years of headroom. The mode is less obvious
+    and matters more in practice: the mode meant for encrypting block media makes
+    changing the disk's contents in a way predictable to an attacker harder. Without
+    it, somebody with access to an encrypted disk can change its contents without
+    knowing the key - they will not read the data, but they can damage it in chosen
+    places or plant blocks of their own.
+
+    Settling the method explicitly also takes from the system the ability to pick a
+    weaker one when encryption is switched on at a machine that happens to be set
+    that way. A written value holds everywhere alike.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy na stanowiskach są już zaszyfrowane dyski i czy
+    nośniki wymienne otwiera się na starszych systemach.
+
+    Zmiana dotyczy wyłącznie szyfrowania zakładanego od nowa. Dysk zaszyfrowany
+    wcześniej inną metodą działa dalej bez zmian i nie zostanie zaszyfrowany
+    ponownie — zmiana metody wymaga odszyfrowania i zaszyfrowania od początku,
+    czego reguła nie robi i czego nie należy po niej oczekiwać.
+
+    Rzeczywisty koszt dotyczy nośników wymiennych. Tryb blokowy nie jest
+    czytany przez systemy starsze niż Windows 10 w wersji z 2015 roku, więc
+    nośnik zaszyfrowany w ten sposób nie otworzy się na starszej maszynie ani
+    na systemie innego producenta. Dlatego dla nośników wymiennych punkt
+    wskazuje dłuższy klucz przy klasycznym trybie, a nie tryb blokowy.
+
+    Nie ma restartu. Zmiana obowiązuje przy następnym włączeniu szyfrowania.
+  en: |
+    What needs checking is whether encrypted drives already exist at the stations
+    and whether removable media are opened on older systems.
+
+    The change concerns only encryption set up anew. A drive encrypted earlier by
+    another method keeps working unchanged and will not be encrypted again -
+    changing the method requires decrypting and encrypting from the start, which the
+    rule does not do and should not be expected to.
+
+    The real cost concerns removable media. The block mode is not read by systems
+    older than the 2015 version of Windows 10, so a medium encrypted this way will
+    not open on an older machine nor on another maker's system. That is why for
+    removable media the item names a longer key with the classic mode rather than
+    the block mode.
+
+    There is no restart. The change takes effect the next time encryption is
+    switched on.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - removable-media
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Nośnik wymienny zaszyfrowany nową metodą nie otworzy się na systemie starszym niż Windows 10 z 2015 roku
+      - Dyski zaszyfrowane wcześniej inną metodą pozostaną przy niej, więc stan maszyny będzie mieszany do czasu ponownego szyfrowania
+    en:
+      - A removable medium encrypted by the new method will not open on a system older than the 2015 Windows 10
+      - Drives encrypted earlier by another method stay with it, so the machine's state will be mixed until they are re-encrypted
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Nośniki wymienne muszą otwierać się na starszych systemach albo na systemach innego producenta
+    en:
+      - Removable media have to open on older systems or on another maker's system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Three values carry this item, one per class of drive. The system drive
+      # and fixed drives take the block mode with a long key; removable media
+      # take the classic mode, because the block mode is not read by older
+      # systems. Whichever value differs is named in the result.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+      $expected = @{
+        EncryptionMethodWithXtsOs  = 7
+        EncryptionMethodWithXtsFdv = 7
+        EncryptionMethodWithXtsRdv = 4
+      }
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $missing = @()
+        $wrong = @()
+        foreach ($name in $expected.Keys) {
+          $value = $item.$name
+          if ($null -eq $value) { $missing += $name }
+          elseif ([int]$value -ne $expected[$name]) { $wrong += ($name + '=' + [int]$value) }
+        }
+        if ($missing.Count -gt 0) { 'MISSING ' + (($missing | Sort-Object) -join ',') }
+        elseif ($wrong.Count -gt 0) { 'OTHER ' + (($wrong | Sort-Object) -join ',') }
+        else { 'AS_REQUIRED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: AS_REQUIRED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path        = $path
+      os          = $item.'EncryptionMethodWithXtsOs'
+      os_existed  = ($null -ne $item.'EncryptionMethodWithXtsOs')
+      fdv         = $item.'EncryptionMethodWithXtsFdv'
+      fdv_existed = ($null -ne $item.'EncryptionMethodWithXtsFdv')
+      rdv         = $item.'EncryptionMethodWithXtsRdv'
+      rdv_existed = ($null -ne $item.'EncryptionMethodWithXtsRdv')
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EncryptionMethodWithXtsOs' -Value 7 -Type DWord
+    Set-ItemProperty -Path $path -Name 'EncryptionMethodWithXtsFdv' -Value 7 -Type DWord
+    Set-ItemProperty -Path $path -Name 'EncryptionMethodWithXtsRdv' -Value 4 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.key_existed) {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+      $pairs = @(
+        @{ name = 'EncryptionMethodWithXtsOs';  value = $b.os;  existed = $b.os_existed },
+        @{ name = 'EncryptionMethodWithXtsFdv'; value = $b.fdv; existed = $b.fdv_existed },
+        @{ name = 'EncryptionMethodWithXtsRdv'; value = $b.rdv; existed = $b.rdv_existed }
+      )
+      foreach ($pair in $pairs) {
+        if ($pair.existed) {
+          Set-ItemProperty -Path $b.path -Name $pair.name -Value $pair.value -Type DWord
+        } else {
+          Remove-ItemProperty -Path $b.path -Name $pair.name -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/data-protection/bitlocker/
+
+notes:
+  pl: |
+    Reguła czyta trzy wartości, bo punkt ustala metodę osobno dla dysku
+    systemowego, dysków stałych i nośników wymiennych. Rozdzielenie ich dałoby
+    trzy rekordy różniące się jedną liczbą, a użytkownikowi nie dałoby żadnej
+    nowej decyzji — metodę wybiera się dla maszyny, nie dla pojedynczej klasy
+    dysków.
+
+    Różnica w oczekiwanej wartości dla nośników wymiennych nie jest
+    niekonsekwencją, tylko świadomym ustępstwem na rzecz możliwości odczytania
+    nośnika gdzie indziej. Odnotowuję to, bo przy pobieżnym czytaniu wygląda na
+    błąd.
+
+    Wpis nie zmienia dysków już zaszyfrowanych. Sprawdzenie metody faktycznie
+    użytej na konkretnym dysku jest osobną czynnością i ta reguła jej nie
+    wykonuje.
+  en: |
+    The rule reads three values, because the item settles the method apart for the
+    system drive, fixed drives and removable media. Splitting them would give three
+    records differing by one number and would give the user no new decision - the
+    method is chosen for a machine, not for a single class of drive.
+
+    The different expected value for removable media is not an inconsistency but a
+    deliberate concession to being able to read the medium elsewhere. I note it,
+    because read quickly it looks like a mistake.
+
+    The entry does not change drives already encrypted. Checking the method actually
+    used on a particular drive is a separate task and this rule does not perform it.

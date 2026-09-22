@@ -1,0 +1,177 @@
+id: win11-bitlocker-secure-boot-integrity
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > BitLocker Drive Encryption > Operating System Drives
+  title:
+    pl: Sprawdzanie spójności startu oparte na bezpiecznym rozruchu
+    en: Startup integrity checking based on secure boot
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Moduł sprzętowy wydaje klucz szyfrowania dopiero wtedy, gdy stan
+    uruchamiania maszyny zgadza się z zapamiętanym. Chodzi o to, żeby podmieniony
+    składnik startowy uniemożliwił odblokowanie dysku, zamiast zostać przez niego
+    obsłużonym.
+
+    Sprawdzanie to można prowadzić na dwa sposoby: porównując zapisane miary
+    kolejnych składników albo opierając się na mechanizmie bezpiecznego
+    rozruchu, który sam pilnuje podpisów tego, co startuje. Drugi sposób jest
+    trwalszy w praktyce, bo nie reaguje na zwykłe aktualizacje oprogramowania
+    sprzętowego i systemu, a nadal wyłapuje składnik, którego nikt nie podpisał.
+
+    Znaczenie dla bezpieczeństwa bierze się stąd, że pierwszy sposób bywa
+    wyłączany właśnie dlatego, że przeszkadza: po każdej aktualizacji maszyna
+    prosi o klucz odzyskiwania, więc ktoś w końcu rezygnuje ze sprawdzania
+    w ogóle. Oparcie go na bezpiecznym rozruchu zdejmuje ten powód i sprawia,
+    że ochrona zostaje włączona.
+  en: |
+    The hardware module gives the encryption key up only when the machine's startup
+    state matches the remembered one. The point is that a substituted startup
+    component should make unlocking the disk impossible, rather than being served by
+    it.
+
+    That checking can be done two ways: by comparing recorded measurements of the
+    successive components, or by resting on the secure boot mechanism, which itself
+    watches the signatures of what starts. The second way lasts better in practice,
+    because it does not react to ordinary firmware and system updates while still
+    catching a component nobody signed.
+
+    Its bearing on security comes from this: the first way is often switched off
+    precisely because it gets in the way - after every update the machine asks for
+    the recovery key, so somebody eventually gives up on checking altogether.
+    Resting it on secure boot removes that reason and means the protection stays on.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Zmienia się sposób, w jaki maszyna sprawdza stan
+    startu, a nie to, czy go sprawdza.
+
+    Skutkiem praktycznym jest mniej, a nie więcej pytań o klucz odzyskiwania:
+    aktualizacja oprogramowania sprzętowego, która przy poprzednim sposobie
+    zatrzymywała maszynę, przy tym przechodzi bez zatrzymania. Jest to zmiana
+    na korzyść użytkownika.
+
+    Dlatego punkt trafia do klasy bez uciążliwości. Warunkiem jest maszyna
+    z włączonym bezpiecznym rozruchem — bez niego ustawienie nie ma na czym się
+    oprzeć i nie zmienia niczego.
+
+    Zmiana obowiązuje po ponownym uruchomieniu maszyny.
+  en: |
+    Nothing stops working. What changes is the way the machine checks its startup
+    state, not whether it checks it.
+
+    The practical effect is fewer, not more, requests for the recovery key: a
+    firmware update that stopped the machine under the previous way passes without
+    stopping under this one. That is a change in the user's favour.
+
+    That is why the item falls into the no-disruption class. The condition is a
+    machine with secure boot switched on - without it the setting has nothing to
+    rest on and changes nothing.
+
+    The change takes effect after the machine is restarted.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - boot-and-firmware
+  what_breaks:
+    pl:
+      - Nic nie przestaje działać; zmienia się sposób sprawdzania stanu startu, a nie jego zakres
+      - Na maszynie bez włączonego bezpiecznego rozruchu ustawienie nie ma na czym się oprzeć i pozostaje bez skutku
+    en:
+      - Nothing stops working; what changes is how the startup state is checked, not what it covers
+      - On a machine without secure boot switched on the setting has nothing to rest on and stays without effect
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Bezpieczny rozruch jest na stanowiskach wyłączony i nie planuje się jego włączenia
+    en:
+      - Secure boot is switched off at the stations and there is no plan to switch it on
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+      $name = 'OSAllowSecureBootForIntegrity'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+    $name = 'OSAllowSecureBootForIntegrity'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'OSAllowSecureBootForIntegrity' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/data-protection/bitlocker/
+
+notes:
+  pl: |
+    Reguła sprawdza wpis, a nie stan bezpiecznego rozruchu na maszynie.
+    Wynik „spełniony" nie mówi, że bezpieczny rozruch jest włączony — mówi, że
+    sprawdzanie spójności ma się na nim oprzeć, jeśli jest. Stan samego rozruchu
+    bada osobna reguła w tej paczce.
+
+    Wartość domyślna jest zgodna z wymaganiem na maszynach z włączonym
+    bezpiecznym rozruchem, a mimo to brak wpisu zgłaszam jako niespełnienie.
+    Punkt dotyczy zapisania rozstrzygnięcia, a nie polegania na tym, co system
+    wybierze sam.
+  en: |
+    The rule checks the entry, not the state of secure boot on the machine. A result
+    of "met" does not say secure boot is switched on - it says the integrity
+    checking is to rest on it if it is. The state of the boot itself is examined by
+    a separate rule in this pack.
+
+    The default value matches the requirement on machines with secure boot switched
+    on, and I nonetheless report a missing entry as unmet. The item is about writing
+    the ruling down rather than relying on what the system picks by itself.

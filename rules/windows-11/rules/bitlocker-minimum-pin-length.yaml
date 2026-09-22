@@ -1,0 +1,190 @@
+id: win11-bitlocker-minimum-pin-length
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > BitLocker Drive Encryption > Operating System Drives
+  title:
+    pl: Minimalna długość kodu odblokowującego dysk systemowy
+    en: The least length of the code unlocking the system drive
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kod podawany przed startem systemu chroni klucz szyfrowania, a więc całą
+    zawartość dysku. Domyślnie wystarczą cztery cyfry, co daje dziesięć tysięcy
+    kombinacji — liczbę, którą przechodzi się w rozsądnym czasie, jeśli tylko da
+    się próbować.
+
+    Obrona przed zgadywaniem opiera się tu na module sprzętowym, który po serii
+    nieudanych prób wprowadza opóźnienia. Jest to obrona realna, ale zależna od
+    tego, co dany moduł robi i jak jest skonfigurowany — a napastnik z dyskiem
+    w ręku ma czas i może próbować bez nadzoru.
+
+    Wydłużenie kodu nie zależy od niczyjej implementacji. Siedem znaków zamiast
+    czterech zmienia przestrzeń poszukiwań o trzy rzędy wielkości i robi to
+    niezależnie od tego, jak zachowuje się moduł. Jest to najtańszy sposób
+    podniesienia progu przy tym samym sprzęcie.
+  en: |
+    The code entered before the system starts guards the encryption key, and so the
+    disk's whole contents. Four digits are enough by default, which gives ten
+    thousand combinations - a number one gets through in reasonable time provided
+    one can try at all.
+
+    The defence against guessing rests here on the hardware module, which brings in
+    delays after a run of failed attempts. It is a real defence, but one depending
+    on what a given module does and how it is set up - and an attacker with the disk
+    in hand has time and can try unwatched.
+
+    Lengthening the code depends on nobody's implementation. Seven characters
+    instead of four changes the search space by three orders of magnitude and does
+    so regardless of how the module behaves. It is the cheapest way of raising the
+    bar on the same hardware.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy na stanowiskach kody startowe już działają
+    i jakiej są długości.
+
+    Na maszynach, na których dodatkowego uwierzytelnienia jeszcze nie wdrożono,
+    zmiana nie ma widocznego skutku — ustala wymaganie na przyszłość. Tam, gdzie
+    kody już działają, krótsze niż wymagane nie zostaną automatycznie
+    unieważnione, ale przy najbliższej zmianie kodu użytkownik nie będzie mógł
+    ustawić poprzedniej długości.
+
+    Odczuwalnym kosztem jest samo wpisywanie: siedem znaków na ekranie sprzed
+    startu systemu, przy każdym uruchomieniu, bez podpowiedzi i bez możliwości
+    zobaczenia, co się wpisało. Zgłoszeń o zablokowanym komputerze po kilku
+    pomyłkach będzie więcej niż przy kodzie czterocyfrowym i warto się na to
+    przygotować po stronie odzyskiwania.
+
+    Zmiana obowiązuje przy ustawianiu nowego kodu.
+  en: |
+    What needs checking is whether startup codes are already in use at the stations
+    and how long they are.
+
+    On machines where the additional authentication has not yet been rolled out the
+    change has no visible effect - it settles the requirement for the future. Where
+    codes are already in use, shorter ones than required will not be invalidated
+    automatically, but at the next change of code the user will not be able to set
+    the previous length.
+
+    The felt cost is the typing itself: seven characters on a screen from before the
+    system starts, at every start, with no hints and no way to see what has been
+    typed. There will be more reports of a locked computer after a few slips than
+    with a four-digit code, and it is worth preparing for that on the recovery side.
+
+    The change takes effect when a new code is set.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - boot-and-firmware
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Użytkownik nie ustawi kodu krótszego niż wymagany przy najbliższej jego zmianie
+      - Dłuższy kod wpisywany przy każdym starcie zwiększa liczbę pomyłek i zgłoszeń o zablokowanym komputerze
+    en:
+      - A user cannot set a code shorter than required at the next change of it
+      - A longer code typed at every start raises the number of slips and reports of a locked computer
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Moduł sprzętowy na stanowiskach nie obsługuje kodów o wymaganej długości i nie da się go zaktualizować
+    en:
+      - The hardware module at the stations does not support codes of the required length and cannot be updated
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # A value below the required one is reported together with its length, so
+      # a machine set too leniently can be told from one with no setting at all.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+      $name = 'MinimumPIN'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'MISSING' }
+        elseif ([int]$value -lt 7) { 'BELOW_MINIMUM ' + [int]$value }
+        else { 'AT_OR_ABOVE_MINIMUM' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: AT_OR_ABOVE_MINIMUM
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+    $name = 'MinimumPIN'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MinimumPIN' -Value 7 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/data-protection/bitlocker/
+
+notes:
+  pl: |
+    Punkt ma skutek dopiero razem z wymaganiem dodatkowego uwierzytelnienia przy
+    starcie. Sam ustala długość kodu, którego bez tamtego nikt nie zakłada —
+    dlatego wdraża się je w tej kolejności, a nie odwrotnie.
+
+    Wartość wyższa od wymaganej jest wynikiem poprawnym i reguła jej nie
+    podważa. Sprawdzenie pyta o próg, a nie o zgodność z konkretną liczbą.
+
+    Wartość niższa od czterech nie jest przyjmowana przez sam mechanizm
+    szyfrowania, więc odczytanie takiej oznacza wpis dopisany poza edytorem
+    zasad. Reguła zgłosi ją jako niespełnienie razem z odczytaną liczbą.
+  en: |
+    The item takes effect only together with the requirement for additional
+    authentication at startup. On its own it settles the length of a code that,
+    without that, nobody sets - which is why they are applied in that order and not
+    the other way round.
+
+    A value above the required one is a correct result and the rule does not dispute
+    it. The check asks about a threshold, not about matching a particular number.
+
+    A value below four is not accepted by the encryption mechanism itself, so
+    reading one means an entry written outside the policy editor. The rule will
+    report it as unmet together with the number it read.

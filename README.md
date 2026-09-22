@@ -87,6 +87,22 @@ Po dokument benchmarku sięgnij bezpośrednio do CIS.
 Pełne zastrzeżenie o braku afiliacji i o znakach towarowych znajduje się w pliku
 [NOTICE](NOTICE). Wyniki działania narzędzia nie są certyfikacją ani atestacją CIS.
 
+## Uruchomienie ze źródeł
+
+```bash
+pip install -r requirements.txt
+python -m sentin_harden
+```
+
+Sprawdzenie spójności bazy reguł:
+
+```bash
+python tools/validate_rules.py
+```
+
+Interfejs zbudowany na PySide6 (LGPL). Język przełącza się w oknie, bez ponownego uruchamiania —
+opisy reguł są w bazie dwujęzyczne.
+
 ## Zastrzeżenie
 
 Narzędzie modyfikuje konfigurację systemu operacyjnego. Zmiany wykonujesz na własną

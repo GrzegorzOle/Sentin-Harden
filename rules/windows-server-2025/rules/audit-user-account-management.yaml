@@ -1,0 +1,218 @@
+id: win2025-audit-user-account-management
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Account Management
+  title:
+    pl: Inspekcja zarządzania kontami użytkowników
+    en: Audit user account management
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w kontach — utworzenie, usunięcie,
+    włączenie, wyłączenie, zmianę hasła i zmianę właściwości konta.
+
+    Jest to zapis o tym, kto zyskał albo stracił dostęp do systemu, i na
+    serwerze jest to informacja innej wagi niż gdzie indziej. Na
+    kontrolerze domeny ta sama podkategoria obejmuje konta całej domeny,
+    a więc wszystkie konta, jakie w tej organizacji istnieją.
+
+    Wartość tego zapisu ujawnia się po czasie i zawsze w tej samej
+    sytuacji. Pytanie „skąd się wzięło to konto" pada, kiedy ktoś je
+    zauważy — czyli tygodnie po tym, jak powstało. Bez tej inspekcji
+    odpowiedzi nie ma, bo konto samo w sobie nie niesie informacji o tym,
+    kto i kiedy je założył.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    założenia sobie własnego konta, ukrycia go wśród istniejących
+    i późniejszego wracania nim jak zwykły użytkownik. Konto jest
+    najtańszym sposobem utrzymania dostępu i najtrudniejszym do wykrycia,
+    jeżeli nikt nie zapisał, skąd się wzięło.
+
+    Zapis obejmuje też zmianę hasła cudzego konta, a to jest zdarzenie,
+    o którym administrator powinien wiedzieć zawsze.
+  en: |
+    The subcategory records changes in accounts - a creation, a deletion, an enabling, a
+    disabling, a change of password and a change of an account's properties.
+
+    It is a record of who gained or lost access to the system, and on a server that is
+    knowledge of another weight than elsewhere. On a domain controller the same subcategory
+    takes in the accounts of the whole domain, and so every account that exists in the
+    organisation.
+
+    This record's worth comes to light afterwards and always in the same situation. The
+    question "where did that account come from" comes when somebody notices it - that is,
+    weeks after it arose. Without this auditing there is no answer, since an account of
+    itself carries no knowledge of who set it up and when.
+
+    What an attacker gains while the item goes unmet: the means of setting up an account of
+    their own, hiding it among those already there and later coming back on it as an
+    ordinary user. An account is the cheapest way of keeping access and the hardest to
+    find, where nobody has recorded where it came from.
+
+    The record takes in a change of somebody else's password as well, and that is an event
+    an administrator ought always to know of.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać, nikt nie musi się wylogowywać, a sam sposób
+    pracy z kontami pozostaje ten sam. Zmienia się wyłącznie to, że każda
+    zmiana zostaje zapisana.
+
+    Objętość jest tu niewielka i to odróżnia ten punkt od inspekcji
+    logowania. Kont nie zakłada się co godzinę — nawet na kontrolerze
+    domeny zdarzeń tego rodzaju jest dziennie tyle, ile realnych zmian
+    kadrowych i administracyjnych. Dziennik zabezpieczeń nie zapełni się
+    od tego punktu.
+
+    Jest jedna rzecz, o której warto wiedzieć przy wdrożeniach
+    zautomatyzowanych: skrypt zakładający konta hurtem wygeneruje tyle
+    zdarzeń, ile kont założy. Nie jest to regresja, ale w dzienniku widać
+    wtedy nagły przyrost, który łatwo wziąć za anomalię.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working, nobody has to sign out, and the manner of working with accounts
+    stays the same. What changes is only that every change gets recorded.
+
+    The volume here is slight, and that sets this item apart from the auditing of sign-ins.
+    Accounts are not set up every hour - even on a domain controller there are as many
+    events of this kind a day as there are real changes of staff and of administration. The
+    security log will not fill up from this item.
+
+    There is one thing worth knowing at automated rollouts: a script setting up accounts in
+    bulk will make as many events as it sets up accounts. That is no regression, but the log
+    then shows a sudden rise easily taken for an anomaly.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Brak znanych regresji — sposób pracy z kontami pozostaje ten sam
+      - Przyrost objętości dziennika jest niewielki, bo kont nie zakłada się często
+      - Skrypt zakładający konta hurtem daje w dzienniku nagły przyrost zdarzeń
+      - Na kontrolerze domeny zapis obejmuje konta całej domeny, nie tylko lokalne
+    en:
+      - No known regressions - the manner of working with accounts stays the same
+      - The rise in the log's volume is slight, since accounts are not set up often
+      - A script setting up accounts in bulk gives a sudden rise of events in the log
+      - On a domain controller the record takes in the whole domain's accounts, not local ones alone
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo i każdy dodatkowy strumień jest kosztem
+    en:
+      - Events from this machine are billed by volume and every added stream is a cost
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9235-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9235-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9235-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9235-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9235-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-user-account-management
+
+notes:
+  pl: |
+    Wymagane są oba rodzaje zapisu. Powodzenie mówi, że konto zmieniono,
+    niepowodzenie mówi, że ktoś próbował i mu nie pozwolono — a to drugie
+    bywa pierwszym sygnałem, że ktoś sprawdza, dokąd sięgają jego
+    uprawnienia.
+
+    Punkt dotyczy kont, nie grup. Zmiana członkostwa w grupie ma osobną
+    podkategorię i oba wdraża się razem, bo droga do uprawnień prowadzi
+    albo przez nowe konto, albo przez dopisanie istniejącego do grupy.
+
+    Podkategoria jest wskazywana identyfikatorem, bo nazwy są tłumaczone
+    razem z systemem, a raport ma być porównywalny niezależnie od języka
+    maszyny.
+  en: |
+    Both kinds of record are taken. A success says the account was changed, a failure says
+    somebody tried and was not let - and the latter is at times the first sign that somebody
+    is testing how far their rights reach.
+
+    The item concerns accounts rather than groups. A change of membership in a group has a
+    subcategory of its own and the two are rolled out together, since the road to rights
+    runs either through a new account or through an existing one being written into a group.
+
+    The subcategory is pointed to by identifier, since names are translated along with the
+    system, and the report is meant to be comparable whatever the machine's language.

@@ -1,0 +1,217 @@
+id: win2025-audit-special-logon
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja logowania specjalnego
+    en: Audit special logon
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje logowania, przy których konto otrzymało
+    uprawnienia uznane za wrażliwe — w praktyce logowania administracyjne.
+
+    Jest to najwęższy wykaz w całej grupie inspekcji i właśnie w tym leży
+    jego wartość. Inspekcja logowania zapisuje wszystko i na serwerze
+    plikowym daje dziesiątki tysięcy zdarzeń dziennie. Ta podkategoria
+    wybiera z tego samego strumienia kilka wpisów i są to dokładnie te
+    wpisy, o które chodzi w pytaniu „kto miał tu pełne uprawnienia".
+
+    Na serwerze wykaz ten ma znaczenie szczególne z powodu prostego:
+    logowanie administracyjne na serwerze nie jest zdarzeniem codziennym
+    i powinno dać się wyjaśnić co do jednego. Pozycja, której nikt nie
+    umie przypisać do żadnej pracy, jest sygnałem sama w sobie —
+    a na stanowisku roboczym byłaby zwykłym szumem.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    wejścia na uprawnieniach administracyjnych w sposób nieodróżnialny od
+    logowania zwykłego użytkownika. Zdarzenie o logowaniu i tak powstaje,
+    ale bez tej podkategorii nikt nie wyłowi go z tysięcy innych.
+
+    Zapis jest też jedynym śladem po użyciu kont usługowych o wysokich
+    uprawnieniach — a to są konta, których nikt na co dzień nie obserwuje.
+  en: |
+    The subcategory records sign-ins at which an account was given rights held to be
+    sensitive - in practice administrative sign-ins.
+
+    It is the narrowest list in the whole auditing group, and in that lies its worth. The
+    auditing of sign-ins records everything and on a file server gives tens of thousands of
+    events a day. This subcategory picks a few entries out of the same stream, and they are
+    exactly the entries the question "who had full rights here" is about.
+
+    On a server that list matters especially for a simple reason: an administrative sign-in
+    on a server is no everyday event and ought to be explicable down to the single one. An
+    entry nobody can match to any piece of work is a sign in itself - whereas at a working
+    station it would be ordinary noise.
+
+    What an attacker gains while the item goes unmet: the means of coming in on
+    administrative rights in a way indistinguishable from an ordinary user's sign-in. An
+    event about the sign-in arises anyway, but without this subcategory nobody will fish it
+    out of thousands of others.
+
+    The record is also the one trace left by the use of service accounts with high rights -
+    and those are accounts nobody watches day to day.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Objętość jest tu znikoma i to odróżnia ten punkt od inspekcji
+    logowania, z którą dzieli tę samą kategorię zdarzeń. Zapisywane są
+    wyłącznie logowania z uprawnieniami wrażliwymi, a tych na serwerze
+    jest dziennie kilka, nie kilka tysięcy.
+
+    Nic nie przestaje działać i nikt niczego nie zauważy. Praca
+    administratora wygląda tak samo jak wcześniej.
+
+    Jedynym miejscem, w którym warto spodziewać się większej liczby
+    zdarzeń, jest serwer z kontami usługowymi o wysokich uprawnieniach
+    startującymi cyklicznie. Każdy taki start daje wpis i jest to
+    zachowanie poprawne — ale wykaz przestaje wtedy być tak krótki, jak
+    być powinien, i warto rozważyć, czy te konta faktycznie potrzebują
+    takich uprawnień.
+  en: |
+    The change has no known side effects and takes no break.
+
+    The volume here is negligible, and that sets this item apart from the auditing of
+    sign-ins, with which it shares the same class of events. Only sign-ins with sensitive
+    rights are recorded, and on a server there are a few of those a day rather than a few
+    thousand.
+
+    Nothing stops working and nobody notices anything. An administrator's work looks just as
+    before.
+
+    The one place at which a greater number of events is worth expecting is a server with
+    high-rights service accounts starting on a cycle. Every such start gives an entry and
+    that is right behaviour - but the list then stops being as short as it ought to be, and
+    it is worth weighing whether those accounts really take such rights.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak znanych regresji — praca administratora wygląda tak samo jak wcześniej
+      - Przyrost objętości dziennika jest znikomy, bo zapis obejmuje kilka zdarzeń dziennie
+      - Konta usługowe o wysokich uprawnieniach dają wpis przy każdym starcie
+    en:
+      - No known regressions - an administrator's work looks just as before
+      - The rise in the log's volume is negligible, since the record takes in a few events a day
+      - High-rights service accounts give an entry at every start
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo i każdy dodatkowy strumień jest kosztem
+    en:
+      - Events from this machine are billed by volume and every added stream is a cost
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE921B-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE921B-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE921B-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE921B-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE921B-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-special-logon
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń. Niepowodzenie nie ma tu sensu —
+    uprawnienia wrażliwe albo zostały nadane przy logowaniu, albo nie,
+    a odmowa logowania jest zdarzeniem innej podkategorii.
+
+    Wykaz z tej podkategorii jest krótki i to jest jego zaleta. Jeżeli
+    okaże się długi, przyczyną jest zwykle nadmiar kont pracujących
+    z uprawnieniami wysokimi — i wtedy sam wykaz jest odpowiedzią na
+    pytanie, czego na tym serwerze jest za dużo.
+
+    Punkt czyta się razem z inspekcją logowania. Ta zapisuje wszystko,
+    tamta wybiera z tego to, co istotne — i to właśnie ta węższa lista
+    trafia zwykle do raportu.
+  en: |
+    Recording of successes is taken. A failure makes no sense here - sensitive rights were
+    either given at the sign-in or not, and a refused sign-in is an event of another
+    subcategory.
+
+    The list from this subcategory is short, and that is its merit. Should it turn out long,
+    the cause is usually a surfeit of accounts working with high rights - and then the list
+    itself is the answer to the question what there is too much of on this server.
+
+    The item is read together with the auditing of sign-ins. That one records everything,
+    this one picks out of it what tells - and it is exactly this narrower list that usually
+    goes into the report.

@@ -1,0 +1,212 @@
+id: win2025-audit-security-group-management
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Account Management
+  title:
+    pl: Inspekcja zarządzania grupami zabezpieczeń
+    en: Audit security group management
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w grupach zabezpieczeń — utworzenie grupy,
+    jej usunięcie oraz dopisanie i wypisanie członków.
+
+    Uprawnienia w systemie Windows nadaje się grupom, nie kontom, więc
+    dopisanie konta do grupy jest tu czynnością równoważną nadaniu
+    uprawnień. Na serwerze grupy te decydują o dostępie do udziałów,
+    do usług i do samej maszyny, a na kontrolerze domeny — o dostępie
+    w całej organizacji.
+
+    Jedno zdarzenie z tej podkategorii waży więcej niż większość
+    pozostałych, i jest to dopisanie konta do grupy administratorów.
+    Trwa sekundę, nie wymaga żadnej wiedzy technicznej i daje pełne
+    uprawnienia. Wypisanie z grupy równie dobrze zaciera ślad, bo konto
+    wraca do stanu poprzedniego i wygląda zwyczajnie.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    nadania sobie uprawnień administracyjnych, wykonania tego, po co
+    przyszedł, i cofnięcia zmiany — a wszystko to bez pozostawienia
+    jakiegokolwiek zapisu. Po wypisaniu z grupy nie istnieje żadne
+    miejsce, w którym ta zmiana byłaby widoczna.
+  en: |
+    The subcategory records changes in security groups - a group's creation, its deletion,
+    and members being written in and out.
+
+    Rights in Windows are given to groups rather than to accounts, so an account being
+    written into a group is here a doing equal to rights being granted. On a server these
+    groups settle the access to shares, to services and to the machine itself, and on a
+    domain controller the access across the whole organisation.
+
+    One event of this subcategory weighs more than most of the rest, and that is an account
+    being written into the administrators' group. It takes a second, takes no technical
+    knowledge and gives full rights. Writing out of the group covers the trace just as well,
+    since the account returns to its former state and looks ordinary.
+
+    What an attacker gains while the item goes unmet: the means of granting themselves
+    administrative rights, doing what they came for and undoing the change - and all of it
+    while leaving no record at all. After the writing out of the group there exists no place
+    at which that change would be visible.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Praca z grupami nie zmienia się w żaden sposób. Nikt nie traci
+    możliwości dopisania ani wypisania kogokolwiek — zmienia się wyłącznie
+    to, że czynność zostaje zapisana.
+
+    Objętość jest niewielka, bo członkostwo w grupach zmienia się rzadko.
+    Nawet na kontrolerze domeny zdarzeń tego rodzaju przybywa tyle, ile
+    realnych zmian uprawnień, a to jest liczba dzienna, nie godzinowa.
+
+    Jedynym miejscem, w którym warto się spodziewać przyrostu, jest
+    środowisko z automatycznym nadawaniem uprawnień — skrypty dopisujące
+    konta do grup przy zakładaniu, synchronizacje z systemem kadrowym,
+    narzędzia nadawania dostępu na czas. Każda taka operacja daje
+    zdarzenie i jest to zachowanie poprawne, nie usterka.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Working with groups does not change in any way. Nobody loses the means of writing anyone
+    in or out - what changes is only that the doing gets recorded.
+
+    The volume is slight, since membership in groups changes seldom. Even on a domain
+    controller events of this kind accrue as often as rights really change, and that is a
+    daily figure rather than an hourly one.
+
+    The one place at which a rise is worth expecting is a setting with the automatic
+    granting of rights - scripts writing accounts into groups at their setting up,
+    synchronisations with a staffing system, tools granting access for a time. Every such
+    operation gives an event, and that is right behaviour rather than a fault.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Brak znanych regresji — praca z grupami pozostaje bez zmian
+      - Przyrost objętości dziennika jest niewielki, bo grupy zmieniają się rzadko
+      - Automatyczne nadawanie uprawnień daje po jednym zdarzeniu na operację
+      - Na kontrolerze domeny zapis obejmuje grupy całej domeny
+    en:
+      - No known regressions - working with groups stays unchanged
+      - The rise in the log's volume is slight, since groups change seldom
+      - Automatic granting of rights gives one event per operation
+      - On a domain controller the record takes in the whole domain's groups
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo i każdy dodatkowy strumień jest kosztem
+    en:
+      - Events from this machine are billed by volume and every added stream is a cost
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9237-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9237-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9237-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9237-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9237-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-security-group-management
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń, bo to udana zmiana członkostwa
+    jest zdarzeniem istotnym. Rejestrowanie niepowodzeń jest dopuszczalne
+    i sprawdzenie je przyjmuje, ale samo w sobie nie wystarcza.
+
+    Punkt czyta się razem z inspekcją zarządzania kontami. Droga do
+    uprawnień prowadzi albo przez założenie konta, albo przez dopisanie
+    istniejącego do grupy — jedno bez drugiego zostawia połowę obrazu.
+
+    Grupy aplikacyjne mają osobną podkategorię i osobny punkt. Ta dotyczy
+    wyłącznie grup zabezpieczeń, czyli tych, którym nadaje się dostęp
+    do zasobów systemu.
+  en: |
+    Recording of successes is taken, since it is a successful change of membership that is
+    the telling event. Recording of failures is admissible and the check accepts it, but of
+    itself it does not suffice.
+
+    The item is read together with the auditing of account management. The road to rights
+    runs either through an account being set up or through an existing one being written
+    into a group - one without the other leaves half the picture.
+
+    Application groups have a subcategory of their own and an item of their own. This one
+    concerns security groups alone, that is, those which are given access to the system's
+    resources.

@@ -1,0 +1,202 @@
+id: win2025-audit-application-group-management
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Account Management
+  title:
+    pl: Inspekcja zarządzania grupami aplikacyjnymi
+    en: Audit application group management
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w grupach aplikacyjnych, czyli w grupach
+    tworzonych przez aplikacje na własny użytek, poza zwykłym zbiorem grup
+    zabezpieczeń.
+
+    Mechanizm ten jest na większości serwerów nieużywany i to jest
+    dokładnie powód, dla którego warto go obserwować. Zdarzenie z tej
+    podkategorii na maszynie, która takich grup nie używa, nie jest
+    zdarzeniem rutynowym — jest sygnałem, że ktoś sięgnął po drogę
+    nadawania uprawnień, której nikt tu nie stosuje.
+
+    Wartość jest więc odwrotna niż przy poprzednich punktach. Tam zapis
+    ma sens, bo zdarzeń jest dużo i trzeba je uporządkować. Tutaj zapis
+    ma sens dlatego, że zdarzeń nie ma prawie wcale, a każde jedno jest
+    warte obejrzenia.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    zbudowania własnej ścieżki uprawnień w miejscu, do którego nikt nie
+    zagląda, bo nikt go nie używa. Nie jest to droga najkrótsza ani
+    najczęstsza i dlatego kategoria jest średnia — ale jest to droga,
+    której brak w dzienniku nikogo nie zdziwi.
+  en: |
+    The subcategory records changes in application groups, that is, in groups made by
+    applications for their own use, outside the ordinary set of security groups.
+
+    That mechanism goes unused on most servers, and that is exactly why it is worth
+    watching. An event of this subcategory on a machine that uses no such groups is no
+    routine event - it is a sign that somebody has reached for a road of granting rights
+    nobody here uses.
+
+    The worth is thus the reverse of that at the preceding items. There the record makes
+    sense because there are many events and they need ordering. Here the record makes sense
+    because there are hardly any events at all, and each single one is worth looking at.
+
+    What an attacker gains while the item goes unmet: the means of building a path of rights
+    of their own in a place nobody looks into, since nobody uses it. It is neither the
+    shortest nor the commonest road, and hence the category is medium - but it is a road
+    whose absence from the log will surprise nobody.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Objętość jest w praktyce zerowa. Na serwerze nieużywającym grup
+    aplikacyjnych ta podkategoria nie wygeneruje żadnego zdarzenia przez
+    całe miesiące — a jeżeli wygeneruje, to jest właśnie ten przypadek,
+    dla którego punkt został wdrożony.
+
+    Jest to jedna z niewielu inspekcji, przy których argument o zapełnianiu
+    dziennika zabezpieczeń nie ma zastosowania i nie trzeba go ważyć
+    razem z rozmiarem dziennika.
+
+    Nic nie przestaje działać. Aplikacje korzystające z grup aplikacyjnych
+    korzystają z nich dalej i nie zauważą, że ich zmiany są zapisywane.
+  en: |
+    The change has no known side effects and takes no break.
+
+    The volume is in practice nil. On a server using no application groups this subcategory
+    will make no event at all for whole months - and if it makes one, that is exactly the
+    case for which the item was rolled out.
+
+    It is one of the few auditings at which the argument about the security log filling up
+    does not apply and need not be weighed together with the log's size.
+
+    Nothing stops working. Applications using application groups go on using them and will
+    not notice that their changes are being recorded.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Brak znanych regresji — aplikacje korzystające z tych grup działają bez zmiany
+      - Przyrost objętości dziennika jest w praktyce zerowy
+      - Na serwerze nieużywającym tego mechanizmu każde zdarzenie jest warte obejrzenia
+    en:
+      - No known regressions - applications using these groups work unchanged
+      - The rise in the log's volume is in practice nil
+      - On a server not using this mechanism every event is worth looking at
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9239-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9239-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9239-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9239-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9239-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-application-group-management
+
+notes:
+  pl: |
+    Grupy aplikacyjne to nie to samo co grupy zabezpieczeń i oba punkty
+    istnieją osobno. Ten dotyczy mechanizmu rzadko używanego; poprzedni —
+    zwykłej drogi nadawania uprawnień.
+
+    Wymagane są oba rodzaje zapisu. Przy podkategorii generującej
+    zdarzenia sporadycznie nie ma powodu, żeby któregokolwiek nie
+    rejestrować — koszt jest żaden, a nieudana próba jest tu równie
+    interesująca jak udana.
+
+    Punkt jest w klasie „bez uciążliwości" i wolno go stosować hurtem.
+  en: |
+    Application groups are not the same thing as security groups and the two items exist
+    apart. This one concerns a seldom-used mechanism; the preceding one the ordinary road of
+    granting rights.
+
+    Both kinds of record are taken. At a subcategory making events now and then there is no
+    reason not to record either of them - the cost is none, and a failed attempt is here as
+    interesting as a successful one.
+
+    The item is in the "no disruption" class and may be applied in bulk.

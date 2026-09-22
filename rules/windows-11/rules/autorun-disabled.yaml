@@ -1,0 +1,148 @@
+id: win11-autorun-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > AutoPlay Policies
+  title:
+    pl: Autoodtwarzanie wyłączone dla wszystkich napędów
+    en: AutoPlay disabled for all drives
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Autoodtwarzanie sprawia, że włożony nośnik sam proponuje uruchomienie tego,
+    co na nim jest, a w części konfiguracji robi to bez pytania. Podrzucony
+    pendrive przestaje wtedy wymagać od napastnika czegokolwiek poza
+    zostawieniem go na parkingu — resztę robi ciekawość i sam system.
+
+    Po wyłączeniu nośnik nadal się montuje i nadal da się otworzyć jego
+    zawartość, ale nic nie startuje samo. Uruchomienie programu z nośnika staje
+    się świadomym kliknięciem użytkownika, a nie skutkiem ubocznym włożenia go
+    do portu.
+  en: |
+    AutoPlay makes an inserted medium offer to run whatever is on it, and in
+    some configurations it does so without asking. A planted USB stick then
+    requires nothing of the attacker beyond leaving it in a car park - curiosity
+    and the system itself do the rest.
+
+    Once disabled, the medium still mounts and its contents can still be opened,
+    but nothing starts on its own. Running a program from a medium becomes a
+    deliberate click by the user rather than a side effect of plugging it in.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna od razu i dotyczy codziennych odruchów: po włożeniu
+    karty pamięci nie pojawi się okno z propozycją zaimportowania zdjęć, płyta
+    nie uruchomi swojego programu, a telefon podłączony kablem nie otworzy sam
+    okna przeglądania plików.
+
+    Nikomu to nie zablokuje pracy, ale użytkownicy zauważą różnicę i część
+    zgłosi ją jako usterkę. Klasa „wymaga sprawdzenia" wynika z tego, że warto
+    ich uprzedzić, a nie z ryzyka technicznego.
+  en: |
+    The change is visible at once and touches everyday habits: inserting a
+    memory card no longer brings up a window offering to import photos, a disc
+    does not start its own program, and a phone connected by cable does not open
+    a file-browsing window by itself.
+
+    This blocks nobody's work, but users notice the difference and some will
+    report it as a fault. The "needs review" class comes from it being worth
+    warning them in advance, not from technical risk.
+
+implementation_consequences:
+  impact_areas:
+    - removable-media
+    - user-interface
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Okno z propozycją importu zdjęć po włożeniu karty pamięci przestanie pojawiać się samo
+      - Płyty i nośniki z własnym programem instalacyjnym trzeba będzie uruchamiać ręcznie z eksploratora
+      - Oprogramowanie pomiarowe startujące z nośnika dostarczonego przez serwis wymaga ręcznego uruchomienia
+    en:
+      - The window offering to import photos after inserting a memory card stops appearing by itself
+      - Discs and media with their own installer need to be started manually from the file explorer
+      - Measurement software starting from a medium supplied by a service engineer requires a manual launch
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko obsługuje proces, w którym operator wielokrotnie w ciągu zmiany wgrywa dane z nośnika
+      - Maszyna pracuje w trybie kiosku, gdzie uruchomienie programu z nośnika jest częścią procedury
+    en:
+      - The station serves a process where an operator loads data from media many times per shift
+      - The machine runs in kiosk mode, where starting a program from a medium is part of the procedure
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+      $name = 'NoDriveTypeAutoRun'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '255'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $name = 'NoDriveTypeAutoRun'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoDriveTypeAutoRun' -Value 255 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-autoplay
+
+notes:
+  pl: |
+    Wartość 255 wyłącza autoodtwarzanie dla wszystkich typów napędów naraz.
+    Punkt pilnuje ustawienia dla całej maszyny; odpowiednik dla bieżącego
+    użytkownika żyje w osobnej gałęzi i nie zastępuje tego wpisu.
+  en: |
+    The value 255 disables AutoPlay for every drive type at once. The item
+    guards the machine-wide setting; the per-user equivalent lives in a separate
+    hive and does not substitute for this entry.

@@ -1,0 +1,151 @@
+id: win11-llmnr-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > DNS Client
+  title:
+    pl: Rozpoznawanie nazw przez LLMNR wyłączone
+    en: LLMNR name resolution disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy stacja nie potrafi rozwiązać nazwy przez DNS, domyślnie rozgłasza
+    pytanie do całej sieci lokalnej: „kto się nazywa "nazwa"?". Odpowiedzieć
+    może dowolny komputer w tym samym segmencie. Napastnik odpowiada „to ja",
+    a stacja sama wysyła mu poświadczenia użytkownika, żeby się uwierzytelnić.
+
+    To najtańszy znany sposób na zebranie skrótów haseł w sieci biurowej —
+    nie wymaga ani exploita, ani błędu użytkownika, wystarczy podłączony
+    komputer i literówka w nazwie udziału. Po wyłączeniu LLMNR stacja odpytuje
+    wyłącznie serwer DNS, a nieudane rozpoznanie nazwy kończy się błędem
+    zamiast rozgłoszeniem zapytania do obcych.
+  en: |
+    When a workstation cannot resolve a name through DNS, it broadcasts the
+    question to the whole local network by default: "who is called <name>?".
+    Any computer in the same segment may answer. An attacker answers "that is
+    me", and the workstation itself sends over the user's credentials in order
+    to authenticate.
+
+    This is the cheapest known way of harvesting password hashes on an office
+    network - it needs neither an exploit nor a user mistake, just a connected
+    computer and a typo in a share name. With LLMNR disabled the workstation
+    queries the DNS server only, and a failed lookup ends in an error instead
+    of a broadcast to strangers.
+
+disruption_description:
+  pl: |
+    W sieci z poprawnie działającym DNS-em zmiana jest niewidoczna. Zabolą
+    miejsca, w których rozgłaszanie zastępuje brakujące wpisy: drukarki
+    i skanery adresowane nazwą bez rejestracji w DNS, sieci gościnne bez
+    własnego serwera nazw, małe sieci domowe pracowników zdalnych.
+
+    Stąd klasa „wymaga sprawdzenia": awaria nie jest widowiskowa — objawia się
+    tym, że coś przestaje się odnajdywać po nazwie, a działa dalej po adresie IP.
+  en: |
+    On a network with working DNS the change is invisible. It hurts where
+    broadcasting stands in for missing records: printers and scanners addressed
+    by name without a DNS registration, guest networks with no name server of
+    their own, small home networks of remote workers.
+
+    Hence the "needs review" class: the failure is not spectacular - it shows up
+    as something no longer being found by name while it still works by IP address.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-authentication
+    - printing
+    - file-sharing
+  what_breaks:
+    pl:
+      - Urządzenia sieciowe bez wpisu w DNS przestaną być osiągalne po nazwie, pozostanie dostęp po adresie IP
+      - Udziały plikowe adresowane krótką nazwą komputera w sieci bez serwera DNS przestaną się otwierać
+      - Drukarki wykrywane rozgłoszeniem w sieci domowej pracownika zdalnego mogą zniknąć z listy urządzeń
+    en:
+      - Network devices with no DNS record stop being reachable by name; access by IP address remains
+      - File shares addressed by a short computer name on a network without a DNS server stop opening
+      - Printers discovered by broadcast on a remote worker's home network may disappear from the device list
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Sieć nie ma własnego serwera DNS i rozpoznawanie nazw opiera się na rozgłoszeniach
+      - Stacja pracuje w segmencie laboratoryjnym, w którym urządzenia celowo nie są rejestrowane w DNS
+    en:
+      - The network has no DNS server of its own and name resolution relies on broadcasts
+      - The workstation sits in a lab segment where devices are deliberately not registered in DNS
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+      $name = 'EnableMulticast'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    $name = 'EnableMulticast'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path       = $path
+      name       = $name
+      value      = $current
+      existed    = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableMulticast' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/networking/dns/dns-top
+
+notes:
+  pl: |
+    Samo wyłączenie LLMNR nie zamyka drogi do końca — bliźniaczy mechanizm
+    NBT-NS robi to samo na poziomie NetBIOS i wyłącza się osobno, na każdej
+    karcie sieciowej. Traktuj ten punkt jako pierwszy z pary.
+  en: |
+    Disabling LLMNR alone does not close the route completely - the twin NBT-NS
+    mechanism does the same thing at the NetBIOS layer and is disabled
+    separately, per network adapter. Treat this item as the first of a pair.

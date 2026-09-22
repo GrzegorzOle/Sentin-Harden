@@ -1,0 +1,158 @@
+id: win11-rdp-network-level-authentication
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services
+  title:
+    pl: Uwierzytelnianie na poziomie sieci wymagane dla pulpitu zdalnego
+    en: Network Level Authentication required for Remote Desktop
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bez uwierzytelniania na poziomie sieci każdy, kto dosięgnie portu pulpitu
+    zdalnego, dostaje sesję graficzną i ekran logowania jeszcze zanim poda
+    jakiekolwiek poświadczenia. System rezerwuje dla nieznajomego pamięć
+    i zasoby, a cała warstwa obsługi sesji staje się dostępna do atakowania —
+    i to właśnie w niej historycznie znajdowano błędy pozwalające przejąć
+    maszynę bez logowania.
+
+    Po włączeniu wymagania kolejność się odwraca: najpierw uwierzytelnienie,
+    dopiero potem sesja. Nieuwierzytelniony rozmówca nie dostaje ani ekranu,
+    ani zasobów, a automat zgadujący hasła traci najtańszy sposób na odróżnienie
+    istniejącego konta od nieistniejącego.
+  en: |
+    Without Network Level Authentication, anyone who can reach the Remote
+    Desktop port gets a graphical session and a sign-in screen before supplying
+    any credentials at all. The system reserves memory and resources for a
+    stranger, and the whole session-handling layer becomes available to attack -
+    and that is precisely where flaws allowing a machine to be taken over
+    without signing in have historically been found.
+
+    With the requirement enabled the order reverses: authentication first, the
+    session afterwards. An unauthenticated caller gets neither a screen nor
+    resources, and a password-guessing bot loses the cheapest way of telling an
+    existing account from a non-existent one.
+
+disruption_description:
+  pl: |
+    Odcięci zostaną klienci, którzy tego mechanizmu nie obsługują: bardzo stare
+    wersje klienta pulpitu zdalnego, część klientów na systemy inne niż Windows
+    i wbudowane klienty w cienkich terminalach sprzed lat. Objaw jest czytelny —
+    klient mówi wprost, że zdalny komputer wymaga uwierzytelniania na poziomie
+    sieci — ale użytkownik w terenie i tak zostaje bez dostępu.
+
+    Drugi przypadek to odzyskiwanie maszyny, na której konto jest zablokowane
+    albo hasło wygasło: bez sesji graficznej przed logowaniem część takich
+    scenariuszy naprawczych przestaje działać zdalnie.
+  en: |
+    Clients that do not support the mechanism get cut off: very old versions of
+    the Remote Desktop client, some clients for non-Windows systems and built-in
+    clients in years-old thin terminals. The symptom is legible - the client
+    states plainly that the remote computer requires Network Level
+    Authentication - but a user in the field is left without access all the same.
+
+    The second case is recovering a machine where the account is locked or the
+    password has expired: without a graphical session before sign-in, some of
+    those repair scenarios stop working remotely.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - remote-management
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Starsze klienty pulpitu zdalnego i cienkie terminale bez obsługi mechanizmu nie nawiążą połączenia
+      - Zdalne odblokowanie konta lub zmiana wygasłego hasła przez ekran logowania przestanie być możliwa
+      - Klienty pulpitu zdalnego na systemach innych niż Windows mogą wymagać aktualizacji albo zmiany na inny
+    en:
+      - Older Remote Desktop clients and thin terminals without support for the mechanism cannot connect
+      - Unlocking an account or changing an expired password remotely through the sign-in screen stops being possible
+      - Remote Desktop clients on non-Windows systems may need updating or replacing with a different one
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Do maszyny łączą się terminale, dla których producent nie wydaje już aktualizacji oprogramowania
+      - Pulpit zdalny jest jedyną drogą naprawy maszyny bez fizycznego dostępu do niej
+    en:
+      - Terminals connect to the machine for which the vendor no longer ships software updates
+      - Remote Desktop is the only route to repairing the machine without physical access to it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $ts = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+      $deny = (Get-ItemProperty -Path $ts -Name 'fDenyTSConnections' -ErrorAction Stop).fDenyTSConnections
+      if ($deny -eq 1) {
+        # Remote Desktop is switched off, so there is no session layer to guard.
+        'NOT_APPLICABLE'
+      } else {
+        $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+        $name = 'UserAuthentication'
+        if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+        else {
+          $item = Get-ItemProperty -Path $path -ErrorAction Stop
+          if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+    $name = 'UserAuthentication'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+      -Name 'UserAuthentication' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access
+
+notes:
+  pl: |
+    Gdy pulpit zdalny jest na maszynie wyłączony, punkt zwraca „nie dotyczy"
+    zamiast zgłaszać niezgodność — nie ma warstwy sesji, której miałby pilnować.
+    Włączenie pulpitu zdalnego później sprawia, że punkt wraca do oceny.
+  en: |
+    When Remote Desktop is switched off on the machine, the item reports "not
+    applicable" instead of raising a finding - there is no session layer for it
+    to guard. Enabling Remote Desktop later brings the item back into scope.

@@ -1,0 +1,151 @@
+id: win11-smb-client-signing-required
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Podpisywanie komunikacji SMB wymagane po stronie klienta
+    en: SMB client communication signing required
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bez podpisywania stacja przyjmuje odpowiedzi serwera plików na słowo. Ktoś,
+    kto znajdzie się w środku tej rozmowy — przez zatrucie rozpoznawania nazw
+    albo przejęty przełącznik — może podmienić przesyłany plik albo przekierować
+    sesję na własną maszynę i przejąć uwierzytelnienie użytkownika.
+
+    Wymagane podpisywanie dokłada do każdego pakietu skrót liczony z klucza
+    sesji. Pakiet zmieniony po drodze przestaje się zgadzać i zostaje odrzucony,
+    a przekazanie cudzego uwierzytelnienia na inny serwer przestaje działać.
+    To jedno ustawienie zamyka całą rodzinę ataków opartych na pośredniczeniu
+    w ruchu plikowym.
+  en: |
+    Without signing, the workstation takes the file server's answers on trust.
+    Anyone who gets into the middle of that conversation - through poisoned name
+    resolution or a compromised switch - can swap the file being transferred or
+    redirect the session to their own machine and capture the user's
+    authentication.
+
+    Required signing adds to every packet a digest computed from the session
+    key. A packet altered in transit stops matching and is rejected, and
+    relaying someone else's authentication to another server stops working. This
+    single setting closes a whole family of attacks based on sitting in the
+    middle of file traffic.
+
+disruption_description:
+  pl: |
+    Podpisywanie kosztuje wydajność przy dużych transferach — im starszy sprzęt
+    i im większe pliki, tym bardziej widoczne. Na stacji biurowej różnica jest
+    nieistotna, przy kopiowaniu obrazów maszyn czy materiału wideo z udziału
+    już nie.
+
+    Drugi powód klasy „wymaga sprawdzenia": serwery i urządzenia, które
+    podpisywania nie obsługują, przestaną być dostępne. Dotyczy to zwykle
+    magazynów sieciowych starszej generacji i wbudowanych udziałów w sprzęcie
+    przemysłowym.
+  en: |
+    Signing costs performance on large transfers - the older the hardware and
+    the bigger the files, the more visible it is. On an office workstation the
+    difference is irrelevant; when copying machine images or video material from
+    a share it is not.
+
+    The second reason for the "needs review" class: servers and devices that do
+    not support signing stop being reachable. This usually concerns
+    older-generation network storage and shares built into industrial equipment.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - network-and-firewall
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Udziały na magazynach sieciowych bez obsługi podpisywania przestaną się montować na tej stacji
+      - Kopiowanie dużych plików z udziałów sieciowych zwolni, najbardziej na starszych procesorach
+      - Wbudowane udziały w urządzeniach przemysłowych i rejestratorach mogą przestać odpowiadać na połączenie
+    en:
+      - Shares on network storage without signing support stop mounting on this workstation
+      - Copying large files from network shares slows down, most visibly on older processors
+      - Built-in shares in industrial equipment and recorders may stop answering the connection
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stacja korzysta z magazynu sieciowego, którego oprogramowanie nie obsługuje podpisywania sesji
+      - Stanowisko montażowe przenosi codziennie duże pliki wideo z udziału na sprzęcie sprzed lat
+    en:
+      - The workstation uses network storage whose software does not support session signing
+      - An editing station moves large video files daily from a share on years-old hardware
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters'
+      $name = 'RequireSecuritySignature'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters'
+    $name = 'RequireSecuritySignature'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' `
+      -Name 'RequireSecuritySignature' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/storage/file-server/smb-signing
+
+notes:
+  pl: |
+    To połowa pary: ten punkt pilnuje stacji jako klienta udziałów. Osobnym
+    ustawieniem jest wymaganie podpisywania po stronie serwera, gdy maszyna sama
+    udostępnia zasoby. Zmiana działa po ponownym uruchomieniu usługi stacji
+    roboczej, więc otwarte sesje pracują jeszcze na starych warunkach.
+  en: |
+    This is half of a pair: the item guards the workstation as a client of
+    shares. Requiring signing on the server side, when the machine shares
+    resources itself, is a separate setting. The change takes effect after the
+    workstation service restarts, so open sessions still run on the old terms.

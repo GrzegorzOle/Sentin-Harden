@@ -1,0 +1,149 @@
+id: win11-lm-hash-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Przechowywanie skrótu LAN Manager wyłączone
+    en: LAN Manager hash storage disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obok nowoczesnego skrótu hasła system potrafi zapisać także skrót w formacie
+    sprzed trzydziestu lat. Ten stary format dzieli hasło na dwie połowy po
+    siedem znaków, ignoruje wielkość liter i nie używa żadnej soli. W praktyce
+    oznacza to, że hasło odtwarza się z niego w minuty, niezależnie od tego,
+    jak długie i skomplikowane wygląda dla użytkownika.
+
+    Po wyłączeniu system przestaje tworzyć ten skrót przy kolejnej zmianie
+    hasła. Napastnik, który zdobędzie bazę kont, dostaje wyłącznie postać
+    odporną na proste łamanie — cała praca włożona w politykę haseł zaczyna
+    mieć znaczenie.
+  en: |
+    Next to the modern password hash the system can also store a hash in a
+    format from thirty years ago. That old format splits the password into two
+    seven-character halves, ignores letter case and uses no salt at all. In
+    practice the password can be recovered from it in minutes, no matter how
+    long and complicated it looks to the user.
+
+    Once disabled, the system stops creating that hash at the next password
+    change. An attacker who obtains the account database gets only the form
+    that resists trivial cracking - all the effort put into the password policy
+    starts to matter.
+
+disruption_description:
+  pl: |
+    Nic nie zepsuje się w dniu wdrożenia: zmiana dotyczy tego, co system zapisze
+    przy **następnej** zmianie hasła, a nie skrótów już istniejących. Ryzyko
+    leży po stronie bardzo starych klientów i urządzeń, które potrafią
+    uwierzytelnić się wyłącznie tym mechanizmem — zwykle są to sprzętowe
+    skanery sieciowe i kontrolery przemysłowe.
+
+    Klasa „wymaga sprawdzenia" bierze się właśnie stąd: na stacji biurowej to
+    zmiana bez konsekwencji, ale trzeba wiedzieć, czy ktoś nie loguje się do
+    niej takim urządzeniem.
+  en: |
+    Nothing breaks on the day of the change: it affects what the system stores
+    at the **next** password change, not the hashes that already exist. The risk
+    lies with very old clients and devices that can authenticate through this
+    mechanism only - usually hardware network scanners and industrial
+    controllers.
+
+    The "needs review" class comes from exactly that: on an office workstation
+    this is a change without consequences, but you need to know whether such a
+    device signs in to it.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - legacy-authentication
+    - file-sharing
+  what_breaks:
+    pl:
+      - Urządzenia uwierzytelniające się wyłącznie mechanizmem LAN Manager stracą dostęp po zmianie hasła konta
+      - Skanery sieciowe zapisujące pliki na udziale stacji mogą przestać się logować po odnowieniu hasła
+      - Bardzo stare systemy klienckie w tej samej grupie roboczej nie nawiążą sesji do udziałów tej maszyny
+    en:
+      - Devices that authenticate only through the LAN Manager mechanism lose access after the account password changes
+      - Network scanners writing files to a share on this workstation may stop signing in once the password is renewed
+      - Very old client systems in the same workgroup will not establish sessions to this machine's shares
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Do stacji loguje się sprzęt, dla którego producent nie wydał już nowszego oprogramowania układowego
+      - Konfiguracja obsługuje linię produkcyjną, w której wymiana sterownika wymaga postoju zakładu
+    en:
+      - Hardware signs in to the workstation for which the vendor no longer ships newer firmware
+      - The configuration serves a production line where replacing a controller requires a plant shutdown
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'NoLMHash'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'NoLMHash'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+      -Name 'NoLMHash' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-do-not-store-lan-manager-hash-value-on-next-password-change
+
+notes:
+  pl: |
+    Skróty zapisane wcześniej zostają w bazie do czasu zmiany hasła. Jeśli
+    zmiana ma zamknąć realne ryzyko, a nie tylko poprawić wynik audytu, wymuś
+    po niej rotację haseł kont lokalnych.
+  en: |
+    Hashes stored earlier stay in the database until the password changes. If
+    the change is meant to close real risk rather than just improve the audit
+    score, force a rotation of local account passwords afterwards.

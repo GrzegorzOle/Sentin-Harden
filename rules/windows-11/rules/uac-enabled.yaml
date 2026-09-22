@@ -1,0 +1,150 @@
+id: win11-uac-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Kontrola konta użytkownika włączona
+    en: User Account Control enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kontrola konta użytkownika sprawia, że nawet członek grupy administratorów
+    pracuje na co dzień z ograniczonymi uprawnieniami, a pełne dostaje dopiero
+    po wyraźnym potwierdzeniu. Gdy jest wyłączona, każdy uruchomiony program —
+    łącznie z otwartym przez pomyłkę załącznikiem — startuje od razu z pełnymi
+    prawami do systemu.
+
+    Wyłączona kontrola nie osłabia jednego zabezpieczenia, tylko usuwa granicę,
+    na której opiera się reszta: bez niej nie działa izolacja procesów o różnym
+    poziomie zaufania, a tryb chroniony przeglądarki i separacja aplikacji ze
+    sklepu tracą sens. Włączenie przywraca moment, w którym podniesienie
+    uprawnień jest decyzją, a nie automatem.
+  en: |
+    User Account Control makes even a member of the administrators group work
+    with limited rights day to day, receiving full rights only after an explicit
+    confirmation. When it is switched off, every program started - including an
+    attachment opened by mistake - runs with full system rights immediately.
+
+    Disabled UAC does not weaken one safeguard; it removes the boundary the
+    others rest on. Without it, isolation between processes of different trust
+    levels stops working, and a browser's protected mode and the separation of
+    store applications lose their meaning. Enabling it restores the moment where
+    elevation is a decision rather than an automatism.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga ponownego uruchomienia systemu i jest odczuwalna od pierwszej
+    minuty: wracają okna potwierdzenia, a programy zapisujące dane w miejscach
+    chronionych zaczynają trafiać na przekierowanie albo odmowę.
+
+    Trudniejszy przypadek to maszyna, na której kontrolę wyłączono celowo, żeby
+    zadziałała konkretna aplikacja. Włączenie jej z powrotem bez sprawdzenia tej
+    aplikacji potrafi zatrzymać pracę użytkownika do czasu diagnozy — dlatego to
+    zmiana do zaplanowania, nigdy hurtowa.
+  en: |
+    The change requires a restart and is noticeable from the first minute:
+    confirmation prompts come back, and programs writing data into protected
+    locations start hitting redirection or refusal.
+
+    The harder case is a machine where the control was switched off deliberately
+    to make one application work. Turning it back on without checking that
+    application can halt the user's work until it is diagnosed - which is why
+    this is a change to plan, never a bulk one.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - scripting-and-automation
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Aplikacje zapisujące pliki w katalogu programu zaczną trafiać na przekierowanie do profilu użytkownika
+      - Skrypty logowania wykonujące zadania administracyjne bez podniesienia uprawnień przestaną się kończyć powodzeniem
+      - Starsze oprogramowanie branżowe wymagające pełnych praw zażąda potwierdzenia przy każdym uruchomieniu
+    en:
+      - Applications writing files into the program directory start being redirected into the user profile
+      - Logon scripts performing administrative tasks without elevation stop completing successfully
+      - Older line-of-business software requiring full rights asks for confirmation at every start
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna obsługuje aplikację, dla której producent wprost wymaga wyłączonej kontroli konta
+      - Stanowisko pracuje bez obsługi, w trybie kiosku, gdzie nie ma komu potwierdzić okna podniesienia
+    en:
+      - The machine serves an application whose vendor explicitly requires User Account Control to be off
+      - The station runs unattended in kiosk mode, where nobody is present to confirm an elevation prompt
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'EnableLUA'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'EnableLUA'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name 'EnableLUA' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/identity-protection/user-account-control/how-user-account-control-works
+
+notes:
+  pl: |
+    Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu, a ponowny audyt
+    tuż po niej odczyta już nową wartość — system nie pracuje jeszcze zgodnie
+    z nią. Aplikacje ze sklepu uruchomione przy wyłączonej kontroli mogą
+    wymagać ponownej instalacji.
+  en: |
+    The change only takes effect after a restart, and a re-audit immediately
+    afterwards already reads the new value - the system is not yet running
+    according to it. Store applications started while the control was off may
+    need to be reinstalled.

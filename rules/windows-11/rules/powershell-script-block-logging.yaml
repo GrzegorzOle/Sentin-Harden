@@ -1,0 +1,154 @@
+id: win11-powershell-script-block-logging
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows PowerShell
+  title:
+    pl: Rejestrowanie bloków skryptu PowerShell włączone
+    en: PowerShell script block logging enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    PowerShell jest dziś podstawowym narzędziem pracy napastnika na Windows,
+    bo jest wszędzie, podpisany i zaufany. Kod potrafi trafić do niego prosto
+    z sieci, wykonać się w pamięci i nie zostawić żadnego pliku — po takim
+    ataku na dysku nie ma czego szukać.
+
+    Rejestrowanie bloków skryptu zapisuje do dziennika treść tego, co faktycznie
+    zostało wykonane, już po rozkodowaniu i odszyfrowaniu. Samo w sobie niczego
+    nie blokuje — zamienia natomiast incydent nie do odtworzenia w taki, który
+    da się zbadać: widać polecenie, godzinę i konto, które je uruchomiło.
+  en: |
+    PowerShell is today the attacker's primary tool on Windows, because it is
+    everywhere, signed and trusted. Code can reach it straight from the network,
+    execute in memory and leave no file behind - after such an attack there is
+    nothing on disk to look for.
+
+    Script block logging writes to the event log what was actually executed,
+    after decoding and deobfuscation. By itself it blocks nothing - what it does
+    is turn an incident that cannot be reconstructed into one that can be
+    investigated: the command, the time and the account that ran it are visible.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy w pracy, ale dziennik rośnie — na maszynie, na której
+    dużo się skryptuje, potrafi urosnąć szybko i wypchnąć starsze zdarzenia.
+    Warto przy okazji podnieść rozmiar dziennika, inaczej zabezpieczenie zjada
+    samo siebie.
+
+    Drugi powód klasy „wymaga sprawdzenia" jest poważniejszy: do dziennika
+    trafia treść skryptów, a więc także to, co w nich siedzi. Skrypt
+    przekazujący hasło w argumencie zapisze je czytelnie. To nie argument
+    przeciw rejestrowaniu, tylko powód, by najpierw sprawdzić, kto ma dostęp
+    do dziennika.
+  en: |
+    Nobody notices it at work, but the log grows - on a machine where a lot of
+    scripting happens it can grow fast and push older events out. Raising the
+    log size at the same time is worth doing; otherwise the safeguard eats
+    itself.
+
+    The second reason for the "needs review" class is more serious: the content
+    of scripts goes into the log, and therefore whatever sits inside them. A
+    script passing a password as an argument records it in the clear. That is
+    not an argument against logging, but a reason to check first who has access
+    to the log.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Dziennik operacyjny PowerShell zapełni się szybciej i zacznie nadpisywać starsze zdarzenia
+      - Skrypty przekazujące hasła w argumentach zapiszą je czytelnie w treści zdarzenia
+      - Maszyny wysyłające dzienniki do systemu zbierającego zwiększą ruch i zajętość po stronie kolektora
+    en:
+      - The PowerShell operational log fills up faster and starts overwriting older events
+      - Scripts passing passwords as arguments record them in clear text in the event body
+      - Machines forwarding logs to a collector increase traffic and storage use on the collector side
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Do dziennika zdarzeń ma dostęp szersza grupa niż administratorzy odpowiedzialni za tę maszynę
+      - Na stacji działa automatyzacja przekazująca sekrety w wierszu polecenia, której nie da się teraz poprawić
+    en:
+      - A wider group than the administrators responsible for this machine has access to the event log
+      - The workstation runs automation passing secrets on the command line that cannot be fixed right now
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+      $name = 'EnableScriptBlockLogging'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+    $name = 'EnableScriptBlockLogging'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableScriptBlockLogging' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_logging_windows
+
+notes:
+  pl: |
+    Zdarzenia trafiają do dziennika Microsoft-Windows-PowerShell/Operational pod
+    numerem 4104. Rejestrowanie samo nie zatrzyma ataku — ma sens tylko wtedy,
+    gdy ktoś te dzienniki czyta albo wysyła je poza maszynę, zanim napastnik je
+    wyczyści.
+  en: |
+    Events land in the Microsoft-Windows-PowerShell/Operational log under number
+    4104. Logging alone stops no attack - it only makes sense when somebody
+    reads those logs, or ships them off the machine before an attacker clears
+    them.

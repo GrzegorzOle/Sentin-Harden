@@ -1,0 +1,152 @@
+id: win11-lan-manager-auth-level
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Poziom uwierzytelniania LAN Manager ograniczony do NTLMv2
+    en: LAN Manager authentication level restricted to NTLMv2
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Stacja domyślnie potrafi uwierzytelnić się starszymi wariantami protokołu
+    NTLM i przyjąć je od innych. Starsze warianty da się przechwycić w sieci
+    i złamać poza nią, bo opierają się na mechanizmie, który nie broni się przed
+    odtworzeniem odpowiedzi ani przed łamaniem słownikowym.
+
+    Po ustawieniu najwyższego poziomu stacja wysyła i przyjmuje wyłącznie
+    NTLMv2 i odrzuca starsze warianty. Napastnik podsłuchujący ruch nie dostaje
+    już materiału, który łamie się offline w rozsądnym czasie, a próba
+    wymuszenia słabszego wariantu kończy się odmową zamiast cichym obniżeniem
+    poziomu zabezpieczeń.
+  en: |
+    By default the workstation can authenticate with older variants of the NTLM
+    protocol and accept them from others. The older variants can be captured on
+    the network and cracked off it, because they rest on a mechanism that
+    defends neither against replaying a response nor against dictionary attacks.
+
+    With the highest level set, the workstation sends and accepts NTLMv2 only
+    and refuses the older variants. An attacker listening on the traffic no
+    longer gets material that cracks offline within reasonable time, and an
+    attempt to force a weaker variant ends in a refusal rather than a silent
+    downgrade.
+
+disruption_description:
+  pl: |
+    To jest zmiana, która potrafi odciąć dostęp natychmiast i bez ostrzeżenia,
+    dlatego wymaga świadomego wdrożenia. Skutek widać dopiero przy pierwszej
+    próbie połączenia ze starszym systemem albo urządzeniem — wcześniej nic nie
+    sygnalizuje problemu.
+
+    Trudność polega na tym, że druga strona zwykle nie mówi, czego użyła.
+    Komunikat brzmi „odmowa dostępu", identycznie jak przy złym haśle, więc
+    diagnoza trafia najpierw na fałszywy trop. Zaplanuj zmianę razem
+    z inwentaryzacją tego, co łączy się do tej maszyny i do czego ona się łączy.
+  en: |
+    This change can cut off access instantly and without warning, which is why
+    it needs a planned rollout. The effect only shows at the first attempt to
+    connect to an older system or device - nothing signals the problem before
+    that.
+
+    The difficulty is that the other side usually does not say what it used.
+    The message reads "access denied", exactly as with a wrong password, so
+    diagnosis follows a false trail first. Plan the change together with an
+    inventory of what connects to this machine and what it connects to.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - file-sharing
+    - network-and-firewall
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Połączenia do udziałów na systemach obsługujących wyłącznie starsze warianty NTLM zostaną odrzucone
+      - Urządzenia wielofunkcyjne skanujące do folderu sieciowego stracą możliwość zalogowania się na udział
+      - Starsze oprogramowanie serwerowe uwierzytelniające użytkowników przez NTLM zacznie zwracać odmowę dostępu
+    en:
+      - Connections to shares on systems that support only older NTLM variants will be refused
+      - Multifunction devices scanning to a network folder lose the ability to sign in to the share
+      - Older server software authenticating users through NTLM starts returning access denied
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - W sieci pracują systemy lub urządzenia, których nie da się przestawić na nowszy wariant protokołu
+      - Stacja korzysta z aplikacji branżowej uwierzytelniającej się do serwera starszym mechanizmem
+    en:
+      - The network runs systems or devices that cannot be moved to a newer variant of the protocol
+      - The workstation uses a line-of-business application authenticating to a server with an older mechanism
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'LmCompatibilityLevel'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '5'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'LmCompatibilityLevel'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+      -Name 'LmCompatibilityLevel' -Value 5 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level
+
+notes:
+  pl: |
+    Brak wartości w rejestrze nie znaczy, że stacja przyjmuje wszystko — domyślne
+    zachowanie współczesnego Windows jest już zawężone. Punkt pilnuje jednak
+    ustawienia jawnego, bo domyślne da się zmienić polityką bez śladu w tym
+    miejscu.
+  en: |
+    A missing registry value does not mean the workstation accepts everything -
+    the default behaviour of current Windows is already narrowed. The item does,
+    however, insist on an explicit setting, because the default can be changed
+    by policy with no trace in this location.

@@ -1,0 +1,181 @@
+id: win11-account-lockout-duration
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Account Policies > Account Lockout Policy
+  title:
+    pl: Czas trwania blokady konta
+    en: Account lockout duration
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Próg blokady decyduje, po ilu błędnych próbach konto się zamyka. Ten punkt
+    decyduje, na jak długo — i to on przesądza, czy blokada rzeczywiście
+    spowalnia zgadywanie hasła.
+
+    Blokada trwająca minutę praktycznie nic nie kosztuje atakującego: przy
+    zgadywaniu prowadzonym automatycznie przerwa jest tylko elementem
+    harmonogramu. Dopiero kwadrans sprawia, że liczba prób możliwych w ciągu
+    doby spada do wartości, przy której zgadywanie przestaje mieć sens.
+  en: |
+    The lockout threshold decides after how many wrong attempts an account
+    closes. This item decides for how long - and it is what determines whether
+    the lockout actually slows password guessing down.
+
+    A lockout lasting a minute costs an attacker practically nothing: in
+    automated guessing the pause is merely part of the schedule. Only a quarter
+    of an hour brings the number of attempts possible within a day down to a
+    level at which guessing stops being worthwhile.
+
+disruption_description:
+  pl: |
+    Skutek ponosi użytkownik, który pomylił hasło, a nie napastnik — i to jest
+    właściwa treść tej decyzji. Kwadrans bez dostępu do własnej maszyny bywa
+    kosztowny, a przy stanowisku pracującym w trybie ciągłym bywa nie do
+    przyjęcia.
+
+    Częstą przyczyną blokad nie jest zresztą człowiek, tylko zapamiętane stare
+    hasło: udział sieciowy, klient poczty albo zadanie harmonogramu próbujące
+    logować się w kółko potrafi zamykać konto raz za razem, bez udziału
+    właściciela.
+  en: |
+    The consequence falls on the user who mistyped their password, not on the
+    attacker - and that is the real substance of this decision. A quarter of an
+    hour without access to your own machine can be expensive, and on a station
+    working continuously it can be unacceptable.
+
+    The common cause of lockouts is not a person anyway but a remembered old
+    password: a network share, a mail client or a scheduled task retrying the
+    sign-in over and over can close the account again and again, with no
+    involvement from its owner.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Użytkownik po przekroczeniu progu błędnych prób czeka kwadrans, zamiast spróbować ponownie od razu
+      - Zapamiętane stare hasło w kliencie poczty lub na udziale sieciowym może blokować konto cyklicznie
+      - Zadania harmonogramu logujące się nieaktualnym hasłem zamkną konto, na którym pracują
+    en:
+      - After passing the attempt threshold a user waits a quarter of an hour instead of retrying at once
+      - A remembered old password in a mail client or on a network share can lock the account repeatedly
+      - Scheduled tasks signing in with an outdated password close the account they run on
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko pracuje w trybie ciągłym, w którym kwadrans bez dostępu przerywa proces
+      - Na maszynie trwa jeszcze porządkowanie zapamiętanych haseł i konta blokują się przypadkowo
+    en:
+      - The station works continuously and a quarter of an hour without access interrupts the process
+      - Remembered passwords on the machine are still being cleaned up and accounts lock accidentally
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^LockoutDuration\s*=\s*(\d+)') { $Matches[1] }
+        else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '15'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^LockoutDuration\s*=\s*(\d+)') { $value = $Matches[1] }
+    [pscustomobject]@{
+      setting = 'LockoutDuration'
+      value   = $value
+      existed = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      'LockoutDuration = 15',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      ('LockoutDuration = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/account-lockout-duration
+
+notes:
+  pl: |
+    Wartość ma znaczenie wyłącznie wtedy, gdy próg blokady jest w ogóle
+    ustawiony — przy progu zerowym konta nie blokują się nigdy i czas trwania
+    nie ma czego opisywać. Te trzy punkty polityki blokady ocenia się razem
+    i wdraża razem.
+
+    Zero znaczy tu "do ręcznego odblokowania przez administratora". To wartość
+    większa niż kwadrans w skutkach, ale mniejsza liczbowo, więc porównanie
+    "nie mniejsze niż" uznałoby ją za niespełnioną. Świadomy wybór blokady
+    bezterminowej należy zapisać jako wyjątek, a nie jako naprawę.
+  en: |
+    The value matters only when a lockout threshold is set at all - with a
+    threshold of zero accounts never lock and there is no duration to describe.
+    These three lockout policy items are assessed together and rolled out
+    together.
+
+    Zero here means "until an administrator unlocks it manually". In its
+    consequences that is stronger than a quarter of an hour, but numerically
+    smaller, so a "not less than" comparison would treat it as unmet. A
+    deliberate choice of an indefinite lockout belongs in an exception, not in
+    a remediation.

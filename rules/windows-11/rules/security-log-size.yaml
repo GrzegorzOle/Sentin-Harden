@@ -1,0 +1,160 @@
+id: win11-security-log-size
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > Security
+  title:
+    pl: Maksymalny rozmiar dziennika zabezpieczeń
+    en: Maximum size of the security log
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dziennik zabezpieczeń nadpisuje się w kółko: gdy zabraknie miejsca,
+    najstarsze zdarzenia znikają. Przy rozmiarze domyślnym na maszynie z włączoną
+    inspekcją logowań ten obrót potrafi trwać kilka dni, a na maszynie
+    obciążonej — kilkanaście godzin.
+
+    Znaczenie tego widać dopiero po incydencie. Włamanie rzadko wykrywa się tego
+    samego dnia; pytanie brzmi zwykle "co działo się dwa tygodnie temu" i to
+    wtedy okazuje się, że zapis już nie istnieje. Powiększenie dziennika jest
+    najtańszym sposobem, żeby odpowiedź w ogóle była możliwa — kosztuje miejsce
+    na dysku i nic więcej.
+  en: |
+    The security log overwrites itself in a circle: when it runs out of room,
+    the oldest events disappear. At the default size, on a machine with sign-in
+    auditing on, that turnover can take a few days - on a busy machine, a dozen
+    hours.
+
+    What that means becomes clear only after an incident. A break-in is rarely
+    detected the same day; the question is usually "what happened two weeks ago",
+    and that is when the record turns out to be gone. Enlarging the log is the
+    cheapest way to make an answer possible at all - it costs disk space and
+    nothing else.
+
+disruption_description:
+  pl: |
+    Zmiana nie dotyka niczego poza miejscem na dysku. Nic nie przestaje działać,
+    nikt nie musi się wylogować, a powiększony dziennik zaczyna obowiązywać bez
+    restartu systemu.
+
+    Jedyny wymierny koszt to około dwieście megabajtów zajęte na stałe przez
+    plik dziennika. Na maszynie z bardzo małym dyskiem systemowym warto to
+    policzyć razem z pozostałymi dziennikami, bo punkt tego samego rodzaju
+    dotyczy też dziennika aplikacji i systemu.
+  en: |
+    The change touches nothing but disk space. Nothing stops working, nobody has
+    to sign out, and the enlarged log takes effect without a system restart.
+
+    The one measurable cost is around two hundred megabytes permanently taken by
+    the log file. On a machine with a very small system disk it is worth counting
+    that together with the other logs, since an item of the same kind applies to
+    the application and system logs as well.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Plik dziennika zabezpieczeń zajmie na dysku systemowym około dwustu megabajtów
+      - Narzędzia przeglądające cały dziennik będą wczytywać go zauważalnie dłużej
+    en:
+      - The security log file takes around two hundred megabytes on the system disk
+      - Tools reading the whole log load it noticeably more slowly
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dysk systemowy jest na tyle mały, że kilkaset megabajtów zmienia sytuację
+    en:
+      - The system disk is small enough that a few hundred megabytes change the situation
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security'
+      $policy = (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue).MaxSize
+      if ($null -ne $policy) { [string][int]$policy }
+      else {
+        # No policy set - report what the log service is actually using, so the
+        # number in the report describes the machine rather than the policy.
+        $log = Get-WinEvent -ListLog Security -ErrorAction Stop
+        [string][int]($log.MaximumSizeInBytes / 1024)
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '196608'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security'
+    $name = 'MaxSize'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MaxSize' -Value 196608 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/view-the-security-event-log
+
+notes:
+  pl: |
+    Sprawdzenie czyta najpierw politykę, a gdy jej nie ma — rzeczywisty rozmiar
+    ustawiony w usłudze dziennika. Dzięki temu liczba w raporcie opisuje stan
+    maszyny, a nie to, czy ktoś kiedyś dotknął polityki. Naprawa ustawia
+    politykę, bo tylko ona przeżyje ponowne utworzenie dziennika.
+
+    Rozmiar to połowa rozwiązania. Druga to sposób postępowania po zapełnieniu:
+    nadpisywanie najstarszych zdarzeń kontra zatrzymanie zapisu. Zatrzymanie
+    chroni dowody, ale przy braku odbioru dzienników potrafi unieruchomić
+    maszynę — dlatego jest osobną decyzją, nie częścią tego punktu.
+  en: |
+    The check reads the policy first and, when there is none, the actual size
+    set in the log service. That way the number in the report describes the
+    state of the machine rather than whether somebody once touched the policy.
+    The remediation sets the policy, because only that survives the log being
+    recreated.
+
+    Size is half the answer. The other half is what happens once the log fills:
+    overwriting the oldest events versus stopping the recording. Stopping
+    protects the evidence but, with no log collection in place, can bring the
+    machine to a halt - which is why it is a separate decision, not part of this
+    item.

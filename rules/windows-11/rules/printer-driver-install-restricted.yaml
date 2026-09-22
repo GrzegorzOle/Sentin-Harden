@@ -1,0 +1,187 @@
+id: win11-printer-driver-install-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Instalowanie sterowników drukarek zastrzeżone dla administratorów
+    en: Installing printer drivers reserved for administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sterownik drukarki nie jest plikiem opisowym — jest kodem wykonywanym
+    w usłudze drukowania, czyli poza kontem użytkownika i z uprawnieniami
+    znacznie wyższymi niż jego własne. Instalacja sterownika to zatem wprowadzenie
+    własnego kodu do uprzywilejowanej części systemu.
+
+    Bez tego punktu zwykły użytkownik może taki sterownik zainstalować, dodając
+    drukarkę. Droga jest krótka i nie wygląda na niebezpieczną: dodanie drukarki
+    sieciowej należy do czynności codziennych i nikt nie traktuje jej jak
+    instalacji oprogramowania. Sterownik przychodzi wtedy z serwera wydruku,
+    czyli z maszyny, nad którą użytkownik nie ma kontroli — a napastnik może mieć.
+
+    Jest to jedna z najlepiej znanych dróg podniesienia uprawnień na stanowisku
+    z kontem bez praw administratora. Punkt ją zamyka, przenosząc decyzję
+    o wprowadzeniu kodu sterownika do osoby, która uprawnienia już ma.
+  en: |
+    A printer driver is not a descriptive file - it is code run inside the printing
+    service, that is, outside the user's account and with rights far above their
+    own. Installing a driver therefore means introducing one's own code into a
+    privileged part of the system.
+
+    Without this item an ordinary user can install such a driver by adding a
+    printer. The road is short and does not look dangerous: adding a network
+    printer is an everyday action and nobody treats it as installing software. The
+    driver then comes from a print server, that is, from a machine the user has no
+    control over - and an attacker may have.
+
+    It is one of the best-known roads to raising rights on a station whose account
+    has none. The item closes it, moving the decision to introduce driver code to
+    somebody who has the rights already.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, w jaki sposób na tej maszynie dodaje się drukarki.
+
+    Użytkownik bez praw administratora przestanie móc dodać drukarkę, dla której
+    sterownika nie ma jeszcze w systemie. Korzystanie z drukarek już dodanych
+    działa bez zmian, bo sterownik jest na miejscu — ogranicza się wyłącznie
+    wprowadzenie nowego.
+
+    Odczują to zespoły, w których ludzie sami podłączają się do drukarek na
+    piętrze albo u klienta. Objawem jest okno z prośbą o poświadczenia
+    administratora przy dodawaniu drukarki, a przy braku takich poświadczeń —
+    komunikat o niepowodzeniu instalacji sterownika.
+
+    Rozwiązaniem stosowanym w większych środowiskach jest rozsyłanie sterowników
+    z serwera wydruku razem z zasadami albo lista wydawców sterowników
+    uznawanych za zaufane. Jedno i drugie jest osobną pracą i nie zastępuje tego
+    punktu.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym uruchomieniu usługi
+    drukowania albo przy następnym starcie systemu.
+  en: |
+    What needs checking is how printers are added on this machine.
+
+    A user without administrator rights will no longer be able to add a printer
+    whose driver is not already in the system. Using printers already added works
+    unchanged, since the driver is in place - only the introduction of a new one is
+    restricted.
+
+    It will be felt by teams where people connect themselves to printers on their
+    floor or at a client's. The symptom is a window asking for administrator
+    credentials while adding a printer, and, with no such credentials, a message
+    about the driver installation failing.
+
+    The answer used in larger environments is distributing drivers from the print
+    server together with policy, or a list of driver publishers treated as trusted.
+    Both are separate work and neither replaces this item.
+
+    There is no machine restart. The change takes effect once the printing service
+    restarts, or at the next system start.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Użytkownik bez praw administratora nie doda drukarki, dla której sterownika nie ma jeszcze w systemie
+      - Samodzielne podłączanie się do drukarek u klienta albo w innym biurze będzie wymagać poświadczeń administratora
+    en:
+      - A user without administrator rights cannot add a printer whose driver is not already in the system
+      - Connecting oneself to printers at a client's or in another office will require administrator credentials
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Zespół pracuje w zmiennych lokalizacjach i podłącza się do drukarek bez udziału obsługi informatycznej
+    en:
+      - The team works in changing locations and connects to printers without help from support staff
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers'
+      $name = 'AddPrinterDrivers'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers'
+    $name = 'AddPrinterDrivers'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AddPrinterDrivers' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/devices-prevent-users-from-installing-printer-drivers
+
+notes:
+  pl: |
+    Punkt ogranicza instalowanie sterownika, a nie samo dodanie drukarki.
+    Rozróżnienie jest istotne przy diagnozowaniu zgłoszeń: jeśli sterownik jest
+    już w systemie, drukarka doda się bez pytania i użytkownik nie zobaczy
+    żadnej różnicy.
+
+    Ścieżka w rejestrze mówi o serwerach usług wydruku, choć ustawienie dotyczy
+    również stanowiska roboczego. Nazwa pochodzi z czasów, gdy mechanizm
+    wydzielono po stronie serwerowej, i nie należy z niej wnioskować, że punkt
+    dotyczy wyłącznie maszyn udostępniających drukarki.
+  en: |
+    The item restricts installing a driver, not adding a printer as such. The
+    distinction matters when diagnosing reports: if the driver is already in the
+    system, the printer will be added without a question and the user sees no
+    difference at all.
+
+    The registry path speaks of print service servers, though the setting concerns
+    a working station too. The name dates from when the mechanism was carved out on
+    the server side, and it should not be taken to mean the item applies only to
+    machines that share printers.

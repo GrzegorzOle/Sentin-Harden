@@ -1,0 +1,192 @@
+id: win11-removable-media-format-eject-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Formatowanie i wysuwanie nośników wymiennych zastrzeżone dla administratorów
+    en: Formatting and ejecting removable media reserved for administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie rozstrzyga, kto na tej maszynie może sformatować i wysunąć nośnik
+    wymienny sformatowany systemem plików obsługującym uprawnienia. Zastrzeżenie
+    tego dla administratorów odbiera zwykłemu użytkownikowi możliwość zniszczenia
+    zawartości takiego nośnika jedną czynnością.
+
+    Wartość tego punktu jest ograniczona i warto ją nazwać wprost: nie broni on
+    przed wyniesieniem danych, bo skopiować plik nadal można. Broni przed
+    zniszczeniem — przypadkowym albo umyślnym — zawartości nośnika, na którym
+    uprawnienia w ogóle coś znaczą, oraz przed obejściem tych uprawnień przez
+    sformatowanie nośnika od nowa.
+
+    Jest to punkt porządkowy. Wnosi spójność w tym, kto na stanowisku decyduje
+    o nośnikach, a nie zamknięcie drogi wejścia.
+  en: |
+    The setting decides who on this machine may format and eject a removable medium
+    formatted with a file system that supports permissions. Reserving this for
+    administrators takes from an ordinary user the ability to destroy such a
+    medium's contents in a single action.
+
+    The value of this item is limited and worth naming plainly: it does not defend
+    against data being carried out, since a file can still be copied. It defends
+    against destruction - accidental or deliberate - of the contents of a medium on
+    which permissions mean anything at all, and against those permissions being
+    bypassed by reformatting the medium from scratch.
+
+    It is a housekeeping item. It brings consistency to who decides about media at
+    a station, rather than closing a road in.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy ktokolwiek na tym stanowisku formatuje nośniki
+    wymienne w ramach swojej pracy.
+
+    Użytkownik bez praw administratora przestanie móc sformatować taki nośnik
+    z poziomu systemu. Objawem jest odmowa przy próbie formatowania, zwykle bez
+    wyjaśnienia, którego by się spodziewać — komunikat mówi o braku dostępu,
+    a nie o zasadzie.
+
+    Odczują to stanowiska, na których przygotowuje się nośniki: obsługa
+    informatyczna pracująca na koncie bez uprawnień, laboratoria i miejsca,
+    gdzie dyski przenośne czyści się przed przekazaniem. W pracy biurowej nie
+    widać tego wcale.
+
+    Zapis plików na nośnik, odczyt z niego i bezpieczne odłączanie działają bez
+    zmian — punkt dotyczy formatowania, a nie korzystania.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym zalogowaniu.
+  en: |
+    What needs checking is whether anybody at this station formats removable media
+    as part of their work.
+
+    A user without administrator rights will no longer be able to format such a
+    medium from within the system. The symptom is a refusal when formatting is
+    attempted, usually without the explanation one would expect - the message
+    speaks of access being denied, not of a policy.
+
+    It will be felt at stations where media are prepared: support staff working on
+    an account without rights, laboratories, and places where portable disks are
+    wiped before being handed on. In office work it does not show at all.
+
+    Writing files to a medium, reading from it and safely detaching it all work
+    unchanged - the item concerns formatting, not use.
+
+    There is no machine restart. The change takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - removable-media
+  what_breaks:
+    pl:
+      - Użytkownik bez praw administratora nie sformatuje nośnika wymiennego z poziomu systemu
+      - Czyszczenie dysków przenośnych przed przekazaniem będzie wymagać konta z uprawnieniami
+    en:
+      - A user without administrator rights cannot format a removable medium from within the system
+      - Wiping portable disks before handing them on will require an account with rights
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku przygotowuje się nośniki wymienne z konta bez praw administratora
+    en:
+      - Removable media are prepared at this station from an account without administrator rights
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is kept as text, not a number, so it is compared as text.
+      # Reading it numerically would turn an absent value into a zero and report
+      # a machine with no setting at all as satisfying the item.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      $name = 'AllocateDASD'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'AllocateDASD'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllocateDASD' -Value '0' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/devices-allowed-to-format-and-eject-removable-media
+
+notes:
+  pl: |
+    Wartość jest przechowywana jako tekst, nie liczba. Zapisanie jej jako liczby
+    sprawia, że system ustawienia nie widzi, a reguła zgłasza je jako spełnione —
+    dlatego polecenie naprawcze i wycofanie wymuszają typ tekstowy, a odczyt
+    porównuje tekstowo.
+
+    Zasięg punktu jest węższy, niż sugeruje jego tytuł: dotyczy nośników
+    sformatowanych systemem plików obsługującym uprawnienia i nie obejmuje
+    wszystkich pamięci przenośnych spotykanych na stanowisku. Pełne panowanie
+    nad nośnikami wymiennymi wymaga osobnych zasad dotyczących urządzeń,
+    a nie tego ustawienia.
+
+    Ustawienie pochodzi z wcześniejszych wydań systemu i jego znaczenie z czasem
+    zmalało. Pozostaje wymagane przez benchmark i dlatego jest tu opisane,
+    ale nie należy budować na nim ochrony przed wyniesieniem danych.
+  en: |
+    The value is stored as text, not a number. Writing it as a number leaves the
+    system blind to the setting while the rule reports it as met - which is why the
+    fix and the rollback force the text type, and the read compares as text.
+
+    The item's reach is narrower than its title suggests: it concerns media
+    formatted with a file system that supports permissions and does not cover every
+    portable store met at a station. Full command over removable media calls for
+    separate device policies, not this setting.
+
+    The setting dates from earlier releases of the system and its significance has
+    waned over time. It remains required by the benchmark and is described here for
+    that reason, but protection against data being carried out should not be built
+    on it.

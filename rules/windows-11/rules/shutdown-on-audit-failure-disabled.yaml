@@ -1,0 +1,185 @@
+id: win11-shutdown-on-audit-failure-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Maszyna nie wyłącza się przy niepowodzeniu zapisu inspekcji
+    en: The machine does not shut down on failure to record an audit entry
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System ma ustawienie, które każe mu zatrzymać maszynę w chwili, gdy nie może
+    zapisać wpisu inspekcji. Pomyślane było dla stanowisk, na których brak wpisu
+    w dzienniku jest gorszy niż przerwa w pracy — tam, gdzie liczy się zamknięty
+    ślad każdej czynności.
+
+    Benchmark wymaga, żeby ustawienie to było wyłączone, i powodem jest
+    dostępność. Maszyna, która zatrzymuje się przy zapełnionym dzienniku,
+    zostaje zatrzymana każdym zdarzeniem generującym wpisy szybciej, niż da się
+    je odłożyć — a wywołać to można z zewnątrz, nie mając na maszynie żadnych
+    uprawnień. Zabezpieczenie zamienia się wtedy w gotowy sposób na unieruchomienie
+    stanowiska.
+
+    Po takim zatrzymaniu maszyna wraca w stanie, w którym zalogować się może
+    wyłącznie administrator, i wymaga ręcznego uprzątnięcia dziennika. Na
+    stanowisku roboczym nie ma to uzasadnienia: ślad inspekcji zabezpiecza się
+    przez odpowiedni rozmiar dziennika i wysyłanie wpisów poza maszynę, a nie
+    przez jej wyłączanie.
+  en: |
+    The system has a setting that tells it to halt the machine the moment it cannot
+    record an audit entry. It was conceived for stations where a missing log entry
+    is worse than a break in work - where a closed trail of every action is what
+    counts.
+
+    The benchmark requires the setting to be off, and the reason is availability. A
+    machine that halts on a full log is halted by any event generating entries
+    faster than they can be filed away - and that can be brought about from
+    outside, holding no rights on the machine at all. The safeguard then turns into
+    a ready means of putting a station out of action.
+
+    After such a halt the machine comes back in a state where only an administrator
+    can sign in, and it requires the log to be cleared by hand. On a working
+    station there is no case for it: an audit trail is secured by a log of adequate
+    size and by sending entries off the machine, not by shutting the machine down.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Ustawienie jest domyślnie wyłączone i ten punkt
+    zwykle tylko utrwala stan istniejący.
+
+    Tam, gdzie zostało włączone celowo, wyłączenie go zmienia zachowanie przy
+    zapełnionym dzienniku: maszyna pracuje dalej zamiast się zatrzymać, a wpisy,
+    których nie da się zapisać, przepadają. Jest to świadoma zamiana — dostępność
+    za kompletność śladu — i tam, gdzie ślad ma być kompletny, trzeba w zamian
+    zadbać o rozmiar dziennika i o wysyłanie wpisów poza maszynę.
+
+    Wyłączenie tego ustawienia nie zmniejsza ilości zbieranych danych inspekcji
+    ani nie zmienia tego, co jest rejestrowane. Dotyczy wyłącznie reakcji na
+    niepowodzenie zapisu.
+
+    Nie ma restartu. Zmiana obowiązuje od razu.
+  en: |
+    Nothing stops working. The setting is off by default, and this item usually
+    just makes the existing state permanent.
+
+    Where it was turned on deliberately, switching it off changes the behaviour on
+    a full log: the machine carries on instead of halting, and entries that cannot
+    be recorded are lost. It is a deliberate trade - availability for completeness
+    of the trail - and where the trail must be complete, log size and sending
+    entries off the machine have to be seen to in exchange.
+
+    Switching this setting off does not reduce the amount of audit data gathered
+    and does not change what is recorded. It concerns only the reaction to a
+    failure to record.
+
+    There is no restart. The change takes effect at once.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Wpisy inspekcji, których nie da się zapisać przy zapełnionym dzienniku, przepadną zamiast zatrzymać maszynę
+    en:
+      - Audit entries that cannot be recorded on a full log are lost instead of halting the machine
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowisko podlega wymaganiu zamkniętego śladu inspekcji, przy którym brak wpisu jest gorszy niż przerwa w pracy
+    en:
+      - The station is subject to a requirement for a closed audit trail, where a missing entry is worse than a break in work
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The benchmark requires this setting off, so zero is what is expected here -
+      # unusually for a security item, the safeguard is the absence of a reaction.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'CrashOnAuditFail'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'CrashOnAuditFail'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'CrashOnAuditFail' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/audit-shut-down-system-immediately-if-unable-to-log-security-audits
+
+notes:
+  pl: |
+    Jest to jeden z nielicznych punktów benchmarku, w którym wymaganiem jest
+    wyłączenie mechanizmu zabezpieczającego. Nie wynika to z jego bezużyteczności,
+    lecz z tego, że cena jest wyższa od zysku na stanowisku roboczym.
+
+    Wartość znaleziona w rejestrze bywa większa niż jeden i wtedy również oznacza
+    włączenie. Reguła porównuje z zerem, więc każdą taką wartość zgłosi jako
+    niespełnienie punktu — i jest to zachowanie właściwe.
+
+    Osobno warto pamiętać, że sam fakt wyłączenia nie chroni przed zapełnieniem
+    dziennika. Adres tego problemu leży w regułach o rozmiarze dzienników
+    zdarzeń, nie tutaj.
+  en: |
+    This is one of the few benchmark items where the requirement is to switch a
+    protective mechanism off. That follows not from its uselessness but from the
+    price being higher than the gain on a working station.
+
+    The value found in the registry is sometimes greater than one, and then it also
+    means "on". The rule compares against zero, so it will report any such value as
+    the item unmet - and that is the right behaviour.
+
+    It is worth remembering separately that switching this off does not protect
+    against the log filling up. That problem is addressed in the rules about event
+    log size, not here.

@@ -1,0 +1,186 @@
+id: win11-force-logoff-when-logon-hours-expire
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Sesje sieciowe rozłączane po upływie dozwolonych godzin pracy
+    en: Network sessions disconnected once permitted working hours end
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Konto może mieć wyznaczone godziny, w których wolno się nim logować. Samo
+    wyznaczenie ich nie wystarcza: bez tego punktu ograniczenie działa wyłącznie
+    przy nawiązywaniu połączenia, a sesja rozpoczęta w porę trwa dalej także
+    wtedy, gdy godziny już minęły.
+
+    Ten punkt każe rozłączyć sesje sieciowe z chwilą upływu dozwolonych godzin.
+    Bez niego ograniczenie czasowe jest deklaracją, którą wystarczy raz obejść:
+    połączenie nawiązane o właściwej porze i utrzymywane w nieskończoność
+    zostawia dostęp otwarty przez całą dobę.
+
+    Jest to dokładnie ten przypadek, w którym mechanizm wygląda na wdrożony
+    i figuruje w dokumentacji, a nie robi tego, po co go wprowadzono. Napastnik
+    korzystający z przejętego konta nie musi go omijać — wystarczy, że nie
+    zamknie sesji.
+  en: |
+    An account can have hours set in which signing in is permitted. Setting them is
+    not enough on its own: without this item the restriction works only while a
+    connection is being established, and a session started in time carries on once
+    the hours have passed.
+
+    This item calls for network sessions to be disconnected the moment the
+    permitted hours end. Without it the time restriction is a declaration that need
+    only be got around once: a connection made at the right hour and held
+    indefinitely leaves access open around the clock.
+
+    This is exactly the case where a mechanism looks applied and appears in the
+    documentation, yet does not do what it was brought in for. An attacker using a
+    taken-over account need not get around it - it is enough not to close the
+    session.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy na kontach używanych z tej maszyny wyznaczono
+    godziny logowania. Jeżeli nie — punkt nie ma czego egzekwować i nie widać go
+    wcale.
+
+    Tam, gdzie godziny są wyznaczone, skutek jest odczuwalny: połączenia sieciowe
+    zostaną zerwane w chwili ich upływu, bez ostrzeżenia i bez pytania.
+    Niezapisany plik otwarty z udziału sieciowego może przepaść, a zadanie
+    kopiowania w toku — przerwać się w połowie.
+
+    Dotyczy to sesji sieciowych, czyli przede wszystkim udziałów plikowych. Sesja
+    interaktywna przy maszynie nie jest tym punktem kończona — użytkownik
+    zalogowany lokalnie pozostaje zalogowany, traci tylko dostęp do zasobów
+    sieciowych.
+
+    Wdrożenie wymaga uprzedzenia ludzi, których godziny obejmują, i sprawdzenia,
+    czy nie ma zadań przetwarzających dane po godzinach na kontach osobowych.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym uruchomieniu usługi
+    udostępniania albo przy następnym starcie systemu.
+  en: |
+    What needs checking is whether sign-in hours are set on the accounts used from
+    this machine. If not, the item has nothing to enforce and does not show at all.
+
+    Where hours are set, the effect is felt: network connections will be broken the
+    moment they end, without warning and without a question. An unsaved file opened
+    from a network share may be lost, and a copying job under way may break off
+    halfway.
+
+    This concerns network sessions, that is, mainly file shares. An interactive
+    session at the machine is not ended by this item - a user signed in locally
+    stays signed in and only loses access to network resources.
+
+    Applying it calls for warning the people whose hours it covers, and for
+    checking there are no jobs processing data after hours under personal accounts.
+
+    There is no machine restart. The change takes effect once the sharing service
+    restarts, or at the next system start.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Połączenia z udziałami sieciowymi zostaną zerwane w chwili upływu dozwolonych godzin, bez ostrzeżenia
+      - Niezapisany plik otwarty z udziału sieciowego może przepaść przy rozłączeniu sesji
+      - Zadania przetwarzające dane po godzinach na kontach osobowych przerwą się w połowie
+    en:
+      - Connections to network shares are broken the moment permitted hours end, without warning
+      - An unsaved file opened from a network share may be lost when the session is disconnected
+      - Jobs processing data after hours under personal accounts break off halfway
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na kontach z wyznaczonymi godzinami działają zadania przetwarzające dane poza tymi godzinami
+    en:
+      - Accounts with set hours run jobs that process data outside those hours
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      $name = 'EnableForcedLogOff'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'EnableForcedLogOff'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableForcedLogOff' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-force-logoff-when-logon-hours-expire
+
+notes:
+  pl: |
+    Punkt sam z siebie nie ogranicza niczyjego dostępu — egzekwuje ograniczenie
+    wprowadzone gdzie indziej. Na maszynie, na której godzin logowania nie
+    wyznaczono, jest spełniony i bez skutku jednocześnie.
+
+    Jest to powód, dla którego klasę uciążliwości ustawiłem na wymagającą
+    sprawdzenia mimo braku widocznych skutków w typowym środowisku: skutek zależy
+    nie od tej maszyny, lecz od kont, którymi się z niej korzysta. Tego reguła nie
+    widzi i nie próbuje zgadywać.
+  en: |
+    The item restricts nobody's access on its own - it enforces a restriction
+    brought in elsewhere. On a machine where no sign-in hours are set, it is met
+    and without effect at the same time.
+
+    That is why the disruption class is set to needs-review despite the absence of
+    visible effects in a typical environment: the effect depends not on this
+    machine but on the accounts used from it. The rule does not see that and does
+    not try to guess.

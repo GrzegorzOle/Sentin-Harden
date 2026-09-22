@@ -1,0 +1,174 @@
+id: win11-vendor-settings-downloads-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Pobieranie ustawień ze zdalnej usługi konfiguracyjnej wyłączone
+    en: Downloading settings from the remote configuration service turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Niezależnie od zasad grupy i od aktualizacji system co jakiś czas pobiera
+    z usługi producenta zestaw ustawień i stosuje je u siebie. Kanał powstał po
+    to, żeby dało się przestawić zachowanie składnika bez wydawania
+    aktualizacji — na przykład przyciszyć funkcję, która okazała się wadliwa.
+
+    Z punktu widzenia organizacji jest to jednak druga droga konfiguracji,
+    obok tej, którą organizacja kontroluje. Ustawienia przychodzą z zewnątrz,
+    nie przechodzą przez żadne zatwierdzenie i nie widać ich w narzędziach,
+    którymi maszynę się zarządza. Maszyna z zatwierdzoną konfiguracją może więc
+    zachowywać się inaczej, niż wynika to z zasad, a osoba porównująca stan
+    z polityką nie znajdzie powodu tam, gdzie go szuka.
+
+    Wyłączenie zostawia jedną drogę konfiguracji zamiast dwóch.
+  en: |
+    Independently of group policy and of updates, the system periodically
+    downloads a set of settings from a vendor service and applies them locally.
+    The channel exists so that a component's behaviour can be adjusted without
+    issuing an update - to quieten a feature that has turned out to be faulty,
+    say.
+
+    From the organisation's standpoint, though, it is a second configuration
+    route alongside the one the organisation controls. The settings come from
+    outside, pass through no approval, and are invisible in the tools the machine
+    is managed with. A machine with an approved configuration may therefore behave
+    differently from what the policy implies, and somebody comparing state against
+    policy will not find the reason where they are looking for it.
+
+    Turning it off leaves one configuration route instead of two.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy maszyna jest zarządzana, i to jest tu jedyne
+    istotne pytanie.
+
+    Odcięty zostaje kanał, którym producent doraźnie wyłącza funkcje okazujące
+    się wadliwe, zanim wyjdzie poprawka. Na maszynie, która dostaje aktualizacje
+    z opóźnieniem albo przez zatwierdzanie, oznacza to dłuższe życie z wadą:
+    poprawka przyjdzie w swoim terminie, a doraźne przyciszenie nie przyjdzie
+    wcale. W środowisku zarządzanym jest to akceptowalne, bo ktoś tę wadę
+    zauważy i podejmie decyzję. Na maszynie bez żadnego zarządzania nie zauważy
+    jej nikt.
+
+    Sama aktualizacja systemu, ochrona i aktywacja działają bez zmian — nie idą
+    tą drogą.
+
+    Dla osoby pracującej na maszynie zmiana jest niewidoczna aż do dnia,
+    w którym doraźne przyciszenie byłoby potrzebne.
+  en: |
+    What needs checking is whether the machine is managed, and that is the only
+    question that matters here.
+
+    What gets cut off is the channel by which the vendor temporarily disables
+    features that turn out to be faulty, before a fix ships. On a machine that
+    receives updates late or through approval, this means living with the fault
+    longer: the fix arrives on its own schedule, and the temporary quietening does
+    not arrive at all. In a managed environment that is acceptable, because
+    somebody will notice the fault and make a decision. On a machine with no
+    management at all, nobody will notice it.
+
+    System updates themselves, protection and activation work unchanged - they do
+    not travel this route.
+
+    For the person working on the machine the change is invisible until the day
+    the temporary quietening would have been needed.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Doraźne wyłączenie przez producenta funkcji okazującej się wadliwą nie dotrze do maszyny
+      - Zmiany zachowania składników poza cyklem aktualizacji przestaną być stosowane
+    en:
+      - A vendor's temporary disabling of a feature found to be faulty does not reach the machine
+      - Changes to component behaviour outside the update cycle stop being applied
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna nie jest zarządzana i nikt nie obserwuje jej zachowania między aktualizacjami
+    en:
+      - The machine is unmanaged and nobody watches its behaviour between updates
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      $name = 'DisableOneSettingsDownloads'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'DisableOneSettingsDownloads'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableOneSettingsDownloads' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-system
+
+notes:
+  pl: |
+    Punkt czyta się razem z rejestrowaniem pobrań z tej samej usługi, ale
+    kolejność jest tu odwrotna niż przy zwykłej parze „zablokuj i rejestruj".
+    Po wyłączeniu pobierania rejestrowanie nie ma już czego zapisywać, więc samo
+    w sobie niczego nie wnosi. Sens obu naraz jest taki, że gdy ktoś to
+    ustawienie cofnie, wpisy w dzienniku znów zaczną powstawać i będzie to
+    widoczne.
+  en: |
+    The item is read together with logging downloads from the same service, but
+    the order here is the reverse of the usual "block and log" pair. Once
+    downloading is off, the logging has nothing left to record and adds nothing on
+    its own. The point of having both is that if somebody reverses this setting,
+    log entries start appearing again and that will be visible.

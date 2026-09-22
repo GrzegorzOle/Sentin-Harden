@@ -1,0 +1,154 @@
+id: win11-vendor-settings-auditing-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Rejestrowanie pobrań ze zdalnej usługi konfiguracyjnej włączone
+    en: Logging of downloads from the remote configuration service turned on
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy system pobiera ustawienia ze zdalnej usługi konfiguracyjnej producenta,
+    może zapisać ten fakt w dzienniku zdarzeń. Domyślnie tego nie robi, więc
+    pobranie następuje bez śladu.
+
+    Wartość jest tu czysto dowodowa i dlatego kategoria jest niska. Rejestrowanie
+    niczego nie blokuje — pozwala natomiast odpowiedzieć na pytanie, czy maszyna
+    z tego kanału korzystała i kiedy. Bez tego zapisu nie da się rozstrzygnąć,
+    czy nieoczekiwana zmiana zachowania składnika przyszła z zewnątrz, czy wzięła
+    się z czegoś na maszynie — a to jest pytanie, które przy takiej zmianie pada
+    jako pierwsze.
+
+    Zapis ma też drugie zastosowanie, ważniejsze w środowisku, w którym pobieranie
+    jest wyłączone: gdy ktoś to wyłączenie cofnie, wpisy zaczną powstawać i będzie
+    to widać w dzienniku.
+  en: |
+    When the system downloads settings from the vendor's remote configuration
+    service, it can record the fact in the event log. By default it does not, so
+    the download happens without a trace.
+
+    The value here is purely evidentiary, and so the category is low. Logging
+    blocks nothing - what it does is allow the question of whether and when the
+    machine used the channel to be answered. Without that record there is no way
+    to settle whether an unexpected change in a component's behaviour came from
+    outside or arose from something on the machine - and that is the first
+    question asked when such a change appears.
+
+    The record has a second use as well, more important in an environment where
+    downloading is turned off: if somebody reverses that, entries start appearing
+    and it shows in the log.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Powstają dodatkowe wpisy w dzienniku zdarzeń
+    i na tym kończy się cała zmiana.
+
+    Wpisów jest niewiele — kanał odzywa się rzadko, więc nie ma tu ryzyka
+    zapchania dziennika ani wypchnięcia z niego starszych zdarzeń.
+
+    Dla osoby pracującej na maszynie zmiana jest niewidoczna. Nie ma restartu,
+    wylogowania ani wpływu na działanie programów.
+  en: |
+    Nothing stops working. Extra entries appear in the event log and that is the
+    whole of the change.
+
+    There are few entries - the channel speaks rarely, so there is no risk of
+    filling the log or pushing older events out of it.
+
+    For the person working on the machine the change is invisible. There is no
+    restart, no sign-out and no effect on how programs run.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Nic nie przestaje działać; w dzienniku zdarzeń pojawiają się dodatkowe wpisy
+    en:
+      - Nothing stops working; extra entries appear in the event log
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      $name = 'EnableOneSettingsAuditing'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'EnableOneSettingsAuditing'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableOneSettingsAuditing' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-system
+
+notes:
+  pl: |
+    Reguła jest przykładem punktu, który wolno zastosować hurtem bez czytania
+    czegokolwiek — dopisuje zdarzenia i nic poza tym. Warto o tym pamiętać przy
+    sortowaniu listy, bo w raporcie stoi obok punktów z tej samej sekcji, które
+    hurtem iść nie mogą.
+  en: |
+    The rule is an example of an item that may be applied in bulk without reading
+    anything - it adds events and nothing besides. Worth remembering when sorting
+    the list, because in the report it stands next to items from the same section
+    that cannot go in bulk.

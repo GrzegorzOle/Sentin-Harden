@@ -1,0 +1,188 @@
+id: win11-diagnostic-data-level-limited
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Zakres wysyłanych danych diagnostycznych ograniczony
+    en: Scope of diagnostic data sent limited
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System wysyła do producenta dane o swoim stanie, a ich zakres jest
+    stopniowany. Przy szerszych poziomach wychodzą nie tylko liczniki i wersje
+    składników, ale też nazwy uruchamianych programów, adresy odwiedzanych
+    stron w przeglądarce producenta i fragmenty pamięci z awarii.
+
+    Znaczenie dla bezpieczeństwa jest pośrednie, ale realne. Fragment pamięci
+    z awarii potrafi zawierać treść dokumentu albo poświadczenie, które akurat
+    było w obiegu. Lista uruchamianych programów opisuje maszynę dokładniej,
+    niż zrobiłby to atakujący po pierwszym rozpoznaniu. Nie znaczy to, że dane
+    te trafiają do niepowołanych rąk — znaczy, że wychodzą poza organizację
+    i przestają podlegać jej kontroli, a każda taka droga jest także drogą
+    wycieku, gdy coś po drodze zawiedzie.
+
+    Ograniczenie zakresu zostawia to, co potrzebne do serwisowania systemu,
+    i odcina to, co opisuje pracę wykonywaną na maszynie.
+  en: |
+    The system sends the vendor data about its own state, and the scope of that
+    data is graded. At the wider levels what leaves is not only counters and
+    component versions but also the names of programs being run, addresses of
+    pages visited in the vendor's browser, and fragments of memory from crashes.
+
+    The bearing on security is indirect but real. A memory fragment from a crash
+    can contain the contents of a document, or a credential that happened to be
+    in circulation. A list of programs being run describes the machine more
+    precisely than an attacker would manage after a first reconnaissance. This
+    does not mean the data reaches the wrong hands - it means it leaves the
+    organisation and stops being under its control, and every such route is also
+    a leak route when something along it fails.
+
+    Limiting the scope keeps what is needed to service the system and cuts off
+    what describes the work being done on the machine.
+
+disruption_description:
+  pl: |
+    To jest punkt, którego skutek zależy od tego, czym się maszyną zarządza,
+    i dlatego wymaga sprawdzenia, a nie automatycznego wdrożenia.
+
+    Usługi raportujące producenta — przegląd stanu aktualizacji, raporty
+    o zgodności sprzętu przed wydaniem systemu, zbiorczy obraz kondycji floty —
+    działają na tych właśnie danych. Po ograniczeniu zakresu maszyna przestaje
+    się w nich pojawiać albo pojawia się bez większości informacji. Zgłoszenie
+    brzmi wtedy „brakuje mi połowy komputerów w zestawieniu", a przyczyna leży
+    tutaj.
+
+    Osobno trzeba sprawdzić ochronę punktu końcowego w wariancie chmurowym:
+    część jej funkcji raportujących korzysta z tego samego kanału i po zmianie
+    milknie, choć sama ochrona działa dalej.
+
+    Dla osoby pracującej na maszynie nie zmienia się nic. Aktualizacje,
+    aktywacja systemu i ochrona działają bez zmian, bo nie idą tą drogą.
+  en: |
+    This is an item whose effect depends on what the machine is managed with,
+    and so it needs checking rather than automatic application.
+
+    The vendor's reporting services - the update status overview, hardware
+    readiness reports ahead of a release, the aggregate picture of fleet health -
+    run on exactly this data. Once the scope is limited the machine stops
+    appearing in them, or appears without most of the information. The report
+    then reads "half my computers are missing from the summary", and the cause is
+    here.
+
+    Endpoint protection in its cloud variant has to be checked separately: some
+    of its reporting functions use the same channel and fall silent after the
+    change, though the protection itself keeps working.
+
+    For the person working on the machine nothing changes. Updates, system
+    activation and protection all work as before, because they do not travel this
+    route.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - updates-and-servicing
+    - remote-management
+  what_breaks:
+    pl:
+      - Zestawienia stanu aktualizacji i kondycji floty przestaną pokazywać tę maszynę albo pokażą ją bez danych
+      - Raporty o gotowości sprzętu przed wydaniem nowej wersji systemu przestaną się zbierać
+      - Część raportowania ochrony punktu końcowego w wariancie chmurowym może zamilknąć
+    en:
+      - Update status and fleet health summaries stop showing this machine, or show it without data
+      - Hardware readiness reports ahead of a new system release stop being collected
+      - Some reporting from cloud endpoint protection may fall silent
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Organizacja korzysta z usług producenta opartych na danych diagnostycznych do planowania aktualizacji
+      - Ochrona punktu końcowego w wariancie chmurowym raportuje tym kanałem i raport jest potrzebny
+    en:
+      - The organisation uses vendor services based on diagnostic data to plan updates
+      - Cloud endpoint protection reports through this channel and the report is needed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      $name = 'AllowTelemetry'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(0|1)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'AllowTelemetry'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowTelemetry' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/configure-windows-diagnostic-data-in-your-organization
+
+notes:
+  pl: |
+    Sprawdzenie dopuszcza dwie wartości, bo najniższy poziom jest egzekwowany
+    tylko w wydaniach dla organizacji. W wydaniu Pro ustawienie zera daje
+    faktycznie poziom podstawowy, więc żądanie samego zera dawałoby na tych
+    maszynach trwały wynik niespełniony, którego nie da się naprawić.
+
+    Naprawa mimo to ustawia zero: tam, gdzie da się je wyegzekwować, punkt
+    zostaje domknięty, a tam, gdzie się nie da, system i tak podniesie wartość
+    do poziomu podstawowego i ponowny audyt przejdzie.
+  en: |
+    The check admits two values, because the lowest level is enforced only in the
+    editions meant for organisations. On the Pro edition setting zero effectively
+    yields the basic level, so demanding zero alone would give those machines a
+    permanently unmet result that cannot be fixed.
+
+    Remediation sets zero all the same: where it can be enforced the item is
+    closed fully, and where it cannot the system raises the value to the basic
+    level by itself and the re-audit passes.

@@ -1,0 +1,154 @@
+id: win11-audit-account-lockout
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja blokady konta
+    en: Audit account lockout
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Blokada konta jest sygnałem, że ktoś wielokrotnie pomylił hasło. Bywa, że
+    pomylił się użytkownik. Bywa też, że to ostatni widoczny ślad przerwanego
+    zgadywania — i różnicę widać dopiero wtedy, gdy blokady są zapisywane
+    i daje się je zestawić w czasie.
+
+    Pojedynczy wpis niewiele znaczy. Znaczenie ma wzór: kilka kont zablokowanych
+    w tej samej minucie, blokady poza godzinami pracy, to samo konto blokowane
+    co noc. Bez rejestrowania żaden z tych wzorów nie istnieje w dzienniku,
+    nawet jeśli wydarzył się wielokrotnie.
+  en: |
+    An account lockout is a signal that somebody got the password wrong several
+    times over. Sometimes it was the user. Sometimes it is the last visible
+    trace of interrupted guessing - and the difference becomes apparent only
+    when lockouts are recorded and can be laid out over time.
+
+    A single entry means little. The pattern is what means something: several
+    accounts locked in the same minute, lockouts outside working hours, the same
+    account locked every night. Without recording, none of those patterns exists
+    in the log, even if it happened many times.
+
+disruption_description:
+  pl: |
+    Zmiana nic nie psuje i nie jest widoczna dla użytkownika. Zdarzenie powstaje
+    wyłącznie w chwili zablokowania konta, czyli na większości maszyn kilka razy
+    w roku — objętość dziennika nie ma tu praktycznie znaczenia.
+
+    Punkt ma sens wyłącznie tam, gdzie próg blokady konta jest w ogóle
+    ustawiony. Przy progu zerowym konta nie blokują się nigdy i rejestrowanie
+    nie będzie miało czego zapisać.
+  en: |
+    The change breaks nothing and is not visible to the user. An event arises
+    only at the moment an account is locked, which on most machines means a few
+    times a year - log volume is practically irrelevant here.
+
+    The item makes sense only where a lockout threshold is set at all. With a
+    threshold of zero, accounts never lock and the recording will have nothing
+    to write.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdej blokadzie konta
+    en:
+      - The security log grows by one entry at each account lockout
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Próg blokady konta jest zerowy i konta nie blokują się w ogóle
+    en:
+      - The account lockout threshold is zero and accounts never lock at all
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9217-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[23]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9217-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9217-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9217-69AE-11D9-BED3-505054503030}" /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9217-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-account-lockout
+
+notes:
+  pl: |
+    Zdarzenie powstaje po stronie niepowodzenia, bo z punktu widzenia systemu
+    blokada jest odmową zalogowania. Dlatego punkt wymaga rejestrowania
+    niepowodzeń, a nie powodzeń — i dlatego sprawdzenie uznaje zarówno samo
+    niepowodzenie, jak i komplet.
+
+    Podkategoria domyka trójkę punktów polityki blokady konta: próg, czas
+    trwania i czas do wyzerowania licznika ustalają, kiedy blokada nastąpi,
+    a ten punkt sprawia, że zostaje po niej ślad.
+  en: |
+    The event arises on the failure side, because from the system's point of
+    view a lockout is a refused sign-in. That is why the item requires failure
+    recording rather than success - and why the check accepts both failure alone
+    and the full pair.
+
+    The subcategory completes the three account lockout policy items: the
+    threshold, the duration and the counter reset decide when a lockout happens,
+    and this item makes sure it leaves a trace.

@@ -1,0 +1,167 @@
+id: win11-audit-process-creation
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Detailed Tracking
+  title:
+    pl: Inspekcja tworzenia procesów
+    en: Audit process creation
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zapis uruchomionych procesów odpowiada na pytanie, które pada w każdym
+    dochodzeniu jako pierwsze: co się na tej maszynie wykonało i w jakiej
+    kolejności. Z tego jednego strumienia odtwarza się przebieg działania
+    napastnika — od pierwszego uruchomionego programu po narzędzia, którymi
+    zbierał dane.
+
+    Współczesne ataki w znacznej części nie przynoszą własnych plików, tylko
+    używają narzędzi już obecnych w systemie. Kontrola plików ich nie zobaczy,
+    bo nic nowego nie powstaje. Widać je wyłącznie po tym, co zostało
+    uruchomione — a to zapisuje dokładnie ta podkategoria.
+  en: |
+    A record of started processes answers the question asked first in every
+    investigation: what ran on this machine and in what order. From this single
+    stream the attacker's sequence of actions is reconstructed - from the first
+    program launched to the tools used to collect data.
+
+    Contemporary attacks largely bring no files of their own and instead use
+    tools already present in the system. File-based controls will not see them,
+    because nothing new appears. They are visible only through what was
+    executed - and that is exactly what this subcategory records.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać, ale objętość rośnie najmocniej ze wszystkich
+    pozycji inspekcji poza logowaniem. Każde uruchomienie programu to wpis,
+    a maszyna uruchamia ich setki dziennie bez udziału człowieka — zadania
+    harmonogramu, aktualizacje, obsługa sprzętu.
+
+    Wdrożenie bez powiększonego dziennika zabezpieczeń kończy się tym, że
+    najcenniejszy strumień danych wypycha z dziennika wszystko inne i sam
+    obraca się w ciągu godzin. Kolejność jest tu odwrotna niż zwykle: najpierw
+    rozmiar dziennika, potem inspekcja.
+  en: |
+    Nothing stops working, but the volume grows more than for any audit entry
+    other than sign-ins. Every program start is an entry, and a machine starts
+    hundreds a day with no human involved - scheduled tasks, updates, hardware
+    handling.
+
+    Rolling it out without an enlarged security log ends with the most valuable
+    stream of data pushing everything else out of the log and turning over
+    within hours itself. The order here is the reverse of the usual: log size
+    first, auditing second.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń zapełnia się w tempie liczonym w godzinach, jeśli nie został wcześniej powiększony
+      - Systemy odbierające zdarzenia dostaną wielokrotnie większy strumień danych z tej maszyny
+      - Na maszynie uruchamiającej wiele krótkich procesów obciążenie zapisem staje się mierzalne
+    en:
+      - The security log fills at a pace measured in hours unless it was enlarged first
+      - Event collection systems receive a many times larger stream of data from this machine
+      - On a machine starting many short processes the write load becomes measurable
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zabezpieczeń ma domyślny rozmiar i nie ma go jak powiększyć
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym
+      - Maszyna uruchamia procesy w pętli i zapis inspekcji wpływa na jej wydajność
+    en:
+      - The security log is at its default size and cannot be enlarged
+      - Events from this machine are billed by volume in the collection system
+      - The machine starts processes in a loop and the audit writes affect its performance
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE922B-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE922B-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE922B-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-process-creation
+
+notes:
+  pl: |
+    Ta podkategoria jest warunkiem działania punktu o wierszu polecenia
+    w zdarzeniach utworzenia procesu. Tamten decyduje, czy zdarzenie zawiera
+    argumenty; ten decyduje, czy zdarzenie w ogóle powstaje. Wdrożenie samego
+    wiersza polecenia nie daje niczego — nie ma czego wzbogacić.
+
+    Sama nazwa uruchomionego pliku mówi mało, bo narzędzia używane w atakach są
+    tymi samymi, których używa administrator. Wartość pojawia się dopiero
+    z argumentami, czyli po wdrożeniu obu punktów razem.
+  en: |
+    This subcategory is the precondition for the item about the command line in
+    process creation events. That one decides whether the event carries
+    arguments; this one decides whether the event exists at all. Rolling out the
+    command line alone achieves nothing - there is nothing to enrich.
+
+    The name of the started file says little by itself, because the tools used
+    in attacks are the same ones an administrator uses. The value appears only
+    with the arguments, that is, once both items are rolled out together.

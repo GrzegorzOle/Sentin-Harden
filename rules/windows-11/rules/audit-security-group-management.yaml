@@ -1,0 +1,157 @@
+id: win11-audit-security-group-management
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Account Management
+  title:
+    pl: Inspekcja zarządzania grupami zabezpieczeń
+    en: Audit security group management
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dopisanie konta do grupy administratorów jest najprostszym sposobem na
+    utrzymanie dostępu po włamaniu. Nie wymaga żadnego narzędzia, nie zostawia
+    pliku na dysku i przeżywa zmianę hasła, zamknięcie luki i ponowne
+    uruchomienie maszyny.
+
+    Rejestrowanie zmian w grupach zamienia tę operację w zdarzenie z datą,
+    nazwą konta i wskazaniem, kto jej dokonał. To jedno z niewielu miejsc,
+    w których widać samo utrwalenie dostępu, a nie dopiero jego skutki — i jedno
+    z tych, w których zapis ma wartość także poza incydentem, bo pokazuje, jak
+    uprawnienia rosły w czasie.
+  en: |
+    Adding an account to the administrators group is the simplest way to keep
+    access after a break-in. It needs no tool, leaves no file on disk and
+    survives a password change, a patched hole and a restart of the machine.
+
+    Recording group changes turns that operation into an event with a date, an
+    account name and an indication of who performed it. This is one of the few
+    places where the act of establishing persistence is visible rather than just
+    its consequences - and one where the record has value outside an incident
+    too, because it shows how rights grew over time.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma wpływu na pracę maszyny i jest niewidoczna dla użytkownika.
+    Zdarzenie powstaje tylko przy zmianie składu grupy, więc na zwykłej stacji
+    roboczej mówimy o pojedynczych wpisach w skali miesięcy.
+
+    Jedyny przypadek, w którym objętość rośnie zauważalnie, to maszyna
+    z oprogramowaniem zarządzającym, które regularnie porządkuje skład grup
+    lokalnych. Wtedy wpisów jest tyle, ile przebiegów tego narzędzia.
+  en: |
+    The change has no effect on how the machine works and is invisible to the
+    user. An event arises only when a group's membership changes, so on an
+    ordinary workstation we are talking about single entries over months.
+
+    The one case where the volume grows noticeably is a machine with management
+    software that regularly reconciles local group membership. Then there are as
+    many entries as that tool has runs.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta przy każdej zmianie składu grupy lokalnej
+      - Oprogramowanie zarządzające porządkujące grupy cyklicznie doda wpis przy każdym przebiegu
+    en:
+      - The security log grows at each change of a local group's membership
+      - Management software reconciling groups on a schedule adds an entry at every run
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo, a narzędzie zarządzające porządkuje grupy co kilka minut
+    en:
+      - Events from this machine are billed by volume and a management tool reconciles groups every few minutes
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9237-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9237-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9237-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9237-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9237-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-security-group-management
+
+notes:
+  pl: |
+    Na stacji roboczej chodzi o grupy lokalne, a wśród nich w praktyce o jedną:
+    administratorów. Reszta zmienia się rzadko i rzadko ma znaczenie, ale
+    inspekcja obejmuje wszystkie, bo rozróżnianie ich w polityce nie jest
+    możliwe.
+
+    Punkt zestawia się z wyłączeniem wbudowanego konta administratora i blokadą
+    logowania kontem Microsoft: tamte ograniczają drogi wejścia, ten pokazuje,
+    czy ktoś otworzył sobie nową.
+  en: |
+    On a workstation this means local groups, and among them in practice one:
+    the administrators. The rest change rarely and rarely matter, but the
+    auditing covers them all, because the policy offers no way to tell them
+    apart.
+
+    The item pairs with disabling the built-in administrator account and
+    blocking sign-in with a Microsoft account: those narrow the ways in, this
+    one shows whether somebody has opened a new one.

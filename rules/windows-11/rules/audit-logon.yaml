@@ -1,0 +1,159 @@
+id: win11-audit-logon
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja logowania
+    en: Audit logon
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zdarzenie logowania jest podstawowym budulcem każdego dochodzenia. Mówi,
+    kto wszedł na maszynę, o której godzinie, z jakiego adresu i w jaki sposób —
+    lokalnie, przez sieć, przez pulpit zdalny czy przez usługę. Z tych danych
+    odtwarza się przebieg zdarzeń; bez nich zostaje domysł.
+
+    Niepowodzenia pokazują próby dobrania się do konta, powodzenia pokazują
+    skutek. Szczególnie wartościowe jest połączenie jednego z drugim: seria
+    niepowodzeń zakończona powodzeniem to najczytelniejszy obraz udanego
+    zgadywania hasła, jaki daje się z maszyny wydobyć.
+  en: |
+    The sign-in event is the basic material of any investigation. It says who
+    got onto the machine, at what hour, from which address and by what means -
+    locally, over the network, through Remote Desktop or as a service. The
+    course of events is reconstructed from that data; without it, guesswork
+    remains.
+
+    Failures show attempts on an account, successes show the outcome. The
+    combination of the two is particularly valuable: a run of failures ending in
+    a success is the clearest picture of successful password guessing that can
+    be extracted from a machine.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać, ale to najbardziej objętościowa pozycja z całej
+    rodziny inspekcji. Na maszynie w sieci, z której korzystają udziały i
+    usługi, zdarzeń logowania przybywa nieustannie.
+
+    Wdrożenie bez powiększenia dziennika zabezpieczeń jest w praktyce
+    pozorowane: zapis powstaje, ale obraca się szybciej, niż ktokolwiek zdąży po
+    niego sięgnąć. Te dwa punkty wdraża się razem albo wcale.
+  en: |
+    Nothing stops working, but this is the highest-volume entry of the whole
+    audit family. On a networked machine, with shares and services in use,
+    sign-in events accumulate continuously.
+
+    Rolling it out without enlarging the security log is in practice a pretence:
+    the record is produced, but turns over faster than anyone can reach for it.
+    These two items are rolled out together or not at all.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń zapełnia się wyraźnie szybciej niż przed zmianą
+      - Systemy odbierające zdarzenia dostaną najliczniejszy strumień właśnie z tej podkategorii
+      - Przeglądanie dziennika ręcznie staje się uciążliwe bez filtrowania po typie zdarzenia
+    en:
+      - The security log fills markedly faster than before the change
+      - Event collection systems receive their largest stream from this very subcategory
+      - Browsing the log by hand becomes tiresome without filtering by event type
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zabezpieczeń ma domyślny rozmiar i nie ma go jak powiększyć
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym
+    en:
+      - The security log is at its default size and cannot be enlarged
+      - Events from this machine are billed by volume in the collection system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9215-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9215-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9215-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9215-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9215-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-logon
+
+notes:
+  pl: |
+    Podkategoria dotyczy wyłącznie logowań interaktywnych i sieciowych na tej
+    maszynie. Sprawdzanie poświadczeń kont lokalnych jest osobną pozycją i widać
+    tam próby, które nigdy nie doszły do etapu logowania — obie ocenia się razem.
+
+    Ustawienie działa niezależnie od nadrzędności szczegółowych zasad inspekcji,
+    ale bez niej może zostać nadpisane przez starszą konfigurację kategorii.
+    Punkt o nadrzędności jest warunkiem trwałości tej zmiany.
+  en: |
+    The subcategory covers only interactive and network sign-ins on this
+    machine. Credential validation for local accounts is a separate entry and
+    shows attempts that never reached the sign-in stage - the two are assessed
+    together.
+
+    The setting works regardless of the detailed audit policy precedence, but
+    without it the change can be overwritten by an older category-level
+    configuration. The precedence item is the condition of this change lasting.

@@ -1,0 +1,155 @@
+id: win11-audit-special-logon
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja logowania specjalnego
+    en: Audit special logon
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje jedno konkretne zdarzenie: zalogowanie się konta
+    posiadającego uprawnienia administracyjne. W całym strumieniu logowań to
+    właśnie ta garstka wpisów interesuje osobę badającą incydent, bo tylko one
+    dają możliwość zmiany czegokolwiek w systemie.
+
+    Wartość jest wprost proporcjonalna do rzadkości. Na maszynie, na której
+    administrator loguje się raz w tygodniu, każdy wpis z tej podkategorii
+    odpowiada realnemu zdarzeniu godnemu sprawdzenia — a logowanie
+    administracyjne o trzeciej w nocy widać natychmiast, bez przeglądania
+    tysięcy zwykłych logowań.
+  en: |
+    The subcategory records one specific event: the sign-in of an account
+    holding administrative rights. Across the whole stream of sign-ins, it is
+    that handful of entries an incident investigator cares about, because only
+    they carry the ability to change anything on the system.
+
+    The value is directly proportional to the rarity. On a machine where an
+    administrator signs in once a week, every entry in this subcategory
+    corresponds to a real event worth checking - and an administrative sign-in
+    at three in the morning stands out immediately, without trawling through
+    thousands of ordinary sign-ins.
+
+disruption_description:
+  pl: |
+    Wdrożenie nie zmienia niczego w pracy maszyny i nie jest odczuwalne dla
+    użytkownika. W odróżnieniu od inspekcji zwykłych logowań nie generuje też
+    zauważalnej objętości — zdarzenie powstaje tylko przy logowaniu konta
+    z uprawnieniami administracyjnymi.
+
+    To najlepszy stosunek zysku do kosztu w całej rodzinie inspekcji i jedyny
+    punkt z tej grupy, który mieści się w klasie bez uciążliwości.
+  en: |
+    The rollout changes nothing in how the machine works and is not perceptible
+    to the user. Unlike auditing of ordinary sign-ins, it also produces no
+    noticeable volume - an event arises only when an account with administrative
+    rights signs in.
+
+    It has the best benefit-to-cost ratio in the entire audit family and is the
+    only item of that group falling into the no-disruption class.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdym logowaniu konta administracyjnego
+    en:
+      - The security log grows by one entry at each sign-in of an administrative account
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym
+    en:
+      - Events from this machine are billed by volume in the collection system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE921B-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE921B-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE921B-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE921B-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE921B-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-special-logon
+
+notes:
+  pl: |
+    Punkt wymaga wyłącznie rejestrowania powodzeń, więc sprawdzenie uznaje
+    zarówno samo powodzenie, jak i komplet powodzeń z niepowodzeniami.
+    Rejestrowanie niepowodzeń nie jest tu błędem — nie miałoby jednak sensu,
+    bo nieudane logowanie nie zdąży otrzymać uprawnień administracyjnych.
+
+    Wycofanie przywraca dokładnie tę parę ustawień, którą zastano, a nie sam
+    stan wyłączony — jeśli ktoś wcześniej włączył także niepowodzenia, wróci to
+    razem z resztą.
+  en: |
+    The item requires success recording only, so the check accepts both success
+    alone and the full pair of success with failure. Recording failures is not
+    an error here - it simply has no point, because a failed sign-in never gets
+    as far as holding administrative rights.
+
+    The rollback restores exactly the pair of settings that was found, not
+    merely the disabled state - if somebody had also enabled failures, that
+    returns along with the rest.

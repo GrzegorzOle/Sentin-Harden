@@ -1,0 +1,249 @@
+id: win11-device-install-deny-dma-capable-ids
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Installation > Device Installation Restrictions
+  title:
+    pl: Zakaz instalacji kontrolerów sięgających wprost do pamięci
+    en: Installation of controllers reaching straight into memory forbidden
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Poprzedni punkt każe systemowi nie dopuszczać do pracy urządzeń, których
+    dostępu do pamięci nie da się ograniczyć. Ten idzie dalej i zabrania
+    instalacji samych kontrolerów, przez które taki dostęp w ogóle prowadzi —
+    portów obsługujących starsze złącze szeregowe dużej przepustowości oraz
+    kontrolerów złącza uniwersalnego nowej generacji.
+
+    Różnica jest zasadnicza. Tamten punkt działa przy podłączeniu urządzenia
+    i wymaga, żeby sprzęt maszyny umiał ograniczyć dostęp do pamięci; ten
+    wyłącza całe wejście niezależnie od tego, co maszyna potrafi. Jest więc
+    skuteczny także na sprzęcie starszym, na którym tamten nie robi nic.
+
+    Urządzenia adresujemy po klasie kontrolera, nie po modelu. Zakaz obejmuje
+    dzięki temu każdy sprzęt tego rodzaju, także taki, którego nikt jeszcze nie
+    wyprodukował.
+  en: |
+    The previous item tells the system not to let devices work when their access
+    to memory cannot be constrained. This one goes further and forbids installing
+    the controllers through which such access runs at all - ports supporting the
+    older high-throughput serial connector and controllers of the new-generation
+    universal connector.
+
+    The difference is fundamental. That item acts when a device is attached and
+    requires the machine's hardware to be able to constrain memory access; this
+    one switches the whole entrance off regardless of what the machine can do. It
+    is therefore effective on older hardware too, where the other does nothing.
+
+    Devices are addressed by controller class rather than by model. The
+    prohibition thus covers every device of the kind, including hardware nobody
+    has manufactured yet.
+
+disruption_description:
+  pl: |
+    To jest zmiana ostrzejsza niż poprzednia i tak trzeba ją czytać. Tam
+    urządzenie zgodne ze sprzętową ochroną pamięci działało dalej; tu nie działa
+    żadne, bo zakaz dotyczy portu, a nie tego, co się do niego podłącza.
+
+    Przestaje działać wszystko, co idzie przez złącze uniwersalne nowej
+    generacji: stacje dokujące, monitory podłączane jednym kablem razem z siecią
+    i zasilaniem, obudowy na karty graficzne, szybkie macierze dyskowe. Na
+    laptopie, na którym ten port jest jedynym złączem rozszerzeń, oznacza to
+    pracę na samym ekranie wbudowanym.
+
+    Ustawienie działa też wstecz, więc obejmuje sprzęt już zainstalowany —
+    po ponownym uruchomieniu maszyny urządzenie, które dotąd pracowało, przestaje
+    być widziane. To właśnie odróżnia ten punkt od zwykłego zakazu instalacji
+    i to jest jego najczęstsza niespodzianka.
+
+    Ślad zostaje w dzienniku instalacji sterowników, ale użytkownik zobaczy tylko
+    to, że urządzenie zniknęło.
+  en: |
+    This is a sharper change than the previous one and has to be read that way.
+    There, a device compatible with hardware memory protection kept working; here
+    none does, because the prohibition is on the port rather than on what is
+    plugged into it.
+
+    Everything running through the new-generation universal connector stops
+    working: docking stations, monitors connected by a single cable together with
+    network and power, external graphics enclosures, fast disk arrays. On a laptop
+    where that port is the only expansion connector, this means working on the
+    built-in screen alone.
+
+    The setting also applies retroactively, so it takes in already installed
+    hardware - after a restart a device that had been working stops being seen.
+    That is what sets this item apart from an ordinary installation ban, and it is
+    its commonest surprise.
+
+    A trace remains in the driver installation log, but the user will see only
+    that the device has disappeared.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - removable-media
+  what_breaks:
+    pl:
+      - Stacje dokujące i monitory podłączane jednym kablem przestaną działać
+      - Obudowy na karty graficzne i szybkie macierze dyskowe nie zostaną zainstalowane
+      - Sprzęt już zainstalowany przestaje być widziany po ponownym uruchomieniu, bo zakaz działa wstecz
+    en:
+      - Docking stations and single-cable monitors stop working
+      - External graphics enclosures and fast disk arrays are not installed
+      - Already installed hardware stops being seen after a restart, because the ban applies retroactively
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko pracuje przez stację dokującą albo monitor podłączany jednym kablem
+      - Port złącza uniwersalnego nowej generacji jest na tej maszynie jedynym złączem rozszerzeń
+      - Używane są zewnętrzne obudowy na karty graficzne albo szybkie macierze dyskowe
+    en:
+      - The station works through a docking station or a single-cable monitor
+      - The new-generation universal connector is this machine's only expansion port
+      - External graphics enclosures or fast disk arrays are in use
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $deny = $item.DenyDeviceIDs
+        $retroactive = $item.DenyDeviceIDsRetroactive
+        $listKey = Join-Path $path 'DenyDeviceIDs'
+        $listed = @()
+        if (Test-Path -Path $listKey) {
+          $listed = @(
+            (Get-ItemProperty -Path $listKey -ErrorAction Stop).PSObject.Properties |
+              Where-Object { $_.Name -notlike 'PS*' } |
+              ForEach-Object { ([string]$_.Value).Trim().ToUpperInvariant() }
+          )
+        }
+        $absent = @(@('PCI\CC_0C0010', 'PCI\CC_0C0A') | Where-Object { $listed -notcontains $_ })
+        if ($null -eq $deny -or $null -eq $retroactive) { 'MISSING' }
+        elseif ([int]$deny -eq 1 -and [int]$retroactive -eq 1 -and $absent.Count -eq 0) { 'DENIED_RETROACTIVELY' }
+        else { 'DENY=' + $deny + ' RETROACTIVE=' + $retroactive + ' ABSENT=' + ($absent -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: DENIED_RETROACTIVELY
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    $listKey = Join-Path $path 'DenyDeviceIDs'
+    $entries = @()
+    if (Test-Path -Path $listKey) {
+      $entries = @(
+        (Get-ItemProperty -Path $listKey -ErrorAction SilentlyContinue).PSObject.Properties |
+          Where-Object { $_.Name -notlike 'PS*' } |
+          ForEach-Object { [pscustomobject]@{ name = $_.Name; value = [string]$_.Value } }
+      )
+    }
+    [pscustomobject]@{
+      path          = $path
+      key_existed   = (Test-Path -Path $path)
+      deny          = $item.DenyDeviceIDs
+      deny_existed  = ($null -ne $item.DenyDeviceIDs)
+      retro         = $item.DenyDeviceIDsRetroactive
+      retro_existed = ($null -ne $item.DenyDeviceIDsRetroactive)
+      list_key      = $listKey
+      list_existed  = (Test-Path -Path $listKey)
+      entries       = $entries
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DenyDeviceIDs' -Value 1 -Type DWord
+    Set-ItemProperty -Path $path -Name 'DenyDeviceIDsRetroactive' -Value 1 -Type DWord
+    $listKey = Join-Path $path 'DenyDeviceIDs'
+    if (-not (Test-Path -Path $listKey)) { New-Item -Path $listKey -Force | Out-Null }
+    # Entries put here by somebody else guard against something this rule does not
+    # know about, so the list is added to and never replaced.
+    $taken = @{}
+    $present = @()
+    foreach ($property in (Get-ItemProperty -Path $listKey -ErrorAction SilentlyContinue).PSObject.Properties) {
+      if ($property.Name -notlike 'PS*') {
+        $taken[$property.Name] = $true
+        $present += ([string]$property.Value).Trim().ToUpperInvariant()
+      }
+    }
+    $index = 1
+    foreach ($id in @('PCI\CC_0C0010', 'PCI\CC_0C0A')) {
+      if ($present -notcontains $id) {
+        while ($taken.ContainsKey([string]$index)) { $index++ }
+        New-ItemProperty -Path $listKey -Name ([string]$index) -Value $id -PropertyType String -Force | Out-Null
+        $taken[[string]$index] = $true
+      }
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.deny_existed) {
+      Set-ItemProperty -Path $b.path -Name 'DenyDeviceIDs' -Value $b.deny -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'DenyDeviceIDs' -ErrorAction SilentlyContinue
+    }
+    if ($b.retro_existed) {
+      Set-ItemProperty -Path $b.path -Name 'DenyDeviceIDsRetroactive' -Value $b.retro -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'DenyDeviceIDsRetroactive' -ErrorAction SilentlyContinue
+    }
+    Remove-Item -Path $b.list_key -Recurse -Force -ErrorAction SilentlyContinue
+    if ($b.list_existed) {
+      New-Item -Path $b.list_key -Force | Out-Null
+      foreach ($entry in @($b.entries)) {
+        New-ItemProperty -Path $b.list_key -Name $entry.name -Value $entry.value -PropertyType String -Force | Out-Null
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/manage-device-installation-with-group-policy
+
+notes:
+  pl: |
+    Lista jest uzupełniana, nigdy nadpisywana. Wpis dołożony tu wcześniej przez
+    kogoś innego broni przed czymś, o czym ta reguła nie wie, więc jego usunięcie
+    byłoby cichym zdjęciem cudzego zabezpieczenia. Wycofanie odtwarza listę
+    dokładnie w postaci z kopii, razem z numeracją wpisów.
+
+    Ten punkt i ograniczenie widoczności urządzeń sięgających do pamięci
+    rozwiązują ten sam problem dwiema drogami i nie zastępują się nawzajem.
+    Na sprzęcie z ochroną pamięci łagodniejszy wystarcza i kosztuje znacznie
+    mniej; na starszym tylko ten działa. Raport ma pokazywać oba, żeby wybór
+    należał do użytkownika.
+  en: |
+    The list is added to, never overwritten. An entry put here earlier by somebody
+    else guards against something this rule does not know about, so removing it
+    would quietly lift another person's protection. Rollback restores the list
+    exactly as the backup holds it, entry numbering included.
+
+    This item and the restriction on enumerating memory-reaching devices solve the
+    same problem by two routes and do not replace each other. On hardware with
+    memory protection the milder one suffices and costs far less; on older
+    hardware only this one works. The report should show both, so that the choice
+    belongs to the user.

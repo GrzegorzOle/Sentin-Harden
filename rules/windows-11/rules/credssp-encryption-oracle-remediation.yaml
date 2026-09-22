@@ -1,0 +1,176 @@
+id: win11-credssp-encryption-oracle-remediation
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Credentials Delegation
+  title:
+    pl: Odmowa połączenia z serwerami bez poprawki mechanizmu delegowania poświadczeń
+    en: Connections refused to servers without the credential delegation fix
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mechanizm, którym pulpit zdalny przekazuje poświadczenia na drugą stronę,
+    miał wadę pozwalającą komuś stojącemu pośrodku połączenia doprowadzić do
+    wykonania poleceń na serwerze poświadczeniami łączącego się użytkownika.
+    Poprawka istnieje po obu stronach, a to ustawienie rozstrzyga, co zrobić,
+    gdy druga strona jej nie ma.
+
+    Wartości są trzy i różnią się tym, komu ufamy. Najłagodniejsza pozwala
+    połączyć się ze wszystkim; pośrednia tylko ostrzega; wymagana odmawia
+    połączenia z serwerem bez poprawki. Odmowa jest jedynym wariantem, który
+    faktycznie zamyka drogę — przy pozostałych podatny serwer nadal przyjmuje
+    poświadczenia, a my jedynie wiemy, że tak się dzieje.
+  en: |
+    The mechanism by which remote desktop passes credentials to the other side
+    had a flaw allowing somebody in the middle of a connection to bring about the
+    execution of commands on the server using the connecting user's credentials.
+    A fix exists on both sides, and this setting decides what to do when the other
+    side lacks it.
+
+    There are three values and they differ in whom we trust. The mildest allows
+    connecting to anything; the middle one only warns; the required one refuses to
+    connect to a server without the fix. Refusal is the only variant that actually
+    closes the route - under the others a vulnerable server still accepts
+    credentials, and all we gain is knowing that it happens.
+
+disruption_description:
+  pl: |
+    Skutek jest ostry i natychmiastowy: połączenie pulpitu zdalnego z maszyną,
+    która nie ma poprawki, zostaje zerwane z komunikatem o błędzie
+    uwierzytelniania. Nie ma tu stanu pośredniego ani możliwości przejścia dalej
+    na własną odpowiedzialność.
+
+    Rozstrzygające pytanie brzmi: czy w sieci stoi coś niezałatanego, do czego
+    ktoś się łączy. Poprawka jest stara, więc systemy aktualizowane normalnie
+    mają ją od dawna — problem dotyczy maszyn celowo zatrzymanych na starej
+    wersji, a takie zwykle istnieją: serwer pod aplikację, której nie wolno
+    ruszać, stanowisko sterujące urządzeniem, maszyna wirtualna trzymana do
+    celów archiwalnych.
+
+    Komunikat o błędzie nie mówi wprost, że przyczyną jest ta polityka, więc
+    zgłoszenie brzmi „nie mogę się połączyć z serwerem", a nie „polityka
+    zablokowała połączenie". Warto wiedzieć, gdzie tego szukać, zanim się
+    zdarzy.
+  en: |
+    The effect is sharp and immediate: a remote desktop connection to a machine
+    without the fix is dropped with an authentication error. There is no
+    intermediate state and no option to proceed at one's own risk.
+
+    The deciding question is whether anything unpatched stands in the network that
+    somebody connects to. The fix is old, so normally updated systems have had it
+    for a long time - the problem concerns machines deliberately held at an old
+    version, and such usually exist: a server for an application that must not be
+    touched, a station driving a piece of equipment, a virtual machine kept for
+    archival purposes.
+
+    The error message does not say outright that this policy is the cause, so the
+    report reads "I cannot connect to the server" rather than "policy blocked the
+    connection". Worth knowing where to look before it happens.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Połączenie pulpitu zdalnego z maszyną bez poprawki zostanie zerwane
+      - Dostęp do systemów celowo zatrzymanych na starej wersji przestanie działać
+      - Komunikat mówi o błędzie uwierzytelniania i nie wskazuje polityki jako przyczyny
+    en:
+      - A remote desktop connection to a machine without the fix is dropped
+      - Access to systems deliberately held at an old version stops working
+      - The message speaks of an authentication error and does not name policy as the cause
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - W sieci stoją maszyny celowo nieaktualizowane, do których ktoś łączy się pulpitem zdalnym
+      - Nie wiadomo, czy wszystkie serwery docelowe mają tę poprawkę
+    en:
+      - The network holds deliberately unpatched machines that somebody reaches by remote desktop
+      - It is not known whether every target server has this fix
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+      $name = 'AllowEncryptionOracle'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+    $name = 'AllowEncryptionOracle'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowEncryptionOracle' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/credentials-protection-and-management/credential-guard-considerations
+
+notes:
+  pl: |
+    Wartość zerowa oznacza tu wariant najostrzejszy, a nie wyłączenie ochrony.
+    Liczba rośnie wraz z pobłażliwością, więc odczytana bez kontekstu sugeruje
+    coś przeciwnego niż stan faktyczny — dlatego tytuł mówi o skutku, a nie
+    o nazwie ustawienia.
+
+    Punkt dotyczy tej maszyny jako strony łączącej się. Serwer, do którego się
+    łączymy, ma własne ustawienie o tej samej nazwie i własne skutki; spełnienie
+    tego punktu nie mówi nic o tamtym.
+  en: |
+    A value of zero here is the strictest variant, not protection being off. The
+    number rises with leniency, so read without context it suggests the opposite
+    of the actual state - which is why the title speaks of the effect rather than
+    of the setting's name.
+
+    The item concerns this machine as the connecting side. The server we connect
+    to has its own setting of the same name and its own consequences; satisfying
+    this item says nothing about that one.

@@ -1,0 +1,160 @@
+id: win11-device-metadata-retrieval-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Installation
+  title:
+    pl: Blokada pobierania opisów urządzeń z internetu
+    en: Device descriptions not fetched from the internet
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Po podłączeniu urządzenia system sięga do usługi producenta po jego opis:
+    ładną nazwę, ikonę, zdjęcie, odnośniki do oprogramowania towarzyszącego.
+    Służy to wyłącznie wyglądowi — urządzenie działa tak samo, niezależnie od
+    tego, czy opis zostanie pobrany.
+
+    Wartość tego punktu nie leży w zamknięciu drogi ataku, tylko w tym, co
+    przestaje wychodzić na zewnątrz. Każde podłączenie urządzenia jest dziś
+    zapytaniem wysyłanym w świat i zawiera identyfikator sprzętu. Zbiór takich
+    zapytań z jednej maszyny mówi, co do niej podłączano i kiedy — a to jest
+    informacja o stanowisku, nie o urządzeniu.
+  en: |
+    When a device is attached the system reaches out to the vendor's service for
+    its description: a pretty name, an icon, a photo, links to accompanying
+    software. This serves appearance only - the device works the same whether or
+    not the description is fetched.
+
+    This item's value lies not in closing an attack route but in what stops going
+    out. Every device attachment is today a query sent into the world, and it
+    carries the hardware identifier. The collection of such queries from one
+    machine says what was plugged into it and when - and that is information about
+    the workstation, not about the device.
+
+disruption_description:
+  pl: |
+    Nic, co dotyczy działania. Urządzenia instalują się, sterowniki wgrywają się
+    i wszystko pracuje tak samo — zmienia się wyłącznie to, jak rzecz wygląda
+    na liście urządzeń.
+
+    Konkretnie: zamiast nazwy handlowej i zdjęcia pojawia się nazwa techniczna
+    z opisu sterownika i ikona rodzajowa. Drukarka nazwie się modelem
+    ze sterownika zamiast pełną nazwą z katalogu producenta, a zamiast jej
+    zdjęcia będzie zarys drukarki.
+
+    Różnica jest odczuwalna głównie dla osoby, która szuka swojego urządzenia
+    wśród kilku podobnych — i to jedyny koszt tego punktu.
+  en: |
+    Nothing that concerns operation. Devices install, drivers load and everything
+    works the same - what changes is only how a thing looks in the device list.
+
+    Specifically: instead of a trade name and a photo there is a technical name
+    from the driver's description and a generic icon. A printer will be named by
+    the model from its driver rather than by its full name from the vendor's
+    catalogue, and instead of its photo there will be an outline of a printer.
+
+    The difference is felt mainly by somebody looking for their device among
+    several similar ones - and that is this item's only cost.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - user-interface
+  what_breaks:
+    pl:
+      - Urządzenia pokazują się z nazwą techniczną i ikoną rodzajową zamiast nazwy handlowej i zdjęcia
+      - Odnalezienie właściwego urządzenia wśród kilku podobnych staje się trudniejsze
+    en:
+      - Devices appear with a technical name and a generic icon instead of a trade name and a photo
+      - Finding the right device among several similar ones becomes harder
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Do stanowiska podłączanych jest wiele podobnych urządzeń rozróżnianych po nazwie handlowej
+    en:
+      - Many similar devices distinguished by trade name are attached to the station
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata'
+      $name = 'PreventDeviceMetadataFromNetwork'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata'
+    $name = 'PreventDeviceMetadataFromNetwork'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'PreventDeviceMetadataFromNetwork' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/drivers/install/device-metadata-retrieval-client
+
+notes:
+  pl: |
+    Kategoria niska jest tu szczera: punkt nie odbiera napastnikowi żadnej drogi.
+    Ogranicza wyciek informacji o tym, co dzieje się na stanowisku, i tyle —
+    a to należy do porządku i zgodności, nie do odpierania zagrożeń.
+
+    Punkt ma sens jako część szerszego ograniczania rozmów z usługami
+    zewnętrznymi, nie osobno. Wdrażany sam, jest kosztem wyglądu bez
+    odpowiadającego mu zysku.
+  en: |
+    The low category here is honest: the item takes no route away from an
+    attacker. It limits the leak of information about what happens at the station,
+    and no more - which belongs to housekeeping and compliance rather than to
+    fending off threats.
+
+    The item makes sense as part of a wider restriction on talking to outside
+    services, not on its own. Applied alone it is a cost in appearance with no
+    matching gain.

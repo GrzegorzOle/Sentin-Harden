@@ -1,0 +1,237 @@
+id: win11-device-install-deny-sbp2-class
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Installation > Device Installation Restrictions
+  title:
+    pl: Zakaz instalacji sterowników pamięci masowej na starszym złączu szeregowym
+    en: Storage drivers on the older serial connector forbidden
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Poprzedni punkt zabrania instalacji samych kontrolerów. Ten zabrania
+    instalacji sterowników pamięci masowej, które przez takie złącze pracują —
+    czyli zamyka drogę, gdy kontroler jest już w systemie, bo przyszedł razem
+    z płytą główną i nie da się go wyjąć.
+
+    Znaczenie bierze się stąd, że dysk podłączony tym złączem jest z punktu
+    widzenia systemu urządzeniem zaufanym, sięgającym do pamięci bez pośrednika.
+    Urządzenie udające dysk wykorzystuje to samo uprawnienie i nie musi być
+    dyskiem — wystarczy, że się za niego poda.
+
+    Sterowniki adresujemy po klasie, nie po modelu, więc zakaz obejmuje także
+    sprzęt, którego nikt jeszcze nie wyprodukował.
+  en: |
+    The previous item forbids installing the controllers themselves. This one
+    forbids installing the storage drivers that work through such a connector -
+    closing the route when the controller is already in the system because it came
+    with the motherboard and cannot be removed.
+
+    Its significance comes from a disk attached by this connector being, as far as
+    the system is concerned, a trusted device reaching into memory with no
+    intermediary. A device pretending to be a disk uses the same privilege and
+    need not be a disk - it only has to pass for one.
+
+    Drivers are addressed by class rather than by model, so the ban takes in
+    hardware nobody has manufactured yet.
+
+disruption_description:
+  pl: |
+    Zakres jest tu wyraźnie węższy niż przy zakazie instalacji kontrolerów
+    i dlatego klasa uciążliwości jest niższa. Ustawienie dotyczy wyłącznie
+    pamięci masowej na tym jednym złączu — kamery, interfejsy dźwiękowe i inne
+    urządzenia korzystające z niego działają bez zmian.
+
+    Zaboli tam, gdzie takie dyski są jeszcze w użyciu. Najczęściej to archiwa
+    sprzed lat, dyski przenośne działów montażu obrazu i dźwięku oraz nośniki
+    dołączane do starszej aparatury pomiarowej. W tych miejscach sprzęt bywa
+    zupełnie sprawny i wymieniany tylko wtedy, gdy przestaje działać.
+
+    Objaw jest taki jak zawsze przy zakazie instalacji: dysk podłączony nie
+    zgłasza błędu, po prostu się nie pojawia. Dane na nim nie są naruszone
+    i wracają po wycofaniu zmiany.
+  en: |
+    The scope here is markedly narrower than in the ban on installing controllers,
+    which is why the disruption class is lower. The setting concerns storage on
+    this one connector only - cameras, audio interfaces and other devices using it
+    work unchanged.
+
+    It hurts where such disks are still in use. Most often those are archives from
+    years back, portable disks in video and audio editing departments, and media
+    that come with older measuring equipment. In those places the hardware is
+    often perfectly sound and gets replaced only when it stops working.
+
+    The symptom is the usual one for an installation ban: an attached disk reports
+    no error, it simply does not appear. The data on it is untouched and comes
+    back once the change is rolled back.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - removable-media
+  what_breaks:
+    pl:
+      - Dyski przenośne podłączane starszym złączem szeregowym przestaną się pojawiać w systemie
+      - Archiwa trzymane na takich nośnikach staną się niedostępne do czasu wycofania zmiany
+      - Dysk nie zgłasza błędu, tylko się nie pojawia, więc objaw wygląda na uszkodzenie nośnika
+    en:
+      - Portable disks attached by the older serial connector stop appearing in the system
+      - Archives held on such media become unreachable until the change is rolled back
+      - The disk reports no error but simply does not appear, so the symptom looks like media failure
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - W użyciu są dyski przenośne podłączane starszym złączem szeregowym
+      - Archiwa albo materiały robocze trzymane są na nośnikach tego rodzaju
+    en:
+      - Portable disks attached by the older serial connector are in use
+      - Archives or working material are held on media of this kind
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $deny = $item.DenyDeviceClasses
+        $retroactive = $item.DenyDeviceClassesRetroactive
+        $listKey = Join-Path $path 'DenyDeviceClasses'
+        $listed = @()
+        if (Test-Path -Path $listKey) {
+          $listed = @(
+            (Get-ItemProperty -Path $listKey -ErrorAction Stop).PSObject.Properties |
+              Where-Object { $_.Name -notlike 'PS*' } |
+              ForEach-Object { ([string]$_.Value).Trim().ToLowerInvariant() }
+          )
+        }
+        $absent = @(@('{d48179be-ec20-11d1-b6b8-00c04fa372a7}') | Where-Object { $listed -notcontains $_ })
+        if ($null -eq $deny -or $null -eq $retroactive) { 'MISSING' }
+        elseif ([int]$deny -eq 1 -and [int]$retroactive -eq 1 -and $absent.Count -eq 0) { 'DENIED_RETROACTIVELY' }
+        else { 'DENY=' + $deny + ' RETROACTIVE=' + $retroactive + ' ABSENT=' + ($absent -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: DENIED_RETROACTIVELY
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    $listKey = Join-Path $path 'DenyDeviceClasses'
+    $entries = @()
+    if (Test-Path -Path $listKey) {
+      $entries = @(
+        (Get-ItemProperty -Path $listKey -ErrorAction SilentlyContinue).PSObject.Properties |
+          Where-Object { $_.Name -notlike 'PS*' } |
+          ForEach-Object { [pscustomobject]@{ name = $_.Name; value = [string]$_.Value } }
+      )
+    }
+    [pscustomobject]@{
+      path          = $path
+      key_existed   = (Test-Path -Path $path)
+      deny          = $item.DenyDeviceClasses
+      deny_existed  = ($null -ne $item.DenyDeviceClasses)
+      retro         = $item.DenyDeviceClassesRetroactive
+      retro_existed = ($null -ne $item.DenyDeviceClassesRetroactive)
+      list_key      = $listKey
+      list_existed  = (Test-Path -Path $listKey)
+      entries       = $entries
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DenyDeviceClasses' -Value 1 -Type DWord
+    Set-ItemProperty -Path $path -Name 'DenyDeviceClassesRetroactive' -Value 1 -Type DWord
+    $listKey = Join-Path $path 'DenyDeviceClasses'
+    if (-not (Test-Path -Path $listKey)) { New-Item -Path $listKey -Force | Out-Null }
+    # Classes put here by somebody else guard against something this rule does not
+    # know about, so the list is added to and never replaced.
+    $taken = @{}
+    $present = @()
+    foreach ($property in (Get-ItemProperty -Path $listKey -ErrorAction SilentlyContinue).PSObject.Properties) {
+      if ($property.Name -notlike 'PS*') {
+        $taken[$property.Name] = $true
+        $present += ([string]$property.Value).Trim().ToLowerInvariant()
+      }
+    }
+    $index = 1
+    foreach ($class in @('{d48179be-ec20-11d1-b6b8-00c04fa372a7}')) {
+      if ($present -notcontains $class) {
+        while ($taken.ContainsKey([string]$index)) { $index++ }
+        New-ItemProperty -Path $listKey -Name ([string]$index) -Value $class -PropertyType String -Force | Out-Null
+        $taken[[string]$index] = $true
+      }
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.deny_existed) {
+      Set-ItemProperty -Path $b.path -Name 'DenyDeviceClasses' -Value $b.deny -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'DenyDeviceClasses' -ErrorAction SilentlyContinue
+    }
+    if ($b.retro_existed) {
+      Set-ItemProperty -Path $b.path -Name 'DenyDeviceClassesRetroactive' -Value $b.retro -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'DenyDeviceClassesRetroactive' -ErrorAction SilentlyContinue
+    }
+    Remove-Item -Path $b.list_key -Recurse -Force -ErrorAction SilentlyContinue
+    if ($b.list_existed) {
+      New-Item -Path $b.list_key -Force | Out-Null
+      foreach ($entry in @($b.entries)) {
+        New-ItemProperty -Path $b.list_key -Name $entry.name -Value $entry.value -PropertyType String -Force | Out-Null
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/manage-device-installation-with-group-policy
+
+notes:
+  pl: |
+    Punkt wskazuje jedną klasę sterowników — pamięć masową na tym złączu.
+    Benchmark bywa czytany tak, jakby wymagał zablokowania całej rodziny klas
+    związanych z tym złączem; tutaj trzymamy się klasy pamięci masowej, bo to
+    ona daje urządzeniu dostęp do pamięci maszyny, a pozostałe nie.
+
+    Lista jest uzupełniana, nie nadpisywana, tak samo jak przy zakazie instalacji
+    kontrolerów. Wycofanie odtwarza ją dokładnie w postaci z kopii.
+
+    Gdy klasa zostanie dopisana do listy wskazanej w benchmarku wraz z nową jego
+    wersją, ten punkt trzeba poprawić razem z nią — dlatego wymagany zestaw stoi
+    w jednym miejscu polecenia, a nie jest rozsiany po warunkach.
+  en: |
+    The item names one driver class - storage on this connector. The benchmark is
+    sometimes read as requiring the whole family of classes tied to that connector
+    to be blocked; here we keep to the storage class, because it is the one giving
+    a device access to the machine's memory, and the others do not.
+
+    The list is added to, not overwritten, just as in the ban on installing
+    controllers. Rollback restores it exactly as the backup holds it.
+
+    Should a class be added to the list named in the benchmark along with a new
+    version of it, this item has to be corrected with it - which is why the
+    required set sits in one place in the command rather than being scattered
+    across conditions.

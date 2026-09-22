@@ -1,0 +1,201 @@
+id: win2025-firewall-log-path-per-profile
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security > Logging
+  title:
+    pl: Osobny plik dziennika zapory dla każdego profilu
+    en: A separate firewall log file for each profile
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt wymaga, żeby każdy profil zapory pisał do własnego pliku
+    w katalogu dzienników zapory, zamiast dzielić jeden plik ze
+    wszystkimi pozostałymi.
+
+    Wartość tego rozdzielenia jest praktyczna i ujawnia się przy
+    czytaniu. Wpis w dzienniku nie mówi, który profil był aktywny
+    w chwili jego powstania — mówi to dopiero plik, w którym się
+    znalazł. Bez rozdzielenia wykaz połączeń odrzuconych z różnych
+    profili miesza się i nie da się z niego odtworzyć, w jakim stanie
+    sieciowym maszyna wtedy pracowała.
+
+    Na serwerze profil zmienia się rzadko, ale zmienia się w chwilach
+    najciekawszych: przy przejściu na łącze zapasowe, po zmianie karty
+    sieciowej i po awarii wykrywania sieci. Są to dokładnie te momenty,
+    o których po fakcie pyta się najczęściej.
+
+    Rozdzielenie plików ma też skutek uboczny wart odnotowania: limit
+    rozmiaru działa wtedy osobno dla każdego profilu, więc obfity ruch
+    w jednym profilu nie wypiera zapisu z pozostałych.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: nic
+    bezpośrednio. Jest to punkt o czytelności zapisu, nie o odpieraniu
+    ataku, i dlatego kategoria jest niska.
+  en: |
+    The item takes that each firewall profile write to a file of its own in the firewall log
+    directory, rather than sharing one file with all the rest.
+
+    That separation's worth is practical and comes to light at the reading. An entry in the
+    log does not say which profile was active at the moment it arose - that is said only by
+    the file it landed in. Without the separation the list of refused connections from
+    various profiles mixes together and there is no piecing back from it what network state
+    the machine was working in then.
+
+    On a server the profile changes seldom, but changes at the most interesting moments: at
+    a switch to a spare link, after a change of network adapter and after a failure of
+    network detection. Those are exactly the moments most often asked about after the fact.
+
+    Separating the files has a side effect worth noting as well: the limit of size then
+    works apart for each profile, so abundant traffic on one profile does not crowd the
+    record out of the rest.
+
+    What an attacker gains while the item goes unmet: nothing directly. It is an item about
+    the record's readability rather than about fending off an attack, and hence the category
+    is low.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać i nikt niczego nie zauważy. Zapora
+    filtruje tak samo — zmienia się wyłącznie to, dokąd pisze.
+
+    Zapis dotychczasowy pozostaje tam, gdzie był. Nowe wpisy trafiają
+    do plików rozdzielonych, a stary plik przestaje rosnąć i nie jest
+    usuwany. Nie ma więc utraty danych, ale wykaz z okresu przed zmianą
+    trzeba czytać osobno.
+
+    Praktyczny skutek dotyczy systemów zbierających dzienniki. Jeżeli
+    coś czyta plik dziennika zapory po ścieżce, trzeba mu wskazać trzy
+    pliki zamiast jednego — inaczej po zmianie przestanie dostawać
+    cokolwiek, nie zgłaszając błędu.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working and nobody notices anything. The firewall filters just the same -
+    what changes is only where it writes.
+
+    The record so far stays where it was. New entries land in the separated files, and the
+    old file stops growing and is not deleted. There is thus no loss of data, but the list
+    from the period before the change has to be read apart.
+
+    The practical effect concerns log-gathering systems. Where something reads the
+    firewall's log file by its path, it has to be pointed at three files instead of one -
+    otherwise after the change it will stop getting anything at all while reporting no
+    error.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Brak znanych regresji — zapora filtruje ruch tak samo jak wcześniej
+      - System czytający dziennik po ścieżce przestanie dostawać dane, nie zgłaszając błędu
+      - Zapis sprzed zmiany zostaje w starym pliku i trzeba go czytać osobno
+      - Limit rozmiaru zaczyna działać osobno dla każdego profilu
+    en:
+      - No known regressions - the firewall filters traffic just as before
+      - A system reading the log by its path will stop getting data while reporting no error
+      - The record from before the change stays in the old file and has to be read apart
+      - The limit of size starts working apart for each profile
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - System zbierający dzienniki czyta plik zapory po stałej ścieżce i nikt nie zmieni mu konfiguracji
+    en:
+      - A log-gathering system reads the firewall's file by a fixed path and nobody will change its configuration
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Each profile is expected to write to a file of its own under the system's
+      # firewall log directory. The comparison ignores letter case, since the
+      # path is not case sensitive, and names the profiles that differ.
+      $expected = @{
+        Domain  = "$env:SystemRoot\System32\logfiles\firewall\domainfw.log"
+        Private = "$env:SystemRoot\System32\logfiles\firewall\privatefw.log"
+        Public  = "$env:SystemRoot\System32\logfiles\firewall\publicfw.log"
+      }
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        $wrong = @()
+        foreach ($p in $profiles) {
+          $want = $expected[[string]$p.Name]
+          if ($null -eq $want) { continue }
+          $have = [string]$p.LogFileName
+          if ($have.Trim().ToUpperInvariant() -ne $want.ToUpperInvariant()) { $wrong += [string]$p.Name }
+        }
+        if ($wrong.Count -eq 0) { 'ALL_SEPARATE' } else { 'OTHER_IN_' + ($wrong -join '_') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_SEPARATE
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile |
+      Select-Object -Property Name, LogFileName |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $dir = Join-Path $env:SystemRoot 'System32\logfiles\firewall'
+    Set-NetFirewallProfile -Profile Domain -LogFileName (Join-Path $dir 'domainfw.log')
+    Set-NetFirewallProfile -Profile Private -LogFileName (Join-Path $dir 'privatefw.log')
+    Set-NetFirewallProfile -Profile Public -LogFileName (Join-Path $dir 'publicfw.log')
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($p in @($b)) {
+      Set-NetFirewallProfile -Profile $p.Name -LogFileName $p.LogFileName
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    Porównanie ścieżek pomija wielkość liter, bo ścieżki w systemie
+    Windows nie są na nią wrażliwe, a zapis w konfiguracji bywa różny.
+    Wynik „OTHER_IN_…" podaje profile, których ścieżka odbiega od
+    oczekiwanej.
+
+    Punkt czyta się razem z rozmiarem dziennika i z rejestrowaniem
+    połączeń odrzuconych. Sam rozdzielony plik bez włączonego zapisu
+    pozostaje pusty.
+
+    Katalog dzienników zapory jest tworzony przez system przy pierwszym
+    zapisie. Zmiana ścieżki nie wymaga tworzenia go ręcznie.
+  en: |
+    The comparison of paths passes over letter case, since paths in Windows are not
+    sensitive to it and the record in the configuration varies. The result "OTHER_IN_…"
+    gives the profiles whose path departs from the expected one.
+
+    The item is read together with the log's size and with the recording of refused
+    connections. A separated file alone with no recording switched on stays empty.
+
+    The firewall log directory is made by the system at the first write. Changing the path
+    takes no making it by hand.

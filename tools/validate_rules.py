@@ -66,10 +66,13 @@ def find_empty_translations(node, trail: str = "") -> list[str]:
     return findings
 
 
-SETTING_PATTERNS = (
-    re.compile(r"Se[A-Za-z]+(?:Privilege|Right)"),
-    re.compile(r"\$path\s*=\s*'([^']+)'\s*\n\s*\$name\s*=\s*'([^']+)'"),
-)
+USER_RIGHT = re.compile(r"Se[A-Za-z]+(?:Privilege|Right)")
+NAMED_VALUE = re.compile(r"\$path\s*=\s*'([^']+)'\s*\n\s*\$name\s*=\s*'([^']+)'")
+REGISTRY_PATH = re.compile(r"\$path\s*=\s*'([^']+)'")
+# A rule that pulls the whole key and then picks properties off it, rather than
+# naming one value up front. The dollar sign in the character class is what keeps
+# `$item.$name` out: that is the named-value form, already covered above.
+PROPERTY_READ = re.compile(r"\$item\.([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def settings_touched(rule) -> set[str]:
@@ -80,10 +83,18 @@ def settings_touched(rule) -> set[str]:
     """
     command = ((rule.get("audit") or {}).get("test_command")) or ""
     found = set()
-    for match in SETTING_PATTERNS[0].findall(command):
+    for match in USER_RIGHT.findall(command):
         found.add(f"right {match}")
-    for path, name in SETTING_PATTERNS[1].findall(command):
+    for path, name in NAMED_VALUE.findall(command):
         found.add(f"registry {path}!{name}")
+    # Several rules read one key and take more than one value out of it, so the
+    # value name never appears in a $name assignment. Without this the duplicate
+    # check cannot see them at all - and those are exactly the rules where one
+    # point quietly covers two settings.
+    paths = REGISTRY_PATH.findall(command)
+    if len(paths) == 1:
+        for name in PROPERTY_READ.findall(command):
+            found.add(f"registry {paths[0]}!{name}")
     return found
 
 

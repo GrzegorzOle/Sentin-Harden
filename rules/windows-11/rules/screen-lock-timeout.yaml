@@ -1,0 +1,151 @@
+id: win11-screen-lock-timeout
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Blokada ekranu po okresie bezczynności
+    en: Screen lock after an inactivity period
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Odblokowana stacja pozostawiona bez opieki daje każdemu przechodzącemu
+    pełny dostęp do poczty, plików i zapisanych sesji — bez łamania czegokolwiek.
+    W otwartej przestrzeni biurowej, na recepcji i w sali konferencyjnej to
+    najczęstsza droga do cudzych danych, a przy tym jedyna, której nie widać
+    w żadnym dzienniku.
+
+    Automatyczna blokada zamyka okno czasowe, w którym to jest możliwe. Nie
+    chroni przed napastnikiem z zewnątrz, tylko przed sytuacją, w której dostęp
+    bierze się z obecności w tym samym pomieszczeniu.
+  en: |
+    An unlocked workstation left unattended gives anyone walking past full
+    access to mail, files and saved sessions - without breaking anything. In an
+    open-plan office, at a reception desk and in a meeting room this is the most
+    common route to someone else's data, and the only one that shows up in no
+    log at all.
+
+    An automatic lock closes the time window in which this is possible. It does
+    not protect against an outside attacker, only against the situation where
+    access comes from being in the same room.
+
+disruption_description:
+  pl: |
+    To zmiana, którą użytkownicy odczują kilka razy dziennie, więc wymaga
+    świadomego wdrożenia i uprzedzenia. Dotknie przede wszystkim pracy, w której
+    ekran jest oglądany, a nie dotykany: prezentacji, wideokonferencji,
+    obserwowania wykresów i dashboardów.
+
+    Osobny przypadek to stanowiska, na których blokada jest wprost szkodliwa —
+    ekrany informacyjne, panele sterowania na hali, stacje pomiarowe pracujące
+    bez obsługi. Tam ten punkt jest kandydatem do świadomego odpuszczenia
+    z uzasadnieniem, a nie do wdrożenia.
+  en: |
+    This is a change users feel several times a day, so it needs a planned
+    rollout and advance warning. It mostly affects work where the screen is
+    watched rather than touched: presentations, video calls, watching charts and
+    dashboards.
+
+    A separate case is stations where locking is outright harmful - information
+    displays, control panels on a shop floor, measurement stations running
+    unattended. There this item is a candidate for a deliberate, justified
+    exception rather than for rollout.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Ekran zablokuje się w trakcie prezentacji i wideokonferencji, jeśli nikt nie dotyka klawiatury
+      - Stanowiska wyświetlające dashboardy i tablice informacyjne wygaszą obraz w środku dnia pracy
+      - Użytkownicy będą podawać hasło wielokrotnie w ciągu dnia, co zwiększy liczbę zgłoszeń o blokadzie konta
+    en:
+      - The screen locks during presentations and video calls when nobody touches the keyboard
+      - Stations showing dashboards and information boards blank out in the middle of the working day
+      - Users type their password many times a day, raising the number of account lockout reports
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko wyświetla informacje dla innych i wygaszenie ekranu jest sprzeczne z jego rolą
+      - Maszyna steruje procesem, w którym operator musi widzieć stan bez podawania hasła
+    en:
+      - The station displays information for others and blanking the screen contradicts its role
+      - The machine controls a process where the operator must see its state without typing a password
+
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'InactivityTimeoutSecs'
+      $value = $null
+      if (Test-Path -Path $path -ErrorAction Stop) {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).$name
+      }
+      # Zero means "never lock" and is a misconfiguration, not a large timeout -
+      # it must not slip through a numeric comparison as a small value.
+      if ($null -eq $value -or [int]$value -eq 0) { 'NEVER' } else { [string]$value }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '900'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'InactivityTimeoutSecs'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name 'InactivityTimeoutSecs' -Value 900 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-machine-inactivity-limit
+
+notes:
+  pl: |
+    Wartość 900 sekund to piętnaście minut — punkt sprawdza, czy limit istnieje
+    i nie jest dłuższy. Krótszy przechodzi. Brak wartości oraz wartość zero są
+    raportowane jako „NEVER", żeby „nigdy nie blokuj" nie przeszło przez
+    porównanie liczbowe jako mały limit.
+  en: |
+    The value 900 seconds is fifteen minutes - the item checks that a limit
+    exists and is no longer than that. A shorter one passes. A missing value and
+    a value of zero are both reported as "NEVER", so that "never lock" cannot
+    pass a numeric comparison as a small limit.

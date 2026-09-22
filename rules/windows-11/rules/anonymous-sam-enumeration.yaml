@@ -1,0 +1,157 @@
+id: win11-anonymous-sam-enumeration
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Anonimowe wyliczanie kont i udziałów zablokowane
+    en: Anonymous enumeration of accounts and shares blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bez tego ograniczenia komputer odpowiada na pytania zadane bez logowania:
+    poda listę kont lokalnych, nazwy udziałów i członków grup. Napastnik dostaje
+    gotowy spis celów — wie, które konto jest administratorem, które istnieje
+    naprawdę, a które zgadywał — i może przejść do zgadywania haseł, mając już
+    połowę odpowiedzi.
+
+    Po zablokowaniu ta sama rozmowa kończy się odmową. Nie utrudnia to ataku
+    komuś, kto ma już poświadczenia, ale odbiera etap rozpoznania temu, kto
+    dopiero się rozgląda — a to właśnie na tym etapie najłatwiej go zatrzymać
+    najmniejszym kosztem.
+  en: |
+    Without this restriction the computer answers questions asked without
+    signing in: it hands over the list of local accounts, share names and group
+    members. An attacker gets a ready-made list of targets - which account is an
+    administrator, which really exists and which was a guess - and can move on
+    to password guessing already holding half the answers.
+
+    Once blocked, the same conversation ends in a refusal. This does not hinder
+    somebody who already holds credentials, but it takes the reconnaissance
+    stage away from someone still looking around - and that is the stage where
+    stopping them costs the least.
+
+disruption_description:
+  pl: |
+    Na stacji roboczej zmiana jest zwykle niewidoczna, bo nic sensownego nie
+    odpytuje jej anonimowo. Kłopot pojawia się tam, gdzie takie odpytywanie jest
+    częścią czyjegoś procesu: systemy inwentaryzacyjne skanujące sieć bez
+    poświadczeń, starsze narzędzia monitorujące i urządzenia przeglądające listę
+    udziałów przed połączeniem.
+
+    Klasa „wymaga sprawdzenia" bierze się stąd, że skutek nie objawia się na tej
+    maszynie, tylko po stronie systemu, który ją odpytywał — i dlatego bywa
+    zauważony z dużym opóźnieniem.
+  en: |
+    On a workstation the change is usually invisible, because nothing sensible
+    queries it anonymously. Trouble appears where such querying is part of
+    somebody's process: inventory systems scanning the network without
+    credentials, older monitoring tools and devices browsing the share list
+    before connecting.
+
+    The "needs review" class comes from the effect showing up not on this
+    machine but on the side of the system that was querying it - and therefore
+    sometimes being noticed much later.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - accounts-and-passwords
+    - remote-management
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Systemy inwentaryzacyjne skanujące sieć bez poświadczeń przestaną zbierać dane z tej stacji
+      - Starsze narzędzia monitorujące odpytujące listę kont anonimowo zaczną zgłaszać brak dostępu
+      - Urządzenia przeglądające listę udziałów przed połączeniem mogą przestać widzieć zasoby tej maszyny
+    en:
+      - Inventory systems scanning the network without credentials stop collecting data from this workstation
+      - Older monitoring tools querying the account list anonymously start reporting access denied
+      - Devices browsing the share list before connecting may stop seeing this machine's resources
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Sieć jest inwentaryzowana narzędziem, które odpytuje stacje bez podawania poświadczeń
+      - Do maszyny łączą się urządzenia wyszukujące udziały przez przeglądanie listy, a nie po nazwie
+    en:
+      - The network is inventoried by a tool that queries workstations without supplying credentials
+      - Devices connect to the machine by browsing the share list rather than by name
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      $sam = $item.RestrictAnonymousSAM
+      $all = $item.RestrictAnonymous
+      if ($null -eq $sam -or $null -eq $all) { 'MISSING' }
+      elseif ([int]$sam -eq 1 -and [int]$all -eq 1) { 'BOTH_RESTRICTED' }
+      else { 'SAM=' + $sam + ' ANONYMOUS=' + $all }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: BOTH_RESTRICTED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path                  = $path
+      restrict_anonymous_sam = $item.RestrictAnonymousSAM
+      sam_existed           = ($null -ne $item.RestrictAnonymousSAM)
+      restrict_anonymous    = $item.RestrictAnonymous
+      anonymous_existed     = ($null -ne $item.RestrictAnonymous)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    Set-ItemProperty -Path $path -Name 'RestrictAnonymousSAM' -Value 1 -Type DWord
+    Set-ItemProperty -Path $path -Name 'RestrictAnonymous' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.sam_existed) {
+      Set-ItemProperty -Path $b.path -Name 'RestrictAnonymousSAM' -Value $b.restrict_anonymous_sam -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'RestrictAnonymousSAM' -ErrorAction SilentlyContinue
+    }
+    if ($b.anonymous_existed) {
+      Set-ItemProperty -Path $b.path -Name 'RestrictAnonymous' -Value $b.restrict_anonymous -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'RestrictAnonymous' -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-do-not-allow-anonymous-enumeration-of-sam-accounts
+
+notes:
+  pl: |
+    Punkt obejmuje dwa ustawienia naraz, bo dopiero razem zamykają rozpoznanie:
+    pierwsze blokuje wyliczanie kont, drugie także udziałów. Gdy tylko jedno jest
+    ustawione, wynik audytu pokazuje obie wartości, więc widać, której brakuje.
+  en: |
+    The item covers two settings at once, because only together do they close
+    the reconnaissance: the first blocks enumerating accounts, the second also
+    shares. When only one is set, the audit result shows both values, so it is
+    clear which one is missing.

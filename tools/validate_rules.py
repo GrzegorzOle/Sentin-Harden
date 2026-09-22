@@ -30,8 +30,21 @@ except ImportError as missing:
 LANGUAGES = ("pl", "en")
 
 
+class RuleFileError(Exception):
+    """A file that cannot be parsed at all, as opposed to one that breaks a rule."""
+
+
 def load_yaml(path: Path):
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as broken:
+        # A malformed file has to come back as a finding like any other. Letting
+        # the parser error escape would abort the whole run on the first bad
+        # file and hide everything after it - including from the commit hook.
+        mark = getattr(broken, "problem_mark", None)
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        problem = getattr(broken, "problem", None) or str(broken)
+        raise RuleFileError(f"not valid YAML{where}: {problem}") from None
 
 
 def find_empty_translations(node, trail: str = "") -> list[str]:
@@ -74,7 +87,11 @@ def check(base: Path) -> list[str]:
         if not (target / "meta.yaml").exists():
             findings.append(f"{target.name}: meta.yaml is missing")
             continue
-        load_yaml(target / "meta.yaml")
+        try:
+            load_yaml(target / "meta.yaml")
+        except RuleFileError as broken:
+            findings.append(f"{target.name}/meta.yaml: {broken}")
+            continue
 
         rule_dir = target / "rules"
         per_target[target.name] = 0
@@ -85,7 +102,11 @@ def check(base: Path) -> list[str]:
             rule_count += 1
             per_target[target.name] += 1
             label = f"{target.name}/{path.name}"
-            rule = load_yaml(path)
+            try:
+                rule = load_yaml(path)
+            except RuleFileError as broken:
+                findings.append(f"{label}: {broken}")
+                continue
 
             for error in sorted(validator.iter_errors(rule), key=lambda e: list(e.path)):
                 field = "/".join(str(part) for part in error.path) or "(root)"

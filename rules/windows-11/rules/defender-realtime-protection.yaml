@@ -1,0 +1,167 @@
+id: win11-defender-realtime-protection
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus
+  title:
+    pl: Ochrona w czasie rzeczywistym Microsoft Defender włączona
+    en: Microsoft Defender real-time protection enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ochrona w czasie rzeczywistym sprawdza pliki w momencie ich zapisu
+    i uruchomienia, zamiast czekać na zaplanowane skanowanie. Bez niej złośliwy
+    plik spokojnie ląduje na dysku i startuje — wykryty zostanie dopiero przy
+    następnym przeglądzie, czyli po fakcie.
+
+    Wyłączenie tej ochrony jest też jednym z pierwszych kroków napastnika, który
+    już wszedł na maszynę: zanim uruchomi właściwe narzędzia, ucisza to, co
+    mogłoby go zatrzymać. Dlatego stan tego ustawienia bywa sygnałem nie tylko
+    o zaniedbaniu, ale o trwającym incydencie.
+  en: |
+    Real-time protection inspects files as they are written and executed instead
+    of waiting for a scheduled scan. Without it a malicious file lands on disk
+    and starts undisturbed - it will be detected at the next sweep, that is,
+    after the fact.
+
+    Turning this protection off is also one of the first steps of an attacker
+    who is already on the machine: before running the real tooling, they silence
+    whatever could stop it. The state of this setting is therefore sometimes a
+    signal not merely of neglect but of an incident in progress.
+
+disruption_description:
+  pl: |
+    Ochrona w czasie rzeczywistym kosztuje wydajność przy operacjach na wielu
+    plikach naraz: kompilacji, rozpakowywaniu dużych archiwów, pracy
+    z maszynami wirtualnymi. Na stanowisku deweloperskim różnica bywa
+    odczuwalna i to zwykle powód, dla którego ktoś ją wyłączył.
+
+    Drugi powód klasy „wymaga sprawdzenia": włączenie skanowania na maszynie,
+    na której działa oprogramowanie o nietypowym wzorcu zapisu — bazy danych,
+    systemy pomiarowe — potrafi ujawnić brakujące wykluczenia. Zamiast
+    wyłączać ochronę, w takich miejscach dodaje się wykluczenie dla konkretnej
+    ścieżki.
+  en: |
+    Real-time protection costs performance during operations touching many files
+    at once: compilation, unpacking large archives, working with virtual
+    machines. On a developer workstation the difference can be noticeable, and
+    that is usually why somebody switched it off.
+
+    The second reason for the "needs review" class: enabling scanning on a
+    machine running software with an unusual write pattern - databases,
+    measurement systems - tends to reveal missing exclusions. Rather than
+    disabling the protection, such places get an exclusion for the specific path.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - virtualization-and-containers
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Kompilacja i rozpakowywanie dużych archiwów zwolni, najbardziej przy tysiącach małych plików
+      - Oprogramowanie z nietypowym wzorcem zapisu może wymagać dodania wykluczenia dla swojego katalogu
+      - Narzędzia deweloperskie pobierające zależności z sieci zostaną objęte skanowaniem przy każdym zapisie
+    en:
+      - Compilation and unpacking of large archives slow down, most of all with thousands of small files
+      - Software with an unusual write pattern may need an exclusion added for its directory
+      - Developer tooling fetching dependencies from the network gets scanned on every write
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Ochroną maszyny zarządza program innego producenta, a Defender został celowo przełączony w tryb bierny
+      - Stanowisko obsługuje proces czasu rzeczywistego, w którym opóźnienie zapisu przerywa pomiar
+    en:
+      - Machine protection is handled by a third-party product and Defender was deliberately put into passive mode
+      - The station serves a real-time process where a write delay interrupts the measurement
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction Stop
+      if ($status.AMRunningMode -eq 'Normal') {
+        $preference = Get-MpPreference -ErrorAction Stop
+        if ($preference.DisableRealtimeMonitoring) { 'DISABLED' } else { 'ENABLED' }
+      } else {
+        # Defender stands aside either because another product took over or
+        # because somebody switched it off. Those are opposite situations and
+        # must not share an answer: only the first one is "not applicable".
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction Stop |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+        if ($others.Count -gt 0) { 'NOT_APPLICABLE' } else { 'NO_PROTECTION' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ENABLED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $preference = Get-MpPreference
+    [pscustomobject]@{
+      setting = 'DisableRealtimeMonitoring'
+      value   = [bool]$preference.DisableRealtimeMonitoring
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-MpPreference -DisableRealtimeMonitoring $false
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Set-MpPreference -DisableRealtimeMonitoring ([bool]$b.value)
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/configure-real-time-protection-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Gdy ochroną zajmuje się program innego producenta, Defender staje z boku
+    i punkt zwraca „nie dotyczy" — ocenianie go wtedy jako niezgodności byłoby
+    myleniem raportu. Sprawdzenie nie poprzestaje jednak na tym, że Defender nie
+    pracuje: dopytuje centrum zabezpieczeń, czy ktoś go zastąpił. Jeśli nikt nie
+    zastąpił, wynikiem jest „NO_PROTECTION" i niezgodność, bo maszyna zostaje
+    bez ochrony w czasie rzeczywistym.
+
+    Punkt ocenia wyłącznie Defendera. Przy ochronie innego producenta raport nie
+    mówi nic o tym, czy ten program jest poprawnie skonfigurowany — to trzeba
+    sprawdzić w jego własnej konsoli.
+
+    Przy włączonej ochronie przed manipulacją zmiana tego ustawienia zostanie
+    odrzucona; trzeba ją wtedy wykonać z konsoli zarządzającej, nie z maszyny.
+  en: |
+    When a third-party product handles protection, Defender stands aside and the
+    item reports "not applicable" - treating it as a finding then would only
+    muddle the report. The check does not stop at Defender not running, though:
+    it asks the security centre whether anything replaced it. If nothing did,
+    the result is "NO_PROTECTION" and a finding, because the machine is left
+    with no real-time protection at all.
+
+    The item assesses Defender only. With third-party protection in place the
+    report says nothing about whether that product is configured correctly -
+    that has to be checked in its own console.
+
+    With tamper protection on, a change to this setting is refused; it then has
+    to be made from the management console rather than on the machine.

@@ -1,0 +1,136 @@
+id: win11-guest-account-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Wbudowane konto gościa wyłączone
+    en: Built-in guest account disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Konto gościa to jedyne konto w systemie, które z założenia nie ma hasła.
+    Włączone daje dostęp bez podawania czegokolwiek — a przy okazji zmienia
+    sposób, w jaki system traktuje połączenia z sieci: anonimowy rozmówca
+    przestaje być anonimowy i dostaje uprawnienia gościa zamiast odmowy.
+
+    Wyłączenie konta odbiera ten najprostszy wariant wejścia. Nie broni przed
+    niczym wyrafinowanym, ale zamyka drogę, która nie wymaga od napastnika ani
+    hasła, ani błędu użytkownika — a bywa otwarta na maszynach stawianych
+    ręcznie albo przeniesionych ze starszego systemu.
+  en: |
+    The guest account is the only account in the system that by design has no
+    password. Enabled, it grants access without supplying anything at all - and
+    it also changes how the system treats network connections: an anonymous
+    caller stops being anonymous and receives guest rights instead of a refusal.
+
+    Disabling the account takes away this simplest way in. It defends against
+    nothing sophisticated, but it closes a route that needs neither a password
+    nor a user mistake from the attacker - and one that is sometimes open on
+    machines built by hand or carried over from an older system.
+
+disruption_description:
+  pl: |
+    Na maszynie, na której konto gościa i tak jest wyłączone, zmiana nie robi
+    nic. Tam, gdzie jest włączone, zwykle włączono je celowo — i to właśnie
+    trzeba sprawdzić, zanim się je zamknie.
+
+    Typowy scenariusz to udostępniony folder albo drukarka, z których korzysta
+    się bez logowania, oraz komputer wystawiony do użytku wspólnego. W obu
+    przypadkach wyłączenie konta odcina dostęp natychmiast i bez komunikatu
+    tłumaczącego powód.
+  en: |
+    On a machine where the guest account is disabled anyway, the change does
+    nothing. Where it is enabled, it was usually enabled deliberately - and that
+    is exactly what to check before closing it.
+
+    The typical scenario is a shared folder or printer used without signing in,
+    and a computer put out for common use. In both cases disabling the account
+    cuts access immediately and with no message explaining why.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - file-sharing
+    - printing
+  what_breaks:
+    pl:
+      - Dostęp do udziałów tej maszyny bez podawania poświadczeń przestanie być możliwy
+      - Drukarka udostępniona z tego komputera może przestać przyjmować zadania od nieuwierzytelnionych stacji
+      - Komputer używany wspólnie bez własnych kont przestanie wpuszczać kogokolwiek poza właścicielem konta
+    en:
+      - Access to this machine's shares without supplying credentials stops being possible
+      - A printer shared from this computer may stop accepting jobs from unauthenticated workstations
+      - A commonly used computer with no individual accounts stops letting anyone in but the account owner
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna celowo udostępnia zasoby bez uwierzytelniania i nie ma dla tego innego rozwiązania
+      - Komputer stoi w przestrzeni wspólnej jako stanowisko dostępne dla wszystkich bez zakładania kont
+    en:
+      - The machine deliberately shares resources without authentication and has no other arrangement for it
+      - The computer stands in a common area as a station open to everyone without creating accounts
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $guest = Get-LocalUser -ErrorAction Stop | Where-Object { $_.SID.Value -like '*-501' }
+      if ($null -eq $guest) {
+        # No built-in guest account in this edition - nothing to assess.
+        'NOT_APPLICABLE'
+      } elseif ($guest.Enabled) { 'ENABLED' } else { 'DISABLED' }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: DISABLED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $guest = Get-LocalUser | Where-Object { $_.SID.Value -like '*-501' }
+    [pscustomobject]@{
+      sid     = $guest.SID.Value
+      name    = $guest.Name
+      enabled = [bool]$guest.Enabled
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $guest = Get-LocalUser | Where-Object { $_.SID.Value -like '*-501' }
+    Disable-LocalUser -SID $guest.SID
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.enabled) { Enable-LocalUser -SID $b.sid } else { Disable-LocalUser -SID $b.sid }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/accounts-guest-account-status
+
+notes:
+  pl: |
+    Konto rozpoznajemy po końcówce identyfikatora zabezpieczeń, a nie po nazwie —
+    nazwa zależy od języka systemu i bywa zmieniana, identyfikator nie. Wyłączenie
+    konta nie usuwa jego profilu ani uprawnień nadanych mu wcześniej na plikach.
+  en: |
+    The account is recognised by the ending of its security identifier rather
+    than by name - the name depends on the system language and is sometimes
+    changed, the identifier is not. Disabling the account removes neither its
+    profile nor permissions granted to it earlier on files.

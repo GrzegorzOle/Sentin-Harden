@@ -1,0 +1,144 @@
+id: win11-firewall-all-profiles-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Defender Firewall with Advanced Security
+  title:
+    pl: Zapora włączona we wszystkich profilach sieciowych
+    en: Firewall enabled on all network profiles
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Windows prowadzi trzy osobne zestawy reguł zapory — dla sieci domenowej,
+    prywatnej i publicznej — i przełącza się między nimi sam, zależnie od tego,
+    gdzie stacja się znajdzie. Wyłączenie zapory w jednym profilu zostaje
+    niezauważone, dopóki komputer nie trafi właśnie do takiej sieci: najczęściej
+    jest to profil publiczny, czyli hotel, lotnisko i kawiarnia.
+
+    Z włączoną zaporą usługi nasłuchujące na stacji nie są widoczne dla
+    sąsiadów w tej samej sieci. To ostatnia linia między przypadkowo
+    uruchomioną usługą a każdym, kto siedzi w tym samym zasięgu — i jedyna,
+    która działa, zanim ktokolwiek zdąży zareagować.
+  en: |
+    Windows keeps three separate sets of firewall rules - for domain, private
+    and public networks - and switches between them by itself, depending on
+    where the workstation ends up. Turning the firewall off in one profile goes
+    unnoticed until the computer lands in exactly that kind of network: most
+    often the public profile, meaning a hotel, an airport and a cafe.
+
+    With the firewall on, services listening on the workstation are invisible to
+    neighbours on the same network. It is the last line between an accidentally
+    started service and everyone within the same reach - and the only one that
+    works before anybody has a chance to react.
+
+disruption_description:
+  pl: |
+    Włączenie zapory w profilu, w którym ktoś ją wyłączył, przywraca obowiązujące
+    tam reguły — a te mogą być starsze niż aplikacje zainstalowane w międzyczasie.
+    Skutek jest natychmiastowy i dotyczy ruchu przychodzącego: usługi, do których
+    ktoś łączy się z zewnątrz, mogą przestać odpowiadać.
+
+    Typowe ofiary to udostępnianie plików i drukarek w sieci domowej, narzędzia
+    zdalnej pomocy oraz oprogramowanie branżowe nasłuchujące na własnym porcie.
+    Ruch wychodzący pozostaje bez zmian, więc przeglądarka i poczta działają
+    dalej — dlatego zgłoszenie brzmi zwykle „nie widzę tego komputera", a nie
+    „nie mam internetu".
+  en: |
+    Enabling the firewall in a profile where somebody turned it off restores the
+    rules that apply there - and those may be older than the applications
+    installed since. The effect is immediate and concerns inbound traffic:
+    services that others connect to from outside may stop answering.
+
+    Typical casualties are file and printer sharing on a home network, remote
+    assistance tooling and line-of-business software listening on a port of its
+    own. Outbound traffic is unaffected, so the browser and mail keep working -
+    which is why the report usually reads "I cannot see that computer" rather
+    than "I have no internet".
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - file-sharing
+    - remote-desktop
+    - printing
+  what_breaks:
+    pl:
+      - Usługi nasłuchujące na stacji przestaną odpowiadać na połączenia z innych komputerów w sieci
+      - Udostępnianie plików i drukarek w sieci domowej może wymagać ponownego dodania reguły zapory
+      - Aplikacje branżowe z własnym portem nasłuchu zażądają zgody na ruch przychodzący przy pierwszym połączeniu
+    en:
+      - Services listening on the workstation stop answering connections from other computers on the network
+      - File and printer sharing on a home network may need its firewall rule adding again
+      - Line-of-business applications with a listening port of their own ask for inbound consent at the first connection
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Ochroną ruchu zarządza zapora innego producenta, która celowo wyłącza wbudowaną
+      - Stacja pracuje w segmencie pomiarowym, w którym filtrowanie ruchu odbywa się na urządzeniu brzegowym
+    en:
+      - Traffic protection is handled by a third-party firewall that deliberately switches the built-in one off
+      - The workstation sits in a measurement segment where filtering happens on an edge device
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $profiles = Get-NetFirewallProfile -ErrorAction Stop
+      if ($null -eq $profiles -or @($profiles).Count -lt 3) { 'CHECK_ERROR' }
+      else {
+        $off = @($profiles | Where-Object { $_.Enabled -ne 'True' })
+        if ($off.Count -eq 0) { 'ALL_ENABLED' } else { 'DISABLED_IN_' + ($off.Name -join '_') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_ENABLED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-NetFirewallProfile |
+      Select-Object -Property Name, Enabled |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($p in @($b)) {
+      Set-NetFirewallProfile -Profile $p.Name -Enabled $p.Enabled
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/
+
+notes:
+  pl: |
+    Wynik audytu nazywa profile, w których zapora jest wyłączona, więc widać od
+    razu, czy chodzi o sieć firmową, czy o publiczną. Punkt pilnuje samego
+    włączenia — domyślna akcja dla ruchu przychodzącego i zestaw reguł to
+    osobne ustawienia.
+  en: |
+    The audit result names the profiles where the firewall is off, so it is
+    immediately clear whether this concerns the corporate network or a public
+    one. The item guards the enablement itself - the default inbound action and
+    the rule set are separate settings.

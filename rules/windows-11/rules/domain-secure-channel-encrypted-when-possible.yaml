@@ -1,0 +1,172 @@
+id: win11-domain-secure-channel-encrypted-when-possible
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Kanał bezpieczny do kontrolera szyfrowany, gdy druga strona to potrafi
+    en: The secure channel to the controller encrypted where the other side can
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ten punkt dotyczy tego samego kanału służbowego między maszyną a kontrolerem
+    domeny co punkt wymagający podpisu bezwzględnie — ale stawia wymaganie
+    warunkowo: szyfruj zawsze, gdy druga strona potrafi.
+
+    Szyfrowanie odbiera podsłuchującemu treść. Bez niego widać w kanale nazwy
+    kont, nazwy grup, nazwy maszyn i przebieg sprawdzania tożsamości. Nie są to
+    hasła, ale jest to rozpoznanie: kto w tej domenie istnieje, kto gdzie należy
+    i którędy idzie potwierdzanie uprawnień. Napastnik, który dopiero wszedł do
+    sieci, dowiaduje się z tego, gdzie warto uderzyć dalej.
+
+    Wartość warunkowej postaci polega na tym, że nie zrywa połączenia z kimś,
+    kto szyfrować nie umie — po prostu szyfruje z każdym, kto umie. Jest to
+    ustawienie, które wolno włączyć wszędzie, również tam, gdzie postać
+    bezwzględna jest jeszcze za wcześnie.
+  en: |
+    This item concerns the same working channel between the machine and the domain
+    controller as the item requiring a signature unconditionally - but it puts the
+    requirement conditionally: encrypt whenever the other side can.
+
+    Encryption takes the content away from an eavesdropper. Without it the channel
+    shows account names, group names, machine names and the course of an identity
+    check. These are not passwords, but they are reconnaissance: who exists in this
+    domain, who belongs where, and which way the confirming of rights goes. An
+    attacker who has only just got into the network learns from it where to strike
+    next.
+
+    The value of the conditional form is that it does not break the connection with
+    somebody who cannot encrypt - it simply encrypts with everybody who can. It is
+    a setting that may be turned on everywhere, including where the unconditional
+    form is still too early.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Wymaganie jest warunkowe, więc strona, która
+    szyfrowania nie obsługuje, nadal się połączy — tyle że bez szyfru.
+
+    Jest to jedyne ustawienie z tej rodziny, przy którym nie trzeba sprawdzać
+    wieku kontrolerów. Dlatego właśnie warto je wdrożyć osobno i wcześniej,
+    zanim zapadnie decyzja o postaci bezwzględnej.
+
+    Kosztu wydajnościowego nie widać — kanał ten przenosi niewielkie ilości
+    danych i pracuje w tle, bez udziału użytkownika.
+
+    Nie ma restartu. Zmiana obowiązuje przy następnym nawiązaniu kanału.
+  en: |
+    Nothing stops working. The requirement is conditional, so a side that does not
+    support encryption will still connect - only without a cipher.
+
+    It is the one setting in this family where the age of the controllers need not
+    be checked. That is precisely why it is worth applying separately and earlier,
+    before a decision is made about the unconditional form.
+
+    No cost in performance is visible - this channel carries small amounts of data
+    and works in the background, with no part played by the user.
+
+    There is no restart. The change takes effect when the channel is next
+    established.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Brak znanych regresji - wymaganie jest warunkowe i nie zrywa połączenia ze stroną, która szyfrowania nie obsługuje
+    en:
+      - No known regressions - the requirement is conditional and does not break a connection with a side that does not support encryption
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+      $name = 'SealSecureChannel'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    $name = 'SealSecureChannel'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SealSecureChannel' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/domain-member-digitally-encrypt-secure-channel-data-when-possible
+
+notes:
+  pl: |
+    Punkt ten i punkt o podpisywaniu „gdy to możliwe" są obsługiwane osobno,
+    ale rozstrzygane razem: gdy wymaganie bezwzględne jest włączone, oba stają
+    się bezprzedmiotowe, bo kanał i tak musi być zabezpieczony. Mimo to
+    benchmark wymaga wszystkich trzech i reguła nie wyciąga jednej z drugiej.
+
+    Szyfrowanie i podpisywanie odpowiadają tu na różne pytania. Szyfr ukrywa
+    treść przed czytającym, podpis broni przed jej zmianą. Podsłuch bez zmiany
+    i zmiana bez podsłuchu to dwa osobne ataki i zamknięcie jednego nie zamyka
+    drugiego.
+  en: |
+    This item and the one about signing "when possible" are handled separately but
+    settled together: with the unconditional requirement on, both become moot,
+    because the channel has to be protected anyway. The benchmark nevertheless
+    requires all three, and the rule does not derive one from another.
+
+    Encryption and signing answer different questions here. The cipher hides the
+    content from a reader, the signature defends against its alteration.
+    Eavesdropping without alteration and alteration without eavesdropping are two
+    separate attacks, and closing one does not close the other.

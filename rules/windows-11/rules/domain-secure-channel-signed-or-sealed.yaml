@@ -1,0 +1,190 @@
+id: win11-domain-secure-channel-signed-or-sealed
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Kanał bezpieczny do kontrolera zawsze podpisany lub zaszyfrowany
+    en: The secure channel to the controller always signed or encrypted
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna należąca do domeny utrzymuje z kontrolerem osobne połączenie służbowe,
+    niezwiązane z logowaniem konkretnej osoby. Idą nim zmiany hasła konta maszyny,
+    potwierdzenia tożsamości przy logowaniu, informacje o zaufaniu między domenami
+    i dane potrzebne do rozstrzygnięcia, kto ma do czego prawo.
+
+    Bez tego punktu połączenie to może biec bez podpisu i bez szyfru. Napastnik,
+    który wszedł między maszynę a kontroler, może wtedy czytać jego zawartość
+    i — co ważniejsze — zmieniać ją w locie. Zmieniona odpowiedź kontrolera jest
+    dla maszyny wiążąca: tak właśnie podstawia się przynależność do grupy albo
+    wynik sprawdzenia tożsamości.
+
+    Punkt wymusza, żeby każda porcja danych w tym kanale była podpisana albo
+    zaszyfrowana — bez wyjątku i bez uzgadniania z drugą stroną, czy sobie
+    z tym poradzi.
+  en: |
+    A machine belonging to a domain keeps a separate working connection to the
+    controller, unrelated to any particular person signing in. Over it travel
+    machine account password changes, confirmations of identity at sign-in,
+    information about trust between domains, and the data needed to settle who has
+    a right to what.
+
+    Without this item that connection may run unsigned and unencrypted. An
+    attacker who has got between the machine and the controller can then read its
+    contents and - more to the point - change them in flight. A changed reply from
+    the controller binds the machine: that is exactly how group membership or the
+    outcome of an identity check gets planted.
+
+    The item forces every portion of data in this channel to be signed or
+    encrypted - without exception and without negotiating with the other side
+    over whether it can manage.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga wiek kontrolerów domeny, do których ta maszyna się odzywa.
+
+    Wymaganie jest bezwarunkowe: jeżeli druga strona nie potrafi podpisać ani
+    zaszyfrować kanału, połączenie nie powstanie. Maszyna traci wtedy zdolność
+    logowania kontami domenowymi, stosowania zasad grupy i zmiany własnego hasła
+    konta — czyli praktycznie wypada z domeny, choć formalnie do niej należy.
+
+    W praktyce dotyczy to wyłącznie kontrolerów sprzed kilkunastu lat. Wszystko,
+    co jest dziś wspierane, obsługuje podpisywanie kanału od dawna i włączenie
+    tego punktu przechodzi niezauważone. Ryzyko leży w środowiskach, gdzie
+    w rogu serwerowni stoi kontroler zostawiony dla jednej starej aplikacji.
+
+    Sprawdzić można bez ryzyka: jeśli pozostałe dwa punkty tej rodziny —
+    podpisywanie i szyfrowanie „gdy to możliwe" — są spełnione i maszyna działa,
+    znaczy to, że druga strona i tak już podpisuje.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje przy następnym nawiązaniu kanału.
+  en: |
+    What needs checking is the age of the domain controllers this machine talks to.
+
+    The requirement is unconditional: if the other side cannot sign or encrypt the
+    channel, no connection will come about. The machine then loses the ability to
+    sign in with domain accounts, apply group policy and change its own account
+    password - it effectively drops out of the domain while formally still
+    belonging to it.
+
+    In practice this concerns only controllers from over a decade ago. Everything
+    supported today has signed the channel for a long time and turning this item on
+    passes unnoticed. The risk lies in environments where a controller left for one
+    old application stands in the corner of the server room.
+
+    It can be checked without risk: if the other two items in this family - signing
+    and encrypting "when possible" - are met and the machine works, it means the
+    other side is already signing anyway.
+
+    There is no machine restart. The change takes effect when the channel is next
+    established.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - network-and-firewall
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Logowanie kontami domenowymi przestanie działać, jeśli kontroler nie potrafi podpisać ani zaszyfrować kanału
+      - Zasady grupy przestaną się stosować na maszynie odciętej od kanału bezpiecznego
+      - Konto maszyny przestanie zmieniać swoje hasło i po czasie utraci przynależność do domeny
+    en:
+      - Signing in with domain accounts stops working if the controller cannot sign or encrypt the channel
+      - Group policy stops applying on a machine cut off from the secure channel
+      - The machine account stops changing its password and in time loses its domain membership
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W domenie pozostaje kontroler sprzed kilkunastu lat, nieobsługujący podpisywania kanału bezpiecznego
+    en:
+      - A controller from over a decade ago, not supporting secure channel signing, remains in the domain
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+      $name = 'RequireSignOrSeal'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    $name = 'RequireSignOrSeal'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RequireSignOrSeal' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/domain-member-digitally-encrypt-or-sign-secure-channel-data-always
+
+notes:
+  pl: |
+    Na maszynie w grupie roboczej ustawienie nie ma czego chronić, bo kanału
+    bezpiecznego nie ma. Reguła nadal go sprawdza i oczekuje wartości wymaganej —
+    powodem jest to, że maszyna może zostać przyłączona do domeny później,
+    a wtedy nikt nie wraca do tego punktu.
+
+    Kanał, o którym mowa, nie jest połączeniem sieciowym w zwykłym rozumieniu
+    i nie widać go w narzędziach pokazujących sesje. Jego zerwanie objawia się
+    błędem przy logowaniu albo przy stosowaniu zasad, nie komunikatem o sieci —
+    warto o tym pamiętać przy diagnozowaniu skutków tej zmiany.
+  en: |
+    On a machine in a workgroup the setting has nothing to protect, because there
+    is no secure channel. The rule checks it anyway and expects the required value
+    - the reason being that the machine may be joined to a domain later, and then
+    nobody comes back to this item.
+
+    The channel in question is not a network connection in the ordinary sense and
+    is not visible in tools showing sessions. Its breaking shows up as an error at
+    sign-in or while applying policy, not as a message about the network - worth
+    remembering when diagnosing the effects of this change.

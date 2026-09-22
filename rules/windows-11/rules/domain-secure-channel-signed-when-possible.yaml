@@ -1,0 +1,160 @@
+id: win11-domain-secure-channel-signed-when-possible
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Kanał bezpieczny do kontrolera podpisywany, gdy druga strona to potrafi
+    en: The secure channel to the controller signed where the other side can
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podpis nie ukrywa treści — poświadcza, że dotarła w takiej postaci, w jakiej
+    wyszła. W kanale służbowym między maszyną a kontrolerem domeny jest to
+    ważniejsze niż ukrycie treści, bo najgroźniejszy atak na ten kanał polega nie
+    na czytaniu, lecz na zmienianiu.
+
+    Napastnik siedzący między maszyną a kontrolerem może podmienić odpowiedź
+    o tym, do jakich grup należy logujące się konto, albo potwierdzić tożsamość,
+    której kontroler nie potwierdził. Maszyna nie ma czym takiej podmiany wykryć,
+    jeśli odpowiedzi nie są podpisane — przyjmuje je, bo przyszły właściwą drogą.
+
+    Ten punkt włącza podpisywanie warunkowo: z każdą stroną, która je obsługuje.
+    Postać bezwzględna jest osobnym punktem i osobną decyzją.
+  en: |
+    A signature does not hide content - it attests that it arrived in the form it
+    left in. In the working channel between a machine and a domain controller this
+    matters more than hiding content, because the most dangerous attack on this
+    channel consists not in reading but in altering.
+
+    An attacker sitting between the machine and the controller can swap the reply
+    about which groups the account signing in belongs to, or confirm an identity
+    the controller did not confirm. The machine has no means of detecting such a
+    swap if the replies are not signed - it accepts them, because they came by the
+    right road.
+
+    This item turns signing on conditionally: with every side that supports it. The
+    unconditional form is a separate item and a separate decision.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Tak jak przy warunkowym szyfrowaniu, strona
+    nieobsługująca podpisu nadal się połączy — bez podpisu.
+
+    Wdrożyć można od razu, bez badania, co stoi po drugiej stronie. Jest to
+    właściwa kolejność pracy w tej rodzinie: najpierw dwa punkty warunkowe,
+    potem — po sprawdzeniu, że nic się nie zmieniło i wszystko i tak podpisuje —
+    punkt bezwzględny.
+
+    Nie ma restartu. Zmiana obowiązuje przy następnym nawiązaniu kanału.
+  en: |
+    Nothing stops working. As with conditional encryption, a side that does not
+    support signing will still connect - unsigned.
+
+    It can be applied straight away, without investigating what stands on the other
+    side. That is the right order of work in this family: first the two conditional
+    items, then - having checked that nothing changed and everything signs anyway -
+    the unconditional one.
+
+    There is no restart. The change takes effect when the channel is next
+    established.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Brak znanych regresji - wymaganie jest warunkowe i nie zrywa połączenia ze stroną, która podpisywania nie obsługuje
+    en:
+      - No known regressions - the requirement is conditional and does not break a connection with a side that does not support signing
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+      $name = 'SignSecureChannel'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    $name = 'SignSecureChannel'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SignSecureChannel' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/domain-member-digitally-sign-secure-channel-data-when-possible
+
+notes:
+  pl: |
+    Reguła czyta wartość zasady, a nie stan faktyczny kanału. Wynik „spełniony"
+    znaczy, że maszyna będzie podpisywać tam, gdzie się da — nie, że wszystkie
+    jej rozmowy z kontrolerem są podpisane. Tej drugiej rzeczy z poziomu
+    stanowiska sprawdzić się nie da i reguła tego nie udaje.
+
+    Pewność daje dopiero punkt bezwzględny, bo ten nie zostawia strony
+    niepodpisującej w grze.
+  en: |
+    The rule reads the policy value, not the actual state of the channel. A result
+    of "met" means the machine will sign where it can - not that all its
+    conversations with the controller are signed. The latter cannot be checked from
+    the station, and the rule does not pretend otherwise.
+
+    Certainty comes only with the unconditional item, because that one leaves no
+    non-signing side in play.

@@ -1,0 +1,186 @@
+id: win11-domain-secure-channel-strong-key-required
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Kanał bezpieczny do kontrolera wymaga silnego klucza sesji
+    en: The secure channel to the controller requires a strong session key
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podpisywanie i szyfrowanie kanału służbowego do kontrolera domeny opiera się
+    na kluczu uzgadnianym przy nawiązaniu połączenia. Sam fakt, że kanał jest
+    zabezpieczony, nic nie mówi o tym, czym jest zabezpieczony — a dla napastnika
+    liczy się właśnie to.
+
+    Bez tego punktu maszyna przyjmie klucz o długości pochodzącej z czasów, gdy
+    projektowano ten mechanizm. Klucz taki jest dziś w zasięgu zwykłego sprzętu:
+    da się go złamać obliczeniowo w czasie, który nie przekreśla ataku. Złamanie
+    klucza sesji odbiera całą wartość podpisowi i szyfrowi, bo napastnik zyskuje
+    zdolność wytwarzania poprawnych podpisów.
+
+    Punkt wymusza użycie klucza o długości uznawanej dziś za wystarczającą.
+    Bez niego dwa wcześniejsze punkty tej rodziny bronią słabiej, niż wynikałoby
+    z ich opisu.
+  en: |
+    The signing and encryption of the working channel to the domain controller
+    rests on a key agreed when the connection is established. The bare fact that
+    the channel is protected says nothing about what it is protected with - and
+    for an attacker that is exactly what counts.
+
+    Without this item the machine will accept a key of a length dating from when
+    the mechanism was designed. Such a key is within reach of ordinary hardware
+    today: it can be broken computationally in a time that does not rule the attack
+    out. Breaking the session key takes all the value from the signature and the
+    cipher, because the attacker gains the ability to produce valid signatures.
+
+    The item forces the use of a key of a length considered sufficient today.
+    Without it the two earlier items in this family defend more weakly than their
+    description would suggest.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to samo co przy wymaganiu bezwzględnego podpisu: wiek
+    kontrolerów, do których ta maszyna się odzywa.
+
+    Wymaganie jest bezwarunkowe. Kontroler, który silnego klucza nie obsługuje,
+    zostanie odrzucony i kanał nie powstanie — ze wszystkimi tego skutkami:
+    brakiem logowania kontami domenowymi, brakiem zasad grupy i zatrzymaniem
+    zmian hasła konta maszyny.
+
+    Granica przebiega przy systemach serwerowych sprzed kilkunastu lat i przy
+    urządzeniach udających kontroler w małych środowiskach. Wszystko, co jest
+    dziś wspierane, silny klucz obsługuje i włączenie tego punktu przechodzi
+    niezauważone.
+
+    Kolejność pracy jest ta sama, co w całej rodzinie: najpierw punkty
+    warunkowe, potem ten i punkt bezwzględnego podpisu — oba po sprawdzeniu,
+    co stoi po drugiej stronie.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje przy następnym nawiązaniu kanału.
+  en: |
+    What needs checking is the same as for the unconditional signature requirement:
+    the age of the controllers this machine talks to.
+
+    The requirement is unconditional. A controller that does not support a strong
+    key will be refused and no channel will come about - with all that follows: no
+    signing in with domain accounts, no group policy, and machine account password
+    changes at a standstill.
+
+    The boundary runs at server systems from over a decade ago and at appliances
+    posing as a controller in small environments. Everything supported today
+    handles a strong key, and turning this item on passes unnoticed.
+
+    The order of work is the same as across the family: the conditional items
+    first, then this one and the unconditional signature - both after checking what
+    stands on the other side.
+
+    There is no machine restart. The change takes effect when the channel is next
+    established.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - encryption-and-tls
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Kanał do kontrolera nieobsługującego silnego klucza nie powstanie, a logowanie kontami domenowymi przestanie działać
+      - Urządzenia udające kontroler domeny w małych środowiskach mogą przestać obsługiwać tę maszynę
+    en:
+      - No channel will come about to a controller that does not support a strong key, and signing in with domain accounts stops working
+      - Appliances posing as a domain controller in small environments may stop serving this machine
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W domenie pozostaje kontroler albo urządzenie zastępcze nieobsługujące silnego klucza sesji
+    en:
+      - A controller or a substitute appliance not supporting a strong session key remains in the domain
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+      $name = 'RequireStrongKey'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    $name = 'RequireStrongKey'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RequireStrongKey' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/domain-member-require-strong-windows-2000-or-later-session-key
+
+notes:
+  pl: |
+    Punkt zamyka rodzinę pięciu reguł dotyczących kanału służbowego do kontrolera
+    domeny. Czytane osobno wyglądają na powtórzenia, bo wszystkie mówią o podpisie
+    i szyfrze — różnią się jednak tym, czy wymaganie jest warunkowe, i tym, czego
+    dotyczy: dwa pierwsze włączają zabezpieczenie tam, gdzie się da, trzecie czyni
+    je obowiązkowym, a ten odpowiada za to, żeby było cokolwiek warte.
+
+    Ostatnia reguła tej rodziny — o zmianach hasła konta maszyny — dotyczy
+    poświadczenia, na którym cały kanał się opiera, a nie samego kanału.
+  en: |
+    The item closes a family of five rules concerning the working channel to the
+    domain controller. Read separately they look like repetitions, since all speak
+    of a signature and a cipher - they differ, though, in whether the requirement
+    is conditional, and in what it covers: the first two turn the safeguard on
+    where they can, the third makes it obligatory, and this one sees to it being
+    worth anything.
+
+    The last rule in the family - about machine account password changes -
+    concerns the credential the whole channel rests on, not the channel itself.

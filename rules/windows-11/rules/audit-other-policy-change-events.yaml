@@ -103,17 +103,30 @@ audit:
   test_command: |
     try {
       $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
-      $null = auditpol /backup /file:$csv
-      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
-      else {
-        $rows = Get-Content -Path $csv -ErrorAction Stop
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
         Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
-        $line = $rows | Where-Object { $_ -match '0CCE9234-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
-        if (-not $line) { 'CHECK_ERROR' }
-        else {
-          $value = ($line -split ',')[-1].Trim()
-          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
-        }
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9234-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
       }
     } catch {
       'CHECK_ERROR'

@@ -1,0 +1,158 @@
+id: win11-winrm-client-unencrypted-traffic-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Remote Management > WinRM Client
+  title:
+    pl: Nieszyfrowany ruch klienta zarządzania zdalnego zabroniony
+    en: Unencrypted traffic from the remote management client refused
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Strona kliencka decyduje, na co się zgodzi, gdy druga strona zaproponuje
+    sesję bez szyfrowania. Zgoda oznacza, że wystarczy przejąć rozmowę
+    w połowie drogi i zaproponować brak szyfrowania, żeby dostać czytelną treść
+    razem z poświadczeniami.
+
+    Ustawienie po stronie klienta jest ważniejsze, niż wygląda: to ta maszyna
+    wysyła poświadczenia administracyjne. Jeżeli sama zgodzi się je wysłać
+    otwartym tekstem, konfiguracja serwera po drugiej stronie już niczego nie
+    uratuje.
+  en: |
+    The client side decides what it will agree to when the other end proposes an
+    unencrypted session. Agreeing means it is enough to hijack the conversation
+    halfway and propose no encryption to obtain readable content along with the
+    credentials.
+
+    The client-side setting matters more than it looks: this machine is the one
+    sending administrative credentials. If it agrees to send them in the clear,
+    the configuration of the server at the other end will no longer save
+    anything.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie połączeń wychodzących z tej maszyny. Nic, co łączy
+    się do niej, nie zostanie odcięte.
+
+    Odczuwalna staje się dla osoby, która z tej stacji zarządza innymi
+    maszynami — zwykle administratora. Połączenia do hostów przyjmujących
+    wyłącznie otwarty tekst, także do urządzeń i systemów innych niż Windows,
+    przestaną się nawiązywać. Objaw pojawia się w konsoli tej osoby od razu
+    i jest czytelny, więc nie ma tu cichej awarii.
+  en: |
+    The change concerns outbound connections from this machine only. Nothing
+    connecting to it gets cut off.
+
+    It becomes noticeable for somebody who manages other machines from this
+    workstation - usually an administrator. Connections to hosts that accept
+    only plain text, including non-Windows devices and systems, stop being
+    established. The symptom appears in that person's console straight away and
+    is legible, so there is no silent failure here.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - scripting-and-automation
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Połączenia z tej stacji do hostów przyjmujących wyłącznie otwarty tekst przestaną działać
+      - Skrypty administracyjne uruchamiane z tej maszyny wobec urządzeń innych niż Windows mogą stracić łączność
+      - Narzędzia łączące się przez HTTP bez negocjacji szyfrowania zgłoszą błąd transportu
+    en:
+      - Connections from this workstation to hosts accepting plain text only stop working
+      - Administrative scripts run from this machine against non-Windows devices may lose connectivity
+      - Tools connecting over HTTP without negotiating encryption report a transport error
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Z tej stacji zarządza się urządzeniami, które nie obsługują szyfrowanej sesji zarządzania
+      - Trwa migracja i część hostów docelowych nie ma jeszcze certyfikatów
+    en:
+      - The workstation manages devices that do not support an encrypted management session
+      - A migration is under way and some target hosts do not have certificates yet
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
+      $name = 'AllowUnencryptedTraffic'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
+    $name = 'AllowUnencryptedTraffic'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowUnencryptedTraffic' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/winrm/installation-and-configuration-for-windows-remote-management
+
+notes:
+  pl: |
+    Klient i usługa to dwa osobne ustawienia w dwóch osobnych gałęziach
+    i żadne z nich nie zastępuje drugiego. Stacja robocza bywa obiema stronami
+    naraz, dlatego oba punkty wchodzą do paczki dla stanowiska, a nie tylko dla
+    serwera.
+
+    Brak przerwy w działaniu: ustawienie czytane jest przy nawiązywaniu
+    połączenia, więc obowiązuje od następnej sesji bez restartu usługi po tej
+    stronie.
+  en: |
+    The client and the service are two separate settings in two separate
+    branches, and neither replaces the other. A workstation is often both ends
+    at once, which is why both items belong in the workstation pack rather than
+    only in the server one.
+
+    No interruption: the setting is read when a connection is established, so it
+    applies from the next session without restarting the service on this side.

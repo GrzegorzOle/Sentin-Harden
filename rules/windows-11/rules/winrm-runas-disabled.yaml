@@ -1,0 +1,156 @@
+id: win11-winrm-runas-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Remote Management > WinRM Service
+  title:
+    pl: Przechowywanie poświadczeń RunAs przez usługę zarządzania zdalnego wyłączone
+    en: RunAs credential storage by the remote management service disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usługa zarządzania zdalnego potrafi mieć skonfigurowane konto, na którym
+    wykonuje żądania — wygodne, bo łączący się nie musi mieć uprawnień na tej
+    maszynie. Hasło tego konta jest przechowywane lokalnie, żeby usługa mogła go
+    użyć bez pytania.
+
+    To znaczy, że na dysku leży hasło konta o dużych uprawnieniach, odzyskiwalne
+    przez każdego, kto zdobędzie prawa systemowe. Zakaz przechowywania zdejmuje
+    z maszyny cel, dla którego warto się do niej włamać niezależnie od tego, co
+    sama zawiera: hasło przydatne gdzie indziej.
+  en: |
+    The remote management service can have an account configured under which it
+    executes requests - convenient, because the connecting party then needs no
+    privileges on this machine. That account's password is stored locally so the
+    service can use it without asking.
+
+    That means a highly privileged account's password sits on the disk,
+    recoverable by anybody who gains system rights. Forbidding the storage
+    removes from the machine a target worth breaking into regardless of what it
+    holds itself: a password useful elsewhere.
+
+disruption_description:
+  pl: |
+    Na zdecydowanej większości stacji nie ma czego wyłączać, bo konto RunAs nigdy
+    nie zostało skonfigurowane. Zmiana zapisuje wtedy wyłącznie zakaz na
+    przyszłość i nie zmienia niczego w działaniu.
+
+    Tam, gdzie konto było skonfigurowane, ustawienie kasuje zapamiętane
+    poświadczenia. Konfiguracje zarządzania zdalnego korzystające z tego konta
+    przestaną działać i trzeba będzie je przestawić na poświadczenia osoby
+    łączącej się. Warto to sprawdzić przed zmianą, bo po niej hasła nie da się
+    odczytać z powrotem — zostaje wpisanie go na nowo.
+  en: |
+    On the overwhelming majority of workstations there is nothing to switch off,
+    because a RunAs account was never configured. The change then only writes
+    down a prohibition for the future and alters nothing in operation.
+
+    Where an account was configured, the setting clears the remembered
+    credentials. Remote management configurations relying on that account stop
+    working and will have to be switched to the connecting person's credentials.
+    Worth checking before the change, because afterwards the password cannot be
+    read back - only entered anew.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konfiguracje zarządzania zdalnego korzystające z konta RunAs przestaną wykonywać żądania
+      - Zapamiętane hasło zostanie usunięte i nie da się go odczytać z powrotem
+    en:
+      - Remote management configurations relying on a RunAs account stop executing requests
+      - The remembered password is deleted and cannot be read back
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa konfiguracja zarządzania zdalnego oparta na koncie RunAs, którego hasła nikt już nie zna
+    en:
+      - The machine runs a remote management configuration based on a RunAs account whose password nobody still knows
+  reversibility: difficult
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+      $name = 'DisableRunAs'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+    $name = 'DisableRunAs'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableRunAs' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_remote_troubleshooting
+
+notes:
+  pl: |
+    Odwracalność oznaczono jako trudną, choć sam wpis w rejestrze cofa się
+    natychmiast. Powód leży gdzie indziej: wycofanie przywraca zezwolenie, ale
+    nie przywraca skasowanego hasła. Kto je znał, wpisze je ponownie; kto nie
+    znał, ma problem niezależny od tej aplikacji.
+
+    Dlatego kopia zapasowa obejmuje wyłącznie wartość polityki — zapamiętane
+    poświadczenie nie jest odczytywalne i nie da się go zabezpieczyć. Trzeba to
+    powiedzieć wprost przed uruchomieniem, a nie po.
+  en: |
+    Reversibility is marked difficult even though the registry entry itself
+    reverts instantly. The reason lies elsewhere: the rollback restores the
+    permission but not the deleted password. Whoever knew it will type it again;
+    whoever did not has a problem independent of this application.
+
+    That is why the backup covers the policy value alone - the remembered
+    credential is not readable and cannot be secured. This has to be said
+    plainly before running, not after.

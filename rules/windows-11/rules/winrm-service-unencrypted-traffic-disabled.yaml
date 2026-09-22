@@ -1,0 +1,161 @@
+id: win11-winrm-service-unencrypted-traffic-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Remote Management > WinRM Service
+  title:
+    pl: Nieszyfrowany ruch usługi zarządzania zdalnego zabroniony
+    en: Unencrypted traffic to the remote management service refused
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usługa zarządzania zdalnego potrafi przyjąć sesję bez szyfrowania. Wtedy
+    w sieci widać nie tylko poświadczenia, ale całą treść: polecenia, wyniki,
+    odczytane pliki, zawartość rejestru. Sesja zarządzania zdalnego jest z natury
+    najbogatszym ruchem, jaki ta maszyna generuje.
+
+    Wymaganie szyfrowania zamyka podsłuch i — co ważniejsze — podmianę w locie.
+    Nieszyfrowaną sesję można nie tylko przeczytać, ale też do niej dopisać;
+    polecenie, które trafi na maszynę, nie musi być tym, które ktoś wysłał.
+  en: |
+    The remote management service can accept a session without encryption. Then
+    the network sees not only the credentials but the entire content: commands,
+    results, files read, registry contents. A remote management session is by
+    nature the richest traffic this machine produces.
+
+    Requiring encryption closes off eavesdropping and - more importantly -
+    tampering in flight. An unencrypted session can not only be read but also
+    written to; the command that reaches the machine need not be the one
+    somebody sent.
+
+disruption_description:
+  pl: |
+    Na stacji, do której nikt nie łączy się zdalnie, zmiana nie robi nic.
+    Odczuwalna staje się tam, gdzie narzędzie po drugiej stronie łączy się przez
+    HTTP i nie ma skonfigurowanego certyfikatu.
+
+    Takie połączenie przestanie się nawiązywać natychmiast. Uwaga na częsty
+    przypadek: sesja przez HTTP z uwierzytelnianiem Kerberos albo Negotiate jest
+    już szyfrowana na poziomie samego protokołu i działa dalej. Zablokowane
+    zostaje wyłącznie to, co faktycznie idzie otwartym tekstem — zwykle
+    połączenia z narzędzi spoza domeny.
+  en: |
+    On a workstation nobody connects to remotely the change does nothing. It
+    becomes noticeable where the tool on the other side connects over HTTP and
+    has no certificate configured.
+
+    Such a connection stops being established at once. Note a common case: a
+    session over HTTP with Kerberos or Negotiate authentication is already
+    encrypted at the protocol level and keeps working. What gets blocked is only
+    what genuinely travels in the clear - usually connections from tools outside
+    the domain.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - scripting-and-automation
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Sesje zarządzania zdalnego z uwierzytelnianiem podstawowym przez HTTP przestaną się nawiązywać
+      - Narzędzia spoza domeny, które nie negocjują szyfrowania, stracą dostęp do tej maszyny
+      - Systemy zbierające dane przez zarządzanie zdalne wymagają certyfikatu albo konfiguracji z domeny
+    en:
+      - Remote management sessions using basic authentication over HTTP stop being established
+      - Tools outside the domain that do not negotiate encryption lose access to this machine
+      - Systems collecting data through remote management need a certificate or domain configuration
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyną zarządza narzędzie łączące się otwartym tekstem i nie da się go szybko przestawić
+      - Zdalne zarządzanie jest jedyną drogą do maszyny, a certyfikat nie jest jeszcze gotowy
+    en:
+      - The machine is managed by a tool connecting in the clear that cannot be switched over quickly
+      - Remote management is the only route to the machine and a certificate is not ready yet
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+      $name = 'AllowUnencryptedTraffic'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+    $name = 'AllowUnencryptedTraffic'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowUnencryptedTraffic' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/winrm/installation-and-configuration-for-windows-remote-management
+
+notes:
+  pl: |
+    Punkt tworzy parę z uwierzytelnianiem podstawowym usługi i z nim wdraża się
+    razem. Osobno któryś z nich zawsze zostawia drogę: szyfrowanie bez zakazu
+    uwierzytelniania podstawowego chroni hasło tylko wtedy, gdy klient rzeczywiście
+    szyfrowanie wynegocjuje.
+
+    Nazwa ustawienia myli: nie chodzi o wyłączenie HTTP na rzecz HTTPS, tylko
+    o zakaz sesji, w których treść idzie otwartym tekstem. Uwierzytelnianie
+    Kerberos przez HTTP szyfruje ładunek samo z siebie i punktu nie narusza.
+  en: |
+    The item pairs with basic authentication for the service and is rolled out
+    together with it. On its own either of them still leaves a way through:
+    encryption without a ban on basic authentication protects the password only
+    if the client actually negotiates encryption.
+
+    The setting's name misleads: it is not about dropping HTTP in favour of
+    HTTPS, but about refusing sessions whose content travels in the clear.
+    Kerberos authentication over HTTP encrypts the payload by itself and does not
+    violate the item.

@@ -1,0 +1,177 @@
+id: win11-powershell-transcription
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows PowerShell
+  title:
+    pl: Zapis przebiegu sesji programu PowerShell włączony
+    en: PowerShell transcription enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Rejestrowanie bloków skryptu zapisuje to, co zostało uruchomione. Zapis
+    przebiegu sesji zapisuje dodatkowo to, co z tego wyszło: wyniki poleceń,
+    komunikaty, odczytane wartości. Przy badaniu incydentu różnica jest
+    zasadnicza — pierwsze mówi, o co ktoś zapytał, drugie, co dostał
+    w odpowiedzi.
+
+    Ma to znaczenie, bo kod uruchamiany podczas ataku jest zwykle pobierany
+    i składany w locie. Sam zapis bloków pokazuje wtedy polecenie pobierające,
+    a nie to, co zostało pobrane. Przebieg sesji zatrzymuje efekt, nawet jeśli
+    źródło zdążyło zniknąć.
+  en: |
+    Script block logging records what was run. Transcription additionally
+    records what came out of it: command results, messages, values read. When
+    investigating an incident the difference is fundamental - the first says what
+    somebody asked for, the second what they got back.
+
+    This matters because code run during an attack is usually fetched and
+    assembled on the fly. Block logging alone then shows the fetching command
+    rather than what was fetched. A transcript keeps the effect even if the
+    source has since disappeared.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać i użytkownik niczego nie zauważy. Koszt jest inny
+    i trzeba go ocenić przed wdrożeniem, bo dotyczy danych.
+
+    Przebieg sesji zapisuje wyjście poleceń dosłownie. Trafi tam więc wszystko,
+    co administrator wyświetlił na ekranie: zawartość plików konfiguracyjnych,
+    klucze, tokeny, czasem hasło wpisane w wierszu polecenia. Domyślnie pliki
+    lądują w katalogu dokumentów użytkownika, gdzie może je przeczytać każdy, kto
+    ma dostęp do jego profilu. Bez wskazania chronionego katalogu punkt potrafi
+    stworzyć nowe źródło wycieku zamiast dowodu.
+  en: |
+    Nothing stops working and the user notices nothing. The cost is of a
+    different kind and has to be weighed before rollout, because it concerns
+    data.
+
+    A transcript records command output literally. So everything an
+    administrator displayed on screen ends up there: the contents of
+    configuration files, keys, tokens, sometimes a password typed on the command
+    line. By default the files land in the user's documents folder, where anybody
+    with access to their profile can read them. Without pointing at a protected
+    directory the item can create a new source of leakage instead of evidence.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Wyjście poleceń trafia do plików tekstowych, razem z danymi wyświetlonymi na ekranie
+      - Domyślnie pliki zapisują się w profilu użytkownika i są czytelne dla każdego, kto ma do niego dostęp
+      - Na maszynie intensywnie używającej skryptów pliki rosną szybko i nikt ich nie kasuje
+      - Sesje skryptowe uruchamiane w pętli zwalniają w sposób mierzalny
+    en:
+      - Command output goes into text files, together with data shown on screen
+      - By default the files are written into the user profile and readable by anybody with access to it
+      - On a machine that uses scripts heavily the files grow fast and nobody deletes them
+      - Script sessions run in a loop slow down measurably
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Nie wskazano chronionego katalogu docelowego, a na maszynie pracuje się z danymi wrażliwymi w konsoli
+      - Maszyna uruchamia skrypty w pętli i zapis wpływa na czas ich wykonania
+      - Nie ma kto porządkować przyrastających plików
+    en:
+      - No protected target directory has been chosen and sensitive data is handled in the console on this machine
+      - The machine runs scripts in a loop and the writing affects their execution time
+      - There is nobody to clean up the accumulating files
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'
+      $name = 'EnableTranscripting'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'
+    $name = 'EnableTranscripting'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableTranscripting' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_group_policy_settings
+
+notes:
+  pl: |
+    Reguła włącza sam zapis i świadomie nie ustawia katalogu docelowego.
+    Katalog to decyzja o tym, gdzie trafią dane wrażliwe, i aplikacja nie ma
+    podstaw, żeby wymyślić ścieżkę za użytkownika. Kopia zapasowa obejmuje
+    dokładnie ten zakres, który zmieniamy — jedną wartość, nie całą gałąź.
+
+    Wybór katalogu jest jednak warunkiem, żeby punkt miał sens. Zapis
+    pozostawiony w profilu użytkownika jest czytelny i kasowalny przez tę samą
+    osobę, której działania rejestruje, a przy koncie przejętym przez atakującego
+    ślad znika razem z resztą. Aplikacja ma to powiedzieć w opisie, a nie
+    zakładać, że użytkownik wie.
+
+    Punkt tworzy parę z rejestrowaniem bloków skryptu. Same bloki pokazują
+    zamiar, przebieg sesji — skutek.
+  en: |
+    The rule enables the recording itself and deliberately does not set the
+    target directory. The directory is a decision about where sensitive data goes,
+    and the application has no basis for inventing a path on the user's behalf.
+    The backup covers exactly the scope being changed - one value, not a whole
+    branch.
+
+    Choosing the directory is nevertheless the condition for the item to make
+    sense. A transcript left in the user profile is readable and deletable by the
+    same person whose actions it records, and with an account taken over by an
+    attacker the trace disappears along with everything else. The application has
+    to say this in the description rather than assume the user knows.
+
+    The item pairs with script block logging. Blocks alone show the intent, a
+    transcript shows the effect.

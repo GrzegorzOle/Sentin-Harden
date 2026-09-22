@@ -1,0 +1,165 @@
+id: win11-remote-shell-access-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Remote Shell
+  title:
+    pl: Dostęp do powłoki zdalnej wyłączony
+    en: Remote shell access disabled
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Powłoka zdalna to możliwość uruchomienia na tej maszynie dowolnego polecenia
+    z sieci. Nie kopiowania pliku, nie odczytania ustawienia — wykonania kodu.
+    Kto ma poświadczenia i dostęp sieciowy, ma stację.
+
+    To jest droga, z której korzysta się przy rozprzestrzenianiu się po sieci:
+    zdobyte gdzie indziej hasło administratora pozwala wejść na kolejne maszyny
+    bez żadnego narzędzia, samymi mechanizmami systemu. Wyłączenie powłoki
+    zdalnej zamyka tę drogę na tej konkretnej stacji.
+  en: |
+    A remote shell is the ability to run an arbitrary command on this machine
+    from the network. Not copying a file, not reading a setting - executing code.
+    Whoever has the credentials and network access has the workstation.
+
+    This is the route used when spreading across a network: an administrator
+    password obtained elsewhere allows entry to further machines with no tooling
+    at all, using the system's own mechanisms. Disabling the remote shell closes
+    that route on this particular workstation.
+
+disruption_description:
+  pl: |
+    Zmiana jest poważna i tak trzeba ją traktować. Przestanie działać zdalne
+    uruchamianie poleceń na tej maszynie: skrypty administracyjne, narzędzia
+    wdrożeniowe, zdalna diagnostyka, część systemów inwentaryzacyjnych
+    i monitorujących.
+
+    Najgroźniejszy skutek jest jednak inny: jeśli powłoka zdalna była drogą, którą
+    ktoś dostawał się do tej maszyny w razie awarii, po zmianie tej drogi nie ma.
+    Wyłączanie jej zdalnie, w trakcie sesji zdalnej, potrafi odciąć osobę, która
+    to robi. To punkt na okno serwisowe i przy fizycznym albo konsolowym dostępie
+    do maszyny.
+  en: |
+    The change is serious and has to be treated as such. Running commands
+    remotely on this machine stops working: administrative scripts, deployment
+    tooling, remote diagnostics, some inventory and monitoring systems.
+
+    The most dangerous consequence is a different one, though: if the remote
+    shell was the route somebody used to reach this machine when things broke,
+    after the change that route is gone. Disabling it remotely, during a remote
+    session, can cut off the person doing it. This is an item for a maintenance
+    window and with physical or console access to the machine.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Zdalne uruchamianie poleceń na tej maszynie przestanie być możliwe
+      - Narzędzia wdrożeniowe i skrypty administracyjne stracą sposób wykonania zadań na tej stacji
+      - Systemy inwentaryzacyjne i monitorujące oparte na powłoce zdalnej przestaną zbierać dane
+      - Zdalna diagnostyka awarii przestanie być dostępna, łącznie z sytuacją, w której to jedyna droga do maszyny
+    en:
+      - Running commands remotely on this machine becomes impossible
+      - Deployment tooling and administrative scripts lose their way of executing tasks on this workstation
+      - Inventory and monitoring systems based on the remote shell stop collecting data
+      - Remote failure diagnostics become unavailable, including where it is the only route to the machine
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna jest zarządzana zdalnie i powłoka zdalna jest do tego używana
+      - Nie ma innej drogi dostępu do maszyny na wypadek awarii
+      - Maszyna jest serwerem albo stacją w zdalnej lokalizacji bez obsługi na miejscu
+    en:
+      - The machine is managed remotely and the remote shell is used for it
+      - There is no other route to the machine in case of failure
+      - The machine is a server or a workstation in a remote location with nobody on site
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service\WinRS'
+      $name = 'AllowRemoteShellAccess'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service\WinRS'
+    $name = 'AllowRemoteShellAccess'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service\WinRS'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowRemoteShellAccess' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/winrm/windows-remote-shell-scripting-api
+
+notes:
+  pl: |
+    Wycofanie samego wpisu jest natychmiastowe, ale wymaga dostępu do maszyny —
+    a tego właśnie ta zmiana potrafi pozbawić. Odwracalność opisana jako
+    natychmiastowa dotyczy operacji, nie sytuacji, w której ktoś odciął sam
+    siebie. Aplikacja ma to powiedzieć przed uruchomieniem.
+
+    Punkt jest poziomu 2 i dla stacji zarządzanej centralnie zwykle kończy się
+    świadomym odpuszczeniem. To prawidłowy wynik: koszt eksploatacyjny bywa tu
+    wyższy niż zysk, a decyzję wraz z uzasadnieniem widać w raporcie.
+  en: |
+    Reverting the entry itself is immediate, but it requires access to the
+    machine - which is exactly what this change can take away. The reversibility
+    described as immediate refers to the operation, not to a situation where
+    somebody has cut themselves off. The application has to say this before
+    running.
+
+    The item is level 2 and on a centrally managed workstation it usually ends in
+    a deliberate acceptance of the risk. That is a correct outcome: the
+    operational cost here is often higher than the gain, and the decision along
+    with its justification is visible in the report.

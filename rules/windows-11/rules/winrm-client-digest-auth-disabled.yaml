@@ -1,0 +1,144 @@
+id: win11-winrm-client-digest-auth-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Remote Management > WinRM Client
+  title:
+    pl: Uwierzytelnianie skrótem w kliencie zarządzania zdalnego wyłączone
+    en: Digest authentication in the remote management client disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uwierzytelnianie skrótem nie przesyła hasła otwartym tekstem, ale ma wadę
+    poważniejszą: uwierzytelnia wyłącznie klienta. Maszyna, z którą rozmawia, nie
+    musi niczego udowodnić. Wystarczy więc stanąć w środku i podać się za serwer,
+    żeby zebrać materiał do ataku na hasło.
+
+    Wyłączenie tego wariantu zostawia mechanizmy, w których obie strony
+    potwierdzają tożsamość. Zamyka klasyczny scenariusz z fałszywym hostem
+    zarządzającym, w którym administrator nawet nie wie, że rozmawiał z kimś
+    innym, niż zamierzał.
+  en: |
+    Digest authentication does not send the password in the clear, but it has a
+    more serious flaw: it authenticates the client only. The machine it talks to
+    has to prove nothing. So it is enough to stand in the middle and pose as the
+    server to collect material for an attack on the password.
+
+    Disabling this variant leaves mechanisms in which both sides confirm their
+    identity. It closes the classic false-management-host scenario, in which the
+    administrator does not even know they talked to somebody other than
+    intended.
+
+disruption_description:
+  pl: |
+    Uwierzytelnianie skrótem jest w zarządzaniu zdalnym Windows rzadkie: domyślnie
+    stosuje się Negotiate lub Kerberos, a tam, gdzie te nie działają, ludzie
+    sięgają po uwierzytelnianie podstawowe albo certyfikat, nie po skrót.
+
+    Dlatego punkt trafia do klasy bez uciążliwości. Zmiana dotyczy wyłącznie
+    połączeń wychodzących i obowiązuje od następnej sesji, bez restartu
+    czegokolwiek. Realne ryzyko regresji sprowadza się do pojedynczego narzędzia
+    zewnętrznego, które świadomie tego wariantu wymaga — a takie zwykle zgłasza
+    to w dokumentacji.
+  en: |
+    Digest authentication is rare in Windows remote management: Negotiate or
+    Kerberos is the default, and where those do not work people reach for basic
+    authentication or a certificate, not for digest.
+
+    That is why the item falls into the no-disruption class. The change concerns
+    outbound connections only and applies from the next session without
+    restarting anything. The real regression risk comes down to a single
+    external tool that deliberately requires this variant - and such tools
+    usually say so in their documentation.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Narzędzie wymagające uwierzytelniania skrótem straci możliwość połączenia z tej stacji
+    en:
+      - A tool requiring digest authentication loses the ability to connect from this workstation
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Z tej stacji korzysta się z usługi zarządzania, która obsługuje wyłącznie uwierzytelnianie skrótem
+    en:
+      - The workstation uses a management service that supports digest authentication only
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
+      $name = 'AllowDigest'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
+    $name = 'AllowDigest'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowDigest' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/winrm/authentication-for-remote-connections
+
+notes:
+  pl: |
+    Ustawienie istnieje wyłącznie po stronie klienta — usługa zarządzania
+    zdalnego w Windows uwierzytelniania skrótem nie przyjmuje w ogóle. Brak
+    odpowiednika po stronie usługi nie jest więc przeoczeniem w paczce.
+  en: |
+    The setting exists on the client side only - the Windows remote management
+    service does not accept digest authentication at all. The absence of a
+    service-side counterpart is therefore not an omission in the pack.

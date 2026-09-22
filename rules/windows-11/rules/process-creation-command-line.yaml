@@ -1,0 +1,157 @@
+id: win11-process-creation-command-line
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Audit Process Creation
+  title:
+    pl: Wiersz polecenia zapisywany w zdarzeniach utworzenia procesu
+    en: Command line recorded in process creation events
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zdarzenie utworzenia procesu bez wiersza polecenia mówi tylko tyle, że coś
+    uruchomiło program. Przy narzędziach systemowych — interpreterze poleceń,
+    narzędziu do pobierania plików, menedżerze zadań — to informacja bezużyteczna,
+    bo właśnie te programy uruchamiają się na tej maszynie setki razy dziennie
+    zupełnie legalnie.
+
+    Cała treść ataku siedzi w argumentach: skąd pobrano plik, co zostało
+    zakodowane w parametrze, jaki adres podano. Zapisanie wiersza polecenia
+    zamienia zdarzenie z „uruchomiono program" w „uruchomiono program, żeby
+    zrobić to i to" — i dopiero wtedy da się odróżnić pracę administratora od
+    pracy napastnika używającego tych samych narzędzi.
+  en: |
+    A process creation event without the command line says only that something
+    started a program. For system tools - the command interpreter, a file
+    download utility, a task manager - that is useless, because those very
+    programs start on this machine hundreds of times a day entirely legitimately.
+
+    The substance of an attack sits in the arguments: where the file was fetched
+    from, what was encoded in a parameter, which address was given. Recording
+    the command line turns the event from "a program was started" into "a
+    program was started in order to do this" - and only then can an
+    administrator's work be told apart from an attacker's using the same tools.
+
+disruption_description:
+  pl: |
+    Zmiana nie wpływa na działanie systemu i użytkownik jej nie zobaczy.
+    Kosztem jest objętość dziennika oraz — poważniejsze — to, co w tych
+    argumentach ląduje.
+
+    Skrypty i zadania przekazujące hasło albo klucz w wierszu polecenia zapiszą
+    je czytelnie w dzienniku zabezpieczeń, dostępnym szerszemu gronu niż sam
+    plik ze skryptem. To nie jest powód, żeby zrezygnować z zapisu, tylko żeby
+    najpierw sprawdzić, kto czyta ten dziennik i czy takie wywołania na tej
+    maszynie występują.
+  en: |
+    The change does not affect how the system works and the user will not see
+    it. The cost is log volume and - more seriously - what ends up in those
+    arguments.
+
+    Scripts and tasks passing a password or a key on the command line will
+    record it in clear text in the security log, which is available to a wider
+    group than the script file itself. That is not a reason to give up the
+    recording, but a reason to check first who reads that log and whether such
+    invocations occur on this machine.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Skrypty przekazujące hasła w wierszu polecenia zapiszą je czytelnie w dzienniku zabezpieczeń
+      - Dziennik zabezpieczeń zapełni się szybciej i zacznie nadpisywać starsze zdarzenia
+      - Maszyny przesyłające dzienniki do kolektora zwiększą ruch i zajętość po jego stronie
+    en:
+      - Scripts passing passwords on the command line record them in clear text in the security log
+      - The security log fills up faster and starts overwriting older events
+      - Machines forwarding logs to a collector increase traffic and storage use on its side
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zabezpieczeń czyta szersza grupa niż administratorzy odpowiedzialni za tę maszynę
+      - Na stacji działa automatyzacja przekazująca sekrety w argumentach, której nie da się teraz poprawić
+    en:
+      - A wider group than the administrators responsible for this machine reads the security log
+      - The workstation runs automation passing secrets in arguments that cannot be fixed right now
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+      $name = 'ProcessCreationIncludeCmdLine_Enabled'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+    $name = 'ProcessCreationIncludeCmdLine_Enabled'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ProcessCreationIncludeCmdLine_Enabled' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/event-4688
+
+notes:
+  pl: |
+    To ustawienie samo z siebie nic nie zapisze: decyduje tylko o tym, czy
+    zdarzenie utworzenia procesu zawiera wiersz polecenia. Samo rejestrowanie
+    tworzenia procesów włącza się osobno, w zasadach inspekcji. Punkt sprawdza
+    wyłącznie tę pierwszą część — bez drugiej pozostaje przygotowaniem, nie
+    zabezpieczeniem.
+  en: |
+    On its own this setting records nothing: it only decides whether a process
+    creation event carries the command line. Auditing of process creation itself
+    is enabled separately, in the audit policy. The item checks only this first
+    part - without the second it remains preparation rather than protection.

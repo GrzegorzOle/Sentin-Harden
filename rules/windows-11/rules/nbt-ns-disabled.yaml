@@ -1,0 +1,156 @@
+id: win11-nbt-ns-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Network > NetBIOS over TCP/IP
+  title:
+    pl: Rozpoznawanie nazw NetBIOS wyłączone na wszystkich kartach
+    en: NetBIOS name resolution disabled on all adapters
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    NBT-NS robi to samo, co LLMNR, tylko starszym mechanizmem: gdy DNS nie zna
+    nazwy, stacja pyta o nią całą sieć lokalną i wierzy pierwszemu, kto się
+    odezwie. Napastnik odpowiada i przejmuje próbę uwierzytelnienia.
+
+    Dlatego wyłączenie samego LLMNR nie zamyka drogi — zostaje bliźniak
+    nasłuchujący obok. Dopiero wyłączenie obu sprawia, że rozpoznawanie nazw
+    opiera się wyłącznie na serwerze DNS, a nieznana nazwa kończy się błędem
+    zamiast pytaniem zadanym obcym.
+  en: |
+    NBT-NS does the same thing as LLMNR, only through an older mechanism: when
+    DNS does not know a name, the workstation asks the whole local network and
+    believes whoever answers first. An attacker answers and captures the
+    authentication attempt.
+
+    This is why disabling LLMNR alone does not close the route - the twin is
+    still listening alongside it. Only disabling both makes name resolution rest
+    on the DNS server alone, so an unknown name ends in an error instead of a
+    question put to strangers.
+
+disruption_description:
+  pl: |
+    Skutki pokrywają się z wyłączeniem LLMNR, ale sięgają głębiej, bo NetBIOS
+    obsługuje też starsze przeglądanie otoczenia sieciowego. Zniknie lista
+    komputerów widoczna w oknie sieci, a udziały adresowane krótką nazwą
+    w sieci bez DNS przestaną się otwierać.
+
+    Osobne ryzyko: ustawienie zapisuje się na każdej karcie sieciowej z osobna,
+    a nowa karta — wirtualna, USB, VPN — pojawia się z wartością domyślną. Punkt
+    trzeba więc sprawdzać ponownie po zmianach sprzętowych, nie tylko raz.
+  en: |
+    The consequences overlap with disabling LLMNR but reach further, because
+    NetBIOS also backs the older network neighbourhood browsing. The list of
+    computers shown in the network window disappears, and shares addressed by a
+    short name on a network without DNS stop opening.
+
+    A separate risk: the setting is written per network adapter, and a new
+    adapter - virtual, USB, VPN - appears with the default value. The item
+    therefore has to be re-checked after hardware changes, not just once.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-authentication
+    - file-sharing
+    - printing
+  what_breaks:
+    pl:
+      - Lista komputerów w oknie otoczenia sieciowego przestanie się wypełniać na tej stacji
+      - Udziały adresowane krótką nazwą komputera w sieci bez serwera DNS przestaną być osiągalne
+      - Starsze aplikacje odnajdujące serwer przez rozgłoszenie NetBIOS nie znajdą go przy starcie
+    en:
+      - The list of computers in the network neighbourhood window stops filling in on this workstation
+      - Shares addressed by a short computer name on a network without DNS stop being reachable
+      - Older applications locating their server through a NetBIOS broadcast fail to find it at start-up
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W sieci działają aplikacje odnajdujące serwery wyłącznie przez rozgłoszenie NetBIOS
+      - Stacja pracuje w segmencie bez serwera DNS, gdzie nazwy rozwiązują się rozgłoszeniami
+    en:
+      - The network runs applications that locate servers only through a NetBIOS broadcast
+      - The workstation sits in a segment with no DNS server, where names resolve by broadcast
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $root = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces'
+      $interfaces = @(Get-ChildItem -Path $root -ErrorAction Stop)
+      if ($interfaces.Count -eq 0) { 'CHECK_ERROR' }
+      else {
+        $enabled = @($interfaces | Where-Object {
+          $value = (Get-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -ErrorAction SilentlyContinue).NetbiosOptions
+          $null -eq $value -or [int]$value -ne 2
+        })
+        if ($enabled.Count -eq 0) { 'ALL_DISABLED' }
+        else { 'ENABLED_ON_' + $enabled.Count + '_OF_' + $interfaces.Count }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_DISABLED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $root = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces'
+    Get-ChildItem -Path $root | ForEach-Object {
+      [pscustomobject]@{
+        path    = $_.PSPath
+        value   = (Get-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -ErrorAction SilentlyContinue).NetbiosOptions
+        existed = ($null -ne (Get-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -ErrorAction SilentlyContinue).NetbiosOptions)
+      }
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $root = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces'
+    Get-ChildItem -Path $root | ForEach-Object {
+      Set-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -Value 2 -Type DWord
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($entry in @($b)) {
+      if ($entry.existed) {
+        Set-ItemProperty -Path $entry.path -Name 'NetbiosOptions' -Value $entry.value -Type DWord
+      } else {
+        Remove-ItemProperty -Path $entry.path -Name 'NetbiosOptions' -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/disable-netbios-tcp-ip-using-dhcp
+
+notes:
+  pl: |
+    Wartość 2 znaczy „wyłącz NetBIOS na tej karcie" niezależnie od tego, co
+    podpowiada serwer DHCP. Wynik audytu podaje, na ilu kartach z ilu mechanizm
+    jest wciąż aktywny, więc widać, czy chodzi o przeoczenie, czy o nową kartę.
+    To druga połowa pary z punktem o LLMNR — wdrażanie jednego bez drugiego
+    zostawia drogę otwartą.
+  en: |
+    The value 2 means "disable NetBIOS on this adapter" regardless of what the
+    DHCP server suggests. The audit result states on how many adapters out of
+    how many the mechanism is still active, so it is clear whether this is an
+    oversight or a new adapter. This is the second half of a pair with the LLMNR
+    item - rolling out one without the other leaves the route open.

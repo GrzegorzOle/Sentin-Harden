@@ -1,0 +1,143 @@
+id: win11-cached-logons-limited
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Liczba zapamiętanych logowań ograniczona
+    en: Number of cached sign-ins limited
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Żeby dało się zalogować bez łączności z kontrolerem domeny, system
+    przechowuje lokalnie materiał weryfikacyjny ostatnich logowań. Im więcej
+    kont zapamiętanych, tym więcej jest do wyniesienia z przejętej maszyny —
+    a wśród nich bywają konta o wyższych uprawnieniach, które kiedyś zalogowały
+    się tu raz, przy naprawie.
+
+    Ograniczenie liczby zapamiętanych logowań zmniejsza to, co napastnik
+    znajduje na laptopie. Nie chroni konta zalogowanego na co dzień, ale usuwa
+    z maszyny ślady po kontach, które nie mają powodu tam zostawać.
+  en: |
+    So that signing in is possible without a connection to a domain controller,
+    the system keeps verification material for recent sign-ins locally. The more
+    accounts remembered, the more there is to carry away from a compromised
+    machine - and among them are sometimes higher-privileged accounts that
+    signed in here once, during a repair.
+
+    Limiting the number of cached sign-ins reduces what an attacker finds on a
+    laptop. It does not protect the account used daily, but it removes from the
+    machine the traces of accounts that have no reason to stay there.
+
+disruption_description:
+  pl: |
+    Ryzyko jest jednostronne i dotyczy pracy bez łączności. Konto, którego
+    logowanie wypadło z pamięci, nie zaloguje się na tej maszynie, dopóki nie
+    będzie widoczny kontroler domeny — czyli dokładnie wtedy, gdy jest to
+    najbardziej potrzebne: w terenie, w podróży, przy zerwanym łączu.
+
+    Na stacji używanej przez jedną osobę zmiana jest niewidoczna. Na komputerze
+    współdzielonym przez zmiany albo na laptopie serwisowym potrafi zamknąć
+    dostęp bez ostrzeżenia, dlatego klasa „wymaga sprawdzenia".
+  en: |
+    The risk is one-sided and concerns working without connectivity. An account
+    whose sign-in has dropped out of the cache cannot sign in on this machine
+    until a domain controller is reachable - which is precisely when it is
+    needed most: in the field, while travelling, with a broken link.
+
+    On a workstation used by one person the change is invisible. On a computer
+    shared across shifts, or on a service laptop, it can close access without
+    warning - hence the "needs review" class.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Konta, które dawno nie logowały się na tej maszynie, nie wejdą bez łączności z kontrolerem domeny
+      - Komputer współdzielony przez wiele zmian może odmówić logowania części osób poza siecią firmową
+      - Laptop serwisowy używany przez zespół przestanie wpuszczać techników, którzy logowali się najdawniej
+    en:
+      - Accounts that have not signed in on this machine for a while cannot get in without a domain controller
+      - A computer shared across many shifts may refuse sign-in to some people outside the corporate network
+      - A service laptop used by a team stops letting in the technicians who signed in longest ago
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna pracuje głównie poza siecią firmową i loguje się do niej więcej osób niż wynosi limit
+      - Stanowisko jest współdzielone przez zmiany, a łączność z kontrolerem domeny bywa przerywana
+    en:
+      - The machine works mostly outside the corporate network and more people sign in than the limit allows
+      - The station is shared across shifts and connectivity to a domain controller is intermittent
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      $name = 'CachedLogonsCount'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { ([string]$item.$name).Trim() }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '4'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'CachedLogonsCount'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+      -Name 'CachedLogonsCount' -Value '4' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value ([string]$b.value) -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-number-of-previous-logons-to-cache-in-case-domain-controller-is-not-available
+
+notes:
+  pl: |
+    Wartość jest przechowywana jako tekst, nie liczba — stąd zapis ciągiem
+    znaków w poleceniu naprawczym. Zero wyłącza pamięć logowań całkowicie
+    i na maszynie przenośnej oznacza brak możliwości zalogowania bez łączności,
+    dlatego punkt sprawdza górną granicę, a nie obecność wartości zero.
+  en: |
+    The value is stored as text rather than a number - hence the string write in
+    the remediation command. Zero disables the sign-in cache entirely and on a
+    portable machine means no sign-in is possible without connectivity, which is
+    why the item checks an upper bound rather than insisting on zero.

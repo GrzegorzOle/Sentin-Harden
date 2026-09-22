@@ -1,0 +1,150 @@
+id: win11-smb-server-signing-required
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Podpisywanie komunikacji SMB wymagane po stronie serwera
+    en: SMB server communication signing required
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Stacja robocza udostępnia zasoby częściej, niż się wydaje: udział na pliki,
+    drukarka, folder wymiany z kolegą z zespołu. Gdy podpisywania nie wymaga,
+    przyjmuje połączenia, których nikt nie weryfikuje — a napastnik siedzący
+    w środku rozmowy może przekazać czyjeś uwierzytelnienie i wejść na udział
+    w cudzym imieniu.
+
+    Wymaganie podpisywania po stronie serwera zamyka tę stronę połączenia.
+    Każdy pakiet niesie skrót liczony z klucza sesji, więc podmiana treści
+    w locie przestaje przechodzić, a przekazanie cudzego uwierzytelnienia na tę
+    maszynę zostaje odrzucone.
+  en: |
+    A workstation shares resources more often than it seems: a file share, a
+    printer, an exchange folder for a teammate. When it does not require
+    signing, it accepts connections nobody verifies - and an attacker sitting in
+    the middle of the conversation can relay someone else's authentication and
+    enter the share on their behalf.
+
+    Requiring signing on the server side closes that end of the connection.
+    Every packet carries a digest computed from the session key, so swapping
+    content in flight stops working, and relaying someone else's authentication
+    to this machine is refused.
+
+disruption_description:
+  pl: |
+    Ryzyko jest lustrzane do strony klienckiej, ale ofiara inna: odcięci zostaną
+    ci, którzy łączą się do tej maszyny. Jeśli stacja udostępnia folder
+    urządzeniu, które podpisywania nie obsługuje — skanerowi, rejestratorowi,
+    sterownikowi na hali — połączenie przestanie dochodzić do skutku.
+
+    Skutek jest natychmiastowy po ponownym uruchomieniu usługi serwera, a
+    komunikat po stronie urządzenia zwykle nie tłumaczy powodu. Stąd klasa
+    „wymaga sprawdzenia": trzeba wiedzieć, kto się do tej maszyny łączy, zanim
+    się ją domknie.
+  en: |
+    The risk mirrors the client side, but the casualty differs: those connecting
+    to this machine get cut off. If the workstation shares a folder with a
+    device that does not support signing - a scanner, a recorder, a shop-floor
+    controller - the connection stops completing.
+
+    The effect is immediate once the server service restarts, and the message on
+    the device side usually does not explain why. Hence the "needs review"
+    class: you need to know who connects to this machine before closing it up.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - printing
+    - network-and-firewall
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Urządzenia bez obsługi podpisywania przestaną zapisywać pliki na udziałach tej maszyny
+      - Skanery sieciowe odkładające dokumenty do folderu na tej stacji stracą możliwość połączenia
+      - Kopiowanie dużych plików z udziałów tej maszyny zwolni, najbardziej przy starszym sprzęcie po drugiej stronie
+    en:
+      - Devices without signing support stop writing files to this machine's shares
+      - Network scanners depositing documents into a folder on this workstation lose the ability to connect
+      - Copying large files from this machine's shares slows down, most of all with older hardware on the other end
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Do udziałów tej maszyny łączą się urządzenia, których oprogramowanie nie obsługuje podpisywania
+      - Stacja pełni rolę magazynu plików dla sprzętu pomiarowego, którego nie da się zaktualizować
+    en:
+      - Devices whose software does not support signing connect to this machine's shares
+      - The workstation serves as a file store for measurement hardware that cannot be updated
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      $name = 'RequireSecuritySignature'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'RequireSecuritySignature'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' `
+      -Name 'RequireSecuritySignature' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/storage/file-server/smb-signing
+
+notes:
+  pl: |
+    Druga połowa pary z podpisywaniem po stronie klienta. Wdrożenie obu naraz
+    jest łatwiejsze do zdiagnozowania niż pojedynczo: gdy zawiedzie tylko jedna
+    strona, objaw zależy od kierunku połączenia i trudniej go powiązać ze zmianą.
+  en: |
+    The second half of a pair with client-side signing. Rolling out both at once
+    is easier to diagnose than one at a time: when only one side fails, the
+    symptom depends on the direction of the connection and is harder to tie back
+    to the change.

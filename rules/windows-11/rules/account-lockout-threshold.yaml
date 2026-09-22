@@ -1,0 +1,176 @@
+id: win11-account-lockout-threshold
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Account Policies > Account Lockout Policy
+  title:
+    pl: Próg blokady konta po nieudanych próbach logowania
+    en: Account lockout threshold after failed sign-in attempts
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bez progu blokady hasło można zgadywać bez końca. Automat próbuje tysiące
+    kombinacji na godzinę, a jedynym ograniczeniem jest przepustowość sieci.
+    Przy przeciętnym haśle użytkownika to kwestia czasu, nie umiejętności.
+
+    Próg blokady zmienia arytmetykę ataku: po kilku nieudanych próbach konto
+    zamyka się na określony czas, więc zgadywanie z rozsądną szybkością staje
+    się niewykonalne. Zostawia też ślad — seria blokad to jeden z nielicznych
+    sygnałów ataku, który widać bez dedykowanego systemu wykrywania.
+  en: |
+    Without a lockout threshold a password can be guessed indefinitely. A bot
+    tries thousands of combinations an hour, limited only by network bandwidth.
+    Against an average user password that is a matter of time, not skill.
+
+    The threshold changes the arithmetic of the attack: after a few failed
+    attempts the account closes for a set period, so guessing at any reasonable
+    rate becomes impractical. It also leaves a trace - a run of lockouts is one
+    of the few attack signals visible without a dedicated detection system.
+
+disruption_description:
+  pl: |
+    Blokada konta jest bronią obosieczną i dlatego wymaga zaplanowania: ten sam
+    mechanizm, który zatrzymuje napastnika, potrafi zablokować pracownika.
+    Najczęstszą przyczyną blokad nie jest atak, tylko stare hasło zapisane
+    w telefonie, w kliencie poczty albo w zadaniu harmonogramu, które próbuje
+    się zalogować w kółko.
+
+    Zbyt niski próg zamienia to w codzienny problem zgłoszeniowy. Zbyt wysoki
+    nie chroni przed niczym. Wdrożenie ma sens razem z ustaleniem czasu
+    blokady i przejrzeniem miejsc, w których hasła są zapisane.
+  en: |
+    Account lockout cuts both ways, which is why it needs planning: the same
+    mechanism that stops an attacker can lock out an employee. The most common
+    cause of lockouts is not an attack but an old password saved on a phone, in
+    a mail client or in a scheduled task that keeps trying to sign in.
+
+    Too low a threshold turns this into a daily support problem. Too high a one
+    protects against nothing. The rollout makes sense together with setting the
+    lockout duration and reviewing the places where passwords are stored.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Urządzenia z zapisanym starym hasłem zablokują konto użytkownika w kilka minut po jego zmianie
+      - Zadania harmonogramu logujące się cyklicznie na nieaktualne poświadczenia zaczną blokować swoje konto
+      - Użytkownik pomyłkowo wpisujący hasło kilka razy straci dostęp do czasu wygaśnięcia blokady
+    en:
+      - Devices holding an old saved password lock the user's account within minutes of a password change
+      - Scheduled tasks signing in periodically with stale credentials start locking their own account
+      - A user mistyping their password a few times loses access until the lockout expires
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa konto usługowe, którego zablokowanie zatrzyma proces produkcyjny
+      - Nie ma sposobu na szybkie odblokowanie konta poza fizycznym dostępem do maszyny
+    en:
+      - The machine runs a service account whose lockout would halt a production process
+      - There is no way to unlock an account quickly other than physical access to the machine
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^LockoutBadCount\s*=\s*(\d+)') {
+          # Zero means "never lock out" - it must not pass a numeric comparison
+          # against an upper bound as if it were a very low threshold.
+          if ([int]$Matches[1] -eq 0) { 'NEVER' } else { $Matches[1] }
+        } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '5'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $threshold = ''
+    $duration = ''
+    $window = ''
+    if ($text -match '(?m)^LockoutBadCount\s*=\s*(\d+)')    { $threshold = $Matches[1] }
+    if ($text -match '(?m)^LockoutDuration\s*=\s*(-?\d+)')  { $duration  = $Matches[1] }
+    if ($text -match '(?m)^ResetLockoutCount\s*=\s*(\d+)')  { $window    = $Matches[1] }
+    [pscustomobject]@{
+      threshold = $threshold
+      duration  = $duration
+      window    = $window
+      existed   = ($threshold -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      'LockoutBadCount = 5',
+      'ResetLockoutCount = 15',
+      'LockoutDuration = 15',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous threshold - refusing to guess one.' }
+    $lines = @('[Unicode]', 'Unicode=yes', '[System Access]', ('LockoutBadCount = ' + $b.threshold))
+    if ($b.window -ne '')   { $lines += ('ResetLockoutCount = ' + $b.window) }
+    if ($b.duration -ne '') { $lines += ('LockoutDuration = ' + $b.duration) }
+    $lines += @('[Version]', 'signature="$CHICAGO$"', 'Revision=1')
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    Set-Content -Path $inf -Value ($lines -join "`r`n") -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/account-lockout-threshold
+
+notes:
+  pl: |
+    Sam próg nic nie znaczy bez czasu blokady i okna zliczania prób, dlatego
+    zmiana ustawia całą trójkę, a kopia zapasowa zapisuje wszystkie trzy
+    wartości. Próg zero jest raportowany jako „NEVER", żeby „nie blokuj nigdy"
+    nie przeszło przez porównanie z górną granicą jako bardzo niska wartość.
+  en: |
+    The threshold alone means nothing without the lockout duration and the
+    counter reset window, so the change sets all three and the backup records
+    all three values. A threshold of zero is reported as "NEVER", so that "never
+    lock out" cannot pass a comparison against an upper bound as a very low
+    value.

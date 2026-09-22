@@ -1,0 +1,156 @@
+id: win11-winrm-basic-auth-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Remote Management
+  title:
+    pl: Uwierzytelnianie podstawowe usługi zarządzania zdalnego wyłączone
+    en: Basic authentication for the remote management service disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uwierzytelnianie podstawowe przesyła nazwę użytkownika i hasło w postaci
+    zaledwie zakodowanej, nie zaszyfrowanej. Kto zobaczy ruch, ten zobaczy
+    hasło — bez łamania, bez czekania, w tej samej sekundzie. W przypadku usługi
+    zarządzania zdalnego mówimy przy tym o poświadczeniach, które z definicji
+    mają na maszynie duże uprawnienia.
+
+    Wyłączenie tego wariantu zostawia mechanizmy, w których hasło nie opuszcza
+    stacji w postaci nadającej się do odczytania. Zamyka też najprostszy sposób
+    na zdobycie działającego hasła administratora: podsłuchanie jednego
+    połączenia narzędziowego.
+  en: |
+    Basic authentication sends the user name and password merely encoded, not
+    encrypted. Whoever sees the traffic sees the password - no cracking, no
+    waiting, in the same second. And in the case of the remote management
+    service these are credentials that by definition carry high privileges on
+    the machine.
+
+    Disabling this variant leaves mechanisms in which the password never leaves
+    the workstation in a readable form. It also closes the simplest route to a
+    working administrator password: listening in on a single tooling connection.
+
+disruption_description:
+  pl: |
+    Na stacji, która nie jest zarządzana zdalnie, zmiana nie robi nic widocznego.
+    Tam, gdzie zarządzanie zdalne jest używane, trzeba sprawdzić czym: skrypty
+    i narzędzia łączące się z systemów innych niż Windows często sięgają po
+    uwierzytelnianie podstawowe, bo jest najprostsze do skonfigurowania.
+
+    Takie połączenie przestanie działać natychmiast i bez okresu przejściowego.
+    Objaw jest czytelny — usługa odrzuca żądanie — ale narzędzie po drugiej
+    stronie zwykle raportuje to jako zwykłą odmowę logowania, więc trop prowadzi
+    najpierw do hasła.
+  en: |
+    On a workstation that is not managed remotely the change does nothing
+    visible. Where remote management is used, you need to check what with:
+    scripts and tools connecting from non-Windows systems often reach for basic
+    authentication because it is the simplest to set up.
+
+    Such a connection stops working at once, with no transition period. The
+    symptom is legible - the service refuses the request - but the tool on the
+    other side usually reports it as an ordinary sign-in failure, so the trail
+    leads to the password first.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - scripting-and-automation
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Narzędzia zarządzające łączące się z systemów innych niż Windows mogą stracić możliwość zalogowania
+      - Skrypty automatyzacji używające uwierzytelniania podstawowego zaczną otrzymywać odmowę dostępu
+      - Systemy monitorujące odpytujące stację przez usługę zarządzania zdalnego przestaną zbierać dane
+    en:
+      - Management tools connecting from non-Windows systems may lose the ability to sign in
+      - Automation scripts using basic authentication start receiving access denied
+      - Monitoring systems querying the workstation through the remote management service stop collecting data
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stacją zarządza narzędzie z innej platformy, które obsługuje wyłącznie uwierzytelnianie podstawowe
+      - Zdalne zarządzanie jest jedyną drogą do maszyny i nie ma czasu na zmianę sposobu logowania
+    en:
+      - The workstation is managed by a cross-platform tool that supports basic authentication only
+      - Remote management is the only route to the machine and there is no time to change the sign-in method
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+      $name = 'AllowBasic'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+    $name = 'AllowBasic'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowBasic' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/winrm/authentication-for-remote-connections
+
+notes:
+  pl: |
+    Punkt dotyczy usługi, czyli strony przyjmującej połączenia. Ustawienie
+    zostaje wymagane nawet wtedy, gdy zarządzanie zdalne jest na tej maszynie
+    wyłączone — chodzi o to, żeby późniejsze włączenie usługi nie przyniosło ze
+    sobą słabego wariantu uwierzytelniania. Odpowiednik dla strony klienckiej
+    jest osobnym ustawieniem.
+  en: |
+    The item concerns the service, that is, the side accepting connections. The
+    setting stays required even when remote management is switched off on this
+    machine - the point is that enabling the service later should not bring the
+    weak authentication variant along with it. The client-side equivalent is a
+    separate setting.

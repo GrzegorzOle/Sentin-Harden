@@ -1,0 +1,146 @@
+id: win11-dont-display-last-username
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Nazwa ostatnio zalogowanego użytkownika ukryta na ekranie logowania
+    en: Last signed-in user name hidden on the sign-in screen
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ekran logowania pokazujący nazwę ostatniego użytkownika rozwiązuje za
+    napastnika połowę zadania. Zgadywanie hasła wymaga dwóch rzeczy, a jedną
+    dostaje gotową — i to bez dotykania klawiatury, samym spojrzeniem na
+    zablokowany ekran w sali konferencyjnej albo na recepcji.
+
+    Po ukryciu nazwy trzeba ją podać samodzielnie. Nie zatrzymuje to nikogo, kto
+    i tak zna strukturę nazw w organizacji, ale odbiera potwierdzenie, że to
+    konto istnieje i że używa się go właśnie na tej maszynie.
+  en: |
+    A sign-in screen showing the last user's name solves half the task for an
+    attacker. Guessing a password takes two things, and one is handed over
+    ready-made - without touching the keyboard, just by looking at a locked
+    screen in a meeting room or at a reception desk.
+
+    With the name hidden it has to be typed in. This stops nobody who already
+    knows the organisation's naming scheme, but it takes away the confirmation
+    that this account exists and that it is used on this particular machine.
+
+disruption_description:
+  pl: |
+    Technicznie nic się nie psuje — i właśnie dlatego ten punkt bywa wdrażany
+    bezrefleksyjnie, a potem odkręcany. Zmiana dotyka codziennego odruchu:
+    zamiast wpisać samo hasło, użytkownik musi za każdym razem podać także
+    nazwę konta, w pełnej postaci wymaganej przez system.
+
+    Na stacji domenowej oznacza to wpisywanie nazwy z przedrostkiem domeny,
+    czego spora część użytkowników nie zna na pamięć. Stąd klasa „wymaga
+    świadomego wdrożenia": koszt nie jest techniczny, tylko ludzki, i ujawnia
+    się w liczbie zgłoszeń następnego ranka.
+  en: |
+    Technically nothing breaks - and that is exactly why this item tends to be
+    rolled out without thought and then undone. The change touches a daily
+    reflex: instead of typing just the password, the user must supply the
+    account name every time, in the full form the system requires.
+
+    On a domain-joined workstation that means typing the name with a domain
+    prefix, which a fair share of users do not know by heart. Hence the "needs
+    planned rollout" class: the cost is not technical but human, and it shows up
+    in the number of support calls the following morning.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Użytkownicy muszą wpisywać pełną nazwę konta przy każdym logowaniu i odblokowaniu stacji
+      - Osoby nieznające nazwy konta z przedrostkiem domeny zgłoszą brak możliwości zalogowania
+      - Stanowiska współdzielone stracą podpowiedź, które konto było na nich używane ostatnio
+    en:
+      - Users must type the full account name at every sign-in and unlock of the workstation
+      - People who do not know their account name with the domain prefix will report being unable to sign in
+      - Shared stations lose the hint about which account was last used on them
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko jest obsługiwane przez osoby, którym nie da się przekazać pełnej nazwy konta
+      - Komputer stoi w miejscu, gdzie logowanie musi być możliwie szybkie i bez pomyłek
+    en:
+      - The station is operated by people who cannot be given their full account name
+      - The computer stands where signing in has to be as fast and error-free as possible
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'DontDisplayLastUserName'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'DontDisplayLastUserName'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name 'DontDisplayLastUserName' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-do-not-display-last-user-name
+
+notes:
+  pl: |
+    Kategoria ryzyka jest tu niska celowo. Punkt utrudnia rozpoznanie, ale nie
+    zamyka żadnej drogi wejścia — w macierzy decyzyjnej trafia więc do rzędu
+    „niskie ryzyko, odczuwalna zmiana", czyli tam, gdzie świadome odpuszczenie
+    z uzasadnieniem jest w pełni sensowną decyzją.
+  en: |
+    The risk category here is deliberately low. The item makes reconnaissance
+    harder but closes no route in - in the decision matrix it therefore lands in
+    the "low risk, noticeable change" row, exactly where a deliberate, justified
+    exception is an entirely sensible decision.

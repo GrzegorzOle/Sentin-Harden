@@ -1,0 +1,226 @@
+id: win11-kernel-shadow-stacks-enforcement
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Sprzętowa ochrona stosu w trybie jądra wymuszona
+    en: Hardware protection of the kernel-mode stack enforced
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie włącza sprzętową ochronę adresów powrotu w kodzie
+    pracującym w trybie jądra i każe jej działać w trybie wymuszania,
+    a nie samego obserwowania.
+
+    Mechanizm odpowiada na jeden z najstarszych sposobów przejmowania
+    kontroli nad programem. Kod wywołujący funkcję odkłada na stosie adres,
+    pod który ma wrócić po jej zakończeniu. Napastnik, który potrafi ten
+    adres nadpisać, przekierowuje wykonanie tam, gdzie chce — nie musi
+    wstrzykiwać żadnego własnego kodu, wystarczy, że poskłada wykonanie
+    z fragmentów już obecnych w systemie.
+
+    Ochrona polega na tym, że procesor trzyma drugą kopię adresów powrotu
+    w pamięci niedostępnej dla zwykłego zapisu. Przy powrocie z funkcji
+    obie kopie są porównywane; różnica kończy pracę kodu natychmiast.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: najwygodniejszą
+    drogę od błędu w sterowniku do wykonania własnego kodu w trybie jądra,
+    czyli w warstwie, w której nie obowiązuje już żadne ograniczenie
+    uprawnień. Jest to dokładnie ta droga, którą idą ataki wykorzystujące
+    podatne sterowniki podpisane.
+
+    Tryb wymuszania jest tutaj istotny. W trybie obserwowania naruszenia są
+    tylko notowane, a kod pracuje dalej — ochrona daje wtedy wiedzę, ale nie
+    daje ochrony.
+  en: |
+    The setting switches on hardware protection of return addresses in code working in
+    kernel mode and bids it work in enforcing mode rather than in mere watching.
+
+    The mechanism answers one of the oldest ways of seizing control of a program. Code
+    calling a function lays on the stack the address it is to return to when the function
+    ends. An attacker able to overwrite that address redirects the running where they wish
+    - they need inject no code of their own, it is enough to put the running together from
+    pieces already present in the system.
+
+    The protection lies in the processor keeping a second copy of the return addresses in
+    memory unreachable for ordinary writing. On a return from a function the two copies are
+    compared; a difference ends the code's work at once.
+
+    What an attacker gains while the item goes unmet: the most convenient road from a fault
+    in a driver to the running of their own code in kernel mode, that is, in the layer
+    where no limit of rights binds any longer. It is exactly the road taken by attacks
+    making use of vulnerable signed drivers.
+
+    The enforcing mode matters here. In watching mode breaches are merely noted and the
+    code works on - the protection then gives knowledge but gives no protection.
+
+disruption_description:
+  pl: |
+    Wdrożenia świadomego wymaga to dlatego, że ochrona zatrzymuje kod
+    naruszający zasadę, a naruszać ją potrafi także kod napisany źle, lecz
+    nieszkodliwie.
+
+    Dotyczy to przede wszystkim sterowników. Sterownik starszy, sterownik
+    urządzenia niszowego albo sterownik oprogramowania zabezpieczającego
+    sięgającego głęboko w system potrafi używać stosu w sposób, który
+    mechanizm uzna za naruszenie. Skutkiem jest zatrzymanie maszyny.
+
+    Jest to najostrzejszy możliwy objaw i dlatego reguła nie nadaje się ani
+    do trybu zbiorczego, ani do wdrożenia bez próby. Właściwa kolejność to
+    jedna maszyna każdego modelu, kilka dni pracy, dopiero potem reszta.
+
+    Sprawdzenia wymaga też sam procesor. Mechanizm opiera się na wsparciu
+    sprzętowym i na procesorach bez tego wsparcia ustawienie nie zrobi nic —
+    ani dobrego, ani złego.
+
+    Zmiana wymaga restartu maszyny. Wycofanie także zaczyna obowiązywać
+    dopiero po restarcie, a maszyna zatrzymująca się przy starcie wymaga
+    wtedy uruchomienia awaryjnego.
+  en: |
+    A knowing rollout is needed because the protection stops code breaching the rule, and
+    code written badly though harmlessly can breach it too.
+
+    That concerns drivers above all. An older driver, the driver of a niche device, or the
+    driver of security software reaching deep into the system can use the stack in a way
+    the mechanism will hold a breach. The result is the machine stopping.
+
+    That is the sharpest possible symptom, and so the rule suits neither the bulk mode nor
+    a rollout without a trial. The right order is one machine of each model, some days of
+    work, and only then the rest.
+
+    The processor itself needs checking too. The mechanism rests on hardware support and on
+    processors without it the setting will do nothing - neither good nor ill.
+
+    The change takes a restart of the machine. The rollback too binds only after a restart,
+    and a machine stopping at startup then takes an emergency start.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - boot-and-firmware
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Sterownik naruszający zasadę powoduje zatrzymanie maszyny
+      - Oprogramowanie zabezpieczające sięgające głęboko w system bywa pierwsze, które przestaje działać
+      - Na procesorze bez wsparcia sprzętowego ustawienie nie robi nic
+      - Wycofanie zmiany zaczyna obowiązywać dopiero po restarcie maszyny
+    en:
+      - A driver breaching the rule brings the machine to a stop
+      - Security software reaching deep into the system is sometimes the first to stop working
+      - On a processor without hardware support the setting does nothing
+      - Rolling the change back binds only after a restart of the machine
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie pracują sterowniki starsze albo sterowniki urządzeń niszowych
+      - Oprogramowanie zabezpieczające innego producenta instaluje własny sterownik trybu jądra
+    en:
+      - Older drivers or drivers of niche devices work on the machine
+      - Another maker's security software installs its own kernel-mode driver
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # One is the enforcing mode; two only watches and notes breaches.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ConfigureKernelShadowStacksLaunch'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard'
+    $current = (Get-ItemProperty -Path $path -Name 'ConfigureKernelShadowStacksLaunch' -ErrorAction SilentlyContinue).'ConfigureKernelShadowStacksLaunch'
+    [pscustomobject]@{
+      path        = $path
+      name        = 'ConfigureKernelShadowStacksLaunch'
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ConfigureKernelShadowStacksLaunch' -Value 1 -Type DWord
+    # The setting binds after a restart of the machine.
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+    # The former state returns after a restart of the machine.
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/
+
+notes:
+  pl: |
+    Wartość druga, w której mechanizm tylko obserwuje, nie spełnia punktu
+    i nie jest tu dopuszczona. Warto o tym wiedzieć przy czytaniu raportu:
+    maszyna z dwójką ma mechanizm włączony, a ochrony nie ma.
+
+    Tryb obserwowania jest za to właściwym krokiem pośrednim przy wdrożeniu.
+    Pozwala zobaczyć, które sterowniki naruszałyby zasadę, zanim naruszenie
+    zatrzyma maszynę. Reguła tego kroku nie opisuje, bo opisuje stan
+    docelowy, ale w planie wdrożenia warto go mieć.
+
+    Wartość leży w kluczu wspólnym z pozostałymi ustawieniami ochrony opartej
+    na wirtualizacji, więc wycofanie tej jednej nie rusza pozostałych.
+
+    Brak wartości nie jest stanem zgodnym, bo domyślnie mechanizm nie jest
+    wymuszany zasadą.
+  en: |
+    The value of two, in which the mechanism merely watches, does not meet the item and is
+    not admitted here. It is worth knowing when reading the report: a machine with a two has
+    the mechanism switched on and has no protection.
+
+    The watching mode is, on the other hand, the right intermediate step in a rollout. It
+    lets one see which drivers would breach the rule before a breach stops the machine. The
+    rule does not describe that step, since it describes the target state, but it is worth
+    having in the plan of the rollout.
+
+    The value lies in a key shared with the remaining settings of the protection resting on
+    virtualisation, so rolling this one back does not disturb the rest.
+
+    A missing value is not a compliant state, since by default the mechanism is not
+    enforced by policy.

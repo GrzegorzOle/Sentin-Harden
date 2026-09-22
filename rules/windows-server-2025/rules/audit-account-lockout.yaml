@@ -1,0 +1,215 @@
+id: win2025-audit-account-lockout
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja blokady konta
+    en: Audit account lockout
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje odmowę logowania spowodowaną zablokowaniem
+    konta, czyli moment, w którym zadziałał próg nieudanych prób.
+
+    Zdarzenie to jest sygnałem podwójnym i oba jego odczytania są warte
+    uwagi. Pierwsze jest oczywiste: ktoś zgadywał hasło i próba została
+    przerwana. Drugie bywa przeoczane, a na serwerze jest częstsze —
+    konto zablokowane bez niczyjej winy, bo w jakiejś usłudze albo
+    w zadaniu zaplanowanym zostało stare hasło, i ta usługa próbuje się
+    logować w kółko aż do przekroczenia progu.
+
+    Wartość zapisu polega na tym, że odróżnia te dwa przypadki. Wpis
+    niesie konto i maszynę, z której próba przyszła, a to zwykle
+    wystarcza, żeby rozstrzygnąć, czy przyczyną jest napastnik, czy
+    własna konfiguracja.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: pewność,
+    że zadziałanie blokady nie zostanie odnotowane. Blokada konta jest
+    zabezpieczeniem, które działa wtedy, gdy atak trwa — ale sama w sobie
+    nikogo nie powiadamia. Bez tego zapisu obrona zadziała i nikt się
+    o tym nie dowie.
+
+    Jest też odczytanie trzecie, warte wymienienia osobno: seria blokad
+    wielu kont naraz jest obrazem ataku prowadzonego szeroko, a nie
+    pomyłką jednego użytkownika.
+  en: |
+    The subcategory records a sign-in refused because an account was locked out, that is,
+    the moment at which the threshold of failed attempts took effect.
+
+    That event is a doubled sign and both its readings are worth notice. The first is
+    obvious: somebody was guessing a password and the attempt was broken off. The second is
+    at times overlooked, and on a server is the commoner - an account locked out through
+    nobody's fault, because an old password was left in some service or in a scheduled task,
+    and that service tries to sign in over and over until the threshold is passed.
+
+    The record's worth lies in telling those two cases apart. The entry carries the account
+    and the machine the attempt came from, and that usually suffices to settle whether the
+    cause is an attacker or one's own configuration.
+
+    What an attacker gains while the item goes unmet: the certainty that the lockout taking
+    effect will go unnoted. An account lockout is a safeguard that works while an attack is
+    under way - but of itself it tells nobody. Without this record the defence will work and
+    nobody will learn of it.
+
+    There is a third reading too, worth naming apart: a run of lockouts across many accounts
+    at once is the picture of an attack carried out broadly rather than one user's mistake.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Konta blokują się tak samo jak wcześniej —
+    zmienia się wyłącznie to, że fakt blokady zostaje zapisany.
+
+    Objętość jest znikoma. Blokada konta jest zdarzeniem rzadkim
+    z definicji i jeżeli w dzienniku pojawia się często, to właśnie jest
+    informacja, po którą ten punkt się wdraża.
+
+    Punkt ma sens wyłącznie tam, gdzie próg blokady konta jest w ogóle
+    ustawiony. Przy progu wyłączonym konta się nie blokują, więc ta
+    podkategoria nie wygeneruje niczego — i jest to stan mylący,
+    bo brak zdarzeń wygląda wtedy jak spokój, a opisuje brak mechanizmu.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. Accounts lock out just as before - what changes is only that the
+    fact of a lockout gets recorded.
+
+    The volume is negligible. An account lockout is by definition a rare event, and should
+    it appear often in the log, that is exactly the knowledge this item is rolled out for.
+
+    The item makes sense only where a threshold of account lockout is set at all. With the
+    threshold off accounts do not lock out, so this subcategory will make nothing - and that
+    is a misleading state, since an absence of events then looks like quiet while describing
+    an absent mechanism.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Brak znanych regresji — konta blokują się tak samo jak wcześniej
+      - Przyrost objętości dziennika jest znikomy, bo blokada jest zdarzeniem rzadkim
+      - Przy wyłączonym progu blokady ta podkategoria nie wygeneruje żadnego zdarzenia
+    en:
+      - No known regressions - accounts lock out just as before
+      - The rise in the log's volume is negligible, since a lockout is a rare event
+      - With the lockout threshold off this subcategory will make no event at all
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9217-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[23]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9217-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9217-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9217-69AE-11D9-BED3-505054503030}" /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9217-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-account-lockout
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie niepowodzeń, bo samo zdarzenie blokady
+    jest z natury niepowodzeniem logowania. Rejestrowanie powodzeń jest
+    dopuszczalne i sprawdzenie je przyjmuje, ale nic tu nie wnosi.
+
+    Punkt czyta się razem z ustawieniem progu blokady konta. Inspekcja
+    bez progu nie ma czego zapisywać, a próg bez inspekcji działa
+    bezgłośnie — dopiero oba razem dają obronę, o której zadziałaniu
+    ktokolwiek się dowie.
+
+    Najczęstszą przyczyną blokad na serwerze nie jest atak, tylko stare
+    hasło w usłudze albo w zadaniu zaplanowanym. Wpis niesie maszynę
+    źródłową i to zwykle wystarcza, żeby ją odnaleźć.
+  en: |
+    Recording of failures is taken, since the lockout event is by its nature a failed
+    sign-in. Recording of successes is admissible and the check accepts it, but adds nothing
+    here.
+
+    The item is read together with the setting of the account lockout threshold. Auditing
+    with no threshold has nothing to record, and a threshold with no auditing works
+    soundlessly - only the two together give a defence whose working anybody learns of.
+
+    The commonest cause of lockouts on a server is not an attack but an old password in a
+    service or in a scheduled task. The entry carries the source machine and that usually
+    suffices to find it.

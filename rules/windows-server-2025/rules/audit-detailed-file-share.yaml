@@ -1,0 +1,214 @@
+id: win2025-audit-detailed-file-share
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Object Access
+  title:
+    pl: Inspekcja szczegółowego dostępu do udziałów — same odmowy
+    en: Detailed auditing of share access - refusals only
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje dostęp do pojedynczych plików i katalogów
+    w udziałach sieciowych, a nie samo połączenie z udziałem.
+
+    Punkt wymaga wyłącznie rejestrowania odmów i jest to wymaganie
+    przemyślane, nie kompromis. Rejestrowanie dostępu udanego oznaczałoby
+    na serwerze plikowym zdarzenie przy każdym odczycie każdego pliku,
+    a więc zapis, którego żaden dziennik nie pomieści i którego nikt nie
+    przeczyta. Odmowy są nieliczne i każda coś znaczy.
+
+    Odmowa dostępu do pliku w udziale jest zdarzeniem z natury
+    interesującym. W pracy normalnej występuje rzadko, bo ludzie sięgają
+    po to, do czego mają prawo. Występuje za to seriami wtedy, gdy ktoś
+    sprawdza, dokąd sięgają jego uprawnienia — a to jest dokładnie ten
+    obraz, którego szuka się po przejęciu konta.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    przejrzenia całej zawartości udziałów katalog po katalogu i ustalenia,
+    do czego przejęte konto ma dostęp, bez pozostawienia śladu po
+    próbach nieudanych. A to właśnie próby nieudane rysują mapę tego,
+    czego szukał.
+  en: |
+    The subcategory records access to single files and folders on network shares rather than
+    the connection to a share itself.
+
+    The item takes the recording of refusals alone, and that is a considered requirement
+    rather than a compromise. Recording successful access would on a file server mean an
+    event at every reading of every file, and so a record no log will hold and nobody will
+    read. Refusals are few and each means something.
+
+    A refusal of access to a file on a share is by its nature an interesting event. In
+    normal work it happens seldom, since people reach for what they have a right to. It
+    happens in runs, though, when somebody is testing how far their rights reach - and that
+    is exactly the picture looked for after an account has been taken over.
+
+    What an attacker gains while the item goes unmet: the means of going through the whole
+    content of the shares folder by folder and settling what the taken-over account has
+    access to, leaving no trace of the failed attempts. And it is the failed attempts that
+    draw the map of what they were looking for.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Odmowy następują tak samo jak wcześniej —
+    zmienia się wyłącznie to, że są zapisywane.
+
+    Objętość jest umiarkowana właśnie dlatego, że punkt obejmuje same
+    odmowy. Jest to różnica rzędu wielkości wobec wariantu z dostępem
+    udanym i to ona przesądza o tym, że reguła mieści się w klasie
+    „bez uciążliwości".
+
+    Jeden przypadek wart jest jednak wymienienia. Aplikacje starszego
+    typu bywają napisane tak, że sprawdzają dostęp przez próbę otwarcia
+    pliku i przyjmują odmowę jako odpowiedź. Taki program generuje odmowy
+    seryjnie w pracy zupełnie normalnej i potrafi zapełnić dziennik sam.
+    Jeżeli wykaz odmów okaże się długi, warto najpierw sprawdzić, czy nie
+    pochodzi w całości z jednego takiego programu.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. Refusals happen just as before - what changes is only that they
+    are recorded.
+
+    The volume is moderate exactly because the item takes in refusals alone. It is a
+    difference of an order of size against the variant with successful access, and it is
+    that which settles the rule's place in the "no disruption" class.
+
+    One case is worth naming, though. Applications of the older kind are at times written so
+    as to test access by trying to open a file and to take a refusal as the answer. Such a
+    program makes refusals in runs in entirely normal work and can fill the log by itself.
+    Should the list of refusals turn out long, it is worth checking first whether it comes
+    wholly from one such program.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - file-sharing
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Brak znanych regresji — odmowy następują tak samo jak wcześniej
+      - Objętość jest umiarkowana, bo zapisywane są same odmowy
+      - Starsza aplikacja sprawdzająca dostęp przez próbę otwarcia potrafi zapełnić dziennik sama
+    en:
+      - No known regressions - refusals happen just as before
+      - The volume is moderate, since refusals alone are recorded
+      - An older application testing access by trying to open can fill the log by itself
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na serwerze pracuje aplikacja generująca odmowy dostępu seryjnie w normalnej pracy
+    en:
+      - An application making refusals of access in runs in normal work runs on the server
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9244-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^2$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9244-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9244-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9244-69AE-11D9-BED3-505054503030}" /success:disable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9244-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-detailed-file-share
+
+notes:
+  pl: |
+    Sprawdzenie wymaga wartości oznaczającej same odmowy i odrzuca
+    wariant z dostępem udanym. Jest to jedyny punkt w tej grupie, w którym
+    zapis szerszy jest traktowany jako niezgodność, a nie jako nadmiar
+    ponad wymaganie.
+
+    Powód jest praktyczny. Rejestrowanie dostępu udanego do pojedynczych
+    plików na serwerze plikowym daje strumień, przy którym dziennik
+    obraca się w minutach, a razem z nim znikają również odmowy. Zapis
+    szerszy pogarsza tu więc wynik, zamiast go poprawiać.
+
+    Punkt uzupełnia inspekcję dostępu do udziałów, nie zastępuje jej.
+    Tamta mówi, kto połączył się z udziałem; ta mówi, czego mu w nim
+    odmówiono.
+  en: |
+    The check takes the value standing for refusals alone and rejects the variant with
+    successful access. It is the one item in this group at which a wider record is held a
+    non-compliance rather than a surplus above the requirement.
+
+    The reason is practical. Recording successful access to single files on a file server
+    gives a stream at which the log turns over in minutes, and the refusals vanish along
+    with it. A wider record thus worsens the outcome here rather than bettering it.
+
+    The item fills out the auditing of access to shares rather than standing in for it. That
+    one says who connected to a share; this one says what they were refused within it.

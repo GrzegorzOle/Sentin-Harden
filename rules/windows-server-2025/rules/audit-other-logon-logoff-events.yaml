@@ -1,0 +1,207 @@
+id: win2025-audit-other-logon-logoff-events
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja pozostałych zdarzeń logowania i wylogowania
+    en: Audit other logon and logoff events
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zbiera zdarzenia sesji, które nie mieszczą się
+    w zwykłym logowaniu ani wylogowaniu — zablokowanie i odblokowanie
+    stacji, ponowne przyłączenie do sesji zdalnej i jej rozłączenie.
+
+    Na serwerze najważniejsza jest tu jedna rzecz i dotyczy pulpitu
+    zdalnego. Rozłączenie sesji zdalnej nie jest wylogowaniem — sesja
+    żyje dalej razem z uruchomionymi programami i otwartymi
+    poświadczeniami, a ktoś, kto się do niej przyłączy, wchodzi do
+    środka bez logowania. Bez tej podkategorii ani rozłączenie, ani
+    ponowne przyłączenie nie zostawia zapisu, więc cała ta ścieżka jest
+    niewidoczna.
+
+    Jest to różnica praktyczna, nie teoretyczna. Wykaz logowań na
+    serwerze z pulpitem zdalnym bywa krótki właśnie dlatego, że nikt się
+    nie wylogowuje — ludzie zamykają okno i wracają do tej samej sesji
+    tygodniami.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    wejścia do cudzej porzuconej sesji bez pozostawienia zdarzenia
+    logowania. Sesja została otwarta wcześniej i przez kogoś innego,
+    a zapis o przyłączeniu nie powstaje.
+  en: |
+    The subcategory gathers session events that fit neither an ordinary sign-in nor a
+    signing out - a station being locked and unlocked, a remote session being rejoined and
+    disconnected.
+
+    On a server one thing matters most here and it concerns remote desktop. Disconnecting a
+    remote session is not a signing out - the session goes on living together with the
+    programs started and the credentials open, and somebody joining it walks inside with no
+    sign-in. Without this subcategory neither the disconnecting nor the rejoining leaves a
+    record, so that whole path is invisible.
+
+    It is a practical difference rather than a theoretical one. The list of sign-ins on a
+    server with remote desktop is at times short exactly because nobody signs out - people
+    close the window and return to the same session for weeks.
+
+    What an attacker gains while the item goes unmet: the means of walking into somebody
+    else's abandoned session with no sign-in event left behind. The session was opened
+    earlier and by somebody else, and no record of the joining arises.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Sesje zdalne rozłączają się i przyłączają
+    tak samo jak wcześniej — zmienia się wyłącznie to, że zostaje po tym
+    zapis.
+
+    Objętość jest umiarkowana i zależy od tego, ile na serwerze jest
+    sesji zdalnych. Na serwerze bez pulpitu zdalnego zdarzeń tych jest
+    niewiele. Na serwerze terminali przybywa ich tyle, ile razy ktoś
+    zamknął i otworzył okno, a to bywa kilka razy dziennie na osobę.
+
+    Nie jest to podkategoria porównywalna objętościowo z inspekcją
+    logowania i nie trzeba jej ważyć równie ostrożnie.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. Remote sessions disconnect and rejoin just as before - what
+    changes is only that a record is left after it.
+
+    The volume is moderate and hangs on how many remote sessions there are on the server. On
+    a server with no remote desktop there are few such events. On a terminal server as many
+    accrue as there were times somebody closed and opened a window, and that is at times
+    several a day per person.
+
+    It is not a subcategory comparable in volume with the auditing of sign-ins and need not
+    be weighed as carefully.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - remote-desktop
+  what_breaks:
+    pl:
+      - Brak znanych regresji — sesje zdalne działają bez zmiany
+      - Na serwerze terminali przybywa zdarzeń przy każdym zamknięciu i otwarciu okna
+      - Na serwerze bez pulpitu zdalnego przyrost objętości jest niewielki
+    en:
+      - No known regressions - remote sessions work unchanged
+      - On a terminal server events accrue at every closing and opening of a window
+      - On a server with no remote desktop the rise in volume is slight
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo i każdy dodatkowy strumień jest kosztem
+    en:
+      - Events from this machine are billed by volume and every added stream is a cost
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE921C-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE921C-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE921C-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE921C-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE921C-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-logonlogoff-events
+
+notes:
+  pl: |
+    Wymagane są oba rodzaje zapisu. Podkategoria zbiera zdarzenia różnego
+    typu, a przy niektórych z nich nieudana próba jest równie istotna jak
+    udana — na przykład nieudane przyłączenie do cudzej sesji zdalnej.
+
+    Punkt jest uzupełnieniem inspekcji logowania i wylogowania, a nie ich
+    powtórzeniem. Na serwerze z pulpitem zdalnym to właśnie tutaj widać
+    ruch, którego tamte dwie podkategorie nie pokazują.
+
+    Zablokowanie i odblokowanie stacji zapisywane jest tą samą
+    podkategorią. Na serwerze zdarzenie to jest rzadkie, ale niesie
+    informację, kto fizycznie siedział przy konsoli.
+  en: |
+    Both kinds of record are taken. The subcategory gathers events of various kinds, and at
+    some of them a failed attempt tells as much as a successful one - for instance a failed
+    joining of somebody else's remote session.
+
+    The item is a filling-out of the auditing of sign-ins and signings out rather than a
+    repeat of them. On a server with remote desktop it is exactly here that the movement
+    those two subcategories do not show becomes visible.
+
+    A station being locked and unlocked is recorded by this same subcategory. On a server
+    that event is rare, but it carries the knowledge of who sat physically at the console.

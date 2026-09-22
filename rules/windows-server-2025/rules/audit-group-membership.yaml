@@ -1,0 +1,210 @@
+id: win2025-audit-group-membership
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja członkostwa w grupach przy logowaniu
+    en: Audit group membership at sign-in
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria dopisuje do zdarzenia logowania wykaz grup, z którymi
+    konto weszło do systemu.
+
+    Jest to informacja, której nie da się odtworzyć później i na tym
+    polega wartość tego punktu. Członkostwo w grupach da się odczytać
+    w dowolnej chwili, ale odczyt pokaże stan dzisiejszy, a nie ten
+    sprzed trzech miesięcy. Pytanie „z jakimi uprawnieniami wtedy wszedł"
+    ma odpowiedź wyłącznie wtedy, gdy zapisano ją w chwili logowania.
+
+    Na serwerze odpowiedź ta jest istotna z powodu, który na stanowisku
+    roboczym nie występuje: uprawnienia nadaje się tu czasowo. Konto
+    dopisywane do grupy na czas wdrożenia i wypisywane po nim wygląda
+    dzisiaj zwyczajnie, a w dniu zdarzenia miało dostęp do wszystkiego.
+    Bez tego zapisu różnica znika bezpowrotnie.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    zatarcia śladu przez zwykłe wypisanie konta z grupy. Zdarzenie
+    logowania pozostaje, ale przestaje mówić cokolwiek o uprawnieniach,
+    z jakimi to logowanie nastąpiło.
+  en: |
+    The subcategory adds to a sign-in event the list of groups the account came into the
+    system with.
+
+    It is knowledge that cannot be pieced back afterwards, and in that lies this item's
+    worth. Membership in groups can be read at any moment, but the reading will show today's
+    state rather than that of three months ago. The question "with what rights did they come
+    in then" has an answer only where it was recorded at the moment of the sign-in.
+
+    On a server that answer matters for a reason that does not arise at a working station:
+    rights are granted here for a time. An account written into a group for the length of a
+    rollout and written out after it looks ordinary today, and on the day of the event had
+    access to everything. Without this record that difference vanishes for good.
+
+    What an attacker gains while the item goes unmet: the means of covering a trace by
+    simply writing the account out of a group. The sign-in event stays, but stops saying
+    anything about the rights that sign-in happened with.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać i nikt niczego nie zauważy. Zmienia się
+    wyłącznie to, ile informacji niesie zdarzenie logowania.
+
+    Kosztem jest rozmiar pojedynczego wpisu, nie ich liczba, i jest to
+    różnica warta wyjaśnienia. Zdarzeń nie przybywa — przybywa treści
+    w tych, które i tak powstają. Przy koncie należącym do wielu grup
+    wykaz bywa długi, a na serwerze w domenie konta bywają w kilkunastu
+    grupach naraz.
+
+    Praktyczny skutek dotyczy systemu zbierającego zdarzenia. Strumień
+    rośnie objętościowo, mimo że liczba zdarzeń zostaje bez zmiany —
+    i jest to przypadek, w którym rozliczenie za liczbę zdarzeń nie
+    odda faktycznego wzrostu, a rozliczenie za objętość odda w pełni.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working and nobody notices anything. What changes is only how much
+    knowledge a sign-in event carries.
+
+    The cost is the size of a single entry rather than their number, and that difference is
+    worth explaining. Events do not accrue - content accrues in those that arise anyway. At
+    an account belonging to many groups the list is at times long, and on a server in a
+    domain accounts are at times in a dozen or so groups at once.
+
+    The practical effect concerns the event-gathering system. The stream grows in volume
+    although the number of events stays unchanged - and it is a case in which billing by the
+    number of events will not show the real rise, while billing by volume will show it in
+    full.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak znanych regresji — logowanie działa tak samo jak wcześniej
+      - Nie przybywa zdarzeń, przybywa treści w tych, które i tak powstają
+      - Konto w kilkunastu grupach daje wyraźnie dłuższy wpis
+      - Strumień do systemu zbierającego rośnie objętościowo przy tej samej liczbie zdarzeń
+    en:
+      - No known regressions - signing in works just as before
+      - Events do not accrue, content accrues in those that arise anyway
+      - An account in a dozen or so groups gives a markedly longer entry
+      - The stream to the gathering system grows in volume at the same number of events
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo i każdy dodatkowy strumień jest kosztem
+    en:
+      - Events from this machine are billed by volume and every added stream is a cost
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9249-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9249-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9249-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9249-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9249-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-group-membership
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń. Wykaz grup dopisywany jest do
+    logowania udanego — przy logowaniu odrzuconym nie ma czego wypisać,
+    bo konto nie otrzymało żadnych uprawnień.
+
+    Punkt nie tworzy własnych zdarzeń, tylko wzbogaca zdarzenia
+    z inspekcji logowania. Wdrożenie go bez tamtej nie daje nic,
+    bo nie ma czego uzupełniać.
+
+    Wykaz bywa dzielony na kilka wpisów, gdy konto należy do wielu grup.
+    Jest to zachowanie systemu, nie usterka, ale przy czytaniu dziennika
+    warto o tym pamiętać — pojedynczy wpis nie zawsze niesie całość.
+  en: |
+    Recording of successes is taken. The list of groups is added to a successful sign-in -
+    at a refused sign-in there is nothing to write out, since the account was given no
+    rights.
+
+    The item makes no events of its own but enriches the events from the auditing of
+    sign-ins. Rolling it out without that one gives nothing, since there is nothing to fill
+    out.
+
+    The list is at times split across several entries where an account belongs to many
+    groups. That is the system's behaviour rather than a fault, but it is worth remembering
+    at the reading of the log - a single entry does not always carry the whole.

@@ -1,0 +1,205 @@
+id: win2025-audit-logoff
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja wylogowania
+    en: Audit logoff
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zakończenie sesji — wylogowanie, zamknięcie
+    sesji zdalnej, koniec sesji sieciowej.
+
+    Sam zapis o wyjściu wygląda na mało interesujący i tak też bywa
+    traktowany. Jego wartość polega na czym innym niż na treści
+    pojedynczego wpisu: dopiero razem z zapisem o wejściu wyznacza czas
+    trwania sesji. Bez niego wiadomo, że ktoś wszedł, ale nie wiadomo,
+    kiedy wyszedł — a więc nie da się powiedzieć, czy sesja trwała minutę,
+    czy trzy tygodnie.
+
+    Na serwerze pytanie o czas trwania sesji pada częściej niż na
+    stanowisku roboczym, bo sesji jest wiele i bywają długie. Sesja
+    zdalna, której nikt nie zamknął, potrafi żyć miesiącami i jest wtedy
+    otwartymi drzwiami, o których nikt nie pamięta.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: pewność, że
+    długość jego obecności na maszynie pozostanie nieznana. Wykaz wejść
+    bez wykazu wyjść odpowiada na pytanie „czy był", ale nie na pytanie
+    „jak długo" — a to drugie przesądza zwykle o ocenie skali zdarzenia.
+  en: |
+    The subcategory records a session's ending - a signing out, the closing of a remote
+    session, the end of a network session.
+
+    The record of a leaving looks of little interest of itself, and is often treated so. Its
+    worth lies elsewhere than in a single entry's content: only together with the record of
+    an entering does it mark out a session's length. Without it one knows somebody came in
+    but not when they left - and so it cannot be said whether the session lasted a minute or
+    three weeks.
+
+    On a server the question of a session's length comes up more often than at a working
+    station, since there are many sessions and they are at times long. A remote session
+    nobody closed can live for months and is then an open door nobody remembers.
+
+    What an attacker gains while the item goes unmet: the certainty that the length of their
+    presence on the machine will stay unknown. A list of entries with no list of leavings
+    answers the question "was he here" but not the question "for how long" - and it is the
+    latter that usually settles the judging of an event's scale.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać, nikt się nie wyloguje i nikt niczego nie
+    zauważy. Zmienia się wyłącznie to, że koniec sesji zostaje zapisany.
+
+    Objętość jest z grubsza taka sama jak przy inspekcji logowania, bo
+    każda sesja kiedyś się kończy. Na serwerze plikowym oznacza to zapis
+    porównywalnie obfity i oba punkty liczy się razem, nie osobno.
+
+    Wart jest odnotowania jeden rodzaj sesji, który zdarzenia nie da:
+    sesja przerwana bez zamknięcia — po zerwaniu połączenia, po awarii
+    zasilania, po zamknięciu maszyny wirtualnej. Wykaz wyjść jest więc
+    z natury krótszy od wykazu wejść i nie jest to usterka.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working, nobody gets signed out and nobody notices anything. What changes
+    is only that a session's end gets recorded.
+
+    The volume is roughly the same as at the auditing of sign-ins, since every session ends
+    sometime. On a file server that means a comparably abundant record, and the two items
+    are counted together rather than apart.
+
+    One kind of session is worth noting which will give no event: a session broken with no
+    closing - after a connection is cut, after a loss of power, after a virtual machine is
+    shut. The list of leavings is thus by its nature shorter than the list of entries, and
+    that is no fault.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak znanych regresji — rośnie wyłącznie objętość dziennika zabezpieczeń
+      - Objętość jest porównywalna z inspekcją logowania i liczy się ją razem z nią
+      - Sesja przerwana bez zamknięcia nie daje zdarzenia i nie jest to usterka
+    en:
+      - No known regressions - only the security log's volume grows
+      - The volume is comparable with the auditing of sign-ins and is counted together with it
+      - A session broken with no closing gives no event, and that is no fault
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zabezpieczeń ma domyślny rozmiar i nie ma go jak powiększyć
+    en:
+      - The security log is at its default size and there is no way of enlarging it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9216-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9216-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9216-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9216-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9216-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-logoff
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń. Niepowodzenie wylogowania nie
+    jest zdarzeniem, które system produkuje — punkt opisuje fakt, a nie
+    próbę.
+
+    Punkt ma sens wyłącznie razem z inspekcją logowania. Sam wykaz wyjść
+    bez wykazu wejść nie mówi nic, a wykaz wejść bez wyjść mówi połowę.
+
+    Wykaz wyjść bywa krótszy od wykazu wejść i jest to zachowanie
+    poprawne. Sesja zerwana zamiast zamkniętej nie generuje zdarzenia,
+    więc różnicy między jednym a drugim wykazem nie należy czytać jako
+    braku w zapisie.
+  en: |
+    Recording of successes is taken. A failed signing out is not an event the system makes -
+    the item describes a fact rather than an attempt.
+
+    The item makes sense only together with the auditing of sign-ins. The list of leavings
+    alone with no list of entries says nothing, and the list of entries with no leavings
+    says half.
+
+    The list of leavings is at times shorter than the list of entries and that is right
+    behaviour. A session cut rather than closed makes no event, so the difference between
+    the two lists ought not to be read as a gap in the record.

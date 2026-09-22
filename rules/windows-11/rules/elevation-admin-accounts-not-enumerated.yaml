@@ -1,0 +1,173 @@
+id: win11-elevation-admin-accounts-not-enumerated
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Credential User Interface
+  title:
+    pl: Konta administratorów nie są wyliczane przy podnoszeniu uprawnień
+    en: Administrator accounts not listed when elevating
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy zwykły użytkownik uruchamia coś wymagającego uprawnień administratora,
+    system prosi o poświadczenia. Przy włączonym wyliczaniu prośba przychodzi
+    z gotową listą kont administracyjnych na tej maszynie — wystarczy wskazać
+    jedno i podać hasło.
+
+    Lista ta jest połową roboty przy odgadywaniu haseł. Napastnik, który dostał
+    się na maszynę jako zwykły użytkownik, nie musi zgadywać, jak nazywa się
+    konto administratora ani czy w ogóle takie istnieje: dostaje nazwy podane
+    wprost, razem z informacją, ile ich jest. Zostaje mu wyłącznie hasło,
+    a przy jednej znanej nazwie konta próby można prowadzić z sensem.
+
+    Wyłączenie wyliczania każe wpisać nazwę konta razem z hasłem. Nie jest to
+    zabezpieczenie samo w sobie — nazwy kont administracyjnych bywają do
+    odgadnięcia — ale przestają być podawane przez system na życzenie każdemu,
+    kto usiądzie przy maszynie.
+  en: |
+    When an ordinary user starts something needing administrator rights, the
+    system asks for credentials. With listing turned on, the prompt arrives with a
+    ready list of administrative accounts on that machine - pick one and type a
+    password.
+
+    That list is half the work of guessing a password. An attacker who has reached
+    the machine as an ordinary user does not have to guess what the administrator
+    account is called, or whether one exists at all: the names are handed over
+    outright, along with how many there are. Only the password is left, and with
+    one known account name the attempts can be made sensibly.
+
+    Turning listing off requires the account name to be typed along with the
+    password. It is not a safeguard in itself - administrative account names can
+    be guessable - but they stop being supplied by the system on request to
+    anybody who sits down at the machine.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Zmienia się wygląd jednego okna.
+
+    Osoba podnosząca uprawnienia zobaczy puste pole na nazwę konta zamiast listy
+    do wskazania i będzie musiała tę nazwę wpisać. Dla kogoś, kto zna swoje konto
+    administracyjne, jest to jedno pole więcej. Dla kogoś, kto go nie zna,
+    zniknięcie listy jest dokładnie tym, o co w tym punkcie chodzi.
+
+    Podnoszenie uprawnień, instalacja programów i wszystko, co wymaga
+    administratora, działa tak samo. Nie ma restartu, wylogowania ani zmiany
+    w uprawnieniach kont.
+
+    Warto uprzedzić obsługę, bo pierwsze zgłoszenie brzmi zwykle „nie mam już
+    swojego konta na liście", a nie „zmieniło się okno".
+  en: |
+    Nothing stops working. The look of one window changes.
+
+    Somebody elevating will see an empty field for the account name instead of a
+    list to pick from, and will have to type that name. For somebody who knows
+    their administrative account it is one more field. For somebody who does not,
+    the list disappearing is exactly the point of the item.
+
+    Elevation, installing programs and everything needing an administrator work as
+    before. There is no restart, no sign-out and no change to account rights.
+
+    Worth warning support, because the first report usually reads "my account is
+    not on the list any more" rather than "the window changed".
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Przy podnoszeniu uprawnień trzeba wpisać nazwę konta administratora zamiast wybrać ją z listy
+    en:
+      - Elevating requires the administrator account name to be typed rather than picked from a list
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI'
+      $name = 'EnumerateAdministrators'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI'
+    $name = 'EnumerateAdministrators'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnumerateAdministrators' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/identity-protection/user-account-control/user-account-control-overview
+
+notes:
+  pl: |
+    Wynik „brak wartości" jest tu łagodniejszy, niż wygląda: bez tej zasady
+    system i tak nie wylicza kont administracyjnych na maszynie poza domeną.
+    Punkt jest niespełniony dlatego, że nic tego nie utrwala, a nie dlatego, że
+    lista jest teraz pokazywana.
+
+    Reguła należy do klasy bez uciążliwości mimo widocznej zmiany w oknie,
+    bo nikt nie musi przez nią zmienić sposobu pracy — trzeba tylko wpisać to,
+    co dotąd dało się kliknąć.
+  en: |
+    A result of "no value" is gentler here than it looks: without this policy the
+    system does not list administrative accounts on a machine outside a domain
+    anyway. The item is unmet because nothing makes that permanent, not because
+    the list is being shown now.
+
+    The rule falls in the class with no disruption despite the visible change to
+    the window, because nobody has to change how they work because of it - only to
+    type what could previously be clicked.

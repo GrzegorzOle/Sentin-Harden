@@ -1,0 +1,183 @@
+id: win11-autorun-commands-not-executed
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > AutoPlay Policies
+  title:
+    pl: Polecenia z pliku startowego nośnika nigdy nie wykonywane
+    en: Commands from a medium's startup file never executed
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Na nośniku może leżeć plik opisujący, co uruchomić po jego podłączeniu,
+    i jaką pozycję pokazać w menu. System czyta ten plik z samego nośnika, czyli
+    stamtąd, skąd przychodzi zagrożenie, i wykonuje zapisane w nim polecenie.
+
+    Ustawienie rozstrzyga, co system robi z takim poleceniem. Przy domyślnym
+    zachowaniu polecenie trafia do menu autoodtwarzania jako gotowa pozycja,
+    często opisana tak, żeby wyglądała na otwarcie zawartości nośnika. Kliknięcie
+    w nią uruchamia program z nośnika, a użytkownik jest przekonany, że otwiera
+    folder. Jest to nie tyle luka, co wprost wbudowany sposób na podszycie się
+    pod zwykłą czynność.
+
+    Punkt każe systemowi nie wykonywać takich poleceń w ogóle, niezależnie od
+    tego, co proponuje nośnik i co wybierze użytkownik.
+  en: |
+    A medium can carry a file describing what to run once it is plugged in and
+    what entry to show in the menu. The system reads that file from the medium
+    itself - that is, from where the threat comes - and carries out the command
+    written in it.
+
+    The setting decides what the system does with such a command. Under the
+    default behaviour the command goes into the autoplay menu as a ready entry,
+    often worded so it looks like opening the medium's contents. Clicking it runs
+    a program from the medium while the user is convinced they are opening a
+    folder. This is less a hole than an outright built-in way to impersonate an
+    ordinary action.
+
+    The item tells the system not to carry out such commands at all, whatever the
+    medium proposes and whatever the user picks.
+
+disruption_description:
+  pl: |
+    Dla osoby pracującej przy maszynie zmiana jest praktycznie niewidoczna,
+    bo dotyczy pozycji w menu, której nikt świadomie nie szuka.
+
+    Przestają działać nośniki instalacyjne liczące na to, że instalator ruszy
+    sam po włożeniu płyty albo podłączeniu pamięci. Zamiast tego trzeba otworzyć
+    nośnik i uruchomić instalator ręcznie — plik na nim leży i nic się z nim nie
+    dzieje, więc jest to jedna czynność więcej, a nie przeszkoda.
+
+    Ten sam mechanizm bywa używany przez firmowe pamięci z zestawem narzędzi
+    i przez nośniki serwisowe dostawców sprzętu. One również przestaną ruszać
+    same.
+
+    Nie ma restartu ani wylogowania, a zmiana obowiązuje od następnego
+    podłączenia nośnika.
+  en: |
+    For the person at the machine the change is practically invisible, because it
+    concerns a menu entry nobody deliberately looks for.
+
+    What stops working are installation media counting on the installer starting
+    by itself once a disc is inserted or a memory stick plugged in. Instead the
+    medium has to be opened and the installer started by hand - the file is there
+    and nothing happens to it, so this is one action more rather than an obstacle.
+
+    The same mechanism is sometimes used by company memory sticks holding a set of
+    tools and by hardware vendors' service media. Those will also stop starting by
+    themselves.
+
+    There is no restart and no sign-out, and the change applies from the next time
+    a medium is plugged in.
+
+implementation_consequences:
+  impact_areas:
+    - removable-media
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Nośniki instalacyjne przestaną uruchamiać instalator samoczynnie po podłączeniu
+      - Firmowe pamięci z zestawem narzędzi i nośniki serwisowe dostawców przestaną ruszać same
+    en:
+      - Installation media stop starting their installer by themselves once plugged in
+      - Company memory sticks holding tools and vendors' service media stop starting by themselves
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których to ustawienie jest błędem
+    en:
+      - No known cases in which this setting is a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+      $name = 'NoAutorun'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $name = 'NoAutorun'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoAutorun' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/shell/autoplay
+
+notes:
+  pl: |
+    Paczka ma trzy reguły dotyczące nośników i łatwo pomyśleć, że jedna z nich
+    wystarcza. Nie wystarcza, bo dotyczą różnych etapów.
+
+    Wyłączenie autoodtwarzania dla wszystkich napędów mówi, czy system w ogóle
+    zagląda na nośnik po podłączeniu. Reguła o urządzeniach niebędących nośnikami
+    rozszerza to na sprzęt, który nośnikiem nie jest, choć się nim przedstawia.
+    Ta reguła rozstrzyga o czymś innym — o tym, co się stanie z poleceniem
+    zapisanym na nośniku, jeśli mimo wszystko zostanie odczytane.
+
+    Wdrożenie samego autoodtwarzania zostawia otwartą drogę, na której polecenie
+    z nośnika trafia do menu przy ręcznym otwarciu napędu. Dlatego punkty
+    trzymamy osobno i żaden nie zastępuje pozostałych.
+  en: |
+    The pack has three rules about media and it is easy to think one of them
+    suffices. It does not, because they concern different stages.
+
+    Turning autoplay off for all drives says whether the system looks at a medium
+    at all once it is plugged in. The rule about devices that are not media
+    extends that to hardware which is not a medium though it presents itself as
+    one. This rule settles something else - what becomes of a command written on a
+    medium if it is read in spite of everything.
+
+    Applying autoplay alone leaves open the route where a command from a medium
+    reaches the menu when the drive is opened by hand. That is why the items are
+    kept apart and none replaces the others.

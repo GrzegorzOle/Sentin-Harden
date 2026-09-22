@@ -1,0 +1,182 @@
+id: win11-debug-privilege-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Debugowanie programów tylko dla administratorów
+    en: Debug programs restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uprawnienie do debugowania pozwala otworzyć dowolny proces w systemie
+    i czytać jego pamięć — łącznie z procesami podsystemu zabezpieczeń, w
+    których leżą skróty haseł i bilety uwierzytelniające zalogowanych osób.
+    Narzędzia wyciągające poświadczenia z pamięci opierają się dokładnie na tym
+    uprawnieniu.
+
+    Konto, które je posiada, jest w praktyce kontem administracyjnym, niezależnie
+    od tego, do jakich grup należy. Rozszerzenie tego uprawnienia poza
+    administratorów jest równoznaczne z przyznaniem im pełnej władzy nad maszyną,
+    tyle że w sposób niewidoczny na liście członków grup.
+  en: |
+    The debug privilege allows any process in the system to be opened and its
+    memory read - including the processes of the security subsystem, where the
+    password hashes and authentication tickets of signed-in people live. Tools
+    that pull credentials out of memory rest on exactly this privilege.
+
+    An account holding it is in practice an administrative account, regardless
+    of which groups it belongs to. Extending the privilege beyond the
+    administrators amounts to granting full power over the machine, only in a
+    way invisible on any group membership list.
+
+disruption_description:
+  pl: |
+    Na typowej stacji uprawnienie i tak ma wyłącznie grupa administratorów,
+    więc wdrożenie niczego nie zmieni. Zmiana nie wymaga restartu ani
+    wylogowania i jest niewidoczna dla użytkownika.
+
+    Skutek pojawi się tam, gdzie uprawnienie zostało komuś przyznane świadomie:
+    przy stanowisku programistycznym z narzędziami diagnostycznymi albo przy
+    agencie monitorującym pracującym na koncie usługi. Wtedy narzędzie przestaje
+    widzieć cudze procesy — co jest właśnie zamierzonym skutkiem, ale warto
+    wiedzieć o tym wcześniej niż z telefonu.
+  en: |
+    On a typical workstation only the administrators group holds the privilege
+    anyway, so the rollout changes nothing. The change needs no restart or
+    sign-out and is invisible to the user.
+
+    The effect appears where the privilege was deliberately granted to somebody:
+    on a development station with diagnostic tools, or with a monitoring agent
+    running under a service account. The tool then stops seeing other people's
+    processes - which is precisely the intended result, but it is better to know
+    about it in advance than from a phone call.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Narzędzia diagnostyczne uruchamiane na koncie bez uprawnień administratora przestaną podłączać się do procesów
+      - Agent monitorujący pracujący na koncie usługi może stracić dostęp do danych o innych procesach
+      - Zrzuty pamięci wykonywane przez oprogramowanie serwisowe mogą zakończyć się odmową
+    en:
+      - Diagnostic tools run under a non-administrative account stop attaching to processes
+      - A monitoring agent running under a service account may lose access to data about other processes
+      - Memory dumps taken by service software may end in a refusal
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie pracuje agent lub narzędzie diagnostyczne, któremu uprawnienie przyznano świadomie
+    en:
+      - The machine runs an agent or diagnostic tool that was deliberately granted the privilege
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDebugPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDebugPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDebugPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The point of this item is exclusivity, so the list is replaced rather than
+    # merged - carrying the previous holders over would defeat it.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeDebugPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDebugPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/debug-programs
+
+notes:
+  pl: |
+    Sprawdzenie uznaje także stan, w którym uprawnienia nie ma nikt. To
+    konfiguracja mocniejsza od wymaganej i nie ma powodu zgłaszać jej jako
+    niezgodności — narzędzia diagnostyczne przestają wtedy działać nawet
+    administratorowi, ale jest to wybór, nie usterka.
+
+    Punkt zestawia się z ochroną podsystemu zabezpieczeń: tamta utrudnia odczyt
+    pamięci procesu uwierzytelniania, ten ogranicza krąg kont, które mogą w
+    ogóle spróbować.
+  en: |
+    The check also accepts the state in which nobody holds the privilege. That
+    is a stronger configuration than required and there is no reason to report
+    it as a non-compliance - diagnostic tools then stop working even for the
+    administrator, but that is a choice, not a fault.
+
+    The item pairs with the protection of the security subsystem: that makes
+    reading the authentication process's memory harder, this narrows the set of
+    accounts that may even try.

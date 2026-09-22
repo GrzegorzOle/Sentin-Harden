@@ -1,0 +1,183 @@
+id: win11-deny-local-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania lokalnego dla grupy Goście
+    en: Deny local sign-in for the Guests group
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Logowanie gościa przy maszynie daje dostęp bez hasła i bez możliwości
+    powiązania działań z konkretną osobą. W dzienniku zostaje nazwa konta,
+    z której nic nie wynika — a to jest dokładnie ten przypadek, w którym zapis
+    przestaje być dowodem.
+
+    Jawna odmowa działa niezależnie od tego, czy konto gościa jest w danej
+    chwili włączone. Zamyka drogę także wtedy, gdy ktoś je później włączy,
+    a przy okazji obejmuje każde konto, które trafi do tej grupy — nie tylko to
+    jedno, wbudowane.
+  en: |
+    A guest signing in at the machine gets access without a password and without
+    any way of tying actions to a particular person. What stays in the log is an
+    account name that says nothing - and that is exactly the case in which a
+    record stops being evidence.
+
+    An explicit denial works regardless of whether the guest account is enabled
+    at the moment. It closes the route even if somebody enables it later, and at
+    the same time covers every account that ends up in that group - not just the
+    one built-in account.
+
+disruption_description:
+  pl: |
+    Na maszynie z wyłączonym kontem gościa zmiana nie ma żadnego widocznego
+    skutku. Nie wymaga restartu, nie wymaga wylogowania i nie dotyka kont
+    używanych do pracy.
+
+    Jedyny przypadek, w którym coś się zmieni, to stanowisko świadomie
+    udostępnione osobom z zewnątrz — recepcja, hala, terminal informacyjny.
+    Tam trzeba najpierw przygotować zwykłe konto, zanim gościnne przestanie
+    działać.
+  en: |
+    On a machine with the guest account disabled the change has no visible
+    effect at all. It needs no restart, no sign-out and does not touch the
+    accounts used for work.
+
+    The only case in which something changes is a station deliberately made
+    available to outsiders - a reception desk, a shop floor, an information
+    terminal. There an ordinary account has to be prepared first, before the
+    guest one stops working.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Zalogowanie się przy maszynie kontem gościa przestanie być możliwe
+      - Stanowisko udostępnione osobom z zewnątrz wymaga przygotowania zwykłego konta
+    en:
+      - Signing in at the machine with the guest account becomes impossible
+      - A station made available to outsiders needs an ordinary account prepared first
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowisko jest świadomie udostępnione osobom z zewnątrz przez konto gościa i nie ma zamiennika
+    en:
+      - The station is deliberately made available to outsiders through the guest account and has no replacement
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyInteractiveLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: S-1-5-32-546
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyInteractiveLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyInteractiveLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyInteractiveLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    if (-not ($members -contains '*S-1-5-32-546')) { $members += '*S-1-5-32-546' }
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyInteractiveLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyInteractiveLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-locally
+
+notes:
+  pl: |
+    Punkt tworzy parę z wyłączeniem konta gościa i z odmową dostępu z sieci.
+    Wyłączenie konta załatwia dzisiejszy stan, odmowa obowiązuje także po jego
+    ponownym włączeniu — to dwie różne rzeczy i obie są potrzebne.
+
+    Odebranie prawa nie wylogowuje osoby, która jest już zalogowana. Skutek
+    pojawia się dopiero przy następnej próbie, co przy stanowiskach
+    pozostawianych zalogowanymi warto mieć na uwadze.
+  en: |
+    The item forms a pair with disabling the guest account and with the denial
+    of network access. Disabling the account settles today's state, the denial
+    holds even after somebody enables it again - two different things, and both
+    are needed.
+
+    Withdrawing the right does not sign out a person already signed in. The
+    effect appears only at the next attempt, which is worth remembering with
+    stations left signed in.

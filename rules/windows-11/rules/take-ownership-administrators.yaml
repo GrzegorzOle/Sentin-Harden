@@ -1,0 +1,168 @@
+id: win11-take-ownership-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Przejmowanie własności obiektów tylko dla administratorów
+    en: Taking ownership of objects restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Właściciel obiektu może zmienić jego uprawnienia niezależnie od tego, co
+    w nich napisano. Uprawnienie do przejmowania własności pozwala więc obejść
+    całą kontrolę dostępu w jednym kroku: przejąć plik, przyznać sobie do niego
+    prawa i odczytać go.
+
+    Dotyczy to nie tylko plików, ale i kluczy rejestru oraz usług. Konto z tym
+    uprawnieniem może sięgnąć po konfigurację usługi systemowej i podmienić
+    program, który ta usługa uruchamia — czyli zdobyć uprawnienia wyższe niż
+    własne, korzystając wyłącznie z mechanizmów systemu.
+  en: |
+    The owner of an object can change its permissions regardless of what those
+    permissions say. The take ownership privilege therefore allows the whole of
+    access control to be bypassed in one step: take the file, grant yourself
+    rights to it, read it.
+
+    This concerns not only files but registry keys and services as well. An
+    account with this privilege can reach for a system service's configuration
+    and replace the program that service starts - gaining rights higher than its
+    own using nothing but the system's own mechanisms.
+
+disruption_description:
+  pl: |
+    Na typowej stacji uprawnienie ma wyłącznie grupa administratorów, więc
+    wdrożenie niczego nie zmieni. Nie wymaga restartu, nie wymaga wylogowania
+    i nie jest widoczne dla użytkownika.
+
+    Zmiana odbiera uprawnienie kontom spoza grupy administratorów, jeśli ktoś
+    im je wcześniej przyznał. Typowy przypadek to konto serwisowe oprogramowania
+    porządkującego pliki albo narzędzia migracyjnego — takie narzędzie przestanie
+    móc przejąć pliki po usuniętym użytkowniku.
+  en: |
+    On a typical workstation only the administrators group holds the privilege,
+    so the rollout changes nothing. It needs no restart, no sign-out and is not
+    visible to the user.
+
+    The change withdraws the privilege from accounts outside the administrators
+    group if somebody granted it to them earlier. The typical case is a service
+    account of file tidying software or a migration tool - such a tool loses the
+    ability to take over the files of a deleted user.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Narzędzia porządkujące pliki po usuniętych użytkownikach przestaną przejmować ich własność
+      - Skrypty migracyjne uruchamiane na koncie bez uprawnień administratora zakończą się odmową
+    en:
+      - Tools tidying up files of deleted users stop taking ownership of them
+      - Migration scripts run under a non-administrative account end in a refusal
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie pracuje narzędzie z kontem serwisowym, któremu to uprawnienie przyznano świadomie
+    en:
+      - The machine runs a tool with a service account that was deliberately granted this privilege
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeTakeOwnershipPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeTakeOwnershipPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeTakeOwnershipPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeTakeOwnershipPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeTakeOwnershipPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/take-ownership-of-files-or-other-objects
+
+notes:
+  pl: |
+    Przejęcie własności zostawia ślad w postaci zmienionego właściciela obiektu,
+    ale nie zostawia go w dzienniku, dopóki nie włączono inspekcji użycia
+    uprawnień wrażliwych. Te dwa punkty czyta się razem: ten ogranicza krąg
+    kont, tamten pozwala zobaczyć, że ktoś z uprawnienia skorzystał.
+  en: |
+    Taking ownership leaves a trace in the form of the object's changed owner,
+    but leaves none in the log until sensitive privilege use auditing is
+    enabled. The two items are read together: this one narrows the set of
+    accounts, that one makes it possible to see that somebody used the
+    privilege.

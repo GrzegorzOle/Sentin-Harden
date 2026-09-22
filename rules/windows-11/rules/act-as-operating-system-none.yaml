@@ -1,0 +1,172 @@
+id: win11-act-as-operating-system-none
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Działanie jako część systemu operacyjnego nieprzyznane nikomu
+    en: Act as part of the operating system granted to nobody
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    To najszersze uprawnienie w systemie. Konto, które je posiada, może
+    utworzyć token dostępu dla dowolnego użytkownika i działać w jego imieniu —
+    bez znajomości hasła, bez logowania, bez ograniczeń wynikających z własnych
+    uprawnień. Nie ma tu nic do podniesienia; to już jest szczyt.
+
+    Uprawnienie nie jest domyślnie przyznane nikomu, łącznie z administratorami.
+    Jeśli pojawia się na liście, ktoś je tam wpisał — albo świadomie, pod stare
+    oprogramowanie, albo jako sposób na utrwalenie dostępu, który nie rzuca się
+    w oczy przy przeglądaniu członków grup.
+  en: |
+    This is the broadest privilege in the system. An account holding it can
+    create an access token for any user and act on their behalf - without
+    knowing the password, without signing in, without limits arising from its
+    own rights. There is nothing here to escalate to; this is already the top.
+
+    The privilege is granted to nobody by default, administrators included. If
+    it appears on the list, somebody put it there - either deliberately, for
+    some old software, or as a way of establishing persistence that does not
+    catch the eye when group memberships are reviewed.
+
+disruption_description:
+  pl: |
+    Na maszynie w stanie domyślnym lista jest pusta i wdrożenie niczego nie
+    zmienia. Zmiana nie wymaga restartu i jest niewidoczna dla użytkownika.
+
+    Jeśli lista pusta nie jest, sprawa wygląda inaczej i warto zacząć od
+    pytania, skąd wpis się wziął. Stare oprogramowanie uwierzytelniające
+    potrafi go wymagać i wtedy odebranie uprawnienia zatrzyma usługę — ale
+    znacznie częściej wpis jest pozostałością po czymś, czego dawno nie ma.
+  en: |
+    On a machine in its default state the list is empty and the rollout changes
+    nothing. The change needs no restart and is invisible to the user.
+
+    If the list is not empty, the situation is different and it is worth
+    starting with the question of where the entry came from. Old authentication
+    software can require it, and then withdrawing the privilege will stop the
+    service - but far more often the entry is a leftover from something long
+    gone.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Usługa uwierzytelniająca się w imieniu innych użytkowników przestanie działać
+      - Starsze oprogramowanie wymagające tego uprawnienia zakończy się błędem przy starcie
+    en:
+      - A service authenticating on behalf of other users stops working
+      - Older software requiring this privilege fails at start-up
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa usługa, której to uprawnienie przyznano świadomie i której nie da się teraz zastąpić
+    en:
+      - The machine runs a service that was deliberately granted this privilege and cannot be replaced now
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeTcbPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeTcbPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeTcbPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeTcbPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeTcbPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/act-as-part-of-the-operating-system
+
+notes:
+  pl: |
+    Eksport polityki pomija uprawnienia, których nikt nie posiada, więc brak
+    wiersza i pusta lista znaczą to samo. Sprawdzenie uznaje oba stany, zamiast
+    traktować brak wiersza jako niemożność odczytu.
+
+    Niepusta lista przy tym punkcie zasługuje na osobne wyjaśnienie, nawet gdy
+    zostanie naprawiona. Warto ustalić, kiedy wpis powstał — samo usunięcie
+    zamyka objaw, a nie przyczynę.
+  en: |
+    A policy export omits privileges nobody holds, so a missing line and an
+    empty list mean the same thing. The check accepts both states rather than
+    treating a missing line as an inability to read.
+
+    A non-empty list on this item deserves a separate explanation even once it
+    has been fixed. It is worth establishing when the entry appeared - removing
+    it closes the symptom, not the cause.

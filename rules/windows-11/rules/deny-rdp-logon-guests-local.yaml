@@ -1,0 +1,192 @@
+id: win11-deny-rdp-logon-guests-local
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania przez pulpit zdalny dla gości i kont lokalnych
+    en: Deny Remote Desktop sign-in for guests and local accounts
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Konta lokalne są wszędzie takie same: to samo hasło administratora
+    powielone na dziesięciu stacjach daje dziesięć wejść. Napastnik, który
+    zdobył jedno takie hasło, przechodzi między maszynami przez pulpit zdalny,
+    nie potrzebując niczego więcej.
+
+    Odmowa logowania zdalnego dla kont lokalnych przecina tę drogę w najbardziej
+    dotkliwym dla atakującego miejscu. Konta pozostają użyteczne przy maszynie,
+    gdzie ktoś musi być fizycznie obecny, ale przestają być kluczem
+    uniwersalnym. Grupa gości domyka to samo od drugiej strony.
+  en: |
+    Local accounts are the same everywhere: one administrator password repeated
+    on ten workstations gives ten ways in. An attacker who has obtained one such
+    password moves between machines over Remote Desktop, needing nothing else.
+
+    Denying remote sign-in to local accounts cuts that route at the point most
+    painful to the attacker. The accounts stay useful at the machine itself,
+    where somebody has to be physically present, but stop being a universal key.
+    The guests group closes the same thing from the other side.
+
+disruption_description:
+  pl: |
+    Na maszynie w domenie zmiana jest zwykle niewidoczna, bo ludzie łączą się
+    kontami domenowymi. Na stacji bez domeny bywa odwrotnie i tam trzeba
+    spojrzeć uważnie: jeśli pulpit zdalny jest używany, to właśnie kontem
+    lokalnym.
+
+    Skutek jest natychmiastowy i dotyczy także administratora, który tą drogą
+    zarządza maszyną. Przed wdrożeniem trzeba mieć inną drogę dostępu —
+    fizyczną albo przez konto domenowe. To jedyna rzecz, którą naprawdę warto
+    sprawdzić, i cały powód, dla którego punkt nie idzie hurtem.
+  en: |
+    On a domain-joined machine the change is usually invisible, because people
+    connect with domain accounts. On a workstation outside a domain it tends to
+    be the reverse, and there it needs a careful look: if Remote Desktop is used
+    at all, it is used with a local account.
+
+    The effect is immediate and applies to the administrator who manages the
+    machine this way as well. Before the rollout there has to be another route
+    in - physical, or through a domain account. That is the one thing genuinely
+    worth checking, and the whole reason this item does not go in bulk.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - accounts-and-passwords
+    - remote-management
+  what_breaks:
+    pl:
+      - Połączenie pulpitem zdalnym na konto lokalne przestanie być możliwe, także dla administratora
+      - Narzędzia zdalnej pomocy logujące się kontem lokalnym stracą dostęp do maszyny
+      - Na stacji bez domeny może zabraknąć jakiejkolwiek zdalnej drogi dostępu
+    en:
+      - Remote Desktop connections to a local account become impossible, including for the administrator
+      - Remote assistance tools signing in with a local account lose access to the machine
+      - On a workstation outside a domain there may be no remote route in left at all
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna jest zarządzana wyłącznie zdalnie kontem lokalnym i nie ma innej drogi dostępu
+      - Stanowisko bez domeny jest używane przez pulpit zdalny przez zwykłych użytkowników
+    en:
+      - The machine is managed solely over the network with a local account and has no other route in
+      - A station outside a domain is used through Remote Desktop by ordinary users
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyRemoteInteractiveLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '(?=.*S-1-5-32-546)(?=.*S-1-5-113)'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyRemoteInteractiveLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyRemoteInteractiveLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyRemoteInteractiveLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    foreach ($sid in @('*S-1-5-32-546', '*S-1-5-113')) {
+      if (-not ($members -contains $sid)) { $members += $sid }
+    }
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyRemoteInteractiveLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyRemoteInteractiveLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-through-remote-desktop-services
+
+notes:
+  pl: |
+    Identyfikator kont lokalnych obejmuje wszystkie konta zakładane na tej
+    maszynie, także administracyjne. To jest zamierzone i stanowi istotę tego
+    punktu — nie ma tu wyjątku dla konta, którym zarządza się maszyną.
+
+    Punkt zestawia się z wymogiem uwierzytelniania na poziomie sieci i poziomem
+    szyfrowania pulpitu zdalnego. Tamte utrudniają przejęcie samego połączenia,
+    ten odbiera wartość hasłu, które napastnik już ma.
+  en: |
+    The local accounts identifier covers every account created on this machine,
+    administrative ones included. That is deliberate and is the substance of
+    this item - there is no exception here for the account the machine is
+    managed with.
+
+    The item pairs with the network level authentication requirement and the
+    Remote Desktop encryption level. Those make the connection itself harder to
+    take over; this one takes the value out of a password the attacker already
+    has.

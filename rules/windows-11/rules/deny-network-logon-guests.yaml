@@ -1,0 +1,192 @@
+id: win11-deny-network-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa dostępu z sieci dla grupy Goście
+    en: Deny access from the network for the Guests group
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Konto gościa bywa wyłączone, ale grupa, do której należy, nadal figuruje
+    w uprawnieniach. Wystarczy, że ktoś to konto włączy albo doda do grupy inne,
+    żeby powstał dostęp do zasobów tej maszyny z sieci — bez hasła i bez śladu
+    w postaci nowego konta administracyjnego.
+
+    Jawna odmowa zamyka tę drogę niezależnie od stanu samego konta. Odmowa
+    w systemie uprawnień jest silniejsza od zezwolenia, więc obowiązuje także
+    wtedy, gdy ktoś przypadkiem przyzna tej grupie dostęp gdzie indziej. To
+    zabezpieczenie odporne na pojedynczy błąd konfiguracji, a nie tylko na
+    dzisiejszy stan.
+  en: |
+    The guest account may be disabled, but the group it belongs to still appears
+    in the rights. It is enough for somebody to enable that account, or add
+    another to the group, for access to this machine's resources from the
+    network to exist - with no password and no trace in the form of a new
+    administrative account.
+
+    An explicit denial closes that route regardless of the account's state. In
+    the rights system a denial outweighs a grant, so it holds even if somebody
+    accidentally gives that group access elsewhere. This is a safeguard
+    resistant to a single configuration mistake, not merely to today's state.
+
+disruption_description:
+  pl: |
+    Na maszynie, na której konto gościa jest wyłączone, zmiana nie ma żadnego
+    widocznego skutku — odbiera dostęp komuś, kto i tak nie mógł się zalogować.
+
+    Nawet przy koncie włączonym skutek dotyczy wyłącznie dostępu z sieci:
+    udziałów plików i zdalnego zarządzania. Logowanie lokalne pozostaje bez
+    zmian, więc stanowisko udostępniane przypadkowym osobom przy biurku działa
+    dokładnie tak jak wcześniej.
+  en: |
+    On a machine where the guest account is disabled the change has no visible
+    effect at all - it withdraws access from somebody who could not sign in
+    anyway.
+
+    Even with the account enabled, the effect concerns network access only: file
+    shares and remote management. Local sign-in is unchanged, so a station made
+    available to passers-by at the desk works exactly as before.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - accounts-and-passwords
+    - remote-management
+  what_breaks:
+    pl:
+      - Dostęp do udziałów tej maszyny z użyciem konta gościa przestanie działać
+      - Urządzenia łączące się do udziału bez podawania poświadczeń nie nawiążą połączenia
+    en:
+      - Access to this machine's shares using the guest account stops working
+      - Devices connecting to a share without supplying credentials fail to connect
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Udział na tej maszynie jest świadomie udostępniony bez uwierzytelnienia dla urządzeń w sieci lokalnej
+    en:
+      - A share on this machine is deliberately published without authentication for devices on the local network
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyNetworkLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: S-1-5-32-546
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    $existed = $false
+    if ($text -match '(?m)^SeDenyNetworkLogonRight\s*=\s*(.*)$') {
+      $value = $Matches[1].Trim()
+      $existed = $true
+    }
+    [pscustomobject]@{
+      right   = 'SeDenyNetworkLogonRight'
+      value   = $value
+      existed = $existed
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyNetworkLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    # The right is replaced wholesale, so whoever is already denied has to be
+    # carried over - otherwise the change would quietly grant somebody access.
+    if (-not ($members -contains '*S-1-5-32-546')) { $members += '*S-1-5-32-546' }
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyNetworkLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyNetworkLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-access-to-this-computer-from-the-network
+
+notes:
+  pl: |
+    Grupy są wskazywane identyfikatorem zabezpieczeń, a nie nazwą. Nazwy grup
+    wbudowanych są tłumaczone razem z systemem, więc reguła oparta na nazwie
+    działałaby wyłącznie na jednej wersji językowej.
+
+    Przypisanie prawa zastępuje całą jego listę, a nie dopisuje do niej.
+    Dlatego polecenie naprawcze odczytuje najpierw stan bieżący i przenosi
+    istniejące wpisy — inaczej wdrożenie jednego punktu cicho odbierałoby
+    odmowę komuś innemu.
+  en: |
+    Groups are addressed by security identifier rather than by name. The names
+    of built-in groups are translated along with the system, so a rule built on
+    the name would work on one language version only.
+
+    Assigning a right replaces its entire list rather than adding to it. That is
+    why the remediation reads the current state first and carries the existing
+    entries over - otherwise rolling out one item would quietly lift the denial
+    from somebody else.

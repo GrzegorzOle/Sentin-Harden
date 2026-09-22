@@ -1,0 +1,146 @@
+id: win11-audit-system-integrity
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja integralności systemu
+    en: Audit system integrity
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zbiera zdarzenia mówiące, że z podsystemem zabezpieczeń stało
+    się coś nietypowego: naruszenie integralności, utracone zdarzenia inspekcji,
+    nieprawidłowe wywołanie interfejsu uwierzytelniania. To nie są zdarzenia
+    codzienne — każde z nich wymaga spojrzenia.
+
+    Szczególnie wartościowy jest zapis o utraconych zdarzeniach. Mówi wprost,
+    że dziennik jest niekompletny, i to w sposób, którego nie da się przeoczyć.
+    Bez niego luka w zapisie wygląda dokładnie tak samo jak okres, w którym nic
+    się nie działo.
+  en: |
+    The subcategory collects events saying something unusual has happened to the
+    security subsystem: an integrity violation, lost audit events, an invalid
+    call to the authentication interface. These are not everyday events - each
+    of them calls for a look.
+
+    The record of lost events is particularly valuable. It states plainly that
+    the log is incomplete, in a way that cannot be overlooked. Without it, a gap
+    in the record looks exactly like a period in which nothing happened.
+
+disruption_description:
+  pl: |
+    Wdrożenie nie zmienia niczego w działaniu maszyny. Zdarzenia z tej
+    podkategorii powstają rzadko i zwykle oznaczają rzeczywistą usterkę albo
+    przeciążenie podsystemu inspekcji.
+
+    Na zdrowej maszynie wpisów nie będzie wcale. Jeśli zaczną się pojawiać
+    regularnie, jest to sama w sobie informacja warta sprawdzenia — a nie powód
+    do wyłączenia inspekcji.
+  en: |
+    The rollout changes nothing in how the machine works. Events in this
+    subcategory arise rarely and usually mean an actual fault or an overloaded
+    audit subsystem.
+
+    On a healthy machine there will be no entries at all. If they start
+    appearing regularly, that is itself information worth checking - not a
+    reason to switch the auditing off.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta przy zdarzeniach dotyczących podsystemu zabezpieczeń
+      - Na maszynie z przeciążoną inspekcją pojawi się regularny strumień wpisów o utraconych zdarzeniach
+    en:
+      - The security log grows on events concerning the security subsystem
+      - On a machine with overloaded auditing a steady stream of lost-event entries appears
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo, a inspekcja jest już przeciążona
+    en:
+      - Events from this machine are billed by volume and the auditing is already overloaded
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9212-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9212-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9212-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9212-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9212-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-system-integrity
+
+notes:
+  pl: |
+    Zdarzenie o utraconych wpisach inspekcji jest tu najważniejsze i warto je
+    czytać razem z rozmiarem dziennika zabezpieczeń. Jego obecność oznacza, że
+    maszyna wytwarza zdarzenia szybciej, niż podsystem jest w stanie je zapisać —
+    czyli że wdrożone wcześniej punkty inspekcji dają zapis niekompletny.
+  en: |
+    The lost audit entries event is the most important one here and is worth
+    reading together with the security log size. Its presence means the machine
+    produces events faster than the subsystem can record them - that is, that
+    the audit items rolled out earlier are yielding an incomplete record.

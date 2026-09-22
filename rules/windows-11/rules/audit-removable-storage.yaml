@@ -1,0 +1,159 @@
+id: win11-audit-removable-storage
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Object Access
+  title:
+    pl: Inspekcja dostępu do nośników wymiennych
+    en: Audit removable storage
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Nośnik wymienny jest drogą, którą dane wychodzą z firmy bez przechodzenia
+    przez sieć. Żaden mechanizm kontrolujący ruch sieciowy tego nie zobaczy,
+    bo ruchu nie ma — plik po prostu zostaje skopiowany i wychodzi w kieszeni.
+
+    Ta podkategoria zapisuje odczyty i zapisy na takich nośnikach: kto, kiedy,
+    jaki plik. To jedyne miejsce w systemie, w którym kopiowanie danych na
+    pamięć przenośną zostawia ślad nadający się do późniejszego sprawdzenia.
+  en: |
+    Removable media are the route by which data leaves an organisation without
+    passing through the network. No mechanism watching network traffic will see
+    it, because there is no traffic - the file is simply copied and walks out in
+    a pocket.
+
+    This subcategory records reads and writes on such media: who, when, which
+    file. It is the only place in the system where copying data onto portable
+    storage leaves a trace fit for later examination.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać i nikt nie traci dostępu do nośników. Zmienia się
+    wyłącznie to, że operacje na nich zostają zapisane.
+
+    Objętość zależy od sposobu pracy i potrafi zaskoczyć: skopiowanie katalogu
+    z tysiącem plików to tysiąc wpisów. Na stanowisku, na którym nośniki
+    wymienne są narzędziem codziennej pracy — przenoszenie zdjęć, wymiana
+    danych z urządzeniem pomiarowym — warto wdrożyć punkt najpierw na jednej
+    maszynie i zobaczyć skalę.
+  en: |
+    Nothing stops working and nobody loses access to the media. The only change
+    is that operations on them are recorded.
+
+    The volume depends on how people work and can be surprising: copying a
+    folder of a thousand files means a thousand entries. On a station where
+    removable media are a daily tool - moving photographs, exchanging data with
+    a measurement device - it is worth rolling the item out on one machine first
+    and seeing the scale.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - removable-media
+  what_breaks:
+    pl:
+      - Każdy odczyt i zapis pliku na nośniku wymiennym tworzy osobny wpis w dzienniku
+      - Skopiowanie katalogu z tysiącem plików zapełni dziennik tysiącem zdarzeń naraz
+      - Stanowisko wymieniające dane z urządzeniem pomiarowym może wytwarzać wpisy w sposób ciągły
+    en:
+      - Every read and write of a file on removable media creates a separate log entry
+      - Copying a folder of a thousand files fills the log with a thousand events at once
+      - A station exchanging data with a measurement device may produce entries continuously
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Nośniki wymienne są na tym stanowisku podstawowym narzędziem pracy i ruch plików jest ciągły
+      - Dziennik zabezpieczeń ma domyślny rozmiar i nie ma go jak powiększyć
+    en:
+      - Removable media are the main working tool on this station and file movement is continuous
+      - The security log is at its default size and cannot be enlarged
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9245-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9245-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9245-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9245-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9245-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-removable-storage
+
+notes:
+  pl: |
+    Inspekcja rejestruje użycie nośnika, ale go nie blokuje. To rozróżnienie
+    warto zachować przy czytaniu raportu: punkt daje wiedzę po fakcie, a nie
+    kontrolę. Blokowanie nośników jest osobną decyzją, o znacznie większej
+    uciążliwości.
+
+    Niepowodzenia mają tu realną wartość — pokazują próby dostępu do nośnika
+    zablokowanego innym mechanizmem, czyli dokładnie te przypadki, w których
+    ktoś próbował obejść przyjętą zasadę.
+  en: |
+    The auditing records the use of a medium but does not block it. That
+    distinction is worth keeping in mind when reading the report: the item gives
+    knowledge after the fact, not control. Blocking media is a separate decision
+    with far greater disruption.
+
+    Failures carry real value here - they show attempts to reach a medium
+    blocked by another mechanism, that is, exactly the cases where somebody
+    tried to get around an established rule.

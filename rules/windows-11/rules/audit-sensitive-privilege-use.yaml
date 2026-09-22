@@ -1,0 +1,165 @@
+id: win11-audit-sensitive-privilege-use
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Privilege Use
+  title:
+    pl: Inspekcja użycia uprawnień wrażliwych
+    en: Audit sensitive privilege use
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kilkanaście uprawnień w systemie pozwala obejść zwykłą kontrolę dostępu:
+    przejęcie własności pliku, debugowanie cudzego procesu, działanie w imieniu
+    innego konta, ładowanie sterownika. Nie używa się ich przy codziennej
+    pracy — używa się ich wtedy, gdy ktoś chce zrobić coś, na co normalne
+    uprawnienia nie pozwalają.
+
+    Zapis ich użycia pokazuje moment, w którym uprawnienie administratora
+    zostaje faktycznie wykorzystane, a nie tylko posiadane. To różnica istotna
+    przy badaniu incydentu: kont z uprawnieniami bywa wiele, ale sięgnięcie po
+    debugowanie cudzego procesu zdarza się rzadko i zawsze ma powód.
+  en: |
+    A dozen or so privileges in the system allow ordinary access control to be
+    bypassed: taking ownership of a file, debugging somebody else's process,
+    acting on behalf of another account, loading a driver. They are not used in
+    daily work - they are used when somebody wants to do something normal rights
+    do not allow.
+
+    Recording their use shows the moment an administrative right is actually
+    exercised rather than merely held. That distinction matters in an
+    investigation: accounts with rights may be many, but reaching for the
+    debugging of another process happens rarely and always has a reason.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Kosztem jest objętość, i to w sposób trudny do
+    przewidzenia z góry: część oprogramowania kopii zapasowych, narzędzi
+    monitorujących i agentów zarządzających używa tych uprawnień przy każdym
+    przebiegu i potrafi wygenerować tysiące wpisów dziennie.
+
+    Dlatego punkt wymaga sprawdzenia, mimo że sam w sobie jest nieszkodliwy.
+    Warto wdrożyć go na jednej maszynie, spojrzeć na tempo przyrostu dziennika
+    przez dobę i dopiero wtedy decydować o reszcie.
+  en: |
+    Nothing stops working. The cost is volume, and in a way that is hard to
+    predict in advance: some backup software, monitoring tools and management
+    agents use these privileges at every run and can produce thousands of
+    entries a day.
+
+    That is why the item needs review even though it is harmless in itself. It
+    is worth rolling out on one machine, watching the log growth rate for a day,
+    and only then deciding about the rest.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Oprogramowanie kopii zapasowych i agenty zarządzające mogą zapełnić dziennik tysiącami wpisów dziennie
+      - Tempo przyrostu dziennika zależy od zainstalowanego oprogramowania i nie da się go przewidzieć z góry
+      - Systemy odbierające zdarzenia dostaną strumień o nieprzewidywalnej objętości
+    en:
+      - Backup software and management agents may fill the log with thousands of entries a day
+      - The log growth rate depends on installed software and cannot be predicted in advance
+      - Event collection systems receive a stream of unpredictable volume
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zabezpieczeń ma domyślny rozmiar i nie ma go jak powiększyć
+      - Na maszynie działa agent używający uprawnień wrażliwych w pętli
+    en:
+      - The security log is at its default size and cannot be enlarged
+      - The machine runs an agent using sensitive privileges in a loop
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9228-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9228-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9228-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9228-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9228-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-sensitive-privilege-use
+
+notes:
+  pl: |
+    Niepowodzenia mają tu osobną wartość: próba użycia uprawnienia przez konto,
+    które go nie ma, jest sygnałem wyraźniejszym niż udane użycie przez
+    administratora. Dlatego punkt wymaga obu stron, a nie samych powodzeń.
+
+    Zakres uprawnień objętych tą podkategorią ustala system i nie da się go
+    zawęzić w polityce. To właśnie stąd bierze się nieprzewidywalna objętość —
+    jedno uprawnienie z tej listy bywa używane przez zwykłe oprogramowanie
+    w tle.
+  en: |
+    Failures carry separate value here: an attempt to use a privilege by an
+    account that does not hold it is a clearer signal than successful use by an
+    administrator. That is why the item requires both sides rather than
+    successes alone.
+
+    The set of privileges covered by this subcategory is fixed by the system and
+    cannot be narrowed in policy. That is where the unpredictable volume comes
+    from - one privilege on that list happens to be used by ordinary software in
+    the background.

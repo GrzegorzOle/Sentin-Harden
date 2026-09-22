@@ -1,0 +1,147 @@
+id: win11-audit-security-state-change
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja zmiany stanu zabezpieczeń
+    en: Audit security state change
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje uruchomienie i zamknięcie systemu oraz zmiany czasu
+    systemowego. Pierwsze wyznacza granice okresów, w których maszyna w ogóle
+    mogła cokolwiek robić — bez nich przerwa w dzienniku jest nie do
+    zinterpretowania.
+
+    Zmiana czasu ma znaczenie osobne. Przesunięcie zegara psuje kolejność
+    zdarzeń w dzienniku i jest znanym sposobem na utrudnienie dochodzenia.
+    Zapis samego przesunięcia przywraca możliwość ułożenia zdarzeń we właściwej
+    kolejności, nawet jeśli znaczniki czasu kłamią.
+  en: |
+    The subcategory records system start-up and shutdown along with changes to
+    the system time. The first marks out the periods in which the machine could
+    have been doing anything at all - without them a gap in the log cannot be
+    interpreted.
+
+    A time change matters separately. Moving the clock breaks the ordering of
+    events in the log and is a known way of hampering an investigation.
+    Recording the shift itself restores the ability to put events back in their
+    proper order, even when the timestamps lie.
+
+disruption_description:
+  pl: |
+    Wdrożenie nie ma wpływu na pracę maszyny ani na użytkownika. Zdarzenia
+    powstają przy uruchomieniu i zamknięciu systemu oraz przy synchronizacji
+    czasu, czyli kilka razy dziennie w najgorszym razie.
+
+    To jedna z najtańszych pozycji inspekcji — koszt w objętości dziennika jest
+    praktycznie niemierzalny, a bez niej nie da się rozróżnić maszyny
+    wyłączonej od maszyny, na której zatrzymano zapis.
+  en: |
+    The rollout has no effect on the machine or on the user. Events arise at
+    system start-up and shutdown and at time synchronisation - a few times a day
+    at worst.
+
+    It is one of the cheapest audit entries: the cost in log volume is
+    practically unmeasurable, and without it a switched-off machine cannot be
+    told apart from one where the recording was stopped.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdym uruchomieniu i zamknięciu systemu
+      - Maszyna synchronizująca czas często doda wpis przy każdej korekcie zegara
+    en:
+      - The security log grows by one entry at each system start-up and shutdown
+      - A machine synchronising its time often adds an entry at each clock correction
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym
+    en:
+      - Events from this machine are billed by volume in the collection system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9210-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9210-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9210-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9210-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9210-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-security-state-change
+
+notes:
+  pl: |
+    Wpis o uruchomieniu systemu pełni w dzienniku rolę znacznika ciągłości.
+    Zestawiony z inspekcją zmian zasad inspekcji pozwala odróżnić trzy
+    sytuacje, które bez nich wyglądają identycznie: maszyna wyłączona, zapis
+    wyłączony, dziennik nadpisany.
+  en: |
+    The start-up entry acts as a continuity marker in the log. Set against the
+    auditing of audit policy changes, it makes it possible to tell apart three
+    situations that otherwise look identical: the machine switched off, the
+    recording switched off, the log overwritten.

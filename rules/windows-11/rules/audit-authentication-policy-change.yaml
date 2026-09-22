@@ -1,0 +1,148 @@
+id: win11-audit-authentication-policy-change
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja zmian zasad uwierzytelniania
+    en: Audit authentication policy change
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zasady uwierzytelniania rozstrzygają, komu wolno się zalogować i w jaki
+    sposób: przypisanie praw logowania, relacje zaufania, ustawienia protokołów.
+    Zmiana w tym obszarze jest cicha i trwała — nie wymaga hasła żadnego
+    użytkownika, a otwiera drogę, której wcześniej nie było.
+
+    Podkategoria zapisuje właśnie takie zmiany. Wartość jest podobna jak przy
+    zmianach w grupach: widać nie skutek dostępu, lecz moment, w którym ktoś
+    zmienił reguły dostępu. Przy badaniu incydentu to często jedyny ślad
+    świadczący o tym, że zmiana była zamierzona, a nie przypadkowa.
+  en: |
+    Authentication policy decides who may sign in and how: the assignment of
+    logon rights, trust relationships, protocol settings. A change in that area
+    is quiet and lasting - it needs no user's password, yet it opens a route
+    that was not there before.
+
+    The subcategory records such changes. The value resembles that of group
+    changes: what becomes visible is not the effect of access but the moment
+    somebody altered the rules of access. In an investigation that is often the
+    only trace showing the change was deliberate rather than accidental.
+
+disruption_description:
+  pl: |
+    Wdrożenie nie wpływa na pracę maszyny i nie jest widoczne dla użytkownika.
+    Zdarzenia powstają rzadko, bo zasady uwierzytelniania zmienia się przy
+    konfigurowaniu maszyny, a nie w codziennym użyciu.
+
+    Na stacji zarządzanej polityką domeny wpisów bywa więcej: każde odświeżenie
+    przynoszące zmianę w prawach logowania zostaje odnotowane. Nadal jest to
+    rząd wielkości nieporównywalny z inspekcją logowań.
+  en: |
+    The rollout does not affect how the machine works and is not visible to the
+    user. Events arise rarely, because authentication policy is changed while
+    configuring a machine, not in daily use.
+
+    On a workstation managed by domain policy there are more entries: every
+    refresh bringing a change in logon rights is recorded. That is still an
+    order of magnitude away from sign-in auditing.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta przy każdej zmianie praw logowania lub ustawień uwierzytelniania
+      - Odświeżanie polityki domeny zmieniające prawa logowania doda wpis przy każdym przebiegu
+    en:
+      - The security log grows at each change of logon rights or authentication settings
+      - Domain policy refreshes that change logon rights add an entry at every run
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym
+    en:
+      - Events from this machine are billed by volume in the collection system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9230-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9230-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9230-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9230-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9230-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-authentication-policy-change
+
+notes:
+  pl: |
+    Podkategoria obejmuje między innymi przypisanie praw logowania, czyli
+    obszar, którego dotyczy osobna grupa punktów benchmarku. Wdrożenie tej
+    inspekcji przed tamtymi ma praktyczny sens: zmiany wprowadzane przy
+    porządkowaniu praw same zostaną zapisane.
+  en: |
+    The subcategory covers, among other things, the assignment of logon rights -
+    the area a separate group of benchmark items deals with. Rolling this
+    auditing out before those has a practical point: the changes made while
+    tidying up the rights will themselves be recorded.

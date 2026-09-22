@@ -1,0 +1,156 @@
+id: win11-audit-policy-change
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja zmian zasad inspekcji
+    en: Audit audit policy change
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Napastnik, który zdobył uprawnienia administratora, wyłącza inspekcję,
+    zanim zrobi resztę. To nie jest wyszukana technika, tylko oczywista
+    kolejność działań — i skutkuje tym, że dziennik urywa się w miejscu, które
+    najbardziej interesuje badającego.
+
+    Ta podkategoria zapisuje właśnie taką zmianę. Nie zapobiega wyłączeniu
+    inspekcji, ale sprawia, że samo wyłączenie zostaje odnotowane. Dziury
+    w dzienniku nie da się wtedy wytłumaczyć przypadkiem: widać dokładnie,
+    kiedy zapis został zatrzymany i przez kogo.
+  en: |
+    An attacker who has gained administrative rights turns auditing off before
+    doing the rest. This is not a sophisticated technique but an obvious order
+    of operations - and it results in the log breaking off exactly where an
+    investigator is most interested.
+
+    This subcategory records that very change. It does not prevent auditing
+    being switched off, but it makes the switching off itself a matter of
+    record. A gap in the log can then no longer be explained away as an
+    accident: it is plain when the recording was stopped, and by whom.
+
+disruption_description:
+  pl: |
+    Wdrożenie nie zmienia niczego w pracy maszyny. Zdarzenie powstaje wyłącznie
+    przy zmianie konfiguracji inspekcji, czyli na typowej stacji kilka razy
+    w roku — najczęściej przy wdrażaniu pozostałych punktów z tej rodziny.
+
+    To jedna z niewielu pozycji inspekcji, których objętość nie zależy od
+    obciążenia maszyny, i dlatego jedna z nielicznych mieszczących się w klasie
+    bez uciążliwości.
+  en: |
+    The rollout changes nothing in how the machine works. An event arises only
+    when the audit configuration changes, which on a typical workstation means a
+    few times a year - most often while rolling out the other items of this
+    family.
+
+    It is one of the few audit entries whose volume does not depend on the
+    machine's load, and therefore one of the few that fall into the
+    no-disruption class.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta przy każdej zmianie konfiguracji inspekcji
+      - Wdrażanie pozostałych punktów inspekcji samo wygeneruje serię wpisów
+    en:
+      - The security log grows at each change of the audit configuration
+      - Rolling out the remaining audit items itself produces a run of entries
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym
+    en:
+      - Events from this machine are billed by volume in the collection system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE922F-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE922F-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE922F-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE922F-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE922F-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-audit-policy-change
+
+notes:
+  pl: |
+    Punkt bywa mylony z nadrzędnością szczegółowych zasad inspekcji. Tamten
+    rozstrzyga, która konfiguracja obowiązuje; ten zapisuje, że konfigurację
+    ktoś zmienił. Dopiero razem dają stan, w którym ustawienia inspekcji są
+    jednocześnie skuteczne i pilnowane.
+
+    Wyłączenie tej podkategorii jest rejestrowane jako ostatnie zdarzenie przed
+    ciszą — i właśnie dlatego zapis ma sens nawet wtedy, gdy napastnik zdąży ją
+    wyłączyć.
+  en: |
+    The item is sometimes confused with the precedence of the detailed audit
+    policy. That one decides which configuration applies; this one records that
+    somebody changed the configuration. Only together do they give a state in
+    which the audit settings are both effective and watched.
+
+    Switching this subcategory off is recorded as the last event before the
+    silence - which is precisely why the record is worth having even when an
+    attacker manages to disable it.

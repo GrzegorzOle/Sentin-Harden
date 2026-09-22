@@ -1,0 +1,166 @@
+id: win11-user-activity-upload-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > OS Policies
+  title:
+    pl: Wysyłanie historii czynności użytkownika wyłączone
+    en: Sending the history of a user's activities switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System prowadzi zapis czynności użytkownika: który dokument otwarto, w jakim
+    programie, kiedy i czego dotyczył. Zapis ten służy podjęciu pracy na innym
+    urządzeniu i w tym celu bywa wysyłany poza maszynę.
+
+    Sama historia jest materiałem wywiadowczym bardziej wartościowym, niż się
+    wydaje. Nazwy plików i tytuły dokumentów mówią, nad czym firma pracuje, jak
+    nazywa swoich klientów, kiedy zaczyna i kończy projekty oraz gdzie trzyma
+    materiały. Napastnik przygotowujący się do ataku ukierunkowanego szuka
+    dokładnie tego, a tutaj dostaje to w gotowej postaci, bez konieczności
+    czytania samych plików.
+
+    Wysyłanie tej historii poza maszynę przenosi ją w miejsce, którego firma nie
+    kontroluje i nie widzi. Wyłączenie wysyłania zostawia zapis tam, gdzie
+    powstał.
+  en: |
+    The system keeps a record of a user's activities: which document was opened, in
+    what program, when, and what it was about. The record serves taking work up on
+    another device and is sometimes sent off the machine for that purpose.
+
+    The history itself is intelligence material of more worth than it seems. File
+    names and document titles say what the company works on, what it calls its
+    clients, when it starts and finishes projects, and where it keeps its material.
+    An attacker preparing a targeted attack looks for exactly that, and here gets it
+    ready-made, without having to read the files themselves.
+
+    Sending this history off the machine moves it somewhere the company neither
+    controls nor sees. Switching the sending off leaves the record where it arose.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać na samej maszynie. Historia czynności powstaje
+    dalej i widok pozwalający wrócić do wcześniejszej pracy działa jak przedtem —
+    zmienia się wyłącznie to, że zapis nie opuszcza stanowiska.
+
+    Przestaje działać podjęcie pracy na innym urządzeniu: dokument otwarty na
+    komputerze nie pojawi się w propozycjach na tablecie ani na telefonie. Jest
+    to funkcja używana rzadko i przez osoby, które świadomie pracują na kilku
+    urządzeniach naraz.
+
+    Dlatego punkt trafia do klasy bez uciążliwości: nie ma restartu, nie ma
+    okna serwisowego i nie ma scenariusza, w którym coś na stanowisku przestaje
+    być dostępne.
+  en: |
+    Nothing stops working on the machine itself. The activity history still arises
+    and the view letting one return to earlier work works as before - all that
+    changes is that the record does not leave the station.
+
+    What stops working is taking work up on another device: a document opened on the
+    computer will not show among the suggestions on a tablet or a phone. It is a
+    function used rarely, and by people who deliberately work across several devices
+    at once.
+
+    That is why the item falls into the no-disruption class: no restart, no
+    maintenance window, and no scenario in which anything at the station stops being
+    available.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - user-interface
+  what_breaks:
+    pl:
+      - Podjęcie pracy nad dokumentem na innym urządzeniu przestanie być proponowane
+    en:
+      - Taking work on a document up on another device stops being suggested
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Przyjęty sposób pracy opiera się na przechodzeniu między komputerem a urządzeniem przenośnym z zachowaniem kontekstu
+    en:
+      - The accepted way of working rests on moving between a computer and a portable device while keeping context
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      $name = 'UploadUserActivities'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'UploadUserActivities'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'UploadUserActivities' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-privacy
+
+notes:
+  pl: |
+    Punkt wyłącza wysyłanie zapisu, a nie jego powstawanie. Historia czynności
+    pozostaje na maszynie i jest dostępna lokalnie — reguła tego nie zmienia i nie
+    należy jej czytać jako wyłączenia całego mechanizmu.
+
+    Wdrożenie nie usuwa tego, co wysłano wcześniej. Usunięcie zgromadzonych już
+    danych jest osobną czynnością, wykonywaną po stronie usługi, a nie na
+    maszynie.
+  en: |
+    The item switches the sending off, not the record's arising. The activity
+    history stays on the machine and is available locally - the rule does not change
+    that, and it should not be read as switching the whole mechanism off.
+
+    Applying it does not remove what was sent earlier. Removing data already
+    gathered is a separate task, carried out on the service's side rather than on
+    the machine.

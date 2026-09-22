@@ -1,0 +1,208 @@
+id: win2025-audit-security-system-extension
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja rozszerzeń podsystemu zabezpieczeń
+    en: Audit security system extension
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje dołączenie do podsystemu zabezpieczeń nowego
+    składnika — pakietu uwierzytelniania, dostawcy poświadczeń, filtru
+    haseł, usługi systemowej rejestrowanej przez menedżera sterowania.
+
+    Jest to jedno z najcichszych miejsc w całym systemie i jednocześnie
+    jedno z najgroźniejszych. Składnik dołączony do podsystemu
+    zabezpieczeń pracuje wewnątrz procesu odpowiadającego za sprawdzanie
+    tożsamości, a więc widzi hasła w chwili, w której są sprawdzane.
+    Filtr haseł napisany w tym celu odczyta każde hasło zmieniane na tej
+    maszynie — a na kontrolerze domeny każde hasło zmieniane w domenie.
+
+    Mechanizm ten istnieje do celów prawidłowych i jest używany przez
+    oprogramowanie wymuszające zasady haseł albo integrujące system
+    z zewnętrznym uwierzytelnianiem. Właśnie dlatego dołączenie nowego
+    składnika nie wygląda podejrzanie i nie psuje niczego.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    zainstalowania trwałego przechwytywania haseł w miejscu, którego nie
+    obejmuje żadna zwykła kontrola. Składnik taki przeżywa restart,
+    aktualizacje i zmianę haseł, bo zmienione hasła po prostu odczyta.
+  en: |
+    The subcategory records a new component being joined to the security subsystem - an
+    authentication package, a credential provider, a password filter, a system service
+    registered by the control manager.
+
+    It is one of the quietest places in the whole system and at the same time one of the
+    most dangerous. A component joined to the security subsystem works inside the process
+    answering for the checking of identity, and so sees passwords at the moment they are
+    checked. A password filter written for that purpose will read every password changed on
+    this machine - and on a domain controller every password changed in the domain.
+
+    The mechanism exists for proper ends and is used by software enforcing password policies
+    or tying the system to outside authentication. That is exactly why joining a new
+    component looks no way suspect and breaks nothing.
+
+    What an attacker gains while the item goes unmet: the means of installing a lasting
+    capture of passwords in a place no ordinary check takes in. Such a component survives a
+    restart, updates and a change of passwords, since it will simply read the changed
+    passwords.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Składniki podsystemu zabezpieczeń ładują
+    się tak samo jak wcześniej — zmienia się wyłącznie to, że ich
+    dołączenie zostaje zapisane.
+
+    Objętość jest niewielka, ale jest jeden moment, w którym zdarzeń jest
+    dużo naraz: uruchomienie systemu. Rejestrowanie usług przez menedżera
+    sterowania odbywa się właśnie wtedy, więc po każdym restarcie
+    w dzienniku pojawia się seria wpisów. Jest to zachowanie poprawne,
+    ale przy czytaniu warto je odróżnić od zdarzeń z czasu pracy.
+
+    Poza startem systemu podkategoria ta milczy tygodniami.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. Components of the security subsystem load just as before - what
+    changes is only that their joining gets recorded.
+
+    The volume is slight, but there is one moment at which there are many events at once:
+    the system's start. Services being registered by the control manager happens exactly
+    then, so after every restart a run of entries appears in the log. That is right
+    behaviour, but at the reading it is worth telling apart from events from working time.
+
+    Outside the system's start this subcategory stays silent for weeks.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Brak znanych regresji — składniki podsystemu zabezpieczeń ładują się tak samo
+      - Po każdym restarcie w dzienniku pojawia się seria wpisów z rejestrowania usług
+      - Poza startem systemu ta podkategoria milczy tygodniami
+    en:
+      - No known regressions - components of the security subsystem load just the same
+      - After every restart a run of entries from service registration appears in the log
+      - Outside the system's start this subcategory stays silent for weeks
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9211-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9211-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9211-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9211-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9211-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-security-system-extension
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń. Dołączenie składnika jest tu
+    zdarzeniem o znaczeniu — próba nieudana nie tworzy niczego trwałego.
+
+    Wykaz z tej podkategorii warto przeglądać po każdej instalacji
+    oprogramowania zabezpieczającego. Filtry haseł i dostawcy poświadczeń
+    instalują się właśnie w ten sposób, więc wpis z tego dnia jest
+    zwykle prawidłowy — a wpis z dnia, w którym nic nie instalowano,
+    nie jest.
+
+    Zdarzenia z rejestrowania usług przy starcie systemu trafiają tu
+    razem z resztą. Jest to najczęstsza przyczyna, dla której wykaz
+    wygląda na dłuższy, niż powinien.
+  en: |
+    Recording of successes is taken. A component being joined is here the event of weight -
+    a failed attempt makes nothing lasting.
+
+    The list from this subcategory is worth going through after every installation of
+    security software. Password filters and credential providers install themselves in
+    exactly this way, so an entry from that day is usually right - and an entry from a day
+    on which nothing was installed is not.
+
+    Events from service registration at the system's start land here along with the rest. It
+    is the commonest reason the list looks longer than it ought to.

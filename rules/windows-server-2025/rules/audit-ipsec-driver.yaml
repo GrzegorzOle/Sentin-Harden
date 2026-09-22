@@ -1,0 +1,206 @@
+id: win2025-audit-ipsec-driver
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja sterownika filtrowania ruchu sieciowego
+    en: Audit the network traffic filtering driver
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zdarzenia sterownika odpowiadającego za
+    filtrowanie i szyfrowanie ruchu sieciowego na poziomie systemu —
+    jego uruchomienie, zatrzymanie, niepowodzenie startu i odrzucone
+    pakiety.
+
+    Sterownik ten jest warstwą leżącą pod zaporą i pod mechanizmami
+    szyfrowania połączeń. Jeżeli się nie uruchomi, reguły filtrowania
+    i zasady szyfrowania zwyczajnie nie działają — a konfiguracja
+    wygląda niezmiennie, bo nikt jej nie zmieniał.
+
+    Jest to więc punkt tej samej natury co poprzedni: mówi o tym, czy
+    mechanizm pracuje, a nie o tym, jak jest ustawiony. Na serwerze
+    z wymuszonym szyfrowaniem połączeń różnica ta jest zasadnicza,
+    bo niedziałający sterownik oznacza ruch płynący jawnie mimo zasady,
+    która tego zakazuje.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    doprowadzenia do stanu, w którym szyfrowanie nie działa, a nikt się
+    o tym nie dowie. Zasada jest na miejscu, audyt wykazuje zgodność,
+    a ruch idzie bez ochrony.
+  en: |
+    The subcategory records events of the driver answering for the filtering and encrypting
+    of network traffic at the system's level - its starting, stopping, a failure to start
+    and refused packets.
+
+    That driver is a layer lying beneath the firewall and beneath the mechanisms encrypting
+    connections. Should it not start, the rules of filtering and the policies of encryption
+    simply do not work - and the configuration looks unchanged, since nobody changed it.
+
+    It is thus an item of the same nature as the preceding one: it speaks of whether the
+    mechanism works rather than of how it is set. On a server with enforced encryption of
+    connections that difference is fundamental, since a driver that is not working means
+    traffic flowing in the clear in spite of a policy forbidding it.
+
+    What an attacker gains while the item goes unmet: the means of bringing about a state in
+    which the encryption does not work and nobody learns of it. The policy is in place, the
+    audit shows compliance, and the traffic goes unprotected.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Sterownik pracuje tak samo jak wcześniej —
+    zmienia się wyłącznie to, że jego zdarzenia są zapisywane.
+
+    Objętość zależy od tego, czy na serwerze wymuszono szyfrowanie
+    połączeń. Bez takiej konfiguracji sterownik zgłasza właściwie tylko
+    start i zatrzymanie, więc wpisów jest kilka na restart.
+
+    Tam, gdzie szyfrowanie jest wymuszone, przybywa zdarzeń o pakietach
+    odrzuconych i objętość rośnie razem z ruchem. Jest to jedyny
+    scenariusz, w którym warto ją przed wdrożeniem policzyć — a jest to
+    zarazem scenariusz, w którym ten punkt jest najbardziej potrzebny.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. The driver works just as before - what changes is only that its
+    events are recorded.
+
+    The volume hangs on whether the encryption of connections is enforced on the server.
+    Without such a configuration the driver reports in effect only a start and a stop, so
+    there are a few entries per restart.
+
+    Where encryption is enforced, events about refused packets accrue and the volume grows
+    along with the traffic. That is the one scenario in which it is worth counting before
+    the rollout - and at the same time the scenario in which this item is most needed.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Brak znanych regresji — sterownik pracuje tak samo jak wcześniej
+      - Bez wymuszonego szyfrowania zdarzeń jest kilka na restart systemu
+      - Przy wymuszonym szyfrowaniu objętość rośnie razem z ruchem sieciowym
+    en:
+      - No known regressions - the driver works just as before
+      - Without enforced encryption there are a few events per restart of the system
+      - With encryption enforced the volume grows along with the network traffic
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na serwerze wymuszono szyfrowanie połączeń, a strumień zdarzeń nie został policzony
+    en:
+      - Encryption of connections is enforced on the server and the stream of events has not been counted
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9213-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9213-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9213-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9213-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9213-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-ipsec-driver
+
+notes:
+  pl: |
+    Wymagane są oba rodzaje zapisu. Niepowodzenie startu sterownika jest
+    tu zdarzeniem najważniejszym, a powodzenie daje punkt odniesienia,
+    bez którego brak zdarzenia jest nieczytelny.
+
+    Punkt ma sens także wtedy, gdy na serwerze nie wymuszono szyfrowania
+    połączeń. Wykaz jest wtedy krótki, ale pokazuje, że warstwa
+    filtrowania w ogóle wstaje — a to jest informacja potrzebna w dniu,
+    w którym ktoś zasady szyfrowania wprowadzi.
+
+    Punkt nie dotyczy zawartości ruchu ani reguł zapory. Opisuje
+    wyłącznie stan sterownika, który te reguły wykonuje.
+  en: |
+    Both kinds of record are taken. A failure of the driver's start is here the weightiest
+    event, and a success gives the point of reference without which an absent event is
+    unreadable.
+
+    The item makes sense also where encryption of connections is not enforced on the server.
+    The list is then short, but shows that the filtering layer comes up at all - and that is
+    knowledge needed on the day somebody brings encryption policies in.
+
+    The item concerns neither the traffic's content nor the firewall's rules. It describes
+    only the state of the driver that carries those rules out.

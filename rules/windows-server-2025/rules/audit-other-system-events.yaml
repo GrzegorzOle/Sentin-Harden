@@ -1,0 +1,206 @@
+id: win2025-audit-other-system-events
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja pozostałych zdarzeń systemowych
+    en: Audit other system events
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zbiera zdarzenia systemowe, które nie mieszczą się
+    w pozostałych podkategoriach tej grupy — w praktyce przede wszystkim
+    zdarzenia usługi zapory oraz błędy mechanizmów kryptograficznych.
+
+    Największa część jej zawartości dotyczy zapory: uruchomienie
+    i zatrzymanie usługi, niepowodzenie startu, błąd wczytania reguł.
+    Są to zdarzenia, których nie pokazuje ani punkt o konfiguracji
+    zapory, ani punkt o zmianach jej reguł — bo tamte opisują stan
+    i zmiany zamierzone, a nie to, czy usługa faktycznie działa.
+
+    Różnica ta jest istotna właśnie na serwerze. Zapora skonfigurowana
+    poprawnie i zatrzymana wygląda w wykazie konfiguracji identycznie
+    jak zapora działająca. Jedynym miejscem, w którym widać, że usługa
+    się nie uruchomiła, jest ta podkategoria.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    zatrzymania usługi zapory bez pozostawiania śladu odróżniającego to
+    od stanu normalnego. Konfiguracja pozostaje nietknięta, więc audyt
+    wykaże zgodność, a filtrowanie nie działa.
+  en: |
+    The subcategory gathers system events that fit none of this group's other subcategories
+    - in practice above all events of the firewall service and errors of cryptographic
+    mechanisms.
+
+    The largest part of its content concerns the firewall: the service starting and
+    stopping, a failure to start, an error in loading the rules. These are events shown
+    neither by the item on the firewall's configuration nor by the item on changes to its
+    rules - since those describe the state and intended changes rather than whether the
+    service actually runs.
+
+    That difference matters on a server in particular. A firewall rightly configured and
+    stopped looks in the list of configuration just like a firewall that is running. The one
+    place at which it is visible that the service did not start is this subcategory.
+
+    What an attacker gains while the item goes unmet: the means of stopping the firewall
+    service while leaving no trace setting it apart from the normal state. The configuration
+    stays untouched, so the audit will show compliance and the filtering does not work.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Usługi startują i zatrzymują się tak samo
+    jak wcześniej — zmienia się wyłącznie to, że zostaje po tym zapis.
+
+    Objętość jest umiarkowana i skupia się wokół startu systemu, kiedy
+    usługi uruchamiają się jedna po drugiej. Poza tym momentem zdarzeń
+    jest niewiele.
+
+    Jest to podkategoria zbiorcza, więc jej zawartość zależy od tego, co
+    na maszynie pracuje. Na serwerze z wieloma usługami systemowymi
+    wykaz bywa dłuższy, ale nie zbliża się objętościowo do podkategorii
+    związanych z logowaniem.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. Services start and stop just as before - what changes is only
+    that a record is left after it.
+
+    The volume is moderate and gathers around the system's start, when the services come up
+    one after another. Outside that moment there are few events.
+
+    It is a gathering subcategory, so its content hangs on what works on the machine. On a
+    server with many system services the list is at times longer, but comes nowhere near the
+    volume of the subcategories tied to signing in.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Brak znanych regresji — usługi startują i zatrzymują się tak samo
+      - Zdarzeń przybywa głównie przy starcie systemu, poza tym jest ich niewiele
+      - Zawartość zależy od tego, jakie usługi systemowe pracują na maszynie
+    en:
+      - No known regressions - services start and stop just the same
+      - Events accrue mostly at the system's start, outside which there are few
+      - The content hangs on which system services work on the machine
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9214-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9214-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9214-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9214-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9214-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-system-events
+
+notes:
+  pl: |
+    Wymagane są oba rodzaje zapisu. Przy zdarzeniach usługi zapory
+    niepowodzenie jest tu informacją istotniejszą niż powodzenie — usługa,
+    która się nie uruchomiła, jest właśnie tym przypadkiem, o którym
+    trzeba wiedzieć.
+
+    Punkt uzupełnia grupę zapory i grupę zmian zasad. Tamte opisują
+    konfigurację i jej zmiany; ten mówi, czy mechanizm faktycznie
+    pracuje.
+
+    Jest to podkategoria zbiorcza i trafiają do niej zdarzenia
+    z mechanizmów bez własnej reprezentacji w dzienniku. Pojedynczy wpis
+    zwykle wymaga sprawdzenia, czego dotyczył.
+  en: |
+    Both kinds of record are taken. At the firewall service's events a failure is here the
+    weightier knowledge than a success - a service that did not start is exactly the case
+    that has to be known of.
+
+    The item fills out the firewall group and the policy-change group. Those describe the
+    configuration and its changes; this one says whether the mechanism actually works.
+
+    It is a gathering subcategory and events land in it from mechanisms with no
+    representation of their own in the log. A single entry usually takes checking as to what
+    it concerned.

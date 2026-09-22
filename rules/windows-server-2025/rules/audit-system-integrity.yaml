@@ -1,0 +1,207 @@
+id: win2025-audit-system-integrity
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja integralności systemu
+    en: Audit system integrity
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje naruszenia integralności podsystemu
+    zabezpieczeń — między innymi utratę zdarzeń przez przepełnienie
+    dziennika, nieprawidłowe wywołania do podsystemu i wykrycie
+    niespójności w jego działaniu.
+
+    Najważniejsze z tych zdarzeń to utrata zapisu. Kiedy dziennik
+    zabezpieczeń nie nadąża, zdarzenia przepadają — i bez tej
+    podkategorii przepadają po cichu. Wykaz w dzienniku wygląda wtedy
+    kompletnie, bo brakujących wpisów nikt nie widzi. Jest to jedyne
+    miejsce, w którym system przyznaje się, że czegoś nie zapisał.
+
+    Na serwerze przepełnienie dziennika nie jest hipotezą. Inspekcja
+    logowania na serwerze plikowym i inspekcja uprawnień wrażliwych przy
+    nocnej kopii potrafią wygenerować strumień, którego dziennik nie
+    obsłuży — a to są dokładnie te punkty, które ta paczka każe włączyć.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: pewność,
+    że zapełnienie dziennika przejdzie niezauważone. Zalanie dziennika
+    zdarzeniami nieistotnymi jest najprostszym sposobem wyparcia z niego
+    zdarzeń istotnych i nie wymaga żadnych uprawnień szczególnych.
+  en: |
+    The subcategory records breaches of the security subsystem's integrity - among them the
+    loss of events through the log overflowing, improper calls into the subsystem and the
+    finding of inconsistency in its working.
+
+    The weightiest of these events is the loss of record. When the security log cannot keep
+    up, events are lost - and without this subcategory they are lost quietly. The list in
+    the log then looks complete, since nobody sees the missing entries. It is the one place
+    at which the system owns that it failed to record something.
+
+    On a server an overflowing log is no hypothesis. The auditing of sign-ins on a file
+    server and the auditing of sensitive privileges at a nightly backup can make a stream
+    the log will not serve - and those are exactly the items this pack bids one switch on.
+
+    What an attacker gains while the item goes unmet: the certainty that a filled log will
+    pass unnoticed. Flooding the log with events of no weight is the simplest way of
+    crowding the weighty ones out of it, and takes no particular rights at all.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać i nikt niczego nie zauważy. Zmienia się
+    wyłącznie to, że system zgłasza własne kłopoty z zapisem.
+
+    Objętość jest znikoma w każdym stanie prawidłowym. Jeżeli zdarzeń
+    z tej podkategorii jest dużo, oznacza to, że dzieje się coś, o czym
+    trzeba wiedzieć — i wtedy sama liczba wpisów jest treścią.
+
+    Nie należy mylić tego punktu z zabezpieczeniem przed przepełnieniem
+    dziennika. Ten punkt nie zapobiega utracie zdarzeń — on o niej mówi.
+    Zapobieganie to rozmiar dziennika i wysyłanie zdarzeń poza maszynę,
+    czyli osobne punkty tej paczki.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working and nobody notices anything. What changes is only that the system
+    reports its own troubles with recording.
+
+    The volume is negligible in every right state. Should there be many events of this
+    subcategory, it means something is happening that has to be known - and then the sheer
+    number of entries is the content.
+
+    This item is not to be confused with a safeguard against the log overflowing. This item
+    does not prevent the loss of events - it tells of it. The preventing is the log's size
+    and the sending of events off the machine, that is, separate items of this pack.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak znanych regresji — system zaczyna zgłaszać własne kłopoty z zapisem
+      - Przyrost objętości dziennika jest znikomy w każdym stanie prawidłowym
+      - Duża liczba wpisów z tej podkategorii jest sama w sobie informacją
+      - Punkt nie zapobiega utracie zdarzeń, tylko o niej mówi
+    en:
+      - No known regressions - the system starts reporting its own troubles with recording
+      - The rise in the log's volume is negligible in every right state
+      - A great number of entries from this subcategory is knowledge in itself
+      - The item does not prevent the loss of events, it tells of it
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9212-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9212-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9212-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9212-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9212-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-system-integrity
+
+notes:
+  pl: |
+    Wymagane są oba rodzaje zapisu. Zdarzenia z tej podkategorii
+    powstają po obu stronach — część opisuje czynność wykonaną, część
+    odrzuconą — a przy tak małej objętości nie ma powodu któregokolwiek
+    pomijać.
+
+    Punkt czyta się razem z rozmiarem dziennika zabezpieczeń i z punktami
+    o inspekcjach obfitych. Tamte tworzą strumień, ten mówi, czy dziennik
+    dał sobie z nim radę.
+
+    Wpis o utracie zdarzeń jest zawsze wart osobnego przeczytania. Mówi
+    nie tylko o kłopocie technicznym, ale i o tym, że w wykazie z tego
+    okresu jest luka, o której nie sposób inaczej się dowiedzieć.
+  en: |
+    Both kinds of record are taken. Events of this subcategory arise on both sides - some
+    describe a doing carried out, some one refused - and at so slight a volume there is no
+    reason to leave either out.
+
+    The item is read together with the security log's size and with the items on the
+    abundant auditings. Those make the stream; this one says whether the log coped with it.
+
+    An entry about the loss of events is always worth reading apart. It speaks not only of a
+    technical trouble but of there being a gap in the list from that period which there is
+    no other way of learning about.

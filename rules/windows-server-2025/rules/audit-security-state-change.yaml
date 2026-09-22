@@ -1,0 +1,210 @@
+id: win2025-audit-security-state-change
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja zmian stanu zabezpieczeń
+    en: Audit security state change
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany stanu samego systemu istotne dla
+    zabezpieczeń — uruchomienie i zamknięcie, start podsystemu
+    zabezpieczeń, zmianę czasu systemowego.
+
+    Dwa z tych zdarzeń mają wartość oczywistą: wiedza o tym, kiedy
+    serwer był uruchamiany i zamykany, jest punktem odniesienia dla
+    wszystkiego innego w dzienniku. Restart, którego nikt nie planował,
+    jest zdarzeniem wymagającym wyjaśnienia sam w sobie.
+
+    Trzecie zdarzenie jest ciekawsze i często pomijane. Zmiana czasu
+    systemowego rozjeżdża znaczniki czasu w całym dzienniku i robi to
+    wstecznie w skutkach: zdarzenia zapisane przed zmianą i po niej
+    przestają układać się w kolejność. Jest to najtańszy sposób
+    zepsucia całego zapisu bez kasowania z niego czegokolwiek.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    przesunięcia czasu, wykonania czegoś i przesunięcia go z powrotem —
+    a zapis z tego okresu trafi wtedy w miejsce, którego nikt nie
+    przegląda. Kasowanie dziennika rzuca się w oczy; przestawienie
+    zegara nie.
+  en: |
+    The subcategory records changes in the system's own state that bear on security - a
+    start and a shutdown, the security subsystem's start, a change of the system's time.
+
+    Two of those events have an obvious worth: knowing when the server was started and shut
+    is the point of reference for everything else in the log. A restart nobody planned is an
+    event taking explanation in itself.
+
+    The third event is the more interesting and often passed over. A change of the system's
+    time knocks the time stamps across the whole log out of line and does so backwards in
+    its effects: events recorded before the change and after it stop falling into order. It
+    is the cheapest way of spoiling a whole record without deleting anything from it.
+
+    What an attacker gains while the item goes unmet: the means of moving the time, doing
+    something and moving it back - and the record from that period will then land in a place
+    nobody goes through. Clearing a log catches the eye; setting a clock does not.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. System uruchamia się i zamyka tak samo —
+    zmienia się wyłącznie to, że zostaje po tym zapis.
+
+    Objętość jest znikoma. Serwera nie uruchamia się często, a czas
+    systemowy zmienia się sam wyłącznie przy synchronizacji, która daje
+    korekty drobne i nie generuje zdarzeń tego rodzaju.
+
+    Jest jeden przypadek warty odnotowania: maszyna wirtualna
+    synchronizująca czas z hostem może przy wznowieniu ze stanu
+    wstrzymanego wykonać skok czasu i zapisać zdarzenie. Nie jest to
+    usterka, ale wykaz na maszynie wirtualnej bywa z tego powodu
+    dłuższy niż na fizycznej.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. The system starts and shuts just the same - what changes is only
+    that a record is left after it.
+
+    The volume is negligible. A server is not started often, and the system's time changes
+    of itself only at synchronisation, which gives slight corrections and makes no events of
+    this kind.
+
+    One case is worth noting: a virtual machine synchronising its time with the host may, on
+    resuming from a suspended state, make a jump of time and record an event. That is no
+    fault, but on a virtual machine the list is for that reason at times longer than on a
+    physical one.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Brak znanych regresji — system uruchamia się i zamyka tak samo jak wcześniej
+      - Przyrost objętości dziennika jest znikomy
+      - Maszyna wirtualna wznawiana ze stanu wstrzymanego może zapisać skok czasu
+    en:
+      - No known regressions - the system starts and shuts just as before
+      - The rise in the log's volume is negligible
+      - A virtual machine resumed from a suspended state may record a jump of time
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9210-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9210-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9210-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9210-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9210-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-security-state-change
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń. Zdarzenia tej podkategorii
+    opisują fakty — system się uruchomił, czas został zmieniony — a nie
+    próby ich wykonania.
+
+    Zapis o zamknięciu systemu bywa niepełny i jest to ograniczenie
+    mechanizmu, nie usterka. Zamknięcie nagłe, po utracie zasilania albo
+    po wyłączeniu maszyny wirtualnej, nie zostawia zdarzenia, bo system
+    nie zdążył go zapisać. Brak zdarzenia zamknięcia przy obecnym
+    zdarzeniu uruchomienia jest więc informacją samą w sobie.
+
+    Wpis o zmianie czasu warto czytać razem z sąsiadującymi znacznikami.
+    Przesunięcie zegara psuje kolejność zdarzeń w całym dzienniku i jest
+    jedynym miejscem, w którym widać, że kolejność ta przestała być
+    wiarygodna.
+  en: |
+    Recording of successes is taken. This subcategory's events describe facts - the system
+    started, the time was changed - rather than attempts at them.
+
+    The record of a shutdown is at times incomplete, and that is a bound of the mechanism
+    rather than a fault. A sudden shutdown, after a loss of power or after a virtual machine
+    is switched off, leaves no event, since the system had no time to record one. An absent
+    shutdown event beside a present start event is thus knowledge in itself.
+
+    An entry about a change of time is worth reading together with the neighbouring stamps.
+    Moving the clock spoils the order of events across the whole log and is the one place at
+    which it is visible that the order has stopped being trustworthy.

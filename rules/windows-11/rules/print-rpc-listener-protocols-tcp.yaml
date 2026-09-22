@@ -1,0 +1,222 @@
+id: win11-print-rpc-listener-protocols-tcp
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Połączenia przychodzące podsystemu druku wyłącznie przez gniazda sieciowe
+    en: Incoming connections of the printing subsystem over network sockets only
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie przesądza, jakimi drogami podsystem druku przyjmuje połączenia
+    z sieci: przez gniazda sieciowe, przez nazwane potoki, czy obiema naraz.
+
+    Punkt dotyczy strony przeciwnej niż reguła o połączeniach wychodzących
+    i jest od niej ważniejszy, bo mówi o tym, co do maszyny wchodzi.
+
+    Nazwane potoki prowadzą do podsystemu druku przez mechanizm udostępniania
+    plików. Znaczy to, że wystarczy dostęp do udostępniania plików na tej
+    maszynie, żeby porozmawiać z jej podsystemem druku — również wtedy, gdy
+    maszyna żadnej drukarki nie udostępnia i nikt nie zamierzał jej wystawiać
+    jako serwera druku.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: dodatkową
+    drogę do podsystemu, który jest w systemie jednym z najczęściej
+    wskazywanych źródeł podniesienia uprawnień. Wykorzystywane w praktyce
+    błędy tego podsystemu były osiągalne właśnie tą drogą, bo prowadzi ona
+    przez port otwarty na stanowiskach z innego powodu.
+
+    Zawężenie do gniazd sieciowych nie zamyka podsystemu druku, ale odbiera
+    tę drogę. Kto chce z nim rozmawiać, musi dostać się do niego wprost,
+    a nie przy okazji udostępniania plików.
+  en: |
+    The setting settles by what roads the printing subsystem takes connections from the
+    network: over network sockets, over named pipes, or both at once.
+
+    The item concerns the opposite side from the rule about outgoing connections and
+    matters more than it, since it speaks of what comes into the machine.
+
+    Named pipes lead to the printing subsystem through the file sharing mechanism. That
+    means access to file sharing on this machine is enough to speak with its printing
+    subsystem - even where the machine shares no printer and nobody meant to set it up as
+    a print server.
+
+    What an attacker gains while the item goes unmet: an additional road to a subsystem
+    that is among the most frequently named sources of raised rights in the system. The
+    faults of that subsystem used in practice were reachable by exactly that road, since
+    it leads through a port open on stations for another reason.
+
+    Narrowing to network sockets does not close the printing subsystem, but takes that
+    road away. Whoever wishes to speak with it has to reach it directly rather than on the
+    occasion of file sharing.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy z tej maszyny cokolwiek drukuje się zdalnie —
+    czyli czy maszyna udostępnia drukarkę albo pełni rolę serwera druku.
+
+    Na typowym stanowisku, które drukuje, a nie udostępnia, zmiana jest
+    niewidoczna. Połączenia wychodzące do serwerów druku nie są jej
+    przedmiotem.
+
+    Skutek pojawia się tam, gdzie do maszyny podłączona jest drukarka
+    udostępniona innym. Klienci starsi, łączący się przez nazwane potoki,
+    przestaną ją widzieć. Klienci na systemach wspieranych połączą się przez
+    gniazda sieciowe bez zmiany.
+
+    Osobnego sprawdzenia wymaga zapora. Połączenie przez gniazda sieciowe idzie
+    innym portem niż udostępnianie plików, więc tam, gdzie dotąd wystarczała
+    reguła zapory dla udostępniania, może być potrzebna osobna. Jest to
+    najczęstsza przyczyna tego, że po zmianie drukarka przestaje być widoczna
+    również dla klientów współczesnych.
+
+    Zmiana wymaga zatrzymania i uruchomienia usługi bufora wydruku albo
+    restartu maszyny.
+  en: |
+    What needs checking is whether anything prints remotely from this machine - that is,
+    whether the machine shares a printer or acts as a print server.
+
+    At a typical station that prints but does not share, the change is invisible. Outgoing
+    connections to print servers are not its subject.
+
+    The effect appears where a printer shared with others is connected to the machine.
+    Older clients connecting over named pipes will stop seeing it. Clients on supported
+    systems will connect over network sockets with no change.
+
+    The firewall needs checking apart. A connection over network sockets goes by a
+    different port than file sharing, so where until now a firewall rule for sharing
+    sufficed, a separate one may be needed. That is the commonest reason why after the
+    change a printer stops being visible to modern clients as well.
+
+    The change takes stopping and starting the print spooler service, or a restart of the
+    machine.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - network-and-firewall
+    - file-sharing
+  what_breaks:
+    pl:
+      - Starsi klienci łączący się przez nazwane potoki przestają widzieć drukarkę udostępnioną z tej maszyny
+      - Zapora może wymagać osobnej reguły dla ruchu przez gniazda sieciowe
+      - Klienci na systemach wspieranych łączą się bez zmiany
+      - Drukowanie z tej maszyny na drukarkach sieciowych działa bez zmiany
+    en:
+      - Older clients connecting over named pipes stop seeing a printer shared from this machine
+      - The firewall may take a separate rule for traffic over network sockets
+      - Clients on supported systems connect with no change
+      - Printing from this machine on network printers works unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna udostępnia drukarkę klientom na systemach sprzed kilku wersji
+      - Zapora nie przepuszcza ruchu podsystemu druku przez gniazda sieciowe
+    en:
+      - The machine shares a printer with clients on systems several versions old
+      - The firewall does not let the printing subsystem's traffic through over network sockets
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Three means named pipes, five network sockets, seven both at once.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'RpcProtocols'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '5'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    $current = (Get-ItemProperty -Path $path -Name 'RpcProtocols' -ErrorAction SilentlyContinue).'RpcProtocols'
+    [pscustomobject]@{
+      path        = $path
+      name        = 'RpcProtocols'
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RpcProtocols' -Value 5 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/printdocs/printer-connections
+
+notes:
+  pl: |
+    Wartość oczekiwana nie jest ani zerem, ani jedynką, i warto to podkreślić
+    przy ręcznym sprawdzaniu. Liczba opisuje zbiór dopuszczonych dróg, a nie
+    stan włączenia: trójka to nazwane potoki, piątka to gniazda sieciowe,
+    siódemka to obie naraz.
+
+    Punkt jest w tej czwórce najważniejszy, bo dotyczy tego, co do maszyny
+    wchodzi. Pozostałe trzy opisują połączenia wychodzące i ich
+    uwierzytelnienie.
+
+    Na stanowisku, które nie udostępnia drukarki, reguła bywa uznawana za
+    zbędną. Warto ją wdrożyć mimo to: podsystem druku nasłuchuje niezależnie
+    od tego, czy cokolwiek udostępniono, a właśnie ta rozbieżność bywa
+    podstawą ataku.
+
+    Brak wartości nie jest stanem zgodnym, bo bez ustawienia dopuszczone są
+    obie drogi.
+  en: |
+    The expected value is neither zero nor one, and that is worth stressing when checking
+    by hand. The number describes a set of permitted roads rather than a state of being
+    switched on: three is named pipes, five is network sockets, seven is both at once.
+
+    The item is the weightiest of the quartet, since it concerns what comes into the
+    machine. The other three describe outgoing connections and their authentication.
+
+    At a station that shares no printer the rule is sometimes held needless. It is worth
+    applying all the same: the printing subsystem listens whether or not anything is
+    shared, and it is that very discrepancy that is sometimes the ground of an attack.
+
+    A missing value is not a compliant state, since with no setting both roads are
+    permitted.

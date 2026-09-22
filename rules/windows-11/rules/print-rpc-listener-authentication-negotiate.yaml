@@ -1,0 +1,221 @@
+id: win11-print-rpc-listener-authentication-negotiate
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Uwierzytelnianie połączeń przychodzących podsystemu druku przez negocjację
+    en: Authentication of incoming connections of the printing subsystem by negotiation
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie przesądza, jakim mechanizmem podsystem druku uwierzytelnia
+    połączenia przychodzące: przez negocjację, czyli uzgodnienie z drugą
+    stroną najmocniejszego dostępnego mechanizmu, czy przez wymuszenie
+    wyłącznie mechanizmu domenowego.
+
+    Wybór między tymi dwoma nie jest wyborem między słabszym a mocniejszym,
+    i tu tkwi cała treść punktu. Negocjacja sięga po mechanizm domenowy
+    wszędzie tam, gdzie jest on osiągalny — czyli w sytuacji normalnej robi
+    dokładnie to samo, co wymuszenie. Różnica ujawnia się dopiero tam, gdzie
+    mechanizm domenowy osiągalny nie jest.
+
+    Wymuszenie w takiej sytuacji zamyka połączenie. Brzmi to jak zachowanie
+    bezpieczniejsze i bywa nim w sieci domenowej zamkniętej. Poza nią
+    prowadzi do tego, że maszyna przestaje przyjmować zadania druku w każdej
+    sytuacji, w której kontroler domeny jest nieosiągalny — a więc na
+    łączu zdalnym, w sieci gościnnej, przy awarii katalogu.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: przy braku
+    ustawienia mechanizm uwierzytelnienia bywa dobierany z uwzględnieniem
+    mechanizmów starszych, podatnych na przekazanie uwierzytelnienia dalej.
+    Zapisana negocjacja tę dowolność usuwa.
+  en: |
+    The setting settles by what mechanism the printing subsystem authenticates incoming
+    connections: by negotiation, that is, agreeing with the other side on the strongest
+    available mechanism, or by forcing the domain mechanism alone.
+
+    The choice between the two is not a choice between weaker and stronger, and there lies
+    the item's whole content. Negotiation reaches for the domain mechanism wherever it is
+    attainable - that is, in the normal case it does exactly what forcing does. The
+    difference shows only where the domain mechanism is not attainable.
+
+    Forcing in such a case closes the connection. That sounds like the safer behaviour and
+    sometimes is, on a closed domain network. Beyond it, it leads to the machine ceasing to
+    take print jobs in every case where a domain controller is unreachable - so on a remote
+    link, on a guest network, at a failure of the directory.
+
+    What an attacker gains while the item goes unmet: with no setting the authentication
+    mechanism is sometimes chosen with older mechanisms taken into account, ones liable to
+    having authentication passed further on. A written negotiation takes that latitude
+    away.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy do maszyny ktokolwiek łączy się w celu druku —
+    czyli czy udostępnia ona drukarkę.
+
+    Na stanowisku, które drukuje, a nie udostępnia, zmiana jest niewidoczna.
+    Połączenia wychodzące nie są jej przedmiotem.
+
+    Skutek pojawia się tam, gdzie do maszyny podłączona jest drukarka
+    udostępniona innym. Klienci uwierzytelniani mechanizmem domenowym łączą
+    się bez zmiany. Połączenia anonimowe i oparte na mechanizmach starszych,
+    o ile dotąd przechodziły, mogą przestać przechodzić.
+
+    Wartość oczekiwana jest przy tym wariantem łagodniejszym z dwóch
+    dostępnych. Wymuszenie mechanizmu domenowego byłoby ostrzejsze i dlatego
+    właśnie nie jest tu wskazane: odcina druk wszędzie, gdzie katalog jest
+    chwilowo nieosiągalny, a to koszt nieproporcjonalny do zysku.
+
+    Zmiana wymaga zatrzymania i uruchomienia usługi bufora wydruku albo
+    restartu maszyny.
+  en: |
+    What needs checking is whether anyone connects to the machine in order to print - that
+    is, whether it shares a printer.
+
+    At a station that prints but does not share, the change is invisible. Outgoing
+    connections are not its subject.
+
+    The effect appears where a printer shared with others is connected to the machine.
+    Clients authenticated by the domain mechanism connect with no change. Anonymous
+    connections and ones resting on older mechanisms may stop getting through, so far as
+    they got through until now.
+
+    The expected value is at that the milder of the two on offer. Forcing the domain
+    mechanism would be sharper and for that very reason is not advised here: it cuts off
+    printing wherever the directory is momentarily unreachable, and that is a cost out of
+    proportion to the gain.
+
+    The change takes stopping and starting the print spooler service, or a restart of the
+    machine.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - legacy-authentication
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Połączenia anonimowe do drukarki udostępnionej z tej maszyny mogą przestać przechodzić
+      - Klienci uwierzytelniani mechanizmem domenowym łączą się bez zmiany
+      - Drukowanie z tej maszyny na drukarkach sieciowych działa bez zmiany
+      - Stanowisko nieudostępniające drukarki nie odczuwa zmiany w żaden sposób
+    en:
+      - Anonymous connections to a printer shared from this machine may stop getting through
+      - Clients authenticated by the domain mechanism connect with no change
+      - Printing from this machine on network printers works unchanged
+      - A station sharing no printer feels the change in no way at all
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna udostępnia drukarkę klientom spoza domeny, łączącym się anonimowo
+    en:
+      - The machine shares a printer with clients from outside the domain, connecting anonymously
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Zero means negotiation, one forces the domain mechanism alone.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ForceKerberosForRpc'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    $current = (Get-ItemProperty -Path $path -Name 'ForceKerberosForRpc' -ErrorAction SilentlyContinue).'ForceKerberosForRpc'
+    [pscustomobject]@{
+      path        = $path
+      name        = 'ForceKerberosForRpc'
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ForceKerberosForRpc' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/printdocs/printer-connections
+
+notes:
+  pl: |
+    Wartość oczekiwana to zero, czyli negocjacja, i nie jest to przeoczenie.
+    Jedynka, która wymusza mechanizm domenowy, wygląda na wybór twardszy,
+    ale jej skutkiem ubocznym jest odcięcie druku wszędzie poza siecią
+    domenową osiągalną w danej chwili. Na stanowisku przenośnym oznacza to
+    brak druku poza biurem.
+
+    Reguła domyka czwórkę opisującą, jak podsystem druku rozmawia przez sieć.
+    Razem z regułą o sposobie połączeń przychodzących stanowi parę: tamta
+    mówi, którędy wchodzi połączenie, ta — czym się wykazuje.
+
+    Ustawienie zapisuje się w tym samym kluczu co pozostałe trzy, więc
+    wycofanie jednej reguły nie rusza pozostałych. Klucz jest usuwany
+    wyłącznie wtedy, gdy po wycofaniu nie została w nim żadna inna wartość.
+
+    Brak wartości nie jest stanem zgodnym, bo bez ustawienia wybór mechanizmu
+    pozostaje dowolnością konfiguracji lokalnej.
+  en: |
+    The expected value is zero, that is, negotiation, and that is no oversight. A one,
+    which forces the domain mechanism, looks the harder choice, but its side effect is the
+    cutting off of printing everywhere outside a domain network reachable at the given
+    moment. On a portable station that means no printing away from the office.
+
+    The rule closes the quartet describing how the printing subsystem speaks over the
+    network. Together with the rule about the means of incoming connections it forms a
+    pair: that one says by which road a connection comes in, this one what it shows for
+    itself.
+
+    The setting is written into the same key as the other three, so rolling one rule back
+    does not disturb the rest. The key is removed only where after the rollback no other
+    value is left in it.
+
+    A missing value is not a compliant state, since with no setting the choice of mechanism
+    remains a latitude of the local configuration.

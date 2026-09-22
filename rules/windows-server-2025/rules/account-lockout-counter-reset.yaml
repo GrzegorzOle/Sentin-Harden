@@ -1,0 +1,220 @@
+id: win2025-account-lockout-counter-reset
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Account Policies > Account Lockout Policy
+  title:
+    pl: Czas, po jakim licznik nieudanych logowań wraca do zera
+    en: Time after which the failed sign-in counter returns to zero
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie przesądza, jak długo system pamięta nieudaną próbę logowania,
+    zanim przestanie ją wliczać do progu blokady, i wymaga co najmniej
+    piętnastu minut.
+
+    Jest to trzeci element blokady konta i najłatwiejszy do przeoczenia.
+    Próg mówi, ile pomyłek wystarczy; czas blokady mówi, na jak długo
+    zamknąć konto; ten punkt mówi, w jakim oknie czasowym pomyłki się
+    sumują. Przy oknie minutowym pięć prób co sześćdziesiąt sekund nigdy nie
+    złoży się w pięć prób z rzędu — i próg nie zadziała ani razu.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    zgadywania w tempie dobranym do okna. Automat, który zna tę wartość,
+    ustawia odstęp tuż powyżej i zgaduje bez końca, nie powodując ani jednej
+    blokady. Ochrona wygląda w raporcie na włączoną, a nie działa.
+
+    Na serwerze waży to więcej niż na stanowisku roboczym, bo zgadywanie
+    prowadzone powoli i zdalnie może trwać tygodniami, zanim ktokolwiek
+    zajrzy w dziennik.
+  en: |
+    The setting settles how long the system remembers a failed sign-in attempt before it
+    stops counting it towards the lockout threshold, and takes at least fifteen minutes.
+
+    It is the third part of account lockout and the easiest to pass over. The threshold says
+    how many slips are enough; the lockout time says how long to close the account for; this
+    item says in what window of time the slips add up. With a window of one minute, five
+    tries every sixty seconds will never make five tries in a row - and the threshold will
+    not fire once.
+
+    What an attacker gains while the item goes unmet: the means of guessing at a pace fitted
+    to the window. A machine that knows this value sets its interval just above it and
+    guesses without end, causing not a single lockout. The protection looks switched on in
+    the report and does not work.
+
+    On a server that weighs more than at a working station, since guessing carried on slowly
+    and from afar may last weeks before anybody looks into the log.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, jak często na serwerze zdarzają się nieudane
+    logowania niebędące atakiem — bo dłuższe okno oznacza, że sumują się
+    one przez kwadrans zamiast przez minutę.
+
+    Na serwerze źródłem takich prób bywa nie człowiek, lecz aplikacja:
+    klient próbujący połączyć się cyklicznie z poświadczeniami, które
+    przestały być aktualne. Przy oknie krótkim takie próby rozmywały się
+    i nie powodowały blokady. Po wydłużeniu okna zaczną się sumować i konto
+    zablokuje się przy pierwszej takiej serii.
+
+    Jest to skutek zamierzony — ale ujawnia konfiguracje, które do tej pory
+    działały wyłącznie dzięki temu, że licznik zapominał o pomyłkach szybciej,
+    niż one powstawały. Warto zajrzeć w dziennik zdarzeń logowania przed
+    zmianą, a nie po niej.
+
+    Wartość nie może przekraczać czasu blokady konta; system tego pilnuje
+    i sam ją przycina, gdy jest wyższa.
+
+    Zmiana nie wymaga restartu.
+  en: |
+    What needs checking is how often failed sign-ins that are no attack happen on the
+    server - since a longer window means they add up over a quarter of an hour rather than
+    over a minute.
+
+    On a server the source of such tries is sometimes not a person but an application: a
+    client trying to connect over and over with credentials that have stopped being current.
+    With a short window such tries were dispersed and caused no lockout. Once the window is
+    lengthened they will start adding up and the account will lock at the first such run.
+
+    That is an intended effect - but it brings to light configurations that until now worked
+    solely because the counter forgot the slips faster than they arose. It is worth looking
+    into the sign-in event log before the change rather than after it.
+
+    The value may not exceed the account lockout time; the system sees to that and trims it
+    itself where it is higher.
+
+    The change takes no restart.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - remote-management
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Aplikacje logujące się cyklicznie starymi poświadczeniami zaczynają blokować konto
+      - Nieudane próby sumują się przez kwadrans zamiast przez minutę
+      - Wartość wyższa od czasu blokady zostaje przez system przycięta
+      - Konta już zablokowane nie są zwalniane w chwili zmiany ustawienia
+    en:
+      - Applications signing in over and over with old credentials start locking the account
+      - Failed tries add up over a quarter of an hour rather than over a minute
+      - A value higher than the lockout time is trimmed by the system
+      - Accounts already locked are not freed at the moment the setting is changed
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na serwerze pracują klienci logujący się cyklicznie poświadczeniami, których nie da się w tej chwili zaktualizować
+    en:
+      - Clients signing in over and over with credentials that cannot be updated at present work on the server
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas SECURITYPOLICY 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^ResetLockoutCount\s*=\s*(\d+)') { $Matches[1] }
+        else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '15'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^ResetLockoutCount\s*=\s*(\d+)') { $value = $Matches[1] }
+    [pscustomobject]@{
+      setting = 'ResetLockoutCount'
+      value   = $value
+      existed = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      'ResetLockoutCount = 15',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      ('ResetLockoutCount = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/reset-account-lockout-counter-after
+
+notes:
+  pl: |
+    Punkt domyka trójkę blokady konta i bez niego pozostałe dwa dają się
+    obejść bez żadnego narzędzia — wystarczy zgadywać wolniej. Jest to
+    dokładnie ten przypadek, w którym raport pokazujący dwa punkty spełnione
+    obok tego niespełnionego opisuje ochronę pozorną.
+
+    Wartość nie powinna przekraczać czasu blokady konta. System sam ją
+    przycina, więc rozbieżność nie jest błędem, ale w raporcie warto ją
+    czytać razem z tamtym punktem.
+  en: |
+    The item closes the trio of account lockout and without it the other two can be got
+    round with no tool at all - it is enough to guess more slowly. It is exactly the case in
+    which a report showing two items met beside this one unmet describes apparent
+    protection.
+
+    The value ought not to exceed the account lockout time. The system trims it itself, so a
+    divergence is no error, but in the report it is worth reading together with that item.

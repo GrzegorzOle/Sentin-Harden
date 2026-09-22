@@ -1,0 +1,221 @@
+id: win2025-account-lockout-duration
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Account Policies > Account Lockout Policy
+  title:
+    pl: Czas, przez jaki zablokowane konto pozostaje zamknięte
+    en: Time a locked account stays closed for
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie przesądza, na jak długo konto zostaje zamknięte po
+    przekroczeniu progu nieudanych logowań, i wymaga co najmniej piętnastu
+    minut.
+
+    Sama blokada jest bezwartościowa, jeżeli trwa chwilę. Automat zgadujący
+    hasła nie przejmuje się przerwą trzydziestosekundową — odczeka ją
+    i próbuje dalej. Dopiero czas liczony w kwadransach sprawia, że
+    zgadywanie przestaje się opłacać: liczba prób możliwych w ciągu doby
+    spada z tysięcy do kilkudziesięciu.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: powrót do
+    zgadywania niemal natychmiast po każdej blokadzie. Próg staje się wtedy
+    nie zabezpieczeniem, tylko opóźnieniem, które automat ma wpisane
+    w algorytm.
+
+    Punkt ma kategorię niską nie dlatego, że jest mało ważny, tylko dlatego,
+    że sam z siebie nie zamyka żadnej drogi. Jest wartością progu blokady,
+    nie osobnym zabezpieczeniem.
+  en: |
+    The setting settles how long an account is closed for once the threshold of failed
+    sign-ins is passed, and takes at least fifteen minutes.
+
+    Lockout itself is worthless if it lasts a moment. A machine guessing passwords does not
+    mind a thirty-second break - it waits it out and goes on. Only a time counted in
+    quarter-hours makes guessing stop paying: the number of tries possible in a day falls
+    from thousands to a few dozen.
+
+    What an attacker gains while the item goes unmet: a return to guessing almost at once
+    after every lockout. The threshold then becomes no safeguard but a delay the machine has
+    built into its method.
+
+    The item carries a low category not because it matters little but because on its own it
+    closes no road. It is the worth of the lockout threshold rather than a separate
+    safeguard.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, jak na serwerze wygląda odblokowanie konta, bo
+    ustawienie zmienia przede wszystkim czekanie, nie dostęp.
+
+    Wartość zero ma tutaj znaczenie odwrotne do intuicji: oznacza blokadę
+    bez końca, zdejmowaną wyłącznie ręcznie przez administratora. Jest to
+    stan bezpieczniejszy od piętnastu minut, ale kosztowny w obsłudze
+    i na serwerze bywa źródłem przestojów — zablokowane konto usługowe
+    zostaje zablokowane do czasu, aż ktoś to zauważy.
+
+    Piętnaście minut to kompromis: konto wraca samo, a zgadywanie i tak
+    przestaje się opłacać. Tam, gdzie blokady zdarzają się rzadko i jest kto
+    je zdejmować, wartość zerowa jest wyborem lepszym i punkt też jest wtedy
+    spełniony.
+
+    Skutek dla ludzi jest jeden: osoba, która pomyliła hasło zbyt wiele razy,
+    czeka kwadrans zamiast minuty. Na serwerze dotyczy to głównie kont
+    administracyjnych używanych przy logowaniu zdalnym.
+
+    Zmiana nie wymaga restartu.
+  en: |
+    What needs checking is how the unlocking of an account looks on the server, since the
+    setting changes waiting above all rather than access.
+
+    The value zero means here the opposite of what intuition suggests: a lockout without
+    end, lifted by an administrator by hand alone. It is a state safer than fifteen minutes
+    but dear to run, and on a server is sometimes a source of downtime - a locked service
+    account stays locked until somebody notices.
+
+    Fifteen minutes is a compromise: the account comes back by itself and guessing stops
+    paying all the same. Where lockouts happen rarely and there is somebody to lift them,
+    the zero value is the better choice and the item is then met as well.
+
+    There is one effect for people: someone who has got the password wrong too many times
+    waits a quarter of an hour rather than a minute. On a server that concerns mostly
+    administrative accounts used when signing in remotely.
+
+    The change takes no restart.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - remote-management
+  what_breaks:
+    pl:
+      - Osoba, która pomyliła hasło ponad próg, czeka kwadrans zamiast chwili
+      - Zablokowane konto usługowe nie wraca do pracy przed upływem tego czasu
+      - Wartość zero oznacza blokadę bez końca, zdejmowaną wyłącznie ręcznie
+      - Konta już zablokowane nie są zwalniane w chwili zmiany ustawienia
+    en:
+      - Someone who got the password wrong past the threshold waits a quarter of an hour rather than a moment
+      - A locked service account does not return to work before that time is up
+      - The value zero means a lockout without end, lifted by hand alone
+      - Accounts already locked are not freed at the moment the setting is changed
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Obsługa serwera nie ma drogi zgłoszenia blokady poza kontem, które może zostać zablokowane
+    en:
+      - The server's support has no way of reporting a lockout beyond the account that may be locked
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas SECURITYPOLICY 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^LockoutDuration\s*=\s*(-?\d+)') { $Matches[1] }
+        else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '15'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^LockoutDuration\s*=\s*(-?\d+)') { $value = $Matches[1] }
+    [pscustomobject]@{
+      setting = 'LockoutDuration'
+      value   = $value
+      existed = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    # A lockout without end - the value zero - meets the item as well, but takes
+    # somebody to lift every lockout by hand. Fifteen minutes is the smallest
+    # change leading to compliance and needs nobody.
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      'LockoutDuration = 15',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      ('LockoutDuration = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/account-lockout-duration
+
+notes:
+  pl: |
+    Sprawdzenie porównuje liczbę minut i wymaga co najmniej piętnastu.
+    Wartość zero, czyli blokada bez końca, jest stanem ostrzejszym,
+    ale porównania liczbowego nie przechodzi — i jest to znane ograniczenie
+    tego punktu, warte odnotowania przy czytaniu raportu.
+
+    Ustawienie ma sens wyłącznie wtedy, gdy próg blokady jest różny od zera.
+    Przy progu wyłączonym czas blokady nie jest używany do niczego, choć
+    zasada dalej go przechowuje.
+  en: |
+    The check compares a number of minutes and takes at least fifteen. The value zero, that
+    is a lockout without end, is a sharper state but does not pass a numeric comparison -
+    and that is a known limit of this item, worth noting when reading the report.
+
+    The setting makes sense only where the lockout threshold differs from zero. With the
+    threshold switched off the lockout time is used for nothing, though the policy goes on
+    keeping it.

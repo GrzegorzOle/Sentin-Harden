@@ -1,0 +1,162 @@
+id: win11-web-publishing-wizards-download-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Internet Communication Management > Internet Communication settings
+  title:
+    pl: Blokada pobierania listy usług zewnętrznych przez kreatory publikowania
+    en: Wizards blocked from downloading the list of outside services
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kreatory publikowania plików w sieci i zamawiania odbitek pobierają przy
+    uruchomieniu listę dostawców usług, którą podpowiadają użytkownikowi.
+    Lista przychodzi z zewnątrz i zmienia się bez udziału organizacji.
+
+    Skutek jest podwójny, choć w obu przypadkach niewielki. Maszyna odpytuje
+    usługę zewnętrzną przy zwykłej czynności użytkownika, a użytkownik dostaje
+    podpowiedź, żeby wysłać plik do dostawcy, którego nikt w organizacji nie
+    wybierał. Punkt nie zamyka drogi ataku — ogranicza pole, na którym dokument
+    wychodzi na zewnątrz przy okazji, a nie z decyzji.
+  en: |
+    The wizards for publishing files on the web and ordering prints fetch, on
+    startup, a list of service providers to suggest to the user. The list comes
+    from outside and changes with no involvement from the organisation.
+
+    The effect is twofold, though small in both cases. The machine queries an
+    outside service during an ordinary user action, and the user is offered a
+    suggestion to send a file to a provider nobody in the organisation chose. The
+    item closes no attack route - it narrows the field on which a document leaves
+    incidentally rather than by decision.
+
+disruption_description:
+  pl: |
+    Nic, co ktokolwiek zauważy na współczesnym stanowisku. Kreatory te pochodzą
+    z czasów, gdy publikowanie plików w sieci odbywało się przez okno systemowe,
+    i dziś praktycznie nikt ich nie uruchamia — pliki wysyła się przeglądarką
+    albo programem dostawcy, a te działają zupełnie inaczej i tego ustawienia nie
+    dotyczą.
+
+    Gdy kreator zostanie uruchomiony, pokaże wyłącznie dostawców skonfigurowanych
+    na maszynie, zamiast listy pobranej z sieci. W praktyce oznacza to listę
+    pustą i komunikat o braku dostępnych usług.
+
+    Przesyłanie plików przeglądarką, synchronizacja z usługą dyskową
+    i zamawianie odbitek przez stronę dostawcy pozostają bez zmian.
+  en: |
+    Nothing anybody will notice on a modern station. These wizards date from the
+    days when publishing files on the web went through a system window, and today
+    practically nobody starts them - files go out through a browser or the
+    provider's own program, and those work quite differently and are untouched by
+    this setting.
+
+    If a wizard is started, it shows only the providers configured on the machine
+    instead of a list fetched from the network. In practice that means an empty
+    list and a message about no services being available.
+
+    Sending files through a browser, syncing with a storage service and ordering
+    prints through a provider's website all stay as they are.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - printing
+  what_breaks:
+    pl:
+      - Kreator publikowania plików pokaże pustą listę dostawców zamiast pobranej z sieci
+      - Zamawianie odbitek przez okno systemowe przestanie podpowiadać usługi
+    en:
+      - The file publishing wizard shows an empty provider list instead of one fetched from the network
+      - Ordering prints through the system window stops suggesting services
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku korzysta się z kreatora publikowania plików albo zamawiania odbitek z okna systemowego
+    en:
+      - The station is used to publish files or order prints through the system wizard
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+      $name = 'NoWebServices'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $name = 'NoWebServices'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoWebServices' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/jj592685(v=ws.11)
+
+notes:
+  pl: |
+    Kategoria niska jest tu szczera i warto ją utrzymać mimo tego, że punkt
+    występuje w benchmarku obok punktów poważniejszych. Nie odbiera napastnikowi
+    żadnej drogi; ogranicza wyłącznie rozmowę z usługą zewnętrzną przy czynności,
+    której prawie nikt już nie wykonuje.
+
+    To jest dobry kandydat do świadomego odpuszczenia w małej organizacji —
+    i równie dobry do zastosowania hurtem, bo nie kosztuje nic. Obie decyzje są
+    tu poprawne i aplikacja ma je obie dopuszczać.
+  en: |
+    The low category here is honest and worth keeping even though the item appears
+    in the benchmark next to weightier ones. It takes no route away from an
+    attacker; it narrows only a conversation with an outside service during an
+    action almost nobody performs any more.
+
+    This is a good candidate for a deliberate pass in a small organisation - and
+    an equally good one for bulk application, because it costs nothing. Both
+    decisions are correct here and the application should permit both.

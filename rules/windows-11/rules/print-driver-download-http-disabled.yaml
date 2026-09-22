@@ -1,0 +1,164 @@
+id: win11-print-driver-download-http-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Internet Communication Management > Internet Communication settings
+  title:
+    pl: Blokada pobierania sterowników drukarek z internetu
+    en: Printer drivers not downloaded from the internet
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przy instalacji drukarki system potrafi pobrać dla niej sterownik wprost
+    z sieci, jeśli nie znajdzie go u siebie. Sterownik pracuje w jądrze systemu,
+    więc jest to jedna z niewielu rzeczy instalowanych automatycznie, która
+    dostaje najwyższe możliwe uprawnienia.
+
+    Punkt zamyka drogę, na której plik o takich uprawnieniach trafia na maszynę
+    w wyniku podłączenia urządzenia, a nie decyzji człowieka. Po zmianie
+    sterowniki mogą pochodzić wyłącznie stamtąd, skąd dostarcza je
+    zarządzanie — z zasobu wskazanego w organizacji albo z pakietu wgranego
+    wcześniej.
+  en: |
+    When installing a printer the system can fetch a driver for it straight from
+    the network if it does not find one locally. A driver runs in the system
+    kernel, so this is one of the few things installed automatically that receives
+    the highest privileges available.
+
+    The item closes the route by which a file with such privileges reaches the
+    machine as a result of a device being plugged in rather than a person's
+    decision. After the change, drivers can come only from where management
+    supplies them - a resource designated in the organisation or a package
+    deployed earlier.
+
+disruption_description:
+  pl: |
+    Przestaje działać samoobsługowa instalacja drukarki. Podłączenie nowego
+    urządzenia albo dodanie drukarki sieciowej, do której sterownik nie jest
+    wgrany na maszynie, kończy się błędem instalacji zamiast pobraniem
+    i uruchomieniem.
+
+    Jest to kłopotliwe dokładnie tam, gdzie nie ma zarządzania sterownikami:
+    w małych sieciach, na stanowiskach pracujących poza biurem i wszędzie tam,
+    gdzie użytkownik sam dodaje sobie drukarkę u klienta albo w punkcie
+    usługowym. W sieci z serwerem wydruku i wgranymi sterownikami zmiana jest
+    niewidoczna.
+
+    Objaw bywa mylący, bo komunikat mówi o niepowodzeniu instalacji sterownika,
+    a nie o zablokowanym pobieraniu — więc pierwszym odruchem jest szukanie
+    uszkodzonej drukarki albo złego portu.
+  en: |
+    Self-service printer installation stops working. Plugging in a new device or
+    adding a network printer whose driver is not present on the machine ends in an
+    installation error instead of a download and a working printer.
+
+    This is awkward precisely where there is no driver management: in small
+    networks, on stations working away from the office, and anywhere a user adds a
+    printer themselves at a client's site or a service point. In a network with a
+    print server and deployed drivers the change is invisible.
+
+    The symptom can mislead, because the message speaks of a driver installation
+    failure rather than of a blocked download - so the first reflex is to look for
+    a broken printer or a wrong port.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Samodzielne dodanie drukarki, której sterownika nie ma na maszynie, zakończy się błędem
+      - Stanowiska pracujące poza biurem nie zainstalują sterownika u klienta ani w punkcie usługowym
+      - Komunikat mówi o niepowodzeniu instalacji, a nie o zablokowanym pobieraniu
+    en:
+      - Adding a printer whose driver is not on the machine ends in an error
+      - Stations working away from the office cannot install a driver at a client's site or a service point
+      - The message speaks of a failed installation rather than of a blocked download
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Użytkownicy sami dodają sobie drukarki i nie ma zarządzania sterownikami
+      - Stanowisko pracuje poza biurem i korzysta z drukarek, których sterowników nie da się wgrać wcześniej
+    en:
+      - Users add printers themselves and there is no driver management
+      - The station works away from the office and uses printers whose drivers cannot be deployed in advance
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      $name = 'DisableWebPnPDownload'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    $name = 'DisableWebPnPDownload'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableWebPnPDownload' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/print-management-group-policy
+
+notes:
+  pl: |
+    Punkt czyta się razem z ograniczeniem instalacji sterowników drukarek do
+    administratorów, ale zakresy są różne i żaden nie zastępuje drugiego.
+    Tamten mówi, kto może zainstalować sterownik; ten — skąd sterownik może
+    pochodzić. Wdrożenie samego tamtego zostawia otwartą drogę, na której
+    administrator instaluje sterownik pobrany automatycznie z sieci.
+  en: |
+    The item is read together with restricting printer driver installation to
+    administrators, but the scopes differ and neither replaces the other. That one
+    says who may install a driver; this one says where a driver may come from.
+    Applying only that one leaves open the route where an administrator installs a
+    driver fetched automatically from the network.

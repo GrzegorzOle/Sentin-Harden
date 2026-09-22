@@ -1,0 +1,173 @@
+id: win11-group-policy-registry-reapply-unchanged
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Group Policy
+  title:
+    pl: Ponowne wgrywanie ustawień rejestru nawet bez zmiany zasad
+    en: Registry settings reapplied even when policy has not changed
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Domyślnie odświeżanie zasad jest oszczędne: system sprawdza, czy zasada się
+    zmieniła, i jeśli nie, nie robi nic. Oszczędność bierze się z założenia, że
+    skoro zasada jest ta sama, to i ustawienie na maszynie jest takie samo.
+
+    Założenie to nie jest prawdziwe. Ustawienie mógł zmienić ktoś przy maszynie
+    albo program działający z uprawnieniami administratora — zasada się wtedy nie
+    zmienia, więc odświeżanie ją pomija, a zmiana zostaje na stałe. To jest
+    dokładnie ten przypadek, który powinien być wychwycony, i jedyny, którego
+    tryb oszczędny nie wychwytuje.
+
+    Włączenie każe wgrywać ustawienia przy każdym odświeżeniu, niezależnie od
+    tego, czy zasada się zmieniła. Odświeżanie przestaje być powiadomieniem
+    o zmianie, a staje się egzekwowaniem stanu.
+  en: |
+    By default refreshing policy is frugal: the system checks whether the policy
+    has changed and, if not, does nothing. The economy rests on the assumption
+    that if the policy is the same, so is the setting on the machine.
+
+    That assumption is untrue. The setting may have been changed by somebody at
+    the machine or by a program running with administrator rights - the policy
+    does not change then, so the refresh skips it and the change stays for good.
+    That is exactly the case that ought to be caught, and the only one the frugal
+    mode does not catch.
+
+    Enabling this has settings applied at every refresh, whether or not the policy
+    changed. The refresh stops being a notification of change and becomes an
+    enforcement of state.
+
+disruption_description:
+  pl: |
+    Zmiana jest odczuwalna dla osób zarządzających maszyną, nie dla osób na niej
+    pracujących.
+
+    Znika możliwość doraźnego odstępstwa. Ustawienie poprawione ręcznie „na
+    chwilę, do końca dnia" wraca do wartości z zasady przy najbliższym
+    odświeżeniu, czyli zwykle w ciągu półtorej godziny. Kto tego nie wie,
+    zobaczy, że zmiana „nie trzyma się" maszyny, i zacznie szukać przyczyny
+    w złym miejscu.
+
+    Drugi skutek jest mierzalny, choć niewielki: każde odświeżenie wykonuje
+    pełną pracę zamiast sprawdzenia, więc rośnie ruch do kontrolera domeny
+    i obciążenie maszyny. Na pojedynczej stacji nie ma to znaczenia; przy
+    kilkuset stacjach odświeżających się w tym samym oknie czasowym bywa
+    zauważalne i warto to wiedzieć przed wdrożeniem, a nie po.
+  en: |
+    The change is felt by those managing the machine, not by those working on it.
+
+    The option of a temporary departure disappears. A setting corrected by hand
+    "just for today" returns to the policy value at the next refresh, usually
+    within an hour and a half. Anybody unaware of this will see the change "not
+    sticking" to the machine and start looking for the cause in the wrong place.
+
+    The second effect is measurable, though small: every refresh does the full
+    work instead of a check, so traffic to the domain controller and load on the
+    machine both rise. On a single station this does not matter; across several
+    hundred stations refreshing in the same window it can be noticeable, and is
+    worth knowing before applying rather than after.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+  what_breaks:
+    pl:
+      - Doraźna ręczna zmiana ustawienia objętego polityką nie utrzyma się dłużej niż do najbliższego odświeżenia
+      - Każde odświeżenie wykonuje pełną pracę, więc rośnie ruch do kontrolera domeny i obciążenie maszyny
+    en:
+      - A temporary manual change to a policy-covered setting does not survive past the next refresh
+      - Every refresh does the full work, so traffic to the domain controller and machine load both rise
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Bieżąca praca wymaga doraźnych odstępstw od ustawień objętych polityką
+      - Wiele stacji odświeża zasady w tym samym oknie czasowym, a łącze do kontrolera domeny jest wąskie
+    en:
+      - Current work requires temporary departures from policy-covered settings
+      - Many stations refresh policy in the same window and the link to the domain controller is narrow
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+      $name = 'NoGPOListChanges'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+    $name = 'NoGPOListChanges'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoGPOListChanges' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc978526(v=technet.10)
+
+notes:
+  pl: |
+    Ten punkt i odświeżanie w tle siedzą w jednym kluczu i czyta się je razem,
+    ale robią różne rzeczy. Tamten odpowiada za to, czy odświeżanie w ogóle
+    następuje; ten za to, czy odświeżenie cokolwiek wgrywa. Spełnienie samego
+    tamtego daje odświeżanie, które przy niezmienionej zasadzie nie robi nic —
+    czyli dokładnie tyle, ile jego brak.
+
+    Wartość zerowa oznacza tu wymaganie: ustawienie nazywa pomijanie zasad, które
+    się nie zmieniły, więc jego wyłączenie jest utwardzeniem.
+  en: |
+    This item and the background refresh sit in one key and are read together, but
+    do different things. That one answers for whether a refresh happens at all;
+    this one for whether a refresh applies anything. Satisfying only that one
+    yields a refresh which, with the policy unchanged, does nothing - that is,
+    exactly as much as its absence.
+
+    A value of zero is the requirement here: the setting names the skipping of
+    policies that have not changed, so disabling it is the hardening.

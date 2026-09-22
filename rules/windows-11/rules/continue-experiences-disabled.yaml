@@ -1,0 +1,167 @@
+id: win11-continue-experiences-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Group Policy
+  title:
+    pl: Przenoszenie pracy między urządzeniami wyłączone
+    en: Continuing work across devices turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System potrafi rozgłaszać w sieci lokalnej, czym użytkownik właśnie się
+    zajmuje, żeby tę samą pracę dało się podjąć na innym urządzeniu tej samej
+    osoby: otwarty dokument, karta przeglądarki, wspólny schowek.
+
+    Cena jest dwojaka. Po pierwsze, maszyna rozgłasza w sieci komunikaty
+    zawierające identyfikator urządzenia i informację o tym, co się na nim dzieje
+    — także w sieci, której nie ufamy, na przykład w hotelu albo na lotnisku.
+    Po drugie, otwarty kanał między urządzeniami przyjmuje treść z zewnątrz,
+    a każdy taki kanał trzeba traktować jak drogę wejścia, niezależnie od tego,
+    do czego został pomyślany.
+  en: |
+    The system can broadcast on the local network what the user is currently doing,
+    so that the same work can be picked up on another device belonging to the same
+    person: an open document, a browser tab, a shared clipboard.
+
+    The price is twofold. First, the machine broadcasts messages carrying a device
+    identifier and information about what is happening on it - including on a
+    network we do not trust, in a hotel or an airport, say. Second, an open
+    channel between devices accepts content from outside, and every such channel
+    has to be treated as a route in, whatever it was designed for.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna dla osoby, która z tej możliwości korzysta, i całkowicie
+    niewidoczna dla wszystkich pozostałych. Rozstrzyga więc jedno pytanie: czy
+    ktokolwiek na tym stanowisku pracuje na dwóch urządzeniach naraz.
+
+    Przestaje działać podejmowanie pracy na drugim urządzeniu, wspólny schowek
+    między urządzeniami oraz przekazywanie otwartej strony albo dokumentu
+    z telefonu na komputer i odwrotnie. Funkcje te bywają używane nieświadomie —
+    ktoś kopiuje tekst na telefonie i wkleja na komputerze, nie zastanawiając
+    się, którędy to idzie — więc zgłoszenie brzmi wtedy „przestało się wklejać",
+    a nie „wyłączono mi przenoszenie pracy".
+
+    Praca na samej maszynie nie zmienia się w niczym: schowek lokalny, historia
+    schowka i wszystko, co nie przechodzi między urządzeniami, działa bez zmian.
+  en: |
+    The change is visible to somebody who uses the feature and entirely invisible
+    to everybody else. So one question settles it: does anybody at this station
+    work on two devices at once.
+
+    Picking work up on a second device stops working, as do the clipboard shared
+    between devices and handing an open page or document from a phone to a
+    computer and back. These features are sometimes used unknowingly - somebody
+    copies text on a phone and pastes it on a computer without wondering which way
+    it travels - so the report then reads "pasting stopped working" rather than
+    "continuing work across devices was turned off for me".
+
+    Work on the machine itself changes in nothing: the local clipboard, clipboard
+    history and everything that does not pass between devices work unchanged.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Podejmowanie rozpoczętej pracy na drugim urządzeniu przestanie działać
+      - Wspólny schowek między komputerem a telefonem przestanie przenosić treść
+      - Zgłoszenie użytkownika wskaże na schowek albo przeglądarkę, a nie na wyłączoną funkcję
+    en:
+      - Picking up started work on a second device stops working
+      - The clipboard shared between computer and phone stops carrying content
+      - The user's report points at the clipboard or the browser rather than at a disabled feature
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Osoba pracująca na tym stanowisku korzysta ze wspólnego schowka albo przenosi pracę z telefonu
+    en:
+      - The person working at this station uses the shared clipboard or moves work over from a phone
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      $name = 'EnableCdp'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'EnableCdp'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableCdp' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-system
+
+notes:
+  pl: |
+    Punkt siedzi w sekcji zasad grupy wyłącznie z powodu układu szablonów
+    administracyjnych i nie ma nic wspólnego z przetwarzaniem zasad. Warto o tym
+    wiedzieć przy czytaniu raportu posortowanego po numerze punktu, bo sąsiedztwo
+    jest tu mylące.
+
+    Wyłączenie nie zrywa działających połączeń natychmiast i zaczyna obowiązywać
+    po ponownym zalogowaniu. Ponowny audyt odczyta wartość poprawnie mimo to,
+    bo czyta politykę, a nie stan bieżącej sesji.
+  en: |
+    The item sits in the group policy section purely because of how the
+    administrative templates are laid out and has nothing to do with policy
+    processing. Worth knowing when reading a report sorted by item number, as the
+    neighbourhood misleads here.
+
+    Turning it off does not break live connections at once and takes effect at the
+    next sign-in. A re-audit reads the value correctly all the same, because it
+    reads the policy rather than the state of the current session.

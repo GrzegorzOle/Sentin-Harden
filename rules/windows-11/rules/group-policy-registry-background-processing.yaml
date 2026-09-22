@@ -1,0 +1,155 @@
+id: win11-group-policy-registry-background-processing
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Group Policy
+  title:
+    pl: Okresowe odświeżanie ustawień rejestru z zasad grupy włączone
+    en: Periodic background refresh of registry policy enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienia przychodzące z zasad grupy są wgrywane przy starcie maszyny
+    i przy logowaniu, a potem odświeżane co pewien czas w tle. Tylko to
+    odświeżanie sprawia, że polityka jest czymś obowiązującym, a nie stanem
+    ustawionym kiedyś i od tamtej pory nieweryfikowanym.
+
+    Bez niego zmiana wprowadzona lokalnie — przez kogoś przy maszynie albo przez
+    program działający z uprawnieniami administratora — zostaje aż do następnego
+    uruchomienia systemu. Na maszynie, która nie jest wyłączana tygodniami, to
+    okno bywa bardzo długie, a przez cały ten czas raport zgodności po stronie
+    zarządzania pokazuje stan zamierzony, nie faktyczny.
+  en: |
+    Settings arriving from group policy are applied at machine start and at
+    sign-in, and then refreshed periodically in the background. Only that refresh
+    makes policy something binding rather than a state set once and unverified
+    ever since.
+
+    Without it a change made locally - by somebody at the machine or by a program
+    running with administrator rights - stays until the next system start. On a
+    machine not switched off for weeks that window can be very long, and
+    throughout it a compliance report on the management side shows the intended
+    state rather than the actual one.
+
+disruption_description:
+  pl: |
+    Nic. Odświeżanie w tle jest zachowaniem domyślnym systemu, a ten punkt
+    pilnuje wyłącznie, żeby nie zostało wyłączone.
+
+    Jedyna odczuwalna różnica dotyczy osoby, która zmienia ustawienia objęte
+    polityką ręcznie na maszynie: taka zmiana zostanie cofnięta przy najbliższym
+    odświeżeniu, a nie dopiero po ponownym uruchomieniu. Jest to zachowanie
+    zamierzone — ustawienie objęte polityką ma pochodzić z polityki — ale bywa
+    mylące przy diagnozowaniu, gdy ktoś nie wie, że pracuje na maszynie
+    zarządzanej.
+  en: |
+    Nothing. Background refresh is the system's default behaviour, and this item
+    only ensures it has not been switched off.
+
+    The one noticeable difference concerns somebody changing policy-covered
+    settings by hand on the machine: such a change is reverted at the next refresh
+    rather than only after a restart. That is the intended behaviour - a
+    policy-covered setting is meant to come from policy - but it can mislead
+    during diagnosis, when somebody does not know they are working on a managed
+    machine.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+  what_breaks:
+    pl:
+      - Ręczna zmiana ustawienia objętego polityką zostanie cofnięta przy najbliższym odświeżeniu
+    en:
+      - A manual change to a policy-covered setting is reverted at the next refresh
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie trwa diagnostyka wymagająca ręcznej zmiany ustawień objętych polityką
+    en:
+      - The machine is undergoing diagnosis requiring manual changes to policy-covered settings
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+      $name = 'NoBackgroundPolicy'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+    $name = 'NoBackgroundPolicy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoBackgroundPolicy' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc978526(v=technet.10)
+
+notes:
+  pl: |
+    Wartość zerowa oznacza tu wymaganie, a nie wyłączenie: ustawienie nazywa
+    zakaz odświeżania, więc jego wyłączenie jest utwardzeniem. Tytuł w tej paczce
+    mówi o skutku, bo nazwa czyta się odwrotnie.
+
+    Ten punkt sam w sobie nie zabezpiecza przed niczym — dba o to, żeby
+    zabezpieczały pozostałe. Dlatego w macierzy stoi po stronie zysku
+    pośredniego: bez niego każda inna reguła z tej paczki, wdrożona przez zasady
+    grupy, jest odwracalna lokalnie na dowolnie długo.
+  en: |
+    A value of zero is the requirement here, not a switching-off: the setting
+    names the prohibition on refreshing, so disabling it is the hardening. The
+    title in this pack speaks of the effect, because the name reads the other way.
+
+    The item by itself protects against nothing - it sees to it that the others
+    do. Hence it stands on the indirect-gain side of the matrix: without it every
+    other rule in this pack, applied through group policy, is locally reversible
+    for as long as one likes.

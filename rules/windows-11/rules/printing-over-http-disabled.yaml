@@ -1,0 +1,160 @@
+id: win11-printing-over-http-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Internet Communication Management > Internet Communication settings
+  title:
+    pl: Blokada wysyłania wydruków protokołem sieciowym przeglądarki
+    en: Printing over the browser network protocol blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Poza zwykłym drukowaniem w sieci lokalnej system potrafi wysłać zadanie
+    wydruku tym samym protokołem, którym działa przeglądarka. Pomyślano to dla
+    drukowania na urządzeniu stojącym gdzie indziej — także poza siecią
+    organizacji.
+
+    Z punktu widzenia bezpieczeństwa problem nie polega na samym drukowaniu,
+    lecz na tym, dokąd wychodzi dokument. Zadanie wydruku to pełna treść pliku,
+    a ta droga wyprowadza ją na adres, który nie musi być niczym ograniczony
+    i którego zwykłe reguły dostępu do udziałów sieciowych nie obejmują.
+    Wyłączenie zostawia drukowanie tam, gdzie da się je zobaczyć.
+  en: |
+    Besides ordinary printing on the local network, the system can send a print
+    job over the same protocol the browser uses. It was meant for printing on a
+    device standing elsewhere - outside the organisation's network as well.
+
+    From a security standpoint the problem is not the printing but where the
+    document goes. A print job is the file's full contents, and this route carries
+    them out to an address that need not be constrained by anything and that the
+    usual rules about access to network shares do not cover. Turning it off leaves
+    printing where it can be seen.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, jak podłączone są używane drukarki. Drukarki dodane
+    przez serwer wydruku, po adresie sieciowym albo podłączone kablem działają
+    bez zmian — to jest przypadek typowy i najczęstszy.
+
+    Przestaje działać drukowanie na drukarce dodanej przez adres rozpoczynający
+    się od nazwy protokołu przeglądarki. Spotyka się to w trzech miejscach:
+    przy drukarkach udostępnianych między oddziałami bez wspólnej sieci, przy
+    urządzeniach wielofunkcyjnych z własnym serwerem wydruku oraz w usługach
+    drukowania działających poza siecią organizacji.
+
+    Objaw jest jednoznaczny — zadanie nie wychodzi, a kolejka zgłasza błąd —
+    więc przyczynę widać od razu, w przeciwieństwie do większości punktów
+    z tej sekcji.
+  en: |
+    How the printers in use are attached needs checking. Printers added through a
+    print server, by network address or connected by cable work unchanged - that
+    is the typical and commonest case.
+
+    Printing stops working on a printer added by an address beginning with the
+    browser protocol's name. This turns up in three places: printers shared
+    between branches with no common network, multifunction devices with a print
+    server of their own, and printing services operating outside the
+    organisation's network.
+
+    The symptom is unambiguous - the job does not go out and the queue reports an
+    error - so the cause is visible at once, unlike in most items in this section.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Drukarki dodane przez adres protokołu przeglądarki przestaną przyjmować zadania
+      - Drukowanie między oddziałami bez wspólnej sieci przestanie działać
+      - Usługi drukowania działające poza siecią organizacji staną się nieosiągalne
+    en:
+      - Printers added by a browser-protocol address stop accepting jobs
+      - Printing between branches with no common network stops working
+      - Printing services outside the organisation's network become unreachable
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Używane są drukarki dodane przez adres rozpoczynający się od nazwy protokołu przeglądarki
+      - Drukowanie odbywa się między oddziałami, które nie mają wspólnej sieci
+    en:
+      - Printers added by an address beginning with the browser protocol's name are in use
+      - Printing happens between branches with no common network
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      $name = 'DisableHTTPPrinting'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    $name = 'DisableHTTPPrinting'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableHTTPPrinting' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/print-management-group-policy
+
+notes:
+  pl: |
+    Ten punkt i blokada pobierania sterowników siedzą w tym samym kluczu
+    i dotyczą tego samego protokołu, ale rozstrzygają o czym innym: tamten
+    o tym, co przychodzi na maszynę, ten o tym, co z niej wychodzi. Wdrożenie
+    jednego nie mówi nic o drugim i oba trzeba przeczytać osobno.
+  en: |
+    This item and the ban on downloading drivers sit in the same key and concern
+    the same protocol, but settle different things: that one what comes onto the
+    machine, this one what leaves it. Applying one says nothing about the other
+    and both have to be read separately.

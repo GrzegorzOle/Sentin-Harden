@@ -1,0 +1,165 @@
+id: win11-defender-pua-protection
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus
+  title:
+    pl: Blokowanie oprogramowania potencjalnie niepożądanego
+    en: Blocking of potentially unwanted applications
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Istnieje szeroka kategoria programów, które nie są szkodliwe w sensie
+    prawnym, ale robią rzeczy, których nikt świadomie nie zamawia: dokładają
+    reklamy, zmieniają wyszukiwarkę, instalują inne programy w tle, podpinają
+    się do przeglądarki. Zwykłe wykrywanie ich nie zatrzymuje, bo formalnie nie
+    są złośliwe.
+
+    Znaczenie dla bezpieczeństwa jest pośrednie, ale realne. Takie programy
+    przychodzą razem z instalatorami z niepewnych źródeł, same ściągają kolejne
+    składniki i tworzą kanał, przez który na maszynę trafia coś, czego nikt nie
+    wybierał. Blokowanie ich zamyka drogę, którą w praktyce zaczyna się większość
+    zaśmieconych stacji.
+  en: |
+    There is a broad category of programs that are not harmful in a legal sense
+    but do things nobody knowingly asks for: they add advertising, change the
+    search engine, install other programs in the background, attach themselves
+    to the browser. Ordinary detection does not stop them, because formally they
+    are not malicious.
+
+    Their significance for security is indirect but real. Such programs arrive
+    with installers from uncertain sources, pull further components down
+    themselves and create a channel through which something nobody chose reaches
+    the machine. Blocking them closes the route by which most cluttered
+    workstations begin in practice.
+
+disruption_description:
+  pl: |
+    Zmiana bywa widoczna od razu, bo ocena „niepożądane" należy do producenta
+    ochrony, a nie do użytkownika. Program używany świadomie — narzędzie
+    pobierające pliki, stary optymalizator, pakiet od dostawcy sprzętu — może
+    zostać zablokowany bez ostrzeżenia.
+
+    Skutek jest odwracalny i dotyczy pojedynczych programów, więc nie wymaga
+    okna serwisowego. Wymaga natomiast spojrzenia, co na maszynie jest
+    faktycznie używane, zanim zmiana zostanie zastosowana — stąd klasa „wymaga
+    sprawdzenia".
+  en: |
+    The change can be visible immediately, because the judgement of "unwanted"
+    belongs to the protection vendor rather than to the user. A program used
+    deliberately - a download tool, an old optimiser, a package from the
+    hardware supplier - may be blocked without warning.
+
+    The effect is reversible and concerns individual programs, so it needs no
+    maintenance window. It does need a look at what is actually in use on the
+    machine before the change is applied - hence the "needs review" class.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - user-interface
+  what_breaks:
+    pl:
+      - Programy sklasyfikowane jako niepożądane zostaną zablokowane, także te instalowane świadomie
+      - Narzędzia dołączane przez dostawców sprzętu mogą przestać się instalować
+      - Pobieranie plików instalacyjnych z niektórych źródeł zostanie przerwane bez czytelnego powodu
+    en:
+      - Programs classed as unwanted are blocked, including ones installed deliberately
+      - Tools bundled by hardware suppliers may stop installing
+      - Downloading installers from some sources is interrupted with no clear reason
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na maszynie używane jest narzędzie regularnie klasyfikowane jako niepożądane i nie ma dla niego zamiennika
+    en:
+      - The machine uses a tool routinely classed as unwanted and has no replacement for it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else { [string][int](Get-MpPreference -ErrorAction Stop).PUAProtection }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
+    $name = 'PUAProtection'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'PUAProtection' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/detect-block-potentially-unwanted-apps-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Ustawienie ma trzeci wariant, w którym program jest wykrywany i zapisywany
+    w dzienniku, ale nie blokowany. Bywa rozsądnym krokiem pośrednim na
+    maszynie, o której nie wiadomo, co blokada zatrzyma — punkt oczekuje jednak
+    blokowania, bo samo wykrywanie niczego nie zmienia.
+
+    Warto zestawić go z listą zainstalowanego oprogramowania zebraną w audycie.
+    Ostrzeżenie odnoszące się do programu faktycznie obecnego na maszynie waży
+    nieporównanie więcej niż ogólne.
+  en: |
+    The setting has a third variant in which a program is detected and logged
+    but not blocked. That can be a sensible intermediate step on a machine where
+    it is unclear what the blocking will stop - the item nevertheless expects
+    blocking, because detection alone changes nothing.
+
+    It is worth setting against the list of installed software gathered during
+    the audit. A warning about a program actually present on the machine carries
+    incomparably more weight than a general one.

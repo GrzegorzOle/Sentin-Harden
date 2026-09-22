@@ -1,0 +1,162 @@
+id: win11-defender-block-at-first-sight
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > MAPS
+  title:
+    pl: Blokowanie przy pierwszym napotkaniu włączone
+    en: Block at first sight enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Odpytanie chmury trwa ułamek sekundy, ale przez ten ułamek plik jest już
+    dostępny. Ten punkt rozstrzyga, co system robi w międzyczasie: wstrzymuje
+    plik do czasu odpowiedzi czy pozwala mu działać i sprawdza w tle.
+
+    Różnica ujawnia się przy plikach widzianych po raz pierwszy — czyli przy
+    tych, dla których cała ochrona z chmury została zbudowana. Bez wstrzymania
+    plik zdąży się uruchomić, zanim przyjdzie odpowiedź, a blokada dotknie
+    czegoś, co już działa. Z wstrzymaniem nie uruchomi się wcale.
+  en: |
+    A cloud query takes a fraction of a second, but for that fraction the file
+    is already available. This item decides what the system does meanwhile: hold
+    the file until the answer arrives, or let it run and check in the
+    background.
+
+    The difference shows on files seen for the first time - that is, on exactly
+    those the whole cloud protection was built for. Without the hold, the file
+    manages to start before the answer comes, and the block then applies to
+    something already running. With the hold, it does not start at all.
+
+disruption_description:
+  pl: |
+    Użytkownik może zauważyć krótkie wstrzymanie przy pierwszym uruchomieniu
+    nowego pliku. W typowych warunkach mówimy o ułamku sekundy i nikt tego nie
+    rozpozna jako zmiany.
+
+    Inaczej wygląda to przy złym albo wolnym łączu: wstrzymanie trwa tyle, ile
+    czekanie na odpowiedź, i przy każdym nowym pliku pojawia się odczuwalna
+    zwłoka. Na maszynie bez dostępu do internetu składnik nie ma z kim się
+    porozumieć i wdrożenie go nie da nic poza tą zwłoką — dlatego punkt wymaga
+    sprawdzenia warunków sieciowych, a nie tylko zgody na ustawienie.
+  en: |
+    The user may notice a brief hold when a new file is started for the first
+    time. Under typical conditions we are talking about a fraction of a second
+    and nobody recognises it as a change.
+
+    It looks different on a poor or slow link: the hold lasts as long as the
+    wait for an answer, and a perceptible delay appears with every new file. On
+    a machine without internet access the component has nobody to talk to and
+    rolling it out gives nothing but that delay - which is why the item calls
+    for a check of the network conditions, not merely agreement to the setting.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - user-interface
+  what_breaks:
+    pl:
+      - Pierwsze uruchomienie nowego pliku zostaje wstrzymane do czasu odpowiedzi z chmury
+      - Przy wolnym lub zawodnym łączu zwłoka staje się odczuwalna przy każdym nowym pliku
+      - Na maszynie bez dostępu do internetu wstrzymanie kończy się dopiero po upływie limitu czasu
+    en:
+      - The first start of a new file is held until the cloud answers
+      - On a slow or unreliable link the delay becomes perceptible with every new file
+      - On a machine with no internet access the hold ends only when the timeout expires
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna pracuje w sieci odciętej od internetu albo na bardzo wolnym łączu
+      - Ochrona dostarczana z chmury nie została wcześniej włączona
+    en:
+      - The machine works in a network cut off from the internet or on a very slow link
+      - Cloud-delivered protection has not been enabled first
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else {
+        if ((Get-MpPreference -ErrorAction Stop).DisableBlockAtFirstSeen) { 'DISABLED' } else { 'ENABLED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ENABLED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'
+    $name = 'DisableBlockAtFirstSeen'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableBlockAtFirstSeen' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/configure-block-at-first-sight-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Składnik jest bezwartościowy bez ochrony dostarczanej z chmury i bez
+    przesyłania próbek — wstrzymuje plik, żeby zdążyć zapytać, więc musi mieć
+    kogo zapytać. Te trzy punkty tworzą komplet i wdraża się je w tej kolejności.
+
+    Nazwa ustawienia w rejestrze jest przecząca, więc stan pożądany to zero.
+    Sprawdzenie czyta stan obowiązujący, a nie sam wpis polityki.
+  en: |
+    The component is worthless without cloud-delivered protection and sample
+    submission - it holds the file in order to have time to ask, so it needs
+    somebody to ask. These three items form a set and are rolled out in that
+    order.
+
+    The registry setting is named in the negative, so the desired state is zero.
+    The check reads the effective state, not the policy entry alone.

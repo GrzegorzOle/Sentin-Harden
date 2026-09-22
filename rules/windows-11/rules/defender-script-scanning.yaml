@@ -1,0 +1,157 @@
+id: win11-defender-script-scanning
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > Real-time Protection
+  title:
+    pl: Skanowanie skryptów włączone
+    en: Script scanning enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Znaczna część ataków nie przynosi na maszynę żadnego pliku wykonywalnego.
+    Przychodzi skrypt — w dokumencie, w skrócie, w wierszu polecenia — a
+    właściwy kod powstaje dopiero w pamięci, po rozpakowaniu i rozszyfrowaniu.
+    Sprawdzanie pliku na dysku widzi wtedy wyłącznie ciąg znaków bez znaczenia.
+
+    Skanowanie skryptów zagląda w treść przekazywaną do interpretera już po jej
+    odszyfrowaniu, czyli dokładnie w tym miejscu, w którym kod przestaje być
+    ukryty. Bez tego zaciemnienie skryptu wystarcza, żeby przejść obok ochrony
+    bez zatrzymania.
+  en: |
+    A large share of attacks brings no executable file to the machine at all. A
+    script arrives - in a document, in a shortcut, on the command line - and the
+    actual code comes into being only in memory, after unpacking and decryption.
+    Checking the file on disk then sees nothing but a meaningless string.
+
+    Script scanning looks into the content handed to the interpreter after it
+    has been decrypted, that is, exactly where the code stops being hidden.
+    Without it, obfuscating a script is enough to walk past the protection
+    unstopped.
+
+disruption_description:
+  pl: |
+    Składnik jest włączony domyślnie i na większości maszyn wdrożenie niczego
+    nie zmieni. Włączenie nie wymaga restartu, nie jest widoczne dla użytkownika
+    i nie zmienia sposobu uruchamiania skryptów.
+
+    Jedyny zauważalny koszt to niewielkie opóźnienie przy uruchamianiu bardzo
+    dużych skryptów oraz — rzadko — fałszywe trafienie na skrypcie
+    administracyjnym używającym tych samych technik co narzędzia atakujące.
+    Wtedy skrypt zostaje zatrzymany bez uprzedzenia.
+  en: |
+    The component is on by default and on most machines the rollout changes
+    nothing. Enabling it needs no restart, is not visible to the user and does
+    not change how scripts are started.
+
+    The only noticeable cost is a small delay when starting very large scripts
+    and - rarely - a false hit on an administrative script using the same
+    techniques as attack tools. The script is then stopped without warning.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Skrypt administracyjny używający technik typowych dla narzędzi atakujących może zostać zatrzymany
+      - Uruchamianie bardzo dużych skryptów zajmie nieco więcej czasu
+    en:
+      - An administrative script using techniques typical of attack tools may be stopped
+      - Starting very large scripts takes slightly longer
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Skanowanie wyłączono świadomie z powodu fałszywego trafienia na skrypcie potrzebnym do pracy
+    en:
+      - Scanning was switched off deliberately because of a false hit on a script needed for work
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else {
+        if ((Get-MpPreference -ErrorAction Stop).DisableScriptScanning) { 'DISABLED' } else { 'ENABLED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ENABLED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+    $name = 'DisableScriptScanning'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableScriptScanning' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/configure-real-time-protection-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Punkt domyka trójkę dotyczącą skryptów: rejestrowanie bloków skryptu
+    zapisuje, co zostało wykonane, usunięcie starszego silnika odbiera drogę
+    obejścia tego zapisu, a skanowanie skryptów pozwala treść zatrzymać, a nie
+    tylko odnotować.
+
+    Wdrożenie samego rejestrowania daje wiedzę po fakcie. Dopiero razem
+    ze skanowaniem powstaje ochrona, która działa w chwili uruchomienia.
+  en: |
+    The item completes the trio concerning scripts: script block logging records
+    what was executed, removing the older engine takes away the way around that
+    record, and script scanning allows the content to be stopped rather than
+    merely noted.
+
+    Rolling out the logging alone gives knowledge after the fact. Only together
+    with scanning does it become protection that acts at the moment of
+    execution.

@@ -1,0 +1,164 @@
+id: win11-defender-network-protection
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Network Protection
+  title:
+    pl: Ochrona sieciowa w trybie blokowania
+    en: Network protection in blocking mode
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ochrona sieciowa blokuje połączenia do adresów o złej reputacji na poziomie
+    systemu, niezależnie od tego, który program je nawiązuje. Działa więc także
+    tam, gdzie mechanizmy przeglądarki nie sięgają: w skrypcie, w narzędziu
+    wiersza polecenia, w procesie uruchomionym przez dokument.
+
+    To ma znaczenie, bo połączenie wychodzące jest zwykle drugim krokiem ataku,
+    nie pierwszym. Program już się uruchomił i sięga po kolejny składnik albo
+    zgłasza się do serwera sterującego. Zablokowanie tego połączenia zatrzymuje
+    atak w momencie, w którym nie zdążył jeszcze niczego zrobić — a ślad po
+    próbie zostaje w dzienniku.
+  en: |
+    Network protection blocks connections to addresses of poor reputation at the
+    system level, regardless of which program makes them. It therefore works
+    where a browser's mechanisms do not reach: in a script, in a command line
+    tool, in a process started by a document.
+
+    That matters, because an outbound connection is usually the second step of
+    an attack, not the first. The program has already started and is reaching
+    for a further component or checking in with a control server. Blocking that
+    connection stops the attack at a point where it has not managed to do
+    anything yet - and a trace of the attempt stays in the log.
+
+disruption_description:
+  pl: |
+    Blokada dotyczy połączeń, a nie programów, więc skutek bywa mylący: program
+    działa, ale jedna z jego funkcji nie odpowiada. Użytkownik zgłasza to jako
+    awarię aplikacji, a nie jako zablokowane połączenie.
+
+    Najczęstszym źródłem fałszywych trafień są usługi wewnętrzne pod adresami
+    bez historii oraz narzędzia łączące się do rzadkich adresów. Dlatego przed
+    wdrożeniem w trybie blokowania warto puścić ochronę w trybie samego zapisu
+    i zobaczyć, co by zostało zatrzymane.
+  en: |
+    The block concerns connections rather than programs, so the effect can
+    mislead: the program runs, but one of its functions does not respond. The
+    user reports it as an application fault, not as a blocked connection.
+
+    The commonest source of false hits are internal services at addresses with
+    no history, and tools connecting to rarely used addresses. That is why,
+    before rolling out in blocking mode, it is worth running the protection in
+    audit-only mode and seeing what would have been stopped.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Połączenia do adresów bez ustalonej reputacji mogą zostać zablokowane, w tym do usług wewnętrznych
+      - Program straci jedną ze swoich funkcji, zamiast zgłosić zablokowane połączenie
+      - Skrypty pobierające pliki z rzadko używanych adresów przestaną działać bez czytelnego komunikatu
+    en:
+      - Connections to addresses with no established reputation may be blocked, including internal services
+      - A program loses one of its functions instead of reporting a blocked connection
+      - Scripts fetching files from rarely used addresses stop working with no clear message
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na maszynie działają narzędzia łączące się do usług wewnętrznych pod adresami bez historii
+      - Nie przeprowadzono wcześniej obserwacji w trybie samego zapisu
+    en:
+      - The machine runs tools connecting to internal services at addresses with no history
+      - No prior observation in audit-only mode has been carried out
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else { [string][int](Get-MpPreference -ErrorAction Stop).EnableNetworkProtection }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\Network Protection'
+    $name = 'EnableNetworkProtection'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\Network Protection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableNetworkProtection' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/network-protection
+
+notes:
+  pl: |
+    Ustawienie ma wartość pośrednią oznaczającą tryb samego zapisu: połączenie
+    przechodzi, ale zostaje odnotowane. To właściwy sposób przygotowania
+    wdrożenia, a nie stan docelowy — punkt oczekuje blokowania, bo w trybie
+    zapisu nic nie zostaje zatrzymane.
+
+    Ochrona sieciowa działa wyłącznie przy włączonej ochronie w czasie
+    rzeczywistym. Wdrożenie jej na maszynie, na której tamta jest wyłączona,
+    zapisze ustawienie, ale nie da żadnego skutku.
+  en: |
+    The setting has an intermediate value meaning audit-only mode: the
+    connection goes through but is recorded. That is the right way to prepare a
+    rollout, not the target state - the item expects blocking, because in audit
+    mode nothing is actually stopped.
+
+    Network protection works only with real-time protection enabled. Rolling it
+    out on a machine where that is switched off will record the setting but have
+    no effect at all.

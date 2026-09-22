@@ -1,0 +1,165 @@
+id: win11-defender-sample-submission
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > MAPS
+  title:
+    pl: Automatyczne wysyłanie bezpiecznych próbek
+    en: Automatic submission of safe samples
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Odpytanie chmury o nieznany plik często kończy się odpowiedzią „nie wiem".
+    Wtedy rozstrzygnięcie wymaga samego pliku, a nie tylko jego opisu. Ten punkt
+    decyduje, czy plik zostanie wysłany automatycznie, czy system będzie czekał
+    na odpowiedź użytkownika.
+
+    Znaczenie ma nie tyle sam plik, co czas. Ustawienie domyślne zatrzymuje
+    sprawdzanie na pytaniu w okienku, którego nikt nie czyta — i którego na
+    maszynie bez zalogowanego użytkownika nie ma komu przeczytać. W praktyce
+    oznacza to, że ochrona z chmury działa tylko w tych przypadkach, w których
+    była najmniej potrzebna.
+  en: |
+    Asking the cloud about an unknown file often ends with "I do not know".
+    Settling it then requires the file itself, not merely its description. This
+    item decides whether the file is sent automatically or the system waits for
+    the user's answer.
+
+    What matters is less the file than the timing. The default setting stops the
+    check at a prompt nobody reads - and which, on a machine with no user signed
+    in, there is nobody to read. In practice that means cloud protection works
+    only in the cases where it was least needed.
+
+disruption_description:
+  pl: |
+    Użytkownik przestanie dostawać pytanie o wysłanie pliku, a sprawdzanie
+    nieznanych plików przestanie się na nim zatrzymywać. Z punktu widzenia
+    codziennej pracy to zmiana na korzyść.
+
+    Koszt leży gdzie indziej: pliki z tej maszyny mogą trafić do producenta.
+    Ustawienie zaleca wysyłkę wyłącznie plików uznanych za niezawierające danych
+    osobowych, ale ta ocena jest po stronie producenta, nie właściciela danych.
+    Na stanowisku przetwarzającym dokumenty objęte tajemnicą decyzja należy do
+    osoby odpowiedzialnej za dane.
+  en: |
+    The user stops being asked about sending a file, and the check of unknown
+    files stops pausing on them. From the point of view of daily work that is a
+    change for the better.
+
+    The cost lies elsewhere: files from this machine may reach the vendor. The
+    setting calls for sending only files judged not to contain personal data,
+    but that judgement rests with the vendor, not with the data's owner. On a
+    station handling confidential documents the decision belongs to whoever is
+    responsible for the data.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - user-interface
+  what_breaks:
+    pl:
+      - Pliki uznane za bezpieczne do wysłania opuszczą maszynę bez pytania użytkownika
+      - Ruch wychodzący do usługi producenta musi być dopuszczony na zaporze brzegowej
+      - Użytkownik straci możliwość odmowy wysłania konkretnego pliku
+    en:
+      - Files judged safe to send leave the machine without asking the user
+      - Outbound traffic to the vendor's service has to be allowed on the perimeter firewall
+      - The user loses the ability to refuse sending a particular file
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko przetwarza dokumenty, które nie mogą opuszczać maszyny w żadnej postaci
+      - Zasady obowiązujące w organizacji wymagają zgody użytkownika na wysłanie pliku
+    en:
+      - The station handles documents that must not leave the machine in any form
+      - The organisation's rules require the user's consent before a file is sent
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else { [string][int](Get-MpPreference -ErrorAction Stop).SubmitSamplesConsent }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'
+    $name = 'SubmitSamplesConsent'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SubmitSamplesConsent' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/cloud-protection-microsoft-antivirus-sample-submission
+
+notes:
+  pl: |
+    Punkt ma sens wyłącznie razem z ochroną dostarczaną z chmury — bez niej nie
+    ma kto prosić o próbkę. Wdrażanie samego przesyłania próbek nie zmienia
+    niczego poza tym, że okienko przestaje się pojawiać.
+
+    Istnieje wariant wysyłający wszystkie pliki, nie tylko uznane za bezpieczne.
+    Daje nieco lepszą ochronę i wyraźnie gorszą kontrolę nad tym, co opuszcza
+    maszynę — dlatego punkt oczekuje wariantu ostrożniejszego, a mocniejszy
+    zostawia jako świadomą decyzję.
+  en: |
+    The item makes sense only alongside cloud-delivered protection - without it
+    there is nobody to ask for a sample. Rolling out sample submission alone
+    changes nothing beyond the prompt no longer appearing.
+
+    There is a variant that sends every file, not only those judged safe. It
+    gives slightly better protection and markedly worse control over what leaves
+    the machine - which is why the item expects the more cautious variant and
+    leaves the stronger one as a deliberate decision.

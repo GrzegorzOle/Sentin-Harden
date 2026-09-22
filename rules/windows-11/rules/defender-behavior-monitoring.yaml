@@ -1,0 +1,158 @@
+id: win11-defender-behavior-monitoring
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > Real-time Protection
+  title:
+    pl: Monitorowanie zachowania włączone
+    en: Behaviour monitoring enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Rozpoznawanie po zawartości pliku zawodzi przy każdym szkodliwym programie,
+    którego nikt wcześniej nie opisał — a to dziś norma, nie wyjątek.
+    Monitorowanie zachowania patrzy na coś innego: co program robi po
+    uruchomieniu. Szyfrowanie plików w pętli, wstrzykiwanie kodu do cudzego
+    procesu, kasowanie kopii woluminu wygląda tak samo niezależnie od tego, czym
+    ten program jest.
+
+    To jedyny składnik ochrony działający na zagrożeniu, którego nikt wcześniej
+    nie widział. Wyłączenie go zostawia ochronę rozpoznającą wyłącznie to, co
+    już opisano — czyli bezradną wobec pierwszego użycia każdego nowego
+    narzędzia.
+  en: |
+    Recognition by file contents fails on every malicious program nobody has
+    described before - and today that is the norm, not the exception. Behaviour
+    monitoring looks at something else: what the program does once it runs.
+    Encrypting files in a loop, injecting code into another process, deleting
+    volume copies looks the same regardless of what the program is.
+
+    It is the only protection component that works on a threat nobody has seen
+    before. Switching it off leaves protection that recognises only what has
+    already been described - helpless against the first use of any new tool.
+
+disruption_description:
+  pl: |
+    Składnik jest włączony domyślnie, więc na większości maszyn wdrożenie
+    niczego nie zmieni. Wyłącza się go świadomie, zwykle w reakcji na fałszywe
+    trafienie albo z powodów wydajnościowych.
+
+    Włączenie nie wymaga restartu ani wylogowania i nie jest widoczne dla
+    użytkownika. Jedyny mierzalny skutek to obciążenie maszyny, zauważalne
+    wyłącznie przy operacjach na bardzo dużej liczbie plików.
+  en: |
+    The component is on by default, so on most machines the rollout changes
+    nothing. It is switched off deliberately, usually in reaction to a false hit
+    or for performance reasons.
+
+    Enabling it needs no restart or sign-out and is not visible to the user. The
+    one measurable effect is load on the machine, noticeable only during
+    operations on very large numbers of files.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Operacje na bardzo dużej liczbie plików mogą wykonywać się wolniej niż przy wyłączonym monitorowaniu
+      - Oprogramowanie wykonujące nietypowe operacje na pamięci innych procesów może zostać zatrzymane
+    en:
+      - Operations on very large numbers of files may run more slowly than with monitoring off
+      - Software performing unusual operations on other processes' memory may be stopped
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Monitorowanie wyłączono świadomie z powodu fałszywego trafienia, którego nie wyjaśniono
+    en:
+      - Monitoring was switched off deliberately because of a false hit that has not been resolved
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else {
+        if ((Get-MpPreference -ErrorAction Stop).DisableBehaviorMonitoring) { 'DISABLED' } else { 'ENABLED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ENABLED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+    $name = 'DisableBehaviorMonitoring'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableBehaviorMonitoring' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/configure-real-time-protection-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Nazwa ustawienia w rejestrze jest przecząca, więc stan pożądany to zero.
+    Naprawa zapisuje wartość jawnie, zamiast usuwać wpis — składnik jest wprawdzie
+    włączony domyślnie, ale jawny zapis przetrwa próbę wyłączenia go lokalnie.
+
+    Sprawdzenie czyta stan obowiązujący, a nie sam wpis polityki. Dzięki temu
+    wyłączenie składnika z poziomu interfejsu zostanie w raporcie zauważone,
+    nawet jeśli polityka mówi co innego.
+  en: |
+    The registry setting is named in the negative, so the desired state is zero.
+    The remediation writes the value explicitly rather than removing the entry -
+    the component is on by default, but an explicit entry survives an attempt to
+    switch it off locally.
+
+    The check reads the effective state, not the policy entry alone. That way
+    switching the component off through the interface is noticed in the report,
+    even when the policy says otherwise.

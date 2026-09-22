@@ -1,0 +1,165 @@
+id: win11-defender-cloud-protection
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Antivirus > MAPS
+  title:
+    pl: Ochrona dostarczana z chmury włączona
+    en: Cloud-delivered protection enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sygnatury pobierane raz na kilka godzin nie nadążają za zagrożeniami, które
+    zmieniają postać przy każdym pobraniu. Odpytanie usługi w chmurze zamyka tę
+    lukę: decyzja o nieznanym pliku zapada w sekundach, na podstawie tego, co
+    zaobserwowano gdzie indziej przed chwilą.
+
+    Różnica jest największa dokładnie tam, gdzie najbardziej boli — przy nowym,
+    jeszcze nieopisanym szkodliwym pliku. Bez odpytania chmury taki plik po
+    prostu przechodzi i zostaje wykryty przy aktualizacji sygnatur, czyli po
+    fakcie.
+  en: |
+    Signatures downloaded every few hours do not keep up with threats that
+    change shape at every download. Querying a cloud service closes that gap:
+    the decision about an unknown file is made within seconds, based on what was
+    observed elsewhere moments earlier.
+
+    The difference is greatest exactly where it hurts most - with a new, not yet
+    described malicious file. Without the cloud query such a file simply passes
+    and is detected at the next signature update, that is, after the fact.
+
+disruption_description:
+  pl: |
+    Zmiana nie wpływa na działanie programów i użytkownik jej nie zauważy.
+    Rzeczywisty koszt jest innego rodzaju: metadane o sprawdzanych plikach
+    opuszczają maszynę i trafiają do usługi producenta.
+
+    To jest właściwy powód klasy „wymaga sprawdzenia". Na stanowisku
+    przetwarzającym dane objęte szczególnym reżimem decyzja należy do osoby
+    odpowiedzialnej za dane, nie do administratora. Drugi przypadek to maszyna
+    bez dostępu do internetu — tam odpytanie chmury nie zadziała, a każde
+    sprawdzenie nieznanego pliku będzie na nie czekać.
+  en: |
+    The change does not affect how programs run and the user will not notice it.
+    The real cost is of a different kind: metadata about the files checked
+    leaves the machine and reaches the vendor's service.
+
+    That is the true reason for the "needs review" class. On a station
+    processing data under a particular regime the decision belongs to whoever is
+    responsible for that data, not to the administrator. The second case is a
+    machine with no internet access - there the cloud query will not work, and
+    every check of an unknown file will wait for it.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Metadane o sprawdzanych plikach opuszczają maszynę i trafiają do usługi producenta
+      - Na maszynie bez dostępu do internetu sprawdzenie nieznanego pliku czeka na odpowiedź, której nie będzie
+      - Ruch wychodzący do usługi producenta musi być dopuszczony na zaporze brzegowej
+    en:
+      - Metadata about the files checked leaves the machine and reaches the vendor's service
+      - On a machine without internet access the check of an unknown file waits for an answer that never comes
+      - Outbound traffic to the vendor's service has to be allowed on the perimeter firewall
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowisko przetwarza dane, których metadane nie mogą opuszczać maszyny
+      - Maszyna pracuje w sieci odciętej od internetu
+    en:
+      - The station processes data whose metadata must not leave the machine
+      - The machine works in a network cut off from the internet
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Order matters: with Defender stood down, reading its preferences throws.
+      # The question "did another product take over" has to be answered first.
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      else { [string][int](Get-MpPreference -ErrorAction Stop).MAPSReporting }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'
+    $name = 'SpynetReporting'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SpynetReporting' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/cloud-protection-microsoft-defender-antivirus
+
+notes:
+  pl: |
+    Sprawdzenie czyta wartość obowiązującą, a naprawa ustawia politykę. Ta
+    asymetria jest zamierzona: raport ma opisywać stan maszyny niezależnie od
+    tego, skąd ustawienie pochodzi, a zmiana ma przetrwać zmianę ustawień
+    lokalnych przez użytkownika.
+
+    Gdy ochronę przejął inny program antywirusowy, punkt zwraca „nie dotyczy",
+    a nie niezgodność. Ustawienia tego producenta nie opisują wtedy stanu
+    ochrony maszyny i ocenianie ich byłoby mylące.
+  en: |
+    The check reads the effective value while the remediation sets the policy.
+    The asymmetry is deliberate: the report is meant to describe the state of
+    the machine regardless of where the setting comes from, and the change is
+    meant to survive a user altering the local settings.
+
+    Where another antivirus product has taken over protection, the item returns
+    "not applicable" rather than a non-compliance. This vendor's settings then
+    do not describe the machine's protection and assessing them would mislead.

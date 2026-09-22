@@ -1,0 +1,222 @@
+id: win2025-remote-sam-calls-restricted
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Zdalne odpytywanie bazy kont ograniczone do administratorów
+    en: Remote querying of the accounts database bounded to administrators
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie ogranicza krąg tych, którzy mogą odpytać bazę kont tej
+    maszyny przez sieć, do administratorów.
+
+    Blokada wyliczania anonimowego zamyka zapytania bez poświadczeń. Ten
+    punkt idzie dalej i zamyka zapytania z poświadczeniami: po jego
+    wdrożeniu zwykły użytkownik domeny, poprawnie zalogowany, nie odczyta
+    już z tej maszyny listy kont ani składu grup lokalnych.
+
+    Różnica jest zasadnicza dla tego, przed czym punkt broni. Napastnik,
+    który zdobył jedno konto o niskich uprawnieniach — a zdobycie takiego
+    konta jest zwykle pierwszym krokiem — odpytuje po kolei maszyny
+    w sieci, szukając tej, na której jego konto albo konto, do którego
+    ma dostęp, należy do grupy administratorów lokalnych. Zapytanie to
+    jest ciche, szybkie i nie wymaga niczego poza ważnym poświadczeniem.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: mapę
+    uprawnień w całej sieci, rysowaną z konta o uprawnieniach najniższych
+    z możliwych. Jest to podstawowe narzędzie planowania ruchu bocznego
+    i odebranie go kosztuje napastnika więcej niż większość pojedynczych
+    utwardzeń.
+  en: |
+    The setting bounds the circle of those who may query this machine's accounts database
+    over the network to administrators.
+
+    Blocking anonymous enumeration closes queries with no credentials. This item goes
+    further and closes queries with credentials: once it is rolled out an ordinary domain
+    user, properly signed in, will no longer read off this machine the list of accounts nor
+    the make-up of the local groups.
+
+    The difference is fundamental to what the item guards against. An attacker who has taken
+    one low-privileged account - and taking such an account is usually the first step -
+    queries the machines on the network one by one, looking for the one on which their
+    account, or an account they have access to, belongs to the local administrators group.
+    That query is quiet, quick and takes nothing beyond a valid credential.
+
+    What an attacker gains while the item goes unmet: a map of rights across the whole
+    network, drawn from an account with the lowest rights possible. It is the basic tool of
+    planning lateral movement, and taking it away costs an attacker more than most single
+    hardenings.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy z odczytu składu grup lokalnych tej maszyny
+    korzysta narzędzie pracujące na koncie nieadministracyjnym.
+
+    Narzędzia takie istnieją i są w użyciu: systemy inwentaryzacyjne
+    zbierające skład grupy administratorów lokalnych, narzędzia zgodności
+    weryfikujące uprawnienia, oprogramowanie pomocy technicznej pokazujące
+    operatorowi, kto ma na maszynie uprawnienia. Wszystkie one pytają
+    dokładnie tą drogą, którą punkt zamyka.
+
+    Po zmianie takie narzędzie nie zgłosi błędu uprawnień w sposób
+    oczywisty — dostanie odmowę i zwykle pokaże, że danych nie ma.
+    Rozwiązaniem nie jest cofnięcie ustawienia, tylko nadanie narzędziu
+    konta o odpowiednich uprawnieniach albo rozszerzenie opisu dostępu
+    o wskazane konto.
+
+    Ustawienie ma postać opisu uprawnień, nie liczby, więc można w nim
+    dopuścić konkretne konto obok administratorów. Jest to droga właściwa
+    tam, gdzie narzędzie musi pytać, a nie ma być administratorem.
+
+    Zmiana nie wymaga restartu.
+  en: |
+    What needs checking is whether a tool working on a non-administrative account uses the
+    reading of this machine's local group make-up.
+
+    Such tools exist and are in use: inventory systems gathering the make-up of the local
+    administrators group, compliance tools verifying rights, support software showing an
+    operator who has rights on a machine. All of them ask by exactly the road this item
+    closes.
+
+    After the change such a tool will not report a rights error in any obvious way - it will
+    get a refusal and will usually show that there are no data. The answer is not to undo
+    the setting but to give the tool an account with the right privileges or to widen the
+    access description by the account named.
+
+    The setting takes the shape of a description of rights rather than a number, so a
+    definite account can be admitted in it beside the administrators. That is the right road
+    wherever a tool has to ask and is not to be an administrator.
+
+    The change takes no restart.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - remote-management
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Narzędzia inwentaryzacyjne na koncie nieadministracyjnym przestają odczytywać skład grup
+      - Odmowa bywa pokazywana jako brak danych, nie jako błąd uprawnień
+      - Oprogramowanie pomocy technicznej nie pokaże, kto ma na maszynie uprawnienia
+      - Dostęp administratorów i uwierzytelnianie zwykłych użytkowników działa bez zmiany
+    en:
+      - Inventory tools on a non-administrative account stop reading the make-up of groups
+      - The refusal is at times shown as missing data rather than as a rights error
+      - Support software will not show who has rights on the machine
+      - Administrators' access and ordinary users' authentication work unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Narzędzie inwentaryzacyjne odczytuje skład grup lokalnych na koncie bez uprawnień administracyjnych
+    en:
+      - An inventory tool reads the make-up of local groups on an account without administrative rights
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is a security descriptor in text form, not a number. It is
+      # compared after stripping spaces and case, because the same permission can
+      # be written in more than one way.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'RestrictRemoteSAM'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value -or [string]$value -eq '') { 'MISSING' }
+        else {
+          $normalised = ([string]$value -replace '\s', '').ToUpperInvariant()
+          if ($normalised -eq 'O:BAG:BAD:(A;;RC;;;BA)') { 'ADMINS_ONLY' }
+          else { 'OTHER ' + $value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ADMINS_ONLY
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $current = (Get-ItemProperty -Path $path -Name 'RestrictRemoteSAM' -ErrorAction SilentlyContinue).'RestrictRemoteSAM'
+    [pscustomobject]@{
+      path        = $path
+      name        = 'RestrictRemoteSAM'
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    # Read access for the local administrators group and for nobody else. A
+    # further account, where one has to ask, is added as another entry in this
+    # description rather than by undoing the setting.
+    Set-ItemProperty -Path $path -Name 'RestrictRemoteSAM' -Value 'O:BAG:BAD:(A;;RC;;;BA)' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value ([string]$b.value) -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-restrict-clients-allowed-to-make-remote-sam-calls
+
+notes:
+  pl: |
+    Wartość jest opisem uprawnień zapisanym tekstem, a nie liczbą.
+    Sprawdzenie porównuje ją po usunięciu odstępów i ujednoliceniu
+    wielkości liter, bo ten sam zapis bywa zapisany różnie. Wynik „OTHER"
+    wraz z treścią oznacza opis inny niż wzorcowy — nie musi być gorszy,
+    ale wymaga przeczytania.
+
+    Punkt nie zastępuje blokady wyliczania anonimowego i odwrotnie.
+    Tamten zamyka zapytania bez poświadczeń, ten — zapytania
+    z poświadczeniami zwykłego użytkownika. Dopiero oba razem zamykają
+    rozpoznanie z tej maszyny.
+
+    Na kontrolerze domeny ustawienie to ma zasięg największy, bo baza kont
+    kontrolera jest bazą całej domeny. Jest to zarazem miejsce, w którym
+    najłatwiej o niespodziankę: narzędzia odpytujące domenę o skład grup
+    bywają liczne i nie wszystkie pracują na koncie administracyjnym.
+  en: |
+    The value is a description of rights recorded as text rather than a number. The check
+    compares it after stripping spaces and levelling case, since the same record is
+    sometimes written differently. An "OTHER" result along with its contents means a
+    description other than the model one - it need not be worse, but it takes reading.
+
+    The item is no substitute for blocking anonymous enumeration nor the other way round.
+    That one closes queries with no credentials, this one queries with an ordinary user's
+    credentials. Only the two together close reconnaissance from this machine.
+
+    On a domain controller this setting has the widest reach, since a controller's accounts
+    database is the whole domain's. It is at the same time the place where a surprise comes
+    easiest: tools querying the domain for the make-up of groups are at times many and not
+    all of them work on an administrative account.

@@ -1,0 +1,204 @@
+id: win2025-audit-other-policy-change-events
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja pozostałych zmian zasad — same niepowodzenia
+    en: Auditing of other policy changes - failures only
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zbiera zmiany zasad, które nie mieszczą się
+    w pozostałych podkategoriach tej grupy — między innymi zmiany
+    w konfiguracji mechanizmów kryptograficznych i w filtrowaniu ruchu
+    na poziomie platformy.
+
+    Punkt wymaga wyłącznie rejestrowania niepowodzeń i tym różni się od
+    reszty grupy. Powód jest taki, że zdarzenia udane w tej podkategorii
+    powstają głównie w pracy normalnej systemu — mechanizmy te
+    przekonfigurowują się same, przy uruchomieniu usług i przy zmianach
+    w sieci. Zapis powodzeń dałby więc dużo szumu i mało treści.
+
+    Niepowodzenie znaczy tu co innego i dlatego jest warte zapisania.
+    Oznacza próbę zmiany, która się nie udała — czyli czynność
+    podejmowaną świadomie i przez kogoś, kto nie miał do niej
+    uprawnień. W pracy normalnej takich prób nie ma.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    sprawdzenia bez ryzyka, czy sięga do mechanizmów, o które chce
+    zahaczyć. Próba nieudana nie zostawia wtedy śladu, więc rozpoznanie
+    jest darmowe.
+  en: |
+    The subcategory gathers policy changes that fit none of this group's other
+    subcategories - among them changes in the configuration of cryptographic mechanisms and
+    in the filtering of traffic at the platform's level.
+
+    The item takes the recording of failures alone and differs in that from the rest of the
+    group. The reason is that successful events in this subcategory arise mostly in the
+    system's normal work - those mechanisms reconfigure themselves, at the starting of
+    services and at changes in the network. A record of successes would thus give much noise
+    and little content.
+
+    A failure means something else here and is therefore worth recording. It means an
+    attempt at a change that did not succeed - that is, a doing undertaken knowingly and by
+    somebody who had no right to it. In normal work there are no such attempts.
+
+    What an attacker gains while the item goes unmet: the means of testing without risk
+    whether they reach the mechanisms they mean to hook into. A failed attempt then leaves
+    no trace, so the reconnaissance is free.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Zmiany zasad następują tak samo jak
+    wcześniej — zapisywane są wyłącznie te, które się nie powiodły.
+
+    Objętość jest znikoma właśnie dzięki ograniczeniu do niepowodzeń.
+    W pracy normalnej ta podkategoria nie wygeneruje niczego przez
+    tygodnie.
+
+    Jest to jeden z tych punktów, przy których pusty wykaz jest wynikiem
+    spodziewanym i poprawnym, a pojedynczy wpis wart jest przeczytania.
+    Odwrotnie niż przy podkategoriach obfitych, gdzie sens ma dopiero
+    obraz całości.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. Policy changes happen just as before - only those that did not
+    succeed are recorded.
+
+    The volume is negligible exactly thanks to the narrowing to failures. In normal work
+    this subcategory will make nothing for weeks.
+
+    It is one of those items at which an empty list is the expected and right outcome, and a
+    single entry is worth reading. The reverse of the abundant subcategories, where only the
+    picture of the whole makes sense.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - encryption-and-tls
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Brak znanych regresji — zmiany zasad następują tak samo jak wcześniej
+      - Przyrost objętości dziennika jest znikomy, bo zapisywane są same niepowodzenia
+      - W pracy normalnej ta podkategoria nie wygeneruje niczego przez tygodnie
+    en:
+      - No known regressions - policy changes happen just as before
+      - The rise in the log's volume is negligible, since failures alone are recorded
+      - In normal work this subcategory will make nothing for weeks
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9234-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[23]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9234-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9234-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9234-69AE-11D9-BED3-505054503030}" /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9234-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-policy-change-events
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie niepowodzeń. Sprawdzenie przyjmuje także
+    zapis szerszy, obejmujący powodzenia — nie jest on błędem, ale daje
+    głównie zdarzenia z normalnej pracy systemu i niewiele wnosi.
+
+    Jest to podkategoria zbiorcza i jej zawartość bywa zaskakująca.
+    Trafiają tu zdarzenia z mechanizmów, które na co dzień nie mają
+    własnej reprezentacji w dzienniku — dlatego pojedynczy wpis wymaga
+    zwykle sprawdzenia, czego konkretnie dotyczył.
+
+    Punkt jest w klasie „bez uciążliwości" i wolno go stosować hurtem.
+  en: |
+    Recording of failures is taken. The check accepts a wider record taking in successes too
+    - it is no mistake, but gives mostly events from the system's normal work and adds
+    little.
+
+    It is a gathering subcategory and its content is at times surprising. Events land here
+    from mechanisms that have no representation of their own in the log day to day - hence a
+    single entry usually takes checking as to what exactly it concerned.
+
+    The item is in the "no disruption" class and may be applied in bulk.

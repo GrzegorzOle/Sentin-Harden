@@ -1,0 +1,212 @@
+id: win2025-audit-policy-change
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja zmian zasad inspekcji
+    en: Audit changes to the audit policy
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w samych zasadach inspekcji — włączenie
+    i wyłączenie zapisu dla dowolnej innej podkategorii.
+
+    Jest to punkt pilnujący pozostałych i z tego bierze się jego waga.
+    Każda inspekcja opisana w tej paczce daje się wyłączyć jednym
+    poleceniem, a po wyłączeniu przestaje cokolwiek zapisywać — łącznie
+    z faktem, że została wyłączona. Ta podkategoria jest jedynym
+    miejscem, w którym taki ruch zostawia ślad.
+
+    Kolejność zdarzeń przy zacieraniu śladów jest zawsze ta sama:
+    najpierw wyłącza się zapis, potem robi się to, po co się przyszło.
+    Wpis o wyłączeniu inspekcji jest więc zwykle ostatnim zapisem przed
+    ciszą — i jednocześnie najważniejszym, bo tłumaczy, skąd ta cisza się
+    wzięła.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    wyłączenia całego zapisu bezgłośnie. Dziennik nie urywa się wtedy
+    w sposób rzucający się w oczy — po prostu przestają w nim przybywać
+    zdarzenia, a to wygląda jak spokój.
+
+    Dotyczy to także sytuacji odwrotnej, wartej wymienienia osobno:
+    włączenie inspekcji przez kogoś, kto nie powinien tego robić, jest
+    równie interesujące. Zmiana zasad inspekcji nie powinna zdarzać się
+    poza wdrożeniem.
+  en: |
+    The subcategory records changes in the auditing policy itself - the switching on and off
+    of the record for any other subcategory.
+
+    It is the item watching the rest, and from that comes its weight. Every auditing
+    described in this pack can be switched off with one command, and once off it records
+    nothing - including the fact that it was switched off. This subcategory is the one place
+    at which such a move leaves a trace.
+
+    The order of events at the covering of tracks is always the same: first the record is
+    switched off, then what one came for is done. An entry about auditing being switched off
+    is thus usually the last record before the quiet - and at the same time the most
+    telling, since it explains where that quiet came from.
+
+    What an attacker gains while the item goes unmet: the means of switching the whole
+    record off soundlessly. The log does not then break off in a way that catches the eye -
+    events simply stop accruing in it, and that looks like quiet.
+
+    It concerns the reverse situation as well, worth naming apart: auditing being switched
+    on by somebody who ought not to be doing it is as interesting. A change of the auditing
+    policy ought not to happen outside a rollout.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Zasady inspekcji zmienia się tak samo jak
+    wcześniej — zmienia się wyłącznie to, że zmiana zostaje zapisana.
+
+    Objętość jest znikoma. Zasady inspekcji zmienia się przy wdrożeniu
+    i potem prawie nigdy, więc w dzienniku pojawi się kilka wpisów
+    w dniu wdrożenia i cisza przez kolejne miesiące.
+
+    Wart jest odnotowania jeden skutek uboczny: zastosowanie pozostałych
+    punktów z tej grupy wygeneruje wpisy właśnie tutaj. Jest to
+    zachowanie poprawne i najlepiej wdrożyć ten punkt jako pierwszy,
+    żeby reszta wdrożenia została w dzienniku udokumentowana.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. The auditing policy is changed just as before - what changes is
+    only that the change gets recorded.
+
+    The volume is negligible. The auditing policy is changed at a rollout and afterwards
+    almost never, so a few entries will appear in the log on the day of the rollout and
+    quiet for the months after.
+
+    One side effect is worth noting: applying the other items of this group will make
+    entries exactly here. That is right behaviour, and it is best to roll this item out
+    first, so that the rest of the rollout is documented in the log.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak znanych regresji — zasady inspekcji zmienia się tak samo jak wcześniej
+      - Przyrost objętości dziennika jest znikomy, bo zasad nie zmienia się na co dzień
+      - Wdrożenie pozostałych punktów tej grupy wygeneruje wpisy w tej podkategorii
+    en:
+      - No known regressions - the auditing policy is changed just as before
+      - The rise in the log's volume is negligible, since the policy is not changed day to day
+      - Rolling out the other items of this group will make entries in this subcategory
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE922F-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE922F-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE922F-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE922F-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE922F-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-audit-policy-change
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń, bo istotna jest zmiana
+    wykonana, a nie próba jej wykonania.
+
+    Zapis ma swoją granicę i warto ją znać. Wyłączenie tej konkretnej
+    podkategorii zostanie zapisane, ale będzie to ostatni wpis, jaki
+    powstanie — dalszy zapis przestaje istnieć razem z nią. Dlatego
+    zdarzenia z tej podkategorii warto wysyłać poza maszynę, gdzie nie
+    sięga ten, kto je wyłącza.
+
+    Punkt warto wdrożyć jako pierwszy w całej grupie. Wtedy wdrożenie
+    pozostałych inspekcji samo zostaje w dzienniku udokumentowane.
+  en: |
+    Recording of successes is taken, since what tells is a change carried out rather than an
+    attempt at one.
+
+    The record has a bound and it is worth knowing. Switching this very subcategory off will
+    be recorded, but it will be the last entry to arise - the record onward ceases to exist
+    along with it. Hence events of this subcategory are worth sending off the machine, where
+    whoever switches them off cannot reach.
+
+    The item is worth rolling out first in the whole group. The rolling out of the remaining
+    auditings then documents itself in the log.

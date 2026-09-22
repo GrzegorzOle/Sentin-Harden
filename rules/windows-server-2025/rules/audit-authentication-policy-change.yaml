@@ -1,0 +1,205 @@
+id: win2025-audit-authentication-policy-change
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja zmian zasad uwierzytelniania
+    en: Audit changes to the authentication policy
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w zasadach uwierzytelniania — w relacjach
+    zaufania, w zasadach protokołu domenowego i w sposobie, w jaki system
+    sprawdza tożsamość.
+
+    Na serwerze członkowskim zdarzeń tych jest niewiele. Na kontrolerze
+    domeny podkategoria ta obejmuje rzeczy o skutkach najdalej idących
+    ze wszystkich opisanych w tej paczce, bo zmiana relacji zaufania
+    przesądza o tym, czyje poświadczenia ta domena w ogóle uznaje.
+
+    Relacja zaufania jest mechanizmem, którego skutku nie widać z zewnątrz.
+    Po jej dodaniu konta z zupełnie innej domeny stają się kontami
+    uznawanymi tutaj — a dla użytkownika i dla administratora nic się
+    pozornie nie zmienia. Nie ma nowego konta, nie ma nowej grupy, nie ma
+    żadnego widocznego śladu poza wpisem z tej podkategorii.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    zbudowania trwałego dostępu w miejscu, do którego nikt nie zagląda.
+    Zmiana zasad uwierzytelniania nie rzuca się w oczy, nie psuje niczego
+    i przeżywa zmianę haseł, przeinstalowanie serwera oraz usunięcie
+    wszystkich podejrzanych kont.
+  en: |
+    The subcategory records changes in the authentication policy - in trust relations, in
+    the domain protocol's policies and in the way the system checks identity.
+
+    On a member server there are few such events. On a domain controller this subcategory
+    takes in things of the furthest-reaching effects of all described in this pack, since a
+    change of a trust relation settles whose credentials this domain acknowledges at all.
+
+    A trust relation is a mechanism whose effect is not visible from outside. Once it is
+    added, accounts from an altogether different domain become accounts acknowledged here -
+    and for the user and for the administrator nothing seemingly changes. There is no new
+    account, no new group, no visible trace at all beyond an entry of this subcategory.
+
+    What an attacker gains while the item goes unmet: the means of building lasting access
+    in a place nobody looks into. A change of the authentication policy does not catch the
+    eye, breaks nothing, and survives a change of passwords, a server's reinstallation and
+    the deletion of every suspect account.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Zasady uwierzytelniania zmienia się tak
+    samo jak wcześniej i nikt nie traci możliwości ich zmiany.
+
+    Objętość jest znikoma na każdym rodzaju serwera. Relacji zaufania nie
+    dodaje się co tydzień, a zasady protokołu domenowego zmienia się
+    zwykle raz, przy budowie środowiska.
+
+    Jest to jedna z tych inspekcji, przy których pusty wykaz jest wynikiem
+    spodziewanym, a każdy wpis wymaga wyjaśnienia. Odwrotnie niż przy
+    inspekcji logowania, gdzie sens ma dopiero analiza całości.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. The authentication policy is changed just as before and nobody
+    loses the means of changing it.
+
+    The volume is negligible on every kind of server. Trust relations are not added weekly,
+    and the domain protocol's policies are usually changed once, at the building of the
+    setting.
+
+    It is one of those auditings at which an empty list is the expected outcome and every
+    entry takes explaining. The reverse of the auditing of sign-ins, where only the analysis
+    of the whole makes sense.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Brak znanych regresji — zasady uwierzytelniania zmienia się tak samo jak wcześniej
+      - Przyrost objętości dziennika jest znikomy na każdym rodzaju serwera
+      - Na serwerze członkowskim zdarzeń tych może nie być wcale
+    en:
+      - No known regressions - the authentication policy is changed just as before
+      - The rise in the log's volume is negligible on every kind of server
+      - On a member server there may be no such events at all
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9230-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9230-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9230-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9230-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9230-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-authentication-policy-change
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń. Istotna jest zmiana wykonana,
+    bo to ona zmienia zakres tożsamości uznawanych przez tę maszynę.
+
+    Waga punktu zależy od roli i jest to różnica duża. Na serwerze
+    członkowskim to punkt porządkowy. Na kontrolerze domeny obejmuje
+    relacje zaufania, czyli mechanizm o skutkach wykraczających poza
+    pojedynczą maszynę.
+
+    Punkt nie pokrywa się z inspekcją zmian zasad autoryzacji. Ta dotyczy
+    tego, czyją tożsamość system uznaje; tamta — co wolno tożsamości już
+    uznanej.
+  en: |
+    Recording of successes is taken. What tells is a change carried out, since it is that
+    which changes the reach of the identities this machine acknowledges.
+
+    The item's weight hangs on the role, and the difference is large. On a member server it
+    is a matter of good order. On a domain controller it takes in trust relations, that is,
+    a mechanism whose effects go beyond a single machine.
+
+    The item does not overlap the auditing of changes to the authorisation policy. This one
+    concerns whose identity the system acknowledges; that one what an already acknowledged
+    identity may do.

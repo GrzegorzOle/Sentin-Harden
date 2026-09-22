@@ -1,0 +1,207 @@
+id: win2025-audit-authorization-policy-change
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja zmian zasad autoryzacji
+    en: Audit changes to the authorisation policy
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w przypisaniu praw użytkownika, czyli
+    w tym, komu wolno na tej maszynie wykonać czynności zastrzeżone.
+
+    Prawa użytkownika to osobna warstwa uprawnień, niezależna od
+    członkostwa w grupach, i właśnie ta niezależność czyni ją
+    interesującą. Konto, któremu przyznano prawo logowania jako usługa,
+    prawo debugowania programów albo prawo przejmowania własności plików,
+    nie należy przez to do żadnej nowej grupy. Wykaz grup wygląda
+    niezmiennie, a możliwości konta są zupełnie inne.
+
+    Na serwerze warstwa ta jest używana intensywniej niż na stanowisku
+    roboczym, bo to przez prawa użytkownika konfiguruje się konta usług.
+    Zmiana w tym miejscu jest więc czynnością administracyjną normalną —
+    i tym trudniej odróżnić ją od czynności, która normalna nie jest.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    nadania kontu uprawnień faktycznie administracyjnych bez dopisywania
+    go do jakiejkolwiek grupy. Przegląd członkostwa w grupach — czyli
+    pierwsza rzecz, którą się sprawdza — nie pokaże wtedy niczego
+    niepokojącego.
+  en: |
+    The subcategory records changes in the assignment of user rights, that is, in who may
+    carry out reserved doings on this machine.
+
+    User rights are a separate layer of entitlements, independent of membership in groups,
+    and it is that independence which makes the layer interesting. An account granted the
+    right of signing in as a service, the right of debugging programs or the right of taking
+    ownership of files does not thereby belong to any new group. The list of groups looks
+    unchanged, and the account's powers are altogether different.
+
+    On a server this layer is used more heavily than at a working station, since it is
+    through user rights that service accounts are configured. A change here is thus an
+    ordinary administrative doing - and the harder to tell from a doing that is not
+    ordinary.
+
+    What an attacker gains while the item goes unmet: the means of giving an account rights
+    that are in fact administrative without writing it into any group. A review of group
+    membership - that is, the first thing checked - will then show nothing troubling.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać i nikt nie traci możliwości zmiany praw
+    użytkownika. Zmienia się wyłącznie to, że zmiana zostaje zapisana.
+
+    Objętość jest niewielka. Prawa użytkownika zmienia się przy
+    konfigurowaniu usług i potem rzadko — a każda taka zmiana jest
+    czynnością świadomą, nie efektem ubocznym pracy.
+
+    Wart jest odnotowania jeden przypadek: wdrożenie zasad z poziomu
+    domeny nadpisuje prawa użytkownika na maszynie i robi to przy każdym
+    odświeżeniu zasad. Jeżeli wykaz zmian okaże się nieoczekiwanie długi,
+    przyczyną jest zwykle właśnie to, a nie czyjeś działanie.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working and nobody loses the means of changing user rights. What changes
+    is only that the change gets recorded.
+
+    The volume is slight. User rights are changed at the configuring of services and
+    afterwards seldom - and every such change is a knowing doing rather than a side effect
+    of work.
+
+    One case is worth noting: a rollout of policies from the domain's level overwrites user
+    rights on the machine and does so at every refreshing of the policies. Should the list
+    of changes turn out unexpectedly long, the cause is usually exactly that rather than
+    somebody's doing.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Brak znanych regresji — prawa użytkownika zmienia się tak samo jak wcześniej
+      - Przyrost objętości dziennika jest niewielki
+      - Odświeżanie zasad z domeny może generować wpisy bez niczyjego działania
+    en:
+      - No known regressions - user rights are changed just as before
+      - The rise in the log's volume is slight, since user rights are changed seldom
+      - The refreshing of policies from the domain may make entries with nobody's doing
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9231-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9231-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9231-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9231-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9231-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-authorization-policy-change
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń. Zmiana wykonana jest tu jedynym
+    zdarzeniem o znaczeniu — próba nieudana nie zmienia niczyich
+    uprawnień.
+
+    Punkt jest uzupełnieniem inspekcji zarządzania grupami, a nie jej
+    powtórzeniem. Uprawnienia na serwerze nadaje się dwiema drogami
+    i ta podkategoria pilnuje tej drugiej, mniej widocznej.
+
+    Prawa użytkownika są tematem osobnej, licznej grupy punktów tej
+    paczki. Ta reguła nie sprawdza, komu je przyznano — sprawdza, czy
+    zmiana w tym miejscu zostawia ślad.
+  en: |
+    Recording of successes is taken. A change carried out is here the one event of weight -
+    a failed attempt changes nobody's rights.
+
+    The item fills out the auditing of group management rather than repeating it. Rights on
+    a server are granted by two roads, and this subcategory watches the second, less visible
+    one.
+
+    User rights are the subject of a separate, numerous group of items in this pack. This
+    rule does not check who they were granted to - it checks whether a change here leaves a
+    trace.

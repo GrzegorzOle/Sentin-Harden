@@ -1,0 +1,175 @@
+id: win11-audit-other-policy-change-events
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja pozostałych zmian zasad - niepowodzenia
+    en: Audit other policy change events - failures
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zbiera zmiany zasad, które nie mieszczą się w pozostałych
+    podkategoriach tej samej grupy: ustawienia dostawców kryptograficznych,
+    zmiany w konfiguracji modułu zaufanej platformy, zmiany w mechanizmach
+    ochrony poświadczeń, błędy przy stosowaniu zasad grupy.
+
+    Benchmark wymaga tutaj samych niepowodzeń i to zawęża rzecz do czegoś
+    konkretnego: do nieudanych prób zmiany tych ustawień oraz do sytuacji,
+    w których mechanizm ochronny nie dał się skonfigurować.
+
+    Wpis taki bywa pierwszym sygnałem, że coś próbuje osłabić ochronę maszyny
+    i nie ma na to uprawnień — albo że mechanizm, na którym opierają się inne
+    zabezpieczenia, nie wystartował i maszyna pracuje bez niego, wyglądając na
+    chronioną.
+  en: |
+    The subcategory gathers policy changes that do not fit the other subcategories
+    in the same group: settings of cryptographic providers, changes to the trusted
+    platform module's configuration, changes to credential protection mechanisms,
+    errors while applying group policy.
+
+    The benchmark requires failures only here, and that narrows the thing to
+    something concrete: to failed attempts to change those settings, and to
+    situations where a protective mechanism could not be configured.
+
+    Such an entry is sometimes the first signal that something is trying to weaken
+    the machine's protection and has no rights to - or that a mechanism other
+    safeguards rest on did not start and the machine is running without it, looking
+    protected.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane i użytkownik niczego nie zauważy. Zmiana dotyczy
+    wyłącznie zapisu.
+
+    Objętość przy samych niepowodzeniach jest bardzo niska. W spokojnym tygodniu
+    wpisów nie ma wcale; pojawiają się przy problemach z zasadami grupy i przy
+    zmianach w konfiguracji sprzętowych mechanizmów ochronnych.
+
+    Jest to podkategoria, przy której brak wpisów jest stanem normalnym,
+    a pojedynczy wpis wart jest przeczytania. Odwrotnie niż przy podkategoriach
+    o dużej objętości, gdzie wartość leży w układaniu się wpisów w ciąg.
+
+    Wymagane są wyłącznie niepowodzenia. Powodzenia obejmowałyby rutynowe
+    stosowanie zasad przy każdym starcie i każdym odświeżeniu, co dałoby stały
+    przyrost bez żadnej treści.
+  en: |
+    Nothing is blocked and the user notices nothing. The change concerns recording
+    alone.
+
+    The volume with failures alone is very low. In a quiet week there are no
+    entries at all; they appear when group policy runs into trouble and when the
+    configuration of hardware protection mechanisms changes.
+
+    This is a subcategory where an absence of entries is the normal state and a
+    single entry is worth reading. The reverse of high-volume subcategories, where
+    the value lies in entries forming a sequence.
+
+    Only failures are required. Successes would cover the routine application of
+    policy at every start and every refresh, which would give a steady growth with
+    no content at all.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdym niepowodzeniu zmiany zasad spoza pozostałych podkategorii tej grupy
+    en:
+      - The security log grows by one entry at every failure to change a policy outside the other subcategories in this group
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym, a dziennik nie został powiększony
+    en:
+      - Events from this machine are billed by volume in the collection system and the log has not been enlarged
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9234-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9234-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9234-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9234-69AE-11D9-BED3-505054503030}" /success:disable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9234-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-policy-change-events
+
+notes:
+  pl: |
+    Podkategoria z założenia zbiera to, co nie zmieściło się gdzie indziej,
+    więc jej zawartość zmienia się między wydaniami systemu. Opis wymienia
+    rodzaje zdarzeń, które się w niej spotyka, ale nie należy traktować tej
+    listy jako zamkniętej.
+
+    Dla tej podkategorii niski przyrost nie jest powodem, żeby uznać ją za mało
+    ważną. Wartość leży tu w rzadkości: wpis, który pojawia się raz na kwartał,
+    zwykle mówi o czymś, czego nikt nie planował.
+  en: |
+    The subcategory gathers by design what did not fit elsewhere, so its contents
+    change between releases of the system. The description names the kinds of
+    events met in it, but that list should not be taken as closed.
+
+    For this subcategory a low rate of growth is no reason to count it
+    unimportant. The value lies here in rarity: an entry appearing once a quarter
+    usually speaks of something nobody planned.

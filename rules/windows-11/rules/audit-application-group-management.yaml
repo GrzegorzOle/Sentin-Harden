@@ -1,0 +1,174 @@
+id: win11-audit-application-group-management
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Account Management
+  title:
+    pl: Inspekcja zarządzania grupami aplikacyjnymi
+    en: Audit application group management
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obok grup zabezpieczeń system zna grupy aplikacyjne — zbiory tożsamości
+    zakładane przez programy na własny użytek, do rozstrzygania, komu wolno
+    w nich co zrobić. Nie widać ich w zwykłym przeglądzie grup maszyny
+    i administrator zwykle nie wie, że istnieją.
+
+    Podkategoria zapisuje ich zakładanie, usuwanie oraz dopisywanie i wypisywanie
+    członków. Wartość tych wpisów bierze się właśnie z niewidoczności: dopisanie
+    konta do takiej grupy potrafi dać mu w aplikacji uprawnienia porównywalne
+    z administracyjnymi, a przegląd grup maszyny niczego nie pokaże.
+
+    Dla napastnika jest to droga cichsza niż dopisanie się do grupy
+    administratorów — nie rusza niczego, co ktokolwiek przegląda, a skutek
+    w obrębie aplikacji bywa ten sam.
+  en: |
+    Alongside security groups the system knows application groups - sets of
+    identities created by programs for their own use, to settle who may do what
+    within them. They do not show in an ordinary review of the machine's groups and
+    an administrator usually does not know they exist.
+
+    The subcategory records their creation and removal and the adding and removing
+    of members. The value of those entries comes precisely from that invisibility:
+    adding an account to such a group can give it rights within the application
+    comparable to administrative ones, and a review of the machine's groups will
+    show nothing.
+
+    For an attacker it is a quieter road than adding oneself to the administrators
+    group - it touches nothing anybody reviews, and the effect within the
+    application is sometimes the same.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane i użytkownik niczego nie zauważy. Zmiana dotyczy
+    wyłącznie zapisu.
+
+    Objętość jest bardzo niska. Na stanowisku roboczym grupy aplikacyjne bywają
+    zakładane przy instalowaniu oprogramowania i potem nie zmieniają się
+    miesiącami. W typowym tygodniu wpisów nie ma wcale.
+
+    Jest to podkategoria tania, przy której cały koszt sprowadza się do dnia,
+    w którym na maszynie coś się instaluje.
+
+    Wymagany jest komplet: powodzenia i niepowodzenia.
+  en: |
+    Nothing is blocked and the user notices nothing. The change concerns recording
+    alone.
+
+    The volume is very low. On a working station application groups tend to be
+    created while software is installed and then do not change for months. In a
+    typical week there are no entries at all.
+
+    It is a cheap subcategory whose whole cost comes down to the day something is
+    installed on the machine.
+
+    The full pair is required: successes and failures.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdej zmianie składu grup aplikacyjnych
+      - W dniach instalowania oprogramowania powstaje kilka wpisów naraz
+    en:
+      - The security log grows by one entry at every change to the membership of application groups
+      - On days when software is installed several entries arise at once
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków - podkategoria jest tania i obejmuje zmiany niewidoczne w przeglądzie grup maszyny
+    en:
+      - No known cases - the subcategory is cheap and covers changes invisible in a review of the machine's groups
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9239-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9239-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9239-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9239-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9239-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-application-group-management
+
+notes:
+  pl: |
+    Na wielu stanowiskach podkategoria nie zapisze nigdy niczego, bo żaden
+    zainstalowany program grup aplikacyjnych nie zakłada. Nie jest to powód,
+    żeby ją pominąć — koszt wynosi wtedy dokładnie zero, a pojawienie się
+    pierwszego wpisu jest samo w sobie informacją.
+
+    Wpisy z tej podkategorii trudno zinterpretować bez znajomości aplikacji,
+    która grupę założyła. Nazwa grupy pochodzi od niej i systemowi nic nie mówi.
+    Warto o tym pamiętać, zanim wpis zostanie odrzucony jako nieczytelny.
+  en: |
+    On many stations the subcategory will never record anything, because no
+    installed program creates application groups. That is no reason to skip it -
+    the cost is then exactly nil, and the appearance of a first entry is
+    information in itself.
+
+    Entries from this subcategory are hard to interpret without knowing the
+    application that created the group. The group's name comes from it and means
+    nothing to the system. Worth remembering before an entry is dismissed as
+    unreadable.

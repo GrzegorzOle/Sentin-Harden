@@ -1,0 +1,166 @@
+id: win11-audit-logoff
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja wylogowania
+    en: Audit logoff
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zakończenie sesji. Sama w sobie wygląda na mało ciekawą
+    — nikt nie bada wylogowań. Jej wartość polega na tym, że domyka wpis
+    o zalogowaniu: bez niej wiadomo, kiedy ktoś wszedł, ale nie wiadomo, jak długo
+    pozostawał.
+
+    Różnica ujawnia się przy odtwarzaniu przebiegu zdarzeń. Pytanie „czy to konto
+    było aktywne, gdy doszło do zmiany" jest pytaniem o parę wpisów, nie o jeden.
+    Bez zamknięcia sesji każda sesja w dzienniku wygląda na trwającą do końca
+    zapisu i nie da się wykluczyć obecności nikogo.
+
+    Osobno liczy się to, czego w tej parze brakuje. Sesja zalogowana, dla której
+    nigdy nie powstał wpis o zakończeniu, a maszyna pracowała dalej, jest sygnałem
+    sama w sobie — tak wygląda sesja przerwana zatrzymaniem maszyny albo
+    usunięciem wpisów.
+  en: |
+    The subcategory records the end of a session. On its own it looks dull - nobody
+    studies logoffs. Its value lies in closing the entry about a sign-in: without
+    it one knows when somebody came in, but not how long they stayed.
+
+    The difference surfaces while reconstructing a course of events. The question
+    "was this account active when the change was made" is a question about a pair
+    of entries, not about one. Without the session's close every session in the log
+    looks as if it lasted to the end of the record, and nobody's presence can be
+    ruled out.
+
+    What is missing from that pair counts separately. A signed-in session for which
+    no closing entry ever appeared, while the machine carried on working, is a
+    signal in itself - that is what a session broken off by halting the machine or
+    by removing entries looks like.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane i użytkownik niczego nie zauważy. Zmiana dotyczy
+    wyłącznie zapisu.
+
+    Objętość jest z góry znana i niewielka: jeden wpis na zakończenie sesji,
+    czyli mniej więcej tyle, ile wpisów o zalogowaniu. Na stanowisku używanym
+    przez jedną osobę są to pojedyncze wpisy dziennie.
+
+    Wymagane są wyłącznie powodzenia. Niepowodzenie wylogowania jest zdarzeniem,
+    które w praktyce nie zachodzi, a jego rejestrowanie dokładałoby szumu bez
+    żadnej wartości.
+  en: |
+    Nothing is blocked and the user notices nothing. The change concerns recording
+    alone.
+
+    The volume is known in advance and small: one entry per session ending, which
+    is roughly as many as the entries about signing in. On a station used by one
+    person these are single entries a day.
+
+    Only successes are required. A failed logoff is an event that does not occur in
+    practice, and recording it would add noise with no value at all.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdym zakończeniu sesji użytkownika
+    en:
+      - The security log grows by one entry at every ending of a user session
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym, a dziennik nie został powiększony
+    en:
+      - Events from this machine are billed by volume in the collection system and the log has not been enlarged
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9216-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9216-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9216-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9216-69AE-11D9-BED3-505054503030}" /success:enable /failure:disable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9216-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-logoff
+
+notes:
+  pl: |
+    Reguła wymaga samych powodzeń i celowo wyłącza niepowodzenia. Ustawienie
+    kompletu nie jest błędem bezpieczeństwa, ale reguła zgłosi je jako
+    niespełnienie punktu, bo benchmark wskazuje tu jedną z dwóch połówek.
+
+    Sesja zakończona zatrzymaniem maszyny nie zawsze zdąży wytworzyć ten wpis.
+    Brak wpisu o zakończeniu nie jest więc dowodem na nic — jest miejscem, od
+    którego zaczyna się pytanie, a nie odpowiedzią.
+  en: |
+    The rule requires successes alone and deliberately turns failures off. Setting
+    the full pair is not a security mistake, but the rule will report it as the
+    item unmet, because the benchmark names one of the two halves here.
+
+    A session ended by halting the machine does not always manage to produce this
+    entry. A missing closing entry is therefore proof of nothing - it is the place
+    a question starts from, not an answer.

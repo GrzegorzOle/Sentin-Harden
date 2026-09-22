@@ -1,0 +1,183 @@
+id: win11-audit-detailed-file-share
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Object Access
+  title:
+    pl: Inspekcja szczegółowego dostępu do udziałów - niepowodzenia
+    en: Audit detailed file share access - failures
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje sięgnięcie po pojedynczy plik albo folder na udziale —
+    w odróżnieniu od podkategorii sąsiedniej, która zapisuje samo nawiązanie
+    sesji z udziałem.
+
+    Benchmark wymaga tutaj wyłącznie niepowodzeń i jest to wybór rozsądny.
+    Powodzenia oznaczałyby wpis na każdy otwarty plik: na maszynie
+    udostępniającej katalog zespołowi są to tysiące wpisów dziennie, które
+    zalewają dziennik i wypychają z niego wszystko inne.
+
+    Niepowodzenia mówią co innego i są tanie. Wpis powstaje wtedy, gdy ktoś
+    sięgnął po plik, do którego nie ma prawa. Pojedynczy taki wpis to zwykle
+    pomyłka. Seria takich wpisów z jednego konta, idąca po kolejnych folderach,
+    to obraz rozglądania się po zasobach — czynności, którą napastnik wykonuje
+    zaraz po wejściu, a uprawniony użytkownik nie wykonuje nigdy.
+  en: |
+    The subcategory records a reach for a single file or folder on a share - as
+    distinct from the neighbouring subcategory, which records the establishment of
+    a share session itself.
+
+    The benchmark requires failures only here, and that is a sensible choice.
+    Successes would mean an entry for every file opened: on a machine sharing a
+    folder with a team these are thousands of entries a day, which flood the log
+    and push everything else out of it.
+
+    Failures say something different and are cheap. An entry arises when somebody
+    reached for a file they have no right to. A single such entry is usually a
+    mistake. A series of them from one account, moving through folder after folder,
+    is a picture of looking around the resources - an action an attacker performs
+    right after getting in and an entitled user never performs at all.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane i użytkownik niczego nie zauważy. Zmiana dotyczy
+    wyłącznie zapisu.
+
+    Objętość przy samych niepowodzeniach jest niska, ale nie zerowa i zależy od
+    tego, jak ułożone są uprawnienia. Na maszynie, gdzie w jednym drzewie
+    katalogów leżą foldery różnych zespołów, wpisy powstają przy każdym
+    przypadkowym wejściu w nieswój folder — a to zdarza się częściej, niż się
+    wydaje, bo programy przeglądają drzewo katalogów same.
+
+    Warto to sprawdzić przed wdrożeniem właśnie w tym przypadku: nie z powodu
+    obciążenia maszyny, lecz dlatego, że szum z nieuporządkowanych uprawnień
+    potrafi ukryć wpisy, dla których ten punkt się wdraża.
+
+    Na stanowisku roboczym, które niczego nie udostępnia, wpisów praktycznie
+    nie ma.
+  en: |
+    Nothing is blocked and the user notices nothing. The change concerns recording
+    alone.
+
+    The volume with failures alone is low but not nil, and depends on how
+    permissions are laid out. On a machine where folders belonging to different
+    teams sit in one directory tree, entries arise at every accidental step into
+    somebody else's folder - and that happens more often than it seems, because
+    programs walk the directory tree by themselves.
+
+    It is worth checking before rollout in exactly this case: not because of load
+    on the machine, but because noise from untidy permissions can hide the very
+    entries this item is applied for.
+
+    On a working station that shares nothing there are practically no entries.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - file-sharing
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdej nieudanej próbie sięgnięcia po plik na udziale
+      - Na maszynie z nieuporządkowanymi uprawnieniami wpisy mogą powstawać przy zwykłym przeglądaniu drzewa katalogów
+    en:
+      - The security log grows by one entry at every failed attempt to reach a file on a share
+      - On a machine with untidy permissions entries may arise during ordinary walking of the directory tree
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym, a uprawnienia na udziałach nie zostały uporządkowane
+    en:
+      - Events from this machine are billed by volume in the collection system and permissions on the shares have not been tidied
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9244-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9244-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9244-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9244-69AE-11D9-BED3-505054503030}" /success:disable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9244-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-detailed-file-share
+
+notes:
+  pl: |
+    Włączenie powodzeń w tej podkategorii jest jedną z najkosztowniejszych
+    zmian, jakie da się wprowadzić w inspekcji. Reguła zgłosi taki stan jako
+    niespełnienie punktu i jest to celowe — nie dlatego, że zapisywanie powodzeń
+    szkodzi bezpieczeństwu, lecz dlatego, że wypycha z dziennika wpisy, które
+    mają wartość.
+
+    Podkategoria sąsiednia, zapisująca nawiązanie sesji z udziałem, jest osobnym
+    punktem i wdraża się ją niezależnie. Obie razem dają obraz, kto się połączył
+    i czego szukał; osobno — tylko jedną z tych rzeczy.
+  en: |
+    Turning successes on in this subcategory is one of the most expensive changes
+    that can be made in auditing. The rule will report such a state as the item
+    unmet, and that is deliberate - not because recording successes harms security,
+    but because it pushes out of the log the entries that have value.
+
+    The neighbouring subcategory, recording the establishment of a share session,
+    is a separate item and is applied independently. Together the two give a
+    picture of who connected and what they looked for; separately, only one of
+    those things.

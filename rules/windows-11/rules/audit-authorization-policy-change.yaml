@@ -1,0 +1,183 @@
+id: win11-audit-authorization-policy-change
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja zmian zasad autoryzacji
+    en: Audit authorization policy change
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w tym, komu wolno na maszynie co robić:
+    przyznanie i odebranie przywileju systemowego, zmianę uprawnień do obiektów
+    chronionych, zmianę zasad rozstrzygających o dostępie.
+
+    Przywileje systemowe są tym, czym napastnik podnosi sobie możliwości po
+    wejściu na maszynę. Nie potrzebuje dopisywać się do grupy administratorów —
+    wystarczy przyznać własnemu kontu jeden przywilej, na przykład pozwalający
+    przejmować pliki albo działać jako część systemu operacyjnego. Zmiana taka
+    jest niewidoczna w przeglądzie grup i nie rzuca się w oczy nikomu, kto jej
+    nie szuka.
+
+    Wpis o przyznaniu przywileju jest jednym z niewielu sygnałów powstających
+    w tym momencie. Bez tej podkategorii zmiana zachodzi bez śladu i wychodzi
+    na jaw dopiero przy jej skutkach.
+  en: |
+    The subcategory records changes to who is allowed to do what on the machine:
+    the granting and withdrawal of a system privilege, changes to permissions on
+    protected objects, changes to the policies that settle access.
+
+    System privileges are what an attacker raises their reach with after getting
+    onto a machine. They need not add themselves to the administrators group - it
+    is enough to grant their own account one privilege, for instance one allowing
+    files to be taken over or allowing action as part of the operating system. Such
+    a change is invisible in a review of groups and catches nobody's eye who is not
+    looking for it.
+
+    An entry about a privilege being granted is one of the few signals arising at
+    that moment. Without this subcategory the change happens without a trace and
+    comes to light only through its effects.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane i użytkownik niczego nie zauważy. Zmiana dotyczy
+    wyłącznie zapisu.
+
+    Objętość jest niska i przewidywalna. Zmiany przywilejów i uprawnień zachodzą
+    przy instalowaniu oprogramowania, przy stosowaniu zasad grupy i przy pracy
+    administratora — nie w toku zwykłego używania maszyny.
+
+    Zauważalny przyrost pojawia się jedynie w dniach, w których na maszynie coś
+    się instaluje albo przebudowuje. Instalator dodający własną usługę potrafi
+    wytworzyć kilkanaście wpisów w ciągu minuty, po czym dziennik wraca do
+    spokoju.
+
+    Wymagane są wyłącznie powodzenia. Nieudana próba zmiany zasad autoryzacji
+    praktycznie nie zachodzi poza przypadkiem, w którym ktoś próbuje czegoś
+    bez uprawnień — a to widać w podkategorii o użyciu uprawnień.
+  en: |
+    Nothing is blocked and the user notices nothing. The change concerns recording
+    alone.
+
+    The volume is low and predictable. Changes to privileges and permissions happen
+    while software is installed, while group policy is applied and during an
+    administrator's work - not in the course of ordinary use of the machine.
+
+    A noticeable rise appears only on days when something is installed or rebuilt
+    on the machine. An installer adding a service of its own can produce a dozen or
+    so entries within a minute, after which the log returns to quiet.
+
+    Only successes are required. A failed attempt to change authorization policy
+    practically does not occur, save where somebody tries something without rights
+    - and that shows in the subcategory about privilege use.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdej zmianie przywilejów i uprawnień na maszynie
+      - W dniach instalowania oprogramowania przyrost jest zauważalnie większy niż zwykle
+    en:
+      - The security log grows by one entry at every change to privileges and permissions on the machine
+      - On days when software is installed the growth is noticeably larger than usual
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym, a dziennik nie został powiększony
+    en:
+      - Events from this machine are billed by volume in the collection system and the log has not been enlarged
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9231-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9231-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9231-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9231-69AE-11D9-BED3-505054503030}" /success:enable /failure:disable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9231-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-authorization-policy-change
+
+notes:
+  pl: |
+    Podkategoria bywa mylona z tą, która zapisuje zmiany zasad uwierzytelniania.
+    Tamta dotyczy tego, jak potwierdza się tożsamość; ta — tego, co wolno
+    potwierdzonej tożsamości zrobić. Obie są osobnymi punktami benchmarku
+    i wdraża się je niezależnie.
+
+    Wpis o przyznaniu przywileju mówi, komu go przyznano, ale nie mówi, czy było
+    to uzasadnione. Wartość tej podkategorii ujawnia się dopiero przy przeglądzie
+    — sama z siebie nie zatrzymuje niczego i nie powinna być czytana jako
+    zabezpieczenie.
+  en: |
+    The subcategory is sometimes confused with the one recording changes to
+    authentication policy. That one concerns how identity is confirmed; this one
+    what a confirmed identity is allowed to do. Both are separate benchmark items
+    and are applied independently.
+
+    An entry about a privilege being granted says to whom it was granted, but does
+    not say whether it was warranted. The value of this subcategory surfaces only
+    during a review - on its own it stops nothing and should not be read as a
+    safeguard.

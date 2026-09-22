@@ -1,0 +1,182 @@
+id: win11-audit-ipsec-driver
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja sterownika ochrony ruchu sieciowego
+    en: Audit the network traffic protection driver
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sterownik, o którym mowa, odpowiada za szyfrowanie i uwierzytelnianie ruchu
+    sieciowego na poziomie systemu — niezależnie od tego, jaki program ten ruch
+    wytwarza. Opierają się na nim reguły zapory wymagające zabezpieczonego
+    połączenia oraz część mechanizmów odgradzających maszyny od siebie w sieci.
+
+    Podkategoria zapisuje start i zatrzymanie tego sterownika, jego błędy oraz
+    odrzucenie pakietów, które nie spełniły wymagań. Wartość tych wpisów bierze
+    się stąd, że mechanizm działa cicho: jeżeli sterownik nie wystartuje, reguły
+    na nim oparte przestają cokolwiek egzekwować, a maszyna pracuje dalej
+    i wygląda na chronioną.
+
+    Jest to jeden z niewielu sygnałów odróżniających zabezpieczenie działające
+    od zabezpieczenia wpisanego w konfigurację. Napastnik zatrzymujący ten
+    sterownik zdejmuje z maszyny warstwę ochrony sieciowej bez zmiany choćby
+    jednej reguły zapory.
+  en: |
+    The driver in question is responsible for encrypting and authenticating network
+    traffic at the system level - regardless of which program produces that
+    traffic. Firewall rules requiring a protected connection rest on it, as do some
+    of the mechanisms that fence machines off from one another on a network.
+
+    The subcategory records this driver's start and stop, its errors, and the
+    dropping of packets that failed to meet the requirements. The value of those
+    entries comes from the mechanism working quietly: if the driver does not start,
+    the rules resting on it stop enforcing anything, while the machine carries on
+    and looks protected.
+
+    It is one of the few signals telling a working safeguard from a safeguard
+    written into the configuration. An attacker stopping this driver takes a layer
+    of network protection off the machine without changing a single firewall rule.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane i użytkownik niczego nie zauważy. Zmiana dotyczy
+    wyłącznie zapisu.
+
+    Objętość jest bardzo niska na maszynie, która z tego mechanizmu nie korzysta:
+    powstają wtedy co najwyżej wpisy o starcie i zatrzymaniu przy uruchomieniu
+    i wyłączeniu maszyny.
+
+    Na maszynie, gdzie reguły wymagające zabezpieczonego połączenia są wdrożone,
+    dochodzą wpisy o odrzuconych pakietach. Ich liczba zależy od tego, ile
+    w sieci jest maszyn niespełniających wymagań — i warto to sprawdzić, bo
+    w środowisku wdrażającym te reguły stopniowo przyrost potrafi być przez
+    pewien czas znaczny.
+
+    Wymagany jest komplet: powodzenia i niepowodzenia.
+  en: |
+    Nothing is blocked and the user notices nothing. The change concerns recording
+    alone.
+
+    The volume is very low on a machine that does not use this mechanism: at most
+    entries about a start and a stop arise, when the machine starts and shuts down.
+
+    On a machine where rules requiring a protected connection are in force, entries
+    about dropped packets are added. Their number depends on how many machines on
+    the network fail to meet the requirements - worth checking, because in an
+    environment rolling those rules out gradually the growth can be considerable
+    for a time.
+
+    The full pair is required: successes and failures.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpisy o starcie i zatrzymaniu sterownika oraz o odrzuconych pakietach
+      - W środowisku wdrażającym reguły wymagające zabezpieczonego połączenia przyrost bywa przez pewien czas znaczny
+    en:
+      - The security log grows by entries about the driver starting and stopping and about dropped packets
+      - In an environment rolling out rules that require a protected connection the growth can be considerable for a time
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym, a w sieci trwa wdrażanie reguł wymagających zabezpieczonego połączenia
+    en:
+      - Events from this machine are billed by volume in the collection system and rules requiring a protected connection are being rolled out on the network
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9213-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9213-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9213-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9213-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9213-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-ipsec-driver
+
+notes:
+  pl: |
+    Na stanowisku, które z ochrony ruchu na tym poziomie nie korzysta,
+    podkategoria niemal nic nie zapisze. Nie jest to powód, żeby ją pominąć:
+    koszt jest bliski zeru, a wdrożenie takich reguł w przyszłości zastanie
+    inspekcję już włączoną, zamiast wymagać powrotu do tego punktu.
+
+    Wpis o zatrzymaniu sterownika przy wyłączaniu maszyny jest zdarzeniem
+    normalnym. Wart uwagi jest wpis o zatrzymaniu w środku dnia pracy, bez
+    towarzyszącego wyłączenia — i właśnie to rozróżnienie trzeba mieć na uwadze
+    przy czytaniu tych wpisów.
+  en: |
+    On a station that does not use traffic protection at this level the
+    subcategory will record almost nothing. That is no reason to skip it: the cost
+    is close to nil, and rolling such rules out in future will find the auditing
+    already on, instead of requiring a return to this item.
+
+    An entry about the driver stopping as the machine shuts down is a normal event.
+    What deserves attention is an entry about it stopping in the middle of a working
+    day, with no shutdown alongside - and it is that distinction to keep in mind
+    while reading these entries.

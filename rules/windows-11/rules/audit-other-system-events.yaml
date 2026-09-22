@@ -1,0 +1,180 @@
+id: win11-audit-other-system-events
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja pozostałych zdarzeń systemowych
+    en: Audit other system events
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zbiera zdarzenia systemowe, które nie mieszczą się w pozostałych
+    podkategoriach tej grupy. Najważniejsze z nich dotyczą zapory: jej start
+    i zatrzymanie, niepowodzenie przy wczytywaniu reguł, przejście w tryb, w którym
+    reguły nie są stosowane.
+
+    Jest to jedyne miejsce, w którym widać, że zapora przestała działać. Wpis
+    o zatrzymaniu usługi zapory w środku dnia pracy jest sygnałem trudnym do
+    przeoczenia i nie powstaje nigdzie indziej — konfiguracja zapory nadal
+    wygląda wtedy poprawnie, bo reguły są na miejscu, tylko nikt ich nie
+    egzekwuje.
+
+    Poza zaporą trafiają tu zdarzenia dotyczące zegara systemowego i pracy
+    mechanizmów kryptograficznych. Zmiana czasu maszyny jest czynnością
+    porządkową, dopóki nie służy do rozjechania wpisów w dzienniku — i wtedy ten
+    wpis staje się jedynym śladem, że kolejność zdarzeń w dzienniku nie
+    odpowiada rzeczywistej.
+  en: |
+    The subcategory gathers system events that do not fit the other subcategories
+    in this group. The most important of them concern the firewall: its start and
+    stop, a failure while loading rules, a switch into a mode in which rules are
+    not applied.
+
+    It is the only place where the firewall having stopped working can be seen. An
+    entry about the firewall service stopping in the middle of a working day is a
+    signal hard to overlook and arises nowhere else - the firewall's configuration
+    still looks correct then, since the rules are in place, only nobody is
+    enforcing them.
+
+    Besides the firewall, events concerning the system clock and the working of
+    cryptographic mechanisms land here. Changing the machine's time is a
+    housekeeping action, until it serves to knock log entries out of step - and
+    then this entry becomes the only trace that the order of events in the log does
+    not match the real one.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane i użytkownik niczego nie zauważy. Zmiana dotyczy
+    wyłącznie zapisu.
+
+    Objętość jest niska i przewidywalna: kilka wpisów przy starcie maszyny,
+    kilka przy wyłączeniu, pojedyncze przy zmianach czasu. W ciągu dnia pracy
+    podkategoria milczy.
+
+    Jest to jedna z najtańszych podkategorii w całym zestawie, a jednocześnie
+    jedyna dająca obraz stanu zapory. Stosunek wartości do kosztu jest tu
+    wyraźnie lepszy niż przy podkategoriach o dużej objętości.
+
+    Wymagany jest komplet: powodzenia i niepowodzenia.
+  en: |
+    Nothing is blocked and the user notices nothing. The change concerns recording
+    alone.
+
+    The volume is low and predictable: a few entries when the machine starts, a few
+    when it shuts down, single ones at time changes. During a working day the
+    subcategory is silent.
+
+    It is one of the cheapest subcategories in the whole set and at the same time
+    the only one giving a picture of the firewall's state. The ratio of value to
+    cost is clearly better here than in high-volume subcategories.
+
+    The full pair is required: successes and failures.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o kilka wpisów przy każdym starcie i wyłączeniu maszyny
+      - Zmiany czasu systemowego zaczną zostawiać wpis w dzienniku
+    en:
+      - The security log grows by a few entries at every start and shutdown of the machine
+      - Changes to the system time start leaving an entry in the log
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków - podkategoria jest tania i obejmuje stan zapory, którego nie widać nigdzie indziej
+    en:
+      - No known cases - the subcategory is cheap and covers the firewall's state, which cannot be seen anywhere else
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9214-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9214-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9214-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9214-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9214-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-system-events
+
+notes:
+  pl: |
+    Podkategoria zbiera z definicji to, co nie zmieściło się gdzie indziej, więc
+    jej zawartość zmienia się między wydaniami systemu. Wymienione rodzaje
+    zdarzeń są tym, co się w niej spotyka dziś, a nie zamkniętą listą.
+
+    Wpis o zatrzymaniu zapory bywa mylony z wpisem o zmianie jej reguł. Zmiany
+    reguł są osobną podkategorią i osobnym punktem benchmarku. Rozróżnienie jest
+    praktyczne: tamta mówi, że ktoś zmienił ochronę, ta — że ochrony przez jakiś
+    czas nie było wcale.
+  en: |
+    The subcategory gathers by definition what did not fit elsewhere, so its
+    contents change between releases of the system. The kinds of events named are
+    what is met in it today, not a closed list.
+
+    An entry about the firewall stopping is sometimes confused with one about its
+    rules changing. Rule changes are a separate subcategory and a separate
+    benchmark item. The distinction is practical: that one says somebody changed
+    the protection, this one that for a while there was no protection at all.

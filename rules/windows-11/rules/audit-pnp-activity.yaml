@@ -1,0 +1,156 @@
+id: win11-audit-pnp-activity
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Detailed Tracking
+  title:
+    pl: Inspekcja podłączania urządzeń
+    en: Audit Plug and Play activity
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje moment rozpoznania nowego urządzenia przez system.
+    Odpowiada na pytanie, którego nie da się zadać nigdzie indziej: co ktoś
+    wpiął w tę maszynę i kiedy.
+
+    Nie chodzi wyłącznie o pamięci przenośne. Urządzenie podszywające się pod
+    klawiaturę wpisuje polecenia szybciej, niż zdąży to zobaczyć ktokolwiek
+    stojący obok, i nie zostawia po sobie pliku. Wpis o rozpoznaniu nowej
+    klawiatury na maszynie, do której nikt nie podłączał klawiatury, jest
+    w takim przypadku jedynym śladem, jaki w ogóle powstaje.
+  en: |
+    The subcategory records the moment the system recognises a new device. It
+    answers a question that cannot be asked anywhere else: what did somebody
+    plug into this machine, and when.
+
+    It is not only about removable storage. A device posing as a keyboard types
+    commands faster than anybody standing next to it can see, and leaves no file
+    behind. An entry about a new keyboard being recognised on a machine where
+    nobody plugged a keyboard in is, in such a case, the only trace that arises
+    at all.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane — urządzenia działają dokładnie jak dotąd,
+    zmienia się wyłącznie to, że ich podłączenie zostaje zapisane. Użytkownik
+    niczego nie zauważy.
+
+    Objętość jest niewielka i przewidywalna: wpis powstaje przy podłączeniu,
+    nie przy każdym użyciu. Na stacji z dokiem, gdzie odłączenie i podłączenie
+    zdarza się dwa razy dziennie, mówimy o kilkunastu wpisach dziennie, przy
+    czym dok rejestruje kilka urządzeń naraz.
+  en: |
+    Nothing is blocked - devices work exactly as before, what changes is only
+    that their connection is recorded. The user notices nothing.
+
+    The volume is small and predictable: an entry arises on connection, not on
+    every use. On a workstation with a dock, where disconnecting and reconnecting
+    happens twice a day, we are talking about a dozen or so entries a day, the
+    dock registering several devices at once.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - removable-media
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdym rozpoznaniu urządzenia
+      - Na stacji z dokiem każde podłączenie daje kilka wpisów naraz
+    en:
+      - The security log grows by one entry each time a device is recognised
+      - On a workstation with a dock each connection produces several entries at once
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo, a urządzenia przełączane są w pętli
+    en:
+      - Events from this machine are billed by volume and devices are switched in a loop
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9248-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9248-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9248-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9248-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9248-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-pnp-activity
+
+notes:
+  pl: |
+    Podkategoria obsługuje wyłącznie powodzenia — nieudane rozpoznanie
+    urządzenia nie jest tu zdarzeniem podlegającym inspekcji.
+
+    Punkt uzupełnia inspekcję nośników wymiennych, ale ich nie zastępuje: ta
+    zapisuje dostęp do plików na nośniku, ta tutaj — sam fakt wpięcia sprzętu,
+    także takiego, który nie jest pamięcią masową. Dopiero razem odpowiadają na
+    pytanie, co podłączono i co z tym zrobiono.
+  en: |
+    The subcategory supports successes only - a failed device recognition is not
+    an auditable event here.
+
+    The item complements removable storage auditing but does not replace it:
+    that one records access to files on the medium, this one the very fact of
+    hardware being plugged in, including hardware that is not storage at all.
+    Only together do they answer what was connected and what was done with it.

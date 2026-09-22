@@ -1,0 +1,158 @@
+id: win11-audit-file-share
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Object Access
+  title:
+    pl: Inspekcja dostępu do udziałów sieciowych
+    en: Audit file share access
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje każde nawiązanie połączenia z udziałem na tej maszynie
+    — także z udziałami administracyjnymi, których nikt świadomie nie zakładał
+    i które istnieją na każdym Windowsie od zawsze.
+
+    To właśnie one są drogą rozprzestrzeniania się po sieci: mając hasło
+    administratora, można kopiować pliki i uruchamiać kod na kolejnych maszynach
+    bez żadnego narzędzia. Wpis o połączeniu z takim udziałem z adresu, który
+    nigdy wcześniej się nie pojawiał, jest najwcześniejszym sygnałem, jaki w tym
+    scenariuszu w ogóle powstaje.
+  en: |
+    The subcategory records every connection made to a share on this machine -
+    including the administrative shares nobody deliberately created and which
+    have existed on every Windows forever.
+
+    Those are precisely the route for spreading across a network: with an
+    administrator password one can copy files and run code on further machines
+    with no tooling at all. An entry about a connection to such a share from an
+    address that has never appeared before is the earliest signal this scenario
+    produces at all.
+
+disruption_description:
+  pl: |
+    Nic nie zostaje zablokowane i użytkownik niczego nie zauważy. Zmiana dotyczy
+    wyłącznie zapisu.
+
+    Objętość zależy od roli maszyny i to trzeba sprawdzić przed wdrożeniem. Na
+    stacji roboczej, z którą nikt się nie łączy, wpisów praktycznie nie ma. Na
+    maszynie udostępniającej katalog zespołowi powstaje wpis przy każdym
+    nawiązaniu sesji — a klienci nawiązują je ponownie po każdym uśpieniu
+    i każdej zmianie sieci, nie raz dziennie.
+  en: |
+    Nothing is blocked and the user notices nothing. The change concerns
+    recording alone.
+
+    The volume depends on the machine's role and that has to be checked before
+    rollout. On a workstation nobody connects to there are practically no
+    entries. On a machine sharing a folder with a team an entry arises at every
+    session establishment - and clients re-establish them after every sleep and
+    every network change, not once a day.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - file-sharing
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdym nawiązaniu sesji z udziałem
+      - Na maszynie udostępniającej katalog wielu osobom wpisy liczy się w setkach dziennie
+    en:
+      - The security log grows by one entry at each share session being established
+      - On a machine sharing a folder with many people entries run into hundreds a day
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna pełni rolę serwera plików, a dziennik zabezpieczeń nie został powiększony
+      - Zdarzenia z tej maszyny są rozliczane objętościowo w systemie zbierającym
+    en:
+      - The machine acts as a file server and the security log has not been enlarged
+      - Events from this machine are billed by volume in the collection system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9224-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9224-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9224-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9224-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9224-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-file-share
+
+notes:
+  pl: |
+    Wymagany jest komplet: powodzenia i niepowodzenia. Niepowodzenia mają tu
+    wartość szczególną — nieudane próby połączenia z udziałem z jednego adresu,
+    następujące po sobie, to obraz zgadywania hasła, a nie pomyłki użytkownika.
+
+    Podkategoria zapisuje nawiązanie sesji z udziałem, nie dostęp do
+    poszczególnych plików. Żeby zobaczyć, co dokładnie zostało otwarte, trzeba
+    inspekcji systemu plików, która jest osobnym i znacznie droższym punktem.
+  en: |
+    The full pair is required: successes and failures. Failures have particular
+    value here - repeated failed attempts to connect to a share from one address
+    are a picture of password guessing, not of a user's mistake.
+
+    The subcategory records the establishment of a share session, not access to
+    individual files. To see what exactly was opened, file system auditing is
+    needed, which is a separate and far more expensive item.

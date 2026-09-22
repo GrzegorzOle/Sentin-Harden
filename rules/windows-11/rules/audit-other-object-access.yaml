@@ -1,0 +1,153 @@
+id: win11-audit-other-object-access
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Object Access
+  title:
+    pl: Inspekcja pozostałych zdarzeń dostępu do obiektów
+    en: Audit other object access events
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Nazwa podkategorii brzmi jak worek na resztę i tak też wygląda w dokumentacji.
+    Trafia do niej jednak jedna rzecz warta uwagi: operacje na zadaniach
+    harmonogramu i na obiektach usługi wywołań zdalnych.
+
+    Zadanie harmonogramu jest najwygodniejszym sposobem, żeby kod uruchamiał się
+    po każdym restarcie, bez zakładania usługi i bez wpisu w autostarcie. Zapis
+    z tej podkategorii mówi, kiedy takie zadanie powstało i kto je założył —
+    czyli dokładnie to, czego sama lista zadań nie powie.
+  en: |
+    The subcategory's name sounds like a bin for leftovers, and that is how it
+    looks in the documentation. One thing worth attention nevertheless lands in
+    it: operations on scheduled tasks and on remote procedure call objects.
+
+    A scheduled task is the most convenient way to have code run after every
+    restart, without creating a service and without an autostart entry. The
+    record from this subcategory says when such a task came into being and who
+    created it - that is, exactly what the task list itself will not say.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać i użytkownik niczego nie zauważy.
+
+    Objętość jest niska, bo zapisywane są operacje na zadaniach, a nie ich
+    uruchomienia. Zadanie wykonywane co pięć minut daje jeden wpis przy
+    założeniu, a nie po jednym przy każdym przebiegu. To odróżnia tę
+    podkategorię od inspekcji tworzenia procesów, z którą bywa mylona.
+  en: |
+    Nothing stops working and the user notices nothing.
+
+    The volume is low, because what gets recorded is operations on tasks rather
+    than their executions. A task running every five minutes produces one entry
+    at creation, not one per run. That distinguishes this subcategory from
+    process creation auditing, with which it is sometimes confused.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdej zmianie w zadaniach harmonogramu
+      - Na maszynie, na której oprogramowanie przebudowuje własne zadania przy każdej aktualizacji, wpisy powtarzają się cyklicznie
+    en:
+      - The security log grows by one entry at each change to scheduled tasks
+      - On a machine where software rebuilds its own tasks at every update the entries repeat cyclically
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo, a zadania harmonogramu tworzone są automatycznie w pętli
+    en:
+      - Events from this machine are billed by volume and scheduled tasks are created automatically in a loop
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9227-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9227-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9227-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9227-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9227-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-object-access-events
+
+notes:
+  pl: |
+    Wymagany jest komplet powodzeń i niepowodzeń. Niepowodzenie oznacza tu
+    zwykle próbę założenia zadania przez konto, które nie ma do tego uprawnień —
+    a to jest sygnał, nie szum.
+
+    Zakres podkategorii jest nieoczywisty i w dokumentacji opisany zdawkowo.
+    W paczce trzymamy ją przy zadaniach harmonogramu, bo to jedyny jej element,
+    o którym da się powiedzieć coś konkretnego przy podejmowaniu decyzji.
+    Reszta zakresu jest realna, ale nie zmienia oceny ani kosztu.
+  en: |
+    The full pair of successes and failures is required. A failure here usually
+    means an attempt to create a task by an account lacking the rights to do so -
+    and that is a signal, not noise.
+
+    The subcategory's scope is non-obvious and described only sketchily in the
+    documentation. In the pack we keep it next to scheduled tasks, because that
+    is its only element about which anything concrete can be said when making a
+    decision. The rest of the scope is real but changes neither the assessment
+    nor the cost.

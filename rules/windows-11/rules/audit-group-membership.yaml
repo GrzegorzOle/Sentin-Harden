@@ -1,0 +1,156 @@
+id: win11-audit-group-membership
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja przynależności do grup
+    en: Audit group membership
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria dopisuje do zdarzenia logowania listę grup, z którymi konto
+    faktycznie weszło do systemu. To jest różnica między „wiem, kto się
+    zalogował" a „wiem, z jakimi uprawnieniami pracował".
+
+    Ma to znaczenie, bo przynależność do grup zmienia się w czasie, a token
+    dostaje ją w chwili logowania. Konto usunięte z grupy administratorów
+    o dziesiątej zachowuje uprawnienia do końca sesji rozpoczętej o ósmej. Bez
+    tej inspekcji odtworzenie tego po fakcie polega na zgadywaniu — z listy
+    grup z dzisiaj, nie sprzed pół roku.
+  en: |
+    The subcategory appends to the sign-in event the list of groups the account
+    actually entered the system with. That is the difference between "I know who
+    signed in" and "I know what privileges they worked with".
+
+    It matters because group membership changes over time while the token
+    receives it at the moment of sign-in. An account removed from the
+    administrators group at ten keeps its privileges until the end of a session
+    started at eight. Without this auditing, reconstructing that after the fact
+    comes down to guessing - from today's group list, not the one from six
+    months ago.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać, użytkownik niczego nie zauważy, nie ma restartu.
+
+    Koszt objętościowy jest jednak wyższy, niż sugeruje rzadkość zdarzeń:
+    podkategoria nie tworzy nowych wpisów, tylko powiększa istniejące zdarzenia
+    logowania o listę grup, a lista bywa długa. Na maszynie w domenie z rozbudowaną
+    strukturą grup pojedynczy wpis rośnie kilkukrotnie.
+  en: |
+    Nothing stops working, the user notices nothing, there is no restart.
+
+    The volume cost is nonetheless higher than the rarity of the events
+    suggests: the subcategory creates no new entries but enlarges existing
+    sign-in events with a list of groups, and the list can be long. On a machine
+    in a domain with an elaborate group structure a single entry grows several
+    times over.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Wpisy o logowaniu w dzienniku zabezpieczeń rosną o listę grup i zajmują więcej miejsca
+      - Przy rozbudowanej strukturze grup dziennik zapełnia się szybciej, niż wynikałoby z liczby zdarzeń
+    en:
+      - Sign-in entries in the security log grow by a group list and take more space
+      - With an elaborate group structure the log fills faster than the event count suggests
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo, a konta należą do dziesiątek grup
+      - Dziennik zabezpieczeń nie został powiększony i już teraz obraca się szybko
+    en:
+      - Events from this machine are billed by volume and accounts belong to dozens of groups
+      - The security log has not been enlarged and already turns over quickly
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9249-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9249-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9249-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9249-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9249-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-group-membership
+
+notes:
+  pl: |
+    Podkategoria wymaga wyłącznie powodzeń — niepowodzenie nie ma tu sensu, bo
+    lista grup powstaje razem z tokenem, a token powstaje tylko przy udanym
+    logowaniu.
+
+    Punkt ma wartość dopiero razem z inspekcją logowania: to ona tworzy
+    zdarzenie, które ta podkategoria wzbogaca. Włączona sama, przy wyłączonej
+    inspekcji logowania, nie zapisze niczego.
+  en: |
+    The subcategory requires successes only - a failure makes no sense here,
+    because the group list is produced together with the token, and a token is
+    produced only on a successful sign-in.
+
+    The item has value only alongside logon auditing: that is what creates the
+    event this subcategory enriches. Enabled on its own, with logon auditing off,
+    it records nothing.

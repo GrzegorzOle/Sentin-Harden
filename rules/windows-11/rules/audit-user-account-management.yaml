@@ -1,0 +1,156 @@
+id: win11-audit-user-account-management
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Account Management
+  title:
+    pl: Inspekcja zarządzania kontami użytkowników
+    en: Audit user account management
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje operacje na kontach: założenie, usunięcie, zmianę
+    hasła, włączenie wyłączonego konta, odblokowanie. To jest dokładnie ten
+    zestaw czynności, który wykonuje ktoś, kto właśnie zdobył uprawnienia
+    i chce je sobie utrwalić na przyszłość.
+
+    Konto założone po włamaniu jest najtańszą formą trwałości: nie wymaga
+    żadnego narzędzia, nie zostawia pliku, nie budzi programu
+    antywirusowego. Bez tej inspekcji jedynym śladem jest samo konto —
+    z datą utworzenia, ale bez informacji, kto je założył i skąd.
+  en: |
+    The subcategory records operations on accounts: creation, deletion, password
+    change, enabling a disabled account, unlocking. That is precisely the set of
+    actions performed by somebody who has just obtained privileges and wants to
+    make them permanent.
+
+    An account created after a break-in is the cheapest form of persistence: it
+    needs no tooling, leaves no file, wakes no antivirus. Without this auditing
+    the only trace is the account itself - with a creation date, but with no
+    information about who created it and from where.
+
+disruption_description:
+  pl: |
+    Wdrożenie nie zmienia niczego w pracy maszyny i użytkownik niczego nie
+    zauważy. Objętość jest znikoma: na zwykłej stacji konta zakłada się kilka
+    razy w całym jej życiu.
+
+    Jedyny przypadek, w którym wpisów robi się dużo, to maszyna zakładająca
+    konta automatycznie — na przykład stanowisko szkoleniowe czyszczone między
+    kursami. Tam warto policzyć objętość, ale nawet wtedy mówimy o setkach
+    wpisów, nie tysiącach.
+  en: |
+    The rollout changes nothing in how the machine works and the user notices
+    nothing. The volume is negligible: on an ordinary workstation accounts are
+    created a handful of times in its entire life.
+
+    The only case where entries become numerous is a machine that creates
+    accounts automatically - a training station wiped between courses, say.
+    There the volume is worth counting, but even then we are talking hundreds of
+    entries, not thousands.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń przyrasta o wpis przy każdej operacji na koncie lokalnym
+    en:
+      - The security log grows by one entry at each operation on a local account
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo, a konta zakładane są automatycznie w dużej liczbie
+    en:
+      - Events from this machine are billed by volume and accounts are created automatically in large numbers
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9235-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9235-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9235-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9235-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9235-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-user-account-management
+
+notes:
+  pl: |
+    Punkt wymaga kompletu: powodzeń i niepowodzeń. Niepowodzenia mają tu sens
+    inny niż przy logowaniu — nieudana próba zmiany hasła cudzego konta albo
+    nieudane założenie konta to zwykle ktoś, kto testuje, dokąd sięgają jego
+    uprawnienia.
+
+    Podkategoria dotyczy kont lokalnych tej maszyny. Operacje na kontach
+    domenowych zapisuje kontroler domeny i tam trzeba ich szukać — raport
+    ze stacji roboczej ich nie pokaże.
+  en: |
+    The item requires the full pair: successes and failures. Failures mean
+    something different here than with sign-ins - a failed attempt to change
+    somebody else's password, or a failed account creation, is usually somebody
+    testing how far their privileges reach.
+
+    The subcategory concerns this machine's local accounts. Operations on domain
+    accounts are recorded by the domain controller and have to be looked for
+    there - a workstation report will not show them.

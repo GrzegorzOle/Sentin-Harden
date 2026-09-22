@@ -1,0 +1,218 @@
+id: win11-bitlocker-hardware-encryption-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > BitLocker Drive Encryption
+  title:
+    pl: Szyfrowanie realizowane przez dysk niedopuszczone
+    en: Encryption performed by the drive itself inadmissible
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Część dysków deklaruje, że potrafi szyfrować się sama, a system może wtedy
+    oddać im tę pracę zamiast wykonywać ją po swojej stronie. Wygląda to na
+    układ korzystny: dysk robi swoje bez obciążania procesora, a dane i tak są
+    zaszyfrowane.
+
+    Kłopot w tym, że o jakości tego szyfrowania rozstrzyga wyłącznie producent
+    dysku, a sprawdzić tego nie da się z zewnątrz. Badania kolejnych rodzin
+    napędów pokazywały to samo: klucz wyprowadzony z niczego, klucz ten sam dla
+    wszystkich egzemplarzy, dane zapisane bez szyfrowania mimo deklaracji,
+    hasło sprawdzane przez układ, który da się obejść. Dysk z taką wadą zgłasza
+    się systemowi jako szyfrujący, system mu wierzy i przestaje szyfrować
+    cokolwiek sam.
+
+    Skutek jest gorszy niż brak szyfrowania, bo jest niewidoczny: raport mówi,
+    że dysk jest zaszyfrowany, a odzyskanie z niego danych bywa kwestią
+    narzędzia serwisowego. Odebranie dyskowi tej roli sprawia, że szyfruje
+    system — kodem, który da się zbadać i który zachowuje się tak samo na
+    każdym sprzęcie.
+  en: |
+    Some drives declare that they can encrypt themselves, and the system may then
+    hand that work to them instead of doing it on its own side. It looks like a
+    favourable arrangement: the drive does its work without burdening the processor,
+    and the data is encrypted all the same.
+
+    The trouble is that the quality of that encryption is settled solely by the
+    drive's maker, and cannot be checked from outside. Studies of one family of
+    drives after another showed the same things: a key derived from nothing, one key
+    shared by every unit, data written unencrypted despite the declaration, a
+    password checked by a circuit that can be bypassed. A drive with such a flaw
+    announces itself to the system as encrypting, the system believes it and stops
+    encrypting anything itself.
+
+    The upshot is worse than no encryption, because it is invisible: the report says
+    the drive is encrypted, and recovering data from it is sometimes a matter of a
+    service tool. Taking that role from the drive means the system encrypts - with
+    code that can be examined and that behaves the same on every piece of hardware.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Szyfrowanie dalej obejmuje te same dyski, zmienia
+    się wyłącznie to, co je wykonuje.
+
+    Jedynym odczuwalnym skutkiem jest obciążenie procesora przy zapisie
+    i odczycie. Na sprzęcie z ostatniej dekady jest ono niemierzalne w zwykłej
+    pracy, bo instrukcje szyfrujące są wbudowane w procesor — różnicę potrafi
+    zauważyć wyłącznie maszyna przepisująca dane w sposób ciągły, a i tam idzie
+    to w pojedyncze procenty.
+
+    Dyski zaszyfrowane wcześniej po swojej stronie pozostaną w tym stanie.
+    Przejście na szyfrowanie systemowe wymaga odszyfrowania i zaszyfrowania od
+    początku, czego reguła nie robi — wdrożenie punktu dotyczy szyfrowania
+    zakładanego od nowa.
+
+    Dlatego punkt trafia do klasy bez uciążliwości: nie ma restartu, nie ma
+    okna serwisowego i nie ma scenariusza, w którym cokolwiek staje się
+    niedostępne.
+  en: |
+    Nothing stops working. Encryption still covers the same drives; all that changes
+    is what performs it.
+
+    The one felt effect is load on the processor when writing and reading. On
+    hardware from the last decade it is unmeasurable in ordinary work, because the
+    encrypting instructions are built into the processor - only a machine rewriting
+    data continuously can notice the difference, and even there it runs to single
+    percent.
+
+    Drives encrypted earlier on their own side stay that way. Moving to system
+    encryption requires decrypting and encrypting from the start, which the rule does
+    not do - applying the item concerns encryption set up anew.
+
+    That is why the item falls into the no-disruption class: no restart, no
+    maintenance window, and no scenario in which anything becomes unavailable.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Szyfrowanie zakładane od nowa obciąża procesor zamiast układu w dysku, co bywa mierzalne wyłącznie przy ciągłym przepisywaniu danych
+      - Dyski zaszyfrowane wcześniej po swojej stronie pozostaną w tym stanie do czasu ponownego zaszyfrowania
+    en:
+      - Encryption set up anew loads the processor instead of a circuit in the drive, which is measurable only under continuous rewriting of data
+      - Drives encrypted earlier on their own side stay that way until they are encrypted again
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowisko przepisuje dane w sposób ciągły, a obciążenie procesora szyfrowaniem zostało zmierzone jako istotne
+    en:
+      - The station rewrites data continuously and the processor load from encryption has been measured as significant
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Three values carry this item, one per class of drive. All three have to
+      # be at zero, and whichever differs is named in the result.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+      $names = @('OSHardwareEncryption', 'FDVHardwareEncryption', 'RDVHardwareEncryption')
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $missing = @()
+        $wrong = @()
+        foreach ($name in $names) {
+          $value = $item.$name
+          if ($null -eq $value) { $missing += $name }
+          elseif ([int]$value -ne 0) { $wrong += ($name + '=' + [int]$value) }
+        }
+        if ($missing.Count -gt 0) { 'MISSING ' + (($missing | Sort-Object) -join ',') }
+        elseif ($wrong.Count -gt 0) { 'OTHER ' + (($wrong | Sort-Object) -join ',') }
+        else { 'ALL_DISABLED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ALL_DISABLED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    $state = @()
+    foreach ($name in @('OSHardwareEncryption', 'FDVHardwareEncryption', 'RDVHardwareEncryption')) {
+      $state += [pscustomobject]@{
+        name    = $name
+        value   = $item.$name
+        existed = ($null -ne $item.$name)
+      }
+    }
+    [pscustomobject]@{
+      path        = $path
+      key_existed = (Test-Path -Path $path)
+      values      = $state
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FVE'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    foreach ($name in @('OSHardwareEncryption', 'FDVHardwareEncryption', 'RDVHardwareEncryption')) {
+      Set-ItemProperty -Path $path -Name $name -Value 0 -Type DWord
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.key_existed) {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+      foreach ($entry in @($b.values)) {
+        if ($entry.existed) {
+          Set-ItemProperty -Path $b.path -Name $entry.name -Value $entry.value -Type DWord
+        } else {
+          Remove-ItemProperty -Path $b.path -Name $entry.name -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/data-protection/bitlocker/
+
+notes:
+  pl: |
+    Reguła czyta trzy wartości, po jednej na klasę dysków, bo punkt ustala tę
+    samą rzecz osobno dla dysku systemowego, dysków stałych i nośników
+    wymiennych. Rozdzielenie ich dałoby trzy rekordy o identycznej treści.
+
+    Wartość zero oznacza niedopuszczenie szyfrowania po stronie dysku i jest
+    wymagana niezależnie od tego, czy sprzęt na maszynie w ogóle je oferuje.
+    Reguła nie sprawdza możliwości sprzętu — sprawdza, czy system ma z niej
+    korzystać.
+
+    Od wydania Windows 10 z 2018 roku zachowanie domyślne jest zgodne
+    z wymaganiem, ale brak wpisu zgłaszam jako niespełnienie. Wartość domyślna
+    nie jest zapisana i nie chroni przed maszyną, na której ktoś ustawił
+    inaczej.
+  en: |
+    The rule reads three values, one per class of drive, because the item settles
+    the same thing apart for the system drive, fixed drives and removable media.
+    Splitting them would give three records with identical content.
+
+    A value of zero means encryption on the drive's side is inadmissible, and it is
+    required whether or not the hardware on the machine offers it at all. The rule
+    does not check what the hardware can do - it checks whether the system is to use
+    it.
+
+    Since the 2018 release of Windows 10 the default behaviour matches the
+    requirement, but I report a missing entry as unmet. A default value is not
+    written down and does not guard against a machine where somebody set otherwise.

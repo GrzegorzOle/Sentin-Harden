@@ -1,0 +1,202 @@
+id: win11-create-symbolic-links-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Tworzenie dowiązań symbolicznych tylko dla administratorów
+    en: Creating symbolic links for administrators only
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dowiązanie symboliczne to wpis w systemie plików wskazujący na inne miejsce.
+    Program otwierający taki wpis trafia tam, gdzie wskazuje dowiązanie, zwykle
+    o tym nie wiedząc — i to jest sedno problemu.
+
+    Napastnik mający to uprawnienie zakłada dowiązanie w miejscu, do którego
+    sięga program uprzywilejowany, i kieruje je na plik, którego ten program
+    nigdy by nie otworzył. Program działa z wysokimi uprawnieniami, więc otwiera.
+    W ten sposób nadpisuje się pliki systemowe, podstawia biblioteki i czyta
+    zawartość, do której konto napastnika nie ma prawa.
+
+    Jest to jedna z lepiej udokumentowanych dróg podniesienia uprawnień
+    i wykorzystuje ją cała rodzina gotowych narzędzi. Uprawnienie należy do
+    administratorów, bo dla nich dowiązanie nie jest podniesieniem uprawnień —
+    jest zwykłą czynnością.
+  en: |
+    A symbolic link is an entry in the file system pointing to another place. A
+    program opening such an entry ends up where the link points, usually without
+    knowing - and that is the heart of the problem.
+
+    An attacker holding this privilege creates a link in a place a privileged
+    program reaches for, and aims it at a file that program would never open. The
+    program runs with high rights, so it opens it. This is how system files get
+    overwritten, libraries substituted, and contents read that the attacker's
+    account has no right to.
+
+    It is one of the better documented roads to raising rights and a whole family
+    of ready-made tools exploits it. The privilege belongs to administrators,
+    because for them a link is no raising of rights - it is an ordinary action.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy na stanowisku pracuje ktoś, kto dowiązania tworzy.
+
+    Uprawnienie to bywa nadane kontom deweloperskim, bo narzędzia budujące
+    projekty i menedżery pakietów zakładają dowiązania rutynowo. Odebranie go
+    objawia się błędem przy budowaniu projektu albo przy instalowaniu
+    zależności, zwykle z komunikatem o braku uprawnień do utworzenia dowiązania.
+
+    Dotyczy to również maszyn z uruchomionymi kontenerami i maszynami
+    wirtualnymi. Tam uprawnienie bywa nadane osobnemu kontu usługowemu i ten
+    przypadek reguła dopuszcza w wyniku audytu, nie uznając go za niespełnienie.
+
+    Praca biurowa tego nie odczuwa. Skróty, które użytkownik tworzy na pulpicie,
+    nie są dowiązaniami w tym rozumieniu i działają bez zmian.
+
+    Nie ma restartu. Zmiana obowiązuje po ponownym zalogowaniu.
+  en: |
+    What needs checking is whether anybody at the station creates links.
+
+    The privilege is sometimes granted to developer accounts, because build tools
+    and package managers create links routinely. Withdrawing it shows up as an
+    error while building a project or installing dependencies, usually with a
+    message about lacking the right to create a link.
+
+    It also concerns machines running containers and virtual machines. There the
+    privilege is sometimes granted to a separate service account, and the rule
+    admits that case in the audit result rather than counting it as unmet.
+
+    Office work does not feel it. The shortcuts a user creates on their desktop are
+    not links in this sense and work unchanged.
+
+    There is no restart. The change takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - virtualization-and-containers
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Narzędzia budujące projekty i menedżery pakietów przestaną tworzyć dowiązania na koncie bez praw administratora
+      - Instalowanie zależności może kończyć się błędem o braku uprawnień do utworzenia dowiązania
+    en:
+      - Build tools and package managers stop creating links under an account without administrator rights
+      - Installing dependencies may end in an error about lacking the right to create a link
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stanowisku pracuje konto deweloperskie, któremu narzędzia budujące wymagają tworzenia dowiązań
+    en:
+      - The station hosts a developer account whose build tools require links to be created
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreateSymbolicLinkPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544(,S-1-5-83-0)?|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreateSymbolicLinkPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreateSymbolicLinkPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreateSymbolicLinkPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreateSymbolicLinkPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-symbolic-links
+
+notes:
+  pl: |
+    Reguła dopuszcza obok grupy administratorów jedno dodatkowe konto — to,
+    którym system uruchamia maszyny wirtualne. Bez tego wyjątku każda maszyna
+    z wirtualizacją zgłaszałaby niespełnienie punktu mimo poprawnej konfiguracji.
+
+    Naprawa ustawia samą grupę administratorów i tym samym usunie konto maszyn
+    wirtualnych, jeśli było nadane. Na maszynie z wirtualizacją należy więc
+    posłużyć się trybem kopiowania polecenia i dopisać to konto ręcznie, zamiast
+    uruchamiać naprawę z aplikacji. Zapisuję to tutaj, bo jest to jedyny punkt
+    w tej rodzinie, w którym naprawa bywa węższa niż stan dopuszczalny.
+  en: |
+    Besides the administrators group the rule admits one additional account - the
+    one the system runs virtual machines under. Without that exception every
+    machine with virtualization would report the item unmet despite correct
+    configuration.
+
+    The fix sets the administrators group alone and will therefore remove the
+    virtual machines account if it was granted. On a machine with virtualization
+    the copy mode should be used and that account added by hand, rather than
+    running the fix from the application. This is recorded here because it is the
+    one item in this family where the fix is narrower than the admissible state.

@@ -1,0 +1,220 @@
+id: win11-remote-registry-paths-and-subpaths
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Lista gałęzi rejestru dostępnych zdalnie wraz z zawartością
+    en: The list of registry keys reachable remotely together with their contents
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt bliźniaczy wobec listy obejmującej same wskazane gałęzie — z jedną
+    różnicą, która przesądza o jego wadze: ta lista otwiera gałąź razem
+    z wszystkim, co pod nią leży.
+
+    Różnica jest w skutkach ogromna. Wpis wskazujący gałąź usług otwiera przez
+    sieć konfigurację każdej usługi na maszynie: ścieżki do plików wykonywalnych,
+    konta, pod którymi usługi działają, i parametry, z którymi startują. Dla
+    napastnika rozglądającego się po maszynie jest to opis, czym warto się zająć,
+    zdobyty bez żadnego uprawnienia poza możliwością odczytu.
+
+    Lista wzorcowa obejmuje jedenaście pozycji potrzebnych narzędziom
+    zbierającym dane o wydajności, drukowaniu i dziennikach zdarzeń. Wszystko
+    ponadto jest rozszerzeniem, które ktoś kiedyś dopisał — i które otwiera
+    poddrzewo, a nie pojedynczą gałąź.
+  en: |
+    A twin of the list covering the named keys alone - with one difference that
+    settles its weight: this list opens a key together with everything beneath it.
+
+    The difference in consequences is enormous. An entry naming the services key
+    opens over the network the configuration of every service on the machine: paths
+    to executables, the accounts the services run under, and the parameters they
+    start with. To an attacker looking around the machine it is a description of
+    what is worth attending to, obtained with no right beyond the ability to read.
+
+    The model list covers eleven entries needed by tools gathering data about
+    performance, printing and event logs. Anything beyond that is a widening
+    somebody once added - and one that opens a subtree, not a single key.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, co na liście stoi ponad jedenastoma pozycjami
+    wzorcowymi i co z tego korzysta.
+
+    Skrócenie listy odetnie narzędzia odczytujące przez sieć poddrzewo, które
+    z niej zniknie. Są to systemy inwentaryzacyjne, narzędzia monitorujące
+    i integracje sięgające po konfigurację konkretnego produktu. Skutek jest
+    szerszy niż przy liście obejmującej same gałęzie, bo odcina się całe
+    poddrzewo naraz.
+
+    Objawem jest brak danych w raporcie narzędzia, a nie błąd na stanowisku.
+    Praca użytkownika nie zmienia się w niczym.
+
+    Reguła podaje odczytaną listę razem z wynikiem, żeby dało się ocenić skutek
+    przed zmianą. Wpis, który trzeba zachować, ma być decyzją wdrożeniową,
+    a nie pozostałością po rozwiązywaniu problemu sprzed lat.
+
+    Nie ma restartu maszyny. Zmiana obowiązuje po ponownym uruchomieniu usługi
+    zdalnego rejestru albo przy następnym starcie systemu.
+  en: |
+    What needs checking is what stands on the list beyond the eleven model entries,
+    and what uses it.
+
+    Shortening the list will cut off tools reading over the network a subtree that
+    disappears from it. These are inventory systems, monitoring tools and
+    integrations reaching for a particular product's configuration. The effect is
+    wider than with the list covering keys alone, because a whole subtree is cut
+    off at once.
+
+    The symptom is missing data in the tool's report, not an error at the station.
+    A user's work does not change in any way.
+
+    The rule reports the list it read together with the result, so the effect can be
+    judged before the change. An entry that has to be kept is to be a deployment
+    decision, not a leftover from troubleshooting years ago.
+
+    There is no machine restart. The change takes effect once the remote registry
+    service restarts, or at the next system start.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Narzędzia odczytujące przez sieć poddrzewo usunięte z listy przestaną zbierać z tej maszyny dane
+      - Integracje sięgające po konfigurację konkretnego produktu przez rejestr mogą zgłaszać brak danych
+    en:
+      - Tools reading over the network a subtree removed from the list stop gathering data from this machine
+      - Integrations reaching for a particular product's configuration through the registry may report missing data
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Z poddrzewa spoza listy wzorcowej korzysta narzędzie zarządzające, którego nie da się jeszcze przestawić na inny sposób odczytu
+    en:
+      - A subtree outside the model list is used by a management tool that cannot yet be switched to another way of reading
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The list is compared as a set, without regard to order or letter case,
+      # because neither carries meaning here. A list that differs is reported
+      # together with its contents rather than as a bare failure.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedPaths'
+      $name = 'Machine'
+      $expected = @(
+        'System\CurrentControlSet\Control\Print\Printers',
+        'System\CurrentControlSet\Services\Eventlog',
+        'Software\Microsoft\OLAP Server',
+        'Software\Microsoft\Windows NT\CurrentVersion\Print',
+        'Software\Microsoft\Windows NT\CurrentVersion\Windows',
+        'System\CurrentControlSet\Control\ContentIndex',
+        'System\CurrentControlSet\Control\Terminal Server',
+        'System\CurrentControlSet\Control\Terminal Server\UserConfig',
+        'System\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration',
+        'Software\Microsoft\Windows NT\CurrentVersion\Perflib',
+        'System\CurrentControlSet\Services\SysmonLog'
+      )
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = @($item.$name | Where-Object { $null -ne $_ -and $_ -ne '' })
+        $left = ($value | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join '|'
+        $right = ($expected | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join '|'
+        if ($left -eq $right) { 'EXACT_MATCH' }
+        elseif ($value.Count -eq 0) { 'EMPTY' }
+        else { 'OTHER ' + ($value -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: EXACT_MATCH
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedPaths'
+    $name = 'Machine'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = @($current)
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedPaths'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    $value = @(
+      'System\CurrentControlSet\Control\Print\Printers',
+      'System\CurrentControlSet\Services\Eventlog',
+      'Software\Microsoft\OLAP Server',
+      'Software\Microsoft\Windows NT\CurrentVersion\Print',
+      'Software\Microsoft\Windows NT\CurrentVersion\Windows',
+      'System\CurrentControlSet\Control\ContentIndex',
+      'System\CurrentControlSet\Control\Terminal Server',
+      'System\CurrentControlSet\Control\Terminal Server\UserConfig',
+      'System\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration',
+      'Software\Microsoft\Windows NT\CurrentVersion\Perflib',
+      'System\CurrentControlSet\Services\SysmonLog'
+    )
+    Set-ItemProperty -Path $path -Name 'Machine' -Value $value -Type MultiString
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value @($b.value) -Type MultiString
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-remotely-accessible-registry-paths-and-sub-paths
+
+notes:
+  pl: |
+    Gałąź, w której leży ta lista, jest czytelna wyłącznie dla administratorów.
+    Uruchomienie audytu bez podniesionych uprawnień kończy się stanem „nie udało
+    się sprawdzić", a nie wynikiem negatywnym.
+
+    Lista wzorcowa jest dłuższa i bardziej rozległa niż w punkcie bliźniaczym,
+    a jednocześnie mniej oczywista: część wpisów dotyczy mechanizmów, których na
+    stanowisku roboczym nie ma. Benchmark wymaga ich mimo to i reguła ich nie
+    podważa — skrócenie listy poniżej wzorca zgłasza jako niezgodność, tak samo
+    jak jej rozszerzenie. Ocena, czy krótsza lista byłaby lepsza, wykracza poza
+    to, co punkt rozstrzyga.
+  en: |
+    The key this list sits in is readable by administrators only. Running the audit
+    without raised privileges ends in a "could not be checked" state rather than a
+    negative result.
+
+    The model list is longer and more far-reaching than in the twin item, and at
+    the same time less obvious: some entries concern mechanisms that are not
+    present on a working station. The benchmark requires them nonetheless and the
+    rule does not dispute it - it reports a list shortened below the model as a
+    mismatch, just as it does a widened one. Judging whether a shorter list would
+    be better goes beyond what the item settles.

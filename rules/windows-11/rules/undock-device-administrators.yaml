@@ -1,0 +1,200 @@
+id: win11-undock-device-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odłączanie maszyny ze stacji dokującej tylko dla administratorów
+    en: Removing the machine from a docking station for administrators only
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uprawnienie pozwala odłączyć maszynę od stacji dokującej z poziomu systemu,
+    bez klucza i bez dostępu do fizycznej blokady. Jego wartość ochronna jest
+    ograniczona i warto to powiedzieć wprost.
+
+    Chroni ono przed jednym: przed zabraniem sprzętu bez otwierania blokady
+    mechanicznej. Stacja dokująca w miejscu publicznym — w sali konferencyjnej,
+    w otwartej przestrzeni biurowej, w punkcie obsługi — trzyma maszynę
+    zamkniętą, a odłączenie przez system tę blokadę obchodzi.
+
+    Zabrany laptop to nie tylko strata sprzętu. To dysk, który można czytać poza
+    firmą, zapisane poświadczenia i konto maszyny w domenie. Uprawnienie samo
+    w sobie nie zatrzyma nikogo zdeterminowanego, ale zamyka drogę
+    najwygodniejszą.
+  en: |
+    The privilege allows the machine to be released from a docking station from
+    within the system, without a key and without access to the physical lock. Its
+    protective value is limited and worth saying so plainly.
+
+    It protects against one thing: hardware being taken without opening a
+    mechanical lock. A docking station in a public place - a meeting room, an open
+    office, a service desk - holds the machine locked, and releasing it through the
+    system gets around that lock.
+
+    A laptop taken away is not only lost hardware. It is a disk that can be read
+    outside the company, saved credentials, and the machine's account in the
+    domain. The privilege alone will stop nobody determined, but it closes the most
+    convenient road.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy stanowisko w ogóle korzysta ze stacji dokującej
+    i kto przy nim pracuje.
+
+    Użytkownik bez praw administratora przestanie móc odłączyć maszynę poleceniem
+    systemu. Fizyczne odłączenie — wyjęcie z podstawki, otwarcie blokady kluczem —
+    działa bez zmian, bo uprawnienie ich nie dotyczy.
+
+    Odczują to osoby przyzwyczajone do odłączania przez menu systemu przed
+    zabraniem laptopa na spotkanie. Objawem jest brak pozycji odłączenia albo
+    odmowa przy jej użyciu. Przyzwyczajenie zmienia się w kilka dni, ale zgłoszeń
+    w tym czasie bywa sporo.
+
+    Na stanowisku stacjonarnym, które stacji dokującej nie ma, zmiana jest bez
+    skutku.
+
+    Nie ma restartu. Zmiana obowiązuje po ponownym zalogowaniu.
+  en: |
+    What needs checking is whether the station uses a docking station at all and
+    who works at it.
+
+    A user without administrator rights will no longer be able to release the
+    machine by a system command. Physical detachment - lifting it out of the
+    cradle, opening the lock with a key - works unchanged, since the privilege does
+    not cover it.
+
+    It will be felt by people used to releasing the machine through the system menu
+    before taking a laptop to a meeting. The symptom is a missing release item or a
+    refusal when it is used. The habit changes within a few days, but there tend to
+    be plenty of reports in that time.
+
+    At a desktop station with no docking station the change has no effect.
+
+    There is no restart. The change takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - user-interface
+  what_breaks:
+    pl:
+      - Użytkownik bez praw administratora nie odłączy maszyny od stacji dokującej poleceniem systemu
+      - Pozycja odłączenia w menu systemu zniknie albo zacznie zwracać odmowę
+    en:
+      - A user without administrator rights cannot release the machine from a docking station by a system command
+      - The release item in the system menu disappears or starts returning a refusal
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko korzysta ze stacji dokującej, a osoba przy nim pracująca odłącza maszynę kilka razy dziennie bez praw administratora
+    en:
+      - The station uses a docking station and the person working at it releases the machine several times a day without administrator rights
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeUndockPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeUndockPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeUndockPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeUndockPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeUndockPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/remove-computer-from-docking-station
+
+notes:
+  pl: |
+    Ochrona jest tutaj wyłącznie fizyczna i nie należy jej mylić z ochroną
+    danych. Maszyna zabrana ze stacji dokującej wraz z blokadą jest równie
+    dostępna dla napastnika — punkt utrudnia zabranie, a nie odczytanie dysku.
+    Za to drugie odpowiada szyfrowanie dysku, będące osobnym punktem.
+
+    Uprawnienie ma znaczenie wyłącznie tam, gdzie stacja dokująca obsługuje
+    blokadę sterowaną przez system. Przy podstawkach łączonych kablem, bez
+    blokady, punkt jest spełniony i bez skutku jednocześnie.
+  en: |
+    The protection here is purely physical and should not be mistaken for
+    protection of data. A machine taken from a docking station together with the
+    lock is just as available to an attacker - the item makes taking harder, not
+    reading the disk. The latter is the business of disk encryption, a separate
+    item.
+
+    The privilege matters only where the docking station supports a lock driven by
+    the system. With cradles joined by a cable and no lock, the item is met and
+    without effect at the same time.

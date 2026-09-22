@@ -1,0 +1,187 @@
+id: win11-network-location-elevation-required
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Network Connections
+  title:
+    pl: Zmiana typu sieci wymaga podniesienia uprawnień
+    en: Changing a network's type requires raised privileges
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przy pierwszym podłączeniu do nowej sieci system pyta, czy jest to sieć
+    prywatna czy publiczna. Odpowiedź nie jest opisowa — przełącza profil zapory,
+    a wraz z nim cały zestaw reguł rozstrzygających, co z sieci wolno do maszyny
+    wpuścić.
+
+    Profil publiczny zamyka maszynę: udostępnianie plików i wykrywanie
+    w sieci są wyłączone, połączenia przychodzące odrzucane. Profil prywatny
+    otwiera to wszystko, zakładając, że sieć jest zaufana.
+
+    Bez tego punktu przełącza to użytkownik, jednym kliknięciem i bez
+    świadomości skutku. Pytanie brzmi dla niego „czy ufam tej sieci", a nie „czy
+    wolno udostępniać pliki gościom w tej kawiarni" — i odpowiedź bywa
+    odpowiednio łatwa. Wymaganie podniesienia uprawnień zamienia odruch
+    w decyzję, którą podejmuje ktoś, kto rozumie skutek.
+  en: |
+    On first connecting to a new network the system asks whether it is private or
+    public. The answer is not descriptive - it switches the firewall profile, and
+    with it the whole set of rules settling what may be let into the machine from
+    the network.
+
+    The public profile closes the machine: file sharing and discovery on the
+    network are off, incoming connections refused. The private profile opens all of
+    that, on the assumption that the network is trusted.
+
+    Without this item the user switches it, with one click and no awareness of the
+    effect. The question reads to them as "do I trust this network", not "may files
+    be shared with the guests in this café" - and the answer comes correspondingly
+    easily. Requiring raised privileges turns a reflex into a decision made by
+    somebody who understands the effect.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać. Zmienia się wyłącznie to, kto może zmienić typ
+    podłączonej sieci.
+
+    Użytkownik bez praw administratora zobaczy pytanie o poświadczenia przy próbie
+    przestawienia sieci z publicznej na prywatną. Dotyczy to również pierwszego
+    podłączenia do nowej sieci — system przyjmie wtedy profil publiczny, czyli
+    bezpieczniejszy, i zostanie przy nim.
+
+    Skutkiem ubocznym jest to, że na nowych sieciach domowych i w hotelach
+    udostępnianie plików oraz wykrywanie maszyny nie będą działać, dopóki ktoś
+    z uprawnieniami nie zmieni typu sieci. Dla stanowiska firmowego jest to
+    zachowanie pożądane, ale warto o nim uprzedzić — zgłoszenia o „niewidocznej
+    drukarce w domu" biorą się właśnie stąd.
+
+    Sieć firmowa rozpoznana jako domenowa nie jest tym objęta. Jej typ
+    rozstrzyga kontroler, a nie użytkownik.
+
+    Nie ma restartu. Zmiana obowiązuje po ponownym zalogowaniu.
+  en: |
+    Nothing stops working. All that changes is who may change the type of a
+    connected network.
+
+    A user without administrator rights will see a request for credentials when
+    they try to switch a network from public to private. This also covers the first
+    connection to a new network - the system will then take the public profile, the
+    safer one, and stay with it.
+
+    A side effect is that on new home networks and in hotels file sharing and
+    discovery of the machine will not work until somebody with rights changes the
+    network's type. For a company station that is the desired behaviour, but it is
+    worth warning about - reports of "the printer at home being invisible" come
+    from exactly this.
+
+    A company network recognised as a domain one is not covered. Its type is
+    settled by the controller, not the user.
+
+    There is no restart. The change takes effect at the next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - file-sharing
+    - printing
+  what_breaks:
+    pl:
+      - Użytkownik bez praw administratora nie przestawi sieci z publicznej na prywatną
+      - Na nowych sieciach domowych udostępnianie plików i wykrywanie maszyny nie zadziała bez zmiany typu sieci przez kogoś z uprawnieniami
+      - Drukarka sieciowa w domu może przestać być widoczna do czasu zmiany typu sieci
+    en:
+      - A user without administrator rights cannot switch a network from public to private
+      - On new home networks file sharing and discovery of the machine will not work until somebody with rights changes the network's type
+      - A network printer at home may stop being visible until the network's type is changed
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko pracuje głównie poza siecią firmową i wymaga udostępniania zasobów w sieciach, do których podłącza je sam użytkownik
+    en:
+      - The station works mainly outside the company network and needs to share resources on networks the user connects it to themselves
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+      $name = 'NC_StdDomainUserSetLocation'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+    $name = 'NC_StdDomainUserSetLocation'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NC_StdDomainUserSetLocation' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/windows-firewall/windows-firewall-with-advanced-security
+
+notes:
+  pl: |
+    Jest to punkt, w którym utwardzenie maszyny widać najszybciej w zgłoszeniach
+    od użytkowników — i jest to normalne, a nie objaw błędnego wdrożenia.
+    Zgłoszenie „w domu nic nie widzę" znaczy tutaj, że punkt działa.
+
+    Reguła nie sprawdza, jaki profil jest obecnie przypisany podłączonym
+    sieciom. Sprawdza, kto może go zmienić. Maszyna z siecią oznaczoną jako
+    prywatna pozostanie przy tym oznaczeniu po wdrożeniu tego punktu — zmiana
+    dotyczy przyszłych decyzji, nie dotychczasowych.
+  en: |
+    This is the item where the machine's hardening shows fastest in reports from
+    users - and that is normal, not a sign of a faulty rollout. A report saying "I
+    can see nothing at home" means here that the item works.
+
+    The rule does not check which profile is currently assigned to connected
+    networks. It checks who can change it. A machine with a network marked private
+    will stay marked that way after this item is applied - the change concerns
+    future decisions, not past ones.

@@ -1,0 +1,161 @@
+id: win11-installer-user-control-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Installer
+  title:
+    pl: Kontrola użytkownika nad instalacją wyłączona
+    en: User control over installation disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Instalator pozwala przekazać z wiersza polecenia parametry zmieniające
+    przebieg instalacji: katalog docelowy, wybrane składniki, ścieżki do plików
+    pomocniczych. Przy kontroli oddanej użytkownikowi te parametry przyjmowane
+    są także wtedy, gdy instalacja działa z podwyższonymi uprawnieniami.
+
+    Znaczy to, że zwykły użytkownik może pokierować uprzywilejowanym procesem:
+    wskazać mu katalog, do którego sam ma prawo zapisu, i doprowadzić do
+    wczytania stamtąd własnego pliku. To jest podniesienie uprawnień wykonane
+    wyłącznie przy użyciu dostarczonych mechanizmów, bez żadnej luki.
+  en: |
+    The installer allows parameters to be passed from the command line that
+    change how an installation proceeds: the target folder, selected components,
+    paths to helper files. With control handed to the user, those parameters are
+    accepted even when the installation runs elevated.
+
+    Which means an ordinary user can steer a privileged process: point it at a
+    folder they can write to themselves and cause their own file to be loaded
+    from there. That is a privilege escalation carried out purely with the
+    supplied mechanisms, without any vulnerability.
+
+disruption_description:
+  pl: |
+    Instalacje uruchamiane normalnie działają bez zmian. Zmienia się wyłącznie
+    to, czy parametry podane przez użytkownika są uwzględniane przy instalacji
+    uprzywilejowanej.
+
+    Zepsuć może wdrożenia, w których ktoś świadomie przekazuje instalatorowi
+    własne parametry: skrypty instalacyjne ze wskazanym katalogiem docelowym,
+    pakiety wymagające podania ścieżki do licencji albo serwera. Takie
+    wdrożenie przestanie kończyć się poprawnie, a komunikat mówi o błędzie
+    instalacji, nie o pominięciu parametru.
+  en: |
+    Installations run normally work unchanged. What changes is only whether
+    parameters supplied by the user are honoured during a privileged
+    installation.
+
+    It can break deployments where somebody deliberately passes the installer
+    their own parameters: installation scripts with a chosen target folder,
+    packages requiring a path to a licence or a server. Such a deployment stops
+    completing correctly, and the message speaks of an installation error rather
+    than of an ignored parameter.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Skrypty instalacyjne przekazujące własne parametry mogą przestać kończyć się poprawnie
+      - Pakiety wymagające wskazania ścieżki do licencji albo serwera mogą nie dać się zainstalować po staremu
+      - Komunikat mówi o błędzie instalacji i nie wskazuje pominiętego parametru jako przyczyny
+    en:
+      - Installation scripts passing their own parameters may stop completing correctly
+      - Packages requiring a path to a licence or a server may no longer install the old way
+      - The message speaks of an installation error and does not point at an ignored parameter as the cause
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Wdrożenia oprogramowania opierają się na parametrach przekazywanych instalatorowi z zewnątrz
+      - Nie ustalono, które pakiety instalują się z dodatkowymi parametrami
+    en:
+      - Software deployments rely on parameters passed to the installer from outside
+      - It has not been established which packages install with additional parameters
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+      $name = 'EnableUserControl'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+    $name = 'EnableUserControl'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableUserControl' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/msi/enableusercontrol
+
+notes:
+  pl: |
+    Punkt tworzy parę z zakazem instalacji z podwyższonymi uprawnieniami,
+    opisanym osobno. Tamten zamyka drogę główną, ten — obejście przez parametry.
+    Wdrożenie samego tamtego zostawia scenariusz, w którym instalacja i tak
+    działa uprzywilejowanie, tyle że z powodu innego niż ustawienie polityki.
+
+    Brak wartości liczy się jako niespełniony, choć zachowanie domyślne jest
+    zgodne z wymaganiem. Powód jak przy pozostałych punktach tego rodzaju:
+    zapis jawny przeżywa zmianę wprowadzoną lokalnie.
+  en: |
+    The item pairs with the ban on installing with elevated privileges,
+    described separately. That one closes the main route, this one the bypass via
+    parameters. Deploying only that one leaves a scenario in which an
+    installation still runs privileged, merely for a reason other than the policy
+    setting.
+
+    A missing value counts as unmet even though the default behaviour matches
+    the requirement. The reason is as with the other items of this kind: an
+    explicit entry survives a change made locally.

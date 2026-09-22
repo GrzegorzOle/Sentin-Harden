@@ -1,0 +1,165 @@
+id: win11-mdm-enrollment-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > MDM
+  title:
+    pl: Rejestracja w zarządzaniu urządzeniami wyłączona
+    en: Enrolment in device management disabled
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zarejestrowanie maszyny w systemie zarządzania urządzeniami oddaje nad nią
+    kontrolę stronie, która tym systemem dysponuje: może wysyłać polityki,
+    instalować oprogramowanie, a w skrajnym przypadku wyczyścić urządzenie.
+
+    Problem nie polega na tym, że zarządzanie jest złe — polega na tym, że
+    rejestrację potrafi zainicjować użytkownik, podając adres usługi. Jeśli poda
+    adres cudzy, maszyna zacznie wykonywać polecenia obcej strony, a wszystko
+    będzie wyglądać jak zwykła konfiguracja firmowa. Wyłączenie rejestracji na
+    maszynie, która ma być zarządzana inaczej, zamyka tę drogę.
+  en: |
+    Enrolling a machine in a device management system hands control over it to
+    whoever operates that system: they can send policies, install software and,
+    in the extreme case, wipe the device.
+
+    The problem is not that management is bad - it is that enrolment can be
+    initiated by the user, by supplying a service address. If they supply
+    somebody else's, the machine starts carrying out a stranger's instructions
+    and everything looks like ordinary company configuration. Disabling enrolment
+    on a machine that is meant to be managed some other way closes that route.
+
+disruption_description:
+  pl: |
+    Na maszynie zarządzanej przez politykę domenową zmiana nie jest odczuwalna
+    w codziennej pracy.
+
+    Skutki są jednak dalekosiężne i dlatego punkt wymaga zaplanowania:
+    zablokowana rejestracja oznacza, że tej maszyny nie da się później objąć
+    zarządzaniem bez cofnięcia ustawienia. Jeśli w organizacji trwa przejście
+    na taki system, wdrożenie tego punktu zatrzyma je na tej maszynie — a osoba
+    prowadząca migrację zobaczy błąd rejestracji, nie informację o polityce.
+
+    Maszyna już zarejestrowana zwykle nie traci połączenia z powodu tej zmiany,
+    ale ponowna rejestracja po przeinstalowaniu systemu nie zadziała.
+  en: |
+    On a machine managed by domain policy the change is not noticeable in daily
+    work.
+
+    The consequences reach further, though, which is why the item needs planning:
+    blocked enrolment means this machine cannot later be brought under management
+    without reverting the setting. If the organisation is in the middle of moving
+    to such a system, deploying this item stops that move on this machine - and
+    the person running the migration will see an enrolment error rather than a
+    note about a policy.
+
+    A machine already enrolled usually does not lose its connection because of
+    this change, but re-enrolment after a system reinstall will not work.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Objęcie tej maszyny systemem zarządzania urządzeniami przestanie być możliwe
+      - Ponowna rejestracja po przeinstalowaniu systemu nie zadziała
+      - Osoba prowadząca migrację zobaczy błąd rejestracji, a nie informację o polityce
+    en:
+      - Bringing this machine under a device management system becomes impossible
+      - Re-enrolment after a system reinstall will not work
+      - The person running a migration sees an enrolment error rather than a note about a policy
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Organizacja przechodzi na zarządzanie urządzeniami albo planuje takie przejście
+      - Maszyna ma być zarządzana zdalnie po przekazaniu jej użytkownikowi
+    en:
+      - The organisation is moving to device management or plans such a move
+      - The machine is meant to be managed remotely once handed to a user
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM'
+      $name = 'DisableRegistration'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM'
+    $name = 'DisableRegistration'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableRegistration' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/
+
+notes:
+  pl: |
+    Punkt jest poziomu 2 i jego sens zależy wprost od tego, jak organizacja
+    zarządza maszynami. Tam, gdzie zarządzanie urządzeniami jest przyjętą drogą,
+    wdrożenie go byłoby błędem — i właśnie dlatego zapisany wyjątek jest tu
+    odpowiedzią częstszą niż naprawa.
+
+    To dobry przykład reguły, której nie wolno stosować hurtem: jest
+    pojedynczym ustawieniem rejestru, wygląda niegroźnie i mieści się
+    w jednym wierszu, a przesądza o sposobie zarządzania maszyną na lata.
+  en: |
+    The item is level 2 and its point depends directly on how the organisation
+    manages machines. Where device management is the accepted route, deploying it
+    would be a mistake - and that is precisely why a recorded exception is a more
+    common answer here than a fix.
+
+    It is a good example of a rule that must not be applied in bulk: it is a
+    single registry setting, looks harmless and fits on one line, yet it decides
+    how the machine will be managed for years.

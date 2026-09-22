@@ -1,0 +1,155 @@
+id: win11-search-encrypted-items-indexing-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Search
+  title:
+    pl: Indeksowanie zaszyfrowanych plików wyłączone
+    en: Indexing of encrypted files disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Indeks wyszukiwania przechowuje fragmenty treści plików, żeby dało się je
+    znaleźć po zawartości. Przy indeksowaniu plików zaszyfrowanych ta sama treść
+    trafia do indeksu — a indeks jest zwykłym plikiem, chronionym uprawnieniami,
+    nie szyfrowaniem.
+
+    Powstaje wtedy kopia danych poza mechanizmem, który miał je chronić.
+    Zaszyfrowany dokument zostaje zaszyfrowany, ale jego treść da się odczytać
+    z indeksu — i to komuś, kto nie ma klucza. Wyłączenie indeksowania takich
+    plików usuwa sprzeczność między tym, co użytkownik zaszyfrował, a tym, co
+    faktycznie jest chronione.
+  en: |
+    The search index stores fragments of file content so that files can be found
+    by what is in them. When encrypted files are indexed, that same content goes
+    into the index - and the index is an ordinary file, protected by permissions
+    rather than by encryption.
+
+    A copy of the data then exists outside the mechanism meant to protect it. The
+    encrypted document stays encrypted, but its content can be read from the
+    index - and read by somebody without the key. Disabling indexing of such
+    files removes the contradiction between what the user encrypted and what is
+    actually protected.
+
+disruption_description:
+  pl: |
+    Zaszyfrowane pliki przestaną być znajdowane po zawartości. Nadal będą
+    widoczne w katalogu, nadal otworzą się normalnie — zmienia się wyłącznie to,
+    że wyszukiwanie po fragmencie tekstu ich nie zwróci.
+
+    Na maszynie bez szyfrowania plików zmiana nie robi nic. Tam, gdzie ktoś
+    z szyfrowania korzysta, jest odczuwalna dokładnie dla tej osoby i dokładnie
+    w tym jednym scenariuszu. Nie ma restartu, nie ma przerwy, indeks nie jest
+    przebudowywany od zera.
+  en: |
+    Encrypted files stop being found by their content. They remain visible in the
+    folder and still open normally - what changes is only that a search for a
+    fragment of text will not return them.
+
+    On a machine without file encryption the change does nothing. Where somebody
+    does use encryption it is noticeable precisely for that person and precisely
+    in that one scenario. There is no restart, no interruption, and the index is
+    not rebuilt from scratch.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - user-interface
+  what_breaks:
+    pl:
+      - Zaszyfrowane pliki przestaną być odnajdywane przez wyszukiwanie po zawartości
+    en:
+      - Encrypted files stop being found by content search
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Praca na maszynie opiera się na wyszukiwaniu w zaszyfrowanych dokumentach po ich treści
+    en:
+      - Work on the machine depends on searching encrypted documents by their content
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+      $name = 'AllowIndexingEncryptedStoresOrItems'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    $name = 'AllowIndexingEncryptedStoresOrItems'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowIndexingEncryptedStoresOrItems' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-search
+
+notes:
+  pl: |
+    Wyłączenie indeksowania nie usuwa z indeksu tego, co już tam trafiło.
+    Dane wpisane wcześniej zostają do czasu przebudowy indeksu — reguła tego nie
+    wymusza, bo przebudowa jest operacją o zupełnie innym koszcie i powinna być
+    osobną decyzją. Warto to wiedzieć, zanim uzna się punkt za zamknięty.
+
+    Punkt dotyczy szyfrowania pojedynczych plików, nie szyfrowania całego dysku.
+    Przy szyfrowanym dysku indeks jest chroniony razem z resztą i sprzeczność,
+    o której mowa w opisie, nie powstaje.
+  en: |
+    Disabling indexing does not remove from the index what has already gone into
+    it. Data written earlier stays until the index is rebuilt - the rule does not
+    force that, because a rebuild is an operation of an entirely different cost
+    and should be a separate decision. Worth knowing before considering the item
+    closed.
+
+    The item concerns encryption of individual files, not whole-disk encryption.
+    With an encrypted disk the index is protected along with everything else and
+    the contradiction described above does not arise.

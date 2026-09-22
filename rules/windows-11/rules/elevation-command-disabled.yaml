@@ -1,0 +1,163 @@
+id: win11-elevation-command-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components
+  title:
+    pl: Polecenie podnoszenia uprawnień w konsoli wyłączone
+    en: Privilege elevation command in the console disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Polecenie podnoszące uprawnienia pozwala uruchomić dowolny program
+    z uprawnieniami administratora z poziomu zwykłej konsoli. W najwygodniejszym
+    trybie uruchamiany program dzieli konsolę z procesem, który go wywołał.
+
+    To oznacza, że proces bez uprawnień pozostaje w tej samej konsoli co proces
+    uprzywilejowany i może na niego wpływać. Program działający na koncie
+    użytkownika — także taki, który uruchomił się bez jego wiedzy — dostaje
+    wtedy drogę do uprawnień administratora bez ponownego pytania o zgodę.
+    Wyłączenie mechanizmu zamyka ją w całości.
+  en: |
+    The elevation command allows any program to be run with administrator rights
+    from an ordinary console. In its most convenient mode, the program being run
+    shares the console with the process that invoked it.
+
+    Which means an unprivileged process stays in the same console as a privileged
+    one and can influence it. A program running under the user's account -
+    including one that started without their knowledge - then gains a route to
+    administrator rights without a fresh prompt for consent. Disabling the
+    mechanism closes it entirely.
+
+disruption_description:
+  pl: |
+    Osoby pracujące w konsoli stracą wygodny sposób podnoszenia uprawnień
+    i będą musiały otwierać osobne okno uruchomione jako administrator. Nic poza
+    tym nie przestaje działać.
+
+    Odczuwalne wyłącznie dla administratorów i osób pracujących w wierszu
+    polecenia; dla pozostałych użytkowników zmiana jest niewidoczna. Skrypty
+    wywołujące to polecenie przestaną działać i zgłoszą brak polecenia, a nie
+    odmowę — to najczytelniejszy możliwy objaw i łatwo po nim trafić do
+    przyczyny.
+  en: |
+    People who work in the console lose a convenient way of elevating and will
+    have to open a separate window started as administrator. Nothing else stops
+    working.
+
+    Noticeable only to administrators and people working at the command line;
+    for other users the change is invisible. Scripts invoking the command stop
+    working and report a missing command rather than a refusal - the clearest
+    possible symptom, and an easy one to trace back to its cause.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - user-interface
+  what_breaks:
+    pl:
+      - Podnoszenie uprawnień z poziomu zwykłej konsoli przestanie być dostępne
+      - Skrypty wywołujące to polecenie zgłoszą brak polecenia i przerwą działanie
+      - Praca administracyjna w konsoli będzie wymagała osobnego okna uruchomionego jako administrator
+    en:
+      - Elevating from an ordinary console stops being available
+      - Scripts invoking the command report a missing command and stop
+      - Administrative work in the console requires a separate window started as administrator
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na maszynie działają skrypty administracyjne korzystające z tego polecenia
+      - Praca administracyjna odbywa się głównie w konsoli i nie ma czasu na zmianę nawyków
+    en:
+      - The machine runs administrative scripts relying on this command
+      - Administrative work happens mostly in the console and there is no time to change habits
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sudo'
+      $name = 'Enabled'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sudo'
+    $name = 'Enabled'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sudo'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Enabled' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/sudo/
+
+notes:
+  pl: |
+    Mechanizm ma kilka trybów pracy różniących się tym, jak bardzo proces
+    uprzywilejowany jest oddzielony od konsoli, z której go wywołano. Ta reguła
+    wymaga wyłączenia w całości, a nie wyboru trybu bezpieczniejszego: tryby
+    pośrednie zmniejszają ryzyko, ale go nie usuwają, a raport ma odpowiadać na
+    pytanie, czy droga jest zamknięta, nie czy jest węższa.
+
+    Punkt dotyczy funkcji dodanej w nowszych wydaniach systemu. Na maszynie,
+    która jej nie ma, brak klucza polityki i tak liczy się jako niespełnienie —
+    ustawienie zapisane z wyprzedzeniem zadziała po aktualizacji, a to jest
+    tańsze niż wracanie do tematu po fakcie.
+  en: |
+    The mechanism has several modes differing in how far the privileged process
+    is separated from the console that invoked it. This rule requires it to be
+    disabled entirely rather than set to a safer mode: intermediate modes reduce
+    the risk but do not remove it, and the report is meant to answer whether the
+    route is closed, not whether it is narrower.
+
+    The item concerns a feature added in newer releases of the system. On a
+    machine that does not have it, a missing policy key still counts as unmet -
+    a setting written in advance takes effect after an update, and that is
+    cheaper than coming back to the subject afterwards.

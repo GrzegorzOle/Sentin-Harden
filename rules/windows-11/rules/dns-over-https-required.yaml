@@ -1,0 +1,182 @@
+id: win11-dns-over-https-required
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > DNS Client
+  title:
+    pl: Szyfrowane rozpoznawanie nazw wymagane
+    en: Encrypted name resolution required
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zapytania o nazwy idą domyślnie otwartym tekstem. Każdy, kto widzi ruch,
+    widzi więc pełną listę adresów, z którymi ta maszyna się łączy — a to
+    wystarczy, żeby odtworzyć, z czego korzysta jej użytkownik i kiedy.
+
+    Poważniejsze od podsłuchu jest jednak to, że zapytanie bez ochrony daje się
+    podmienić w locie. Odpowiedź przysłana przez kogoś obcego kieruje maszynę
+    pod wskazany adres, a ona nie ma jak tego zauważyć. Szyfrowane rozpoznawanie
+    nazw zamyka oba scenariusze naraz, bo odpowiedź pochodzi od serwera, którego
+    tożsamość została potwierdzona.
+  en: |
+    Name queries travel in the clear by default. Anybody who sees the traffic
+    therefore sees the full list of addresses this machine connects to - and
+    that is enough to reconstruct what its user relies on, and when.
+
+    More serious than eavesdropping, though, is that an unprotected query can be
+    substituted in flight. An answer sent by a stranger directs the machine to an
+    address of their choosing, and it has no way of noticing. Encrypted name
+    resolution closes both scenarios at once, because the answer comes from a
+    server whose identity has been confirmed.
+
+disruption_description:
+  pl: |
+    To jest zmiana, którą trzeba zaplanować, bo w wariancie wymagającym potrafi
+    odciąć maszynę od sieci w całości.
+
+    Wymaganie szyfrowania oznacza, że maszyna nie skorzysta z serwera nazw,
+    który tego nie obsługuje. Serwer firmowy, serwer w routerze na łączu
+    domowym i serwer w sieci hotelowej zwykle go nie obsługują — a wtedy
+    rozpoznawanie nazw przestaje działać i nie działa nic, co z niego korzysta.
+    Objaw wygląda jak zerwane łącze, mimo że łącze jest sprawne.
+
+    Osobny, cichszy skutek: rozwiązywanie nazw wewnętrznych przez serwer firmowy
+    przestanie działać, więc zasoby dostępne tylko po nazwie w sieci lokalnej
+    znikną, nawet jeśli reszta internetu działa.
+  en: |
+    This is a change that needs planning, because in the requiring variant it
+    can cut the machine off from the network entirely.
+
+    Requiring encryption means the machine will not use a name server that does
+    not support it. A company server, a server in a home router and a server on a
+    hotel network usually do not - and then name resolution stops working, and so
+    does everything that relies on it. The symptom looks like a broken link even
+    though the link is fine.
+
+    A separate, quieter consequence: resolving internal names through the company
+    server stops working, so resources reachable only by name on the local
+    network disappear, even if the rest of the internet works.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Maszyna nie skorzysta z serwera nazw bez obsługi szyfrowania, także w sieci firmowej
+      - Nazwy wewnętrzne rozpoznawane przez serwer firmowy przestaną się rozwiązywać
+      - W sieci hotelowej albo domowej rozpoznawanie nazw może przestać działać w całości
+      - Objaw wygląda jak zerwane łącze, mimo że łącze działa
+    en:
+      - The machine will not use a name server without encryption support, including on the company network
+      - Internal names resolved by the company server stop resolving
+      - On a hotel or home network name resolution may stop working entirely
+      - The symptom looks like a broken link even though the link works
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwer nazw używany w tej sieci nie obsługuje szyfrowanego rozpoznawania
+      - Maszyna korzysta z nazw wewnętrznych rozwiązywanych wyłącznie przez serwer firmowy
+      - Maszyna jest przenośna i łączy się z sieciami, nad którymi nikt nie panuje
+    en:
+      - The name server used on this network does not support encrypted resolution
+      - The machine uses internal names resolved only by the company server
+      - The machine is portable and connects to networks nobody controls
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+      $name = 'DoHPolicy'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    $name = 'DoHPolicy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DoHPolicy' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/networking/dns/doh-client-support
+
+notes:
+  pl: |
+    Reguła wymaga wariantu najostrzejszego, choć istnieje łagodniejszy —
+    szyfrowanie tam, gdzie serwer je obsługuje, i otwarty tekst tam, gdzie nie.
+    Wariant łagodniejszy nie spełnia tego punktu, bo pozwala na cofnięcie się do
+    otwartego tekstu, a to właśnie jest scenariusz, przed którym punkt broni.
+
+    Na maszynie przenośnej albo w sieci bez obsługi szyfrowania prawidłową
+    odpowiedzią jest zapisany wyjątek z uzasadnieniem, a nie wdrożenie wariantu
+    łagodniejszego i uznanie punktu za spełniony. To rozróżnienie decyduje
+    o wartości raportu.
+
+    Przed uruchomieniem warto sprawdzić, czy serwer nazw tej sieci obsługuje
+    szyfrowanie. Podsumowanie skutków ma to powiedzieć wprost, bo błąd w tym
+    punkcie objawia się jako brak łączności, a nie jako komunikat o polityce.
+  en: |
+    The rule requires the strictest variant, even though a milder one exists -
+    encryption where the server supports it and plain text where it does not.
+    The milder variant does not satisfy this item, because it permits falling
+    back to plain text, and that is exactly the scenario the item defends
+    against.
+
+    On a portable machine or a network without encryption support, the correct
+    answer is a recorded exception with a justification rather than deploying the
+    milder variant and calling the item met. That distinction decides the value
+    of the report.
+
+    Before running it is worth checking whether this network's name server
+    supports encryption. The summary of consequences should say so plainly,
+    because an error here shows up as a loss of connectivity rather than as a
+    policy message.

@@ -1,0 +1,151 @@
+id: win11-ink-workspace-above-lock-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Ink Workspace
+  title:
+    pl: Obszar roboczy pisma odręcznego niedostępny z ekranu blokady
+    en: Ink workspace unavailable from the lock screen
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obszar roboczy pisma odręcznego daje się otworzyć na zablokowanym ekranie,
+    żeby dało się szybko coś zanotować. Otwiera się razem z zawartością
+    poprzedniej notatki — czyli pokazuje to, co użytkownik zapisał wcześniej,
+    osobie, która nie podała hasła.
+
+    Gorsze jest to, że notatka bywa miejscem, w które przepisuje się rzeczy
+    tymczasowe: numer, adres, kod, hasło do przekazania komuś. Funkcja
+    pomyślana jako wygoda staje się więc oknem na dane zapisane w pośpiechu.
+    To ten sam problem co przy pokazie slajdów na ekranie blokady, tylko dotyczy
+    treści pisanych ręcznie, a nie plików.
+  en: |
+    The ink workspace can be opened on a locked screen so that something can be
+    jotted down quickly. It opens along with the content of the previous note -
+    that is, it shows what the user wrote earlier to somebody who has not entered
+    a password.
+
+    Worse, a note tends to be the place where temporary things get copied: a
+    number, an address, a code, a password to pass on to somebody. A feature
+    conceived as a convenience therefore becomes a window onto data written in
+    haste. It is the same problem as with the lock screen slideshow, only it
+    concerns handwritten content rather than files.
+
+disruption_description:
+  pl: |
+    Obszar roboczy działa normalnie po zalogowaniu. Zmienia się wyłącznie to, że
+    nie otworzy się przed podaniem hasła.
+
+    Na maszynie bez pióra i bez ekranu dotykowego zmiana nie robi zupełnie nic.
+    Na tablecie odczuwalna jest dla osoby, która notuje na szybko — traci jeden
+    gest, a zyskuje konieczność odblokowania. Nie ma restartu ani wylogowania.
+  en: |
+    The workspace works normally after signing in. What changes is only that it
+    will not open before a password is entered.
+
+    On a machine with no pen and no touchscreen the change does nothing
+    whatsoever. On a tablet it is noticeable for somebody who takes quick notes -
+    they lose one gesture and gain the need to unlock. There is no restart and no
+    sign-out.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Notatka odręczna nie otworzy się już z ekranu blokady, bez odblokowania urządzenia
+    en:
+      - A handwritten note no longer opens from the lock screen without unlocking the device
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Urządzenie służy do szybkiego notowania piórem i gest z ekranu blokady jest częścią tej pracy
+    en:
+      - The device is used for quick pen notes and the lock screen gesture is part of that work
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsInkWorkspace'
+      $name = 'AllowWindowsInkWorkspace'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[01]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsInkWorkspace'
+    $name = 'AllowWindowsInkWorkspace'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsInkWorkspace'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowWindowsInkWorkspace' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-windowsinkworkspace
+
+notes:
+  pl: |
+    Sprawdzenie uznaje dwie wartości: całkowite wyłączenie obszaru roboczego
+    oraz pozostawienie go włączonym przy zablokowanym dostępie z ekranu blokady.
+    Obie spełniają to, o co w punkcie chodzi, a wybór między nimi zależy od
+    tego, czy ktoś z funkcji korzysta.
+
+    Naprawa zapisuje wariant łagodniejszy — obszar roboczy zostaje, znika tylko
+    dostęp sprzed zalogowania. Odbieranie całej funkcji byłoby tu nadmiarowe:
+    problemem jest dostęp bez uwierzytelnienia, a nie notatki jako takie.
+  en: |
+    The check accepts two values: disabling the workspace altogether, and
+    leaving it on with access from the lock screen blocked. Both satisfy what the
+    item is about, and the choice between them depends on whether anybody uses
+    the feature.
+
+    The fix writes the milder variant - the workspace stays, only access from
+    before sign-in disappears. Taking the whole feature away would be excessive
+    here: the problem is access without authentication, not notes as such.

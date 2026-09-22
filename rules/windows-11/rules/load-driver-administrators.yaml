@@ -1,0 +1,187 @@
+id: win11-load-driver-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Ładowanie sterowników zastrzeżone dla administratorów
+    en: Loading drivers restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sterownik to kod wykonywany w jądrze, czyli na poziomie, z którego widać
+    całą pamięć maszyny i można wyłączyć dowolne zabezpieczenie działające
+    wyżej. Uprawnienie do ładowania sterowników jest więc równoważne pełnej
+    kontroli nad systemem, niezależnie od tego, jakie konto je posiada.
+
+    Przyznanie go komukolwiek poza administratorami znosi w praktyce podział na
+    konta uprzywilejowane i zwykłe. Konto z tym uprawnieniem nie musi
+    podnosić uprawnień — wystarczy, że załaduje sterownik, który zrobi to za
+    nie. To jedna z najkrótszych dróg od konta zwykłego do pełnej kontroli
+    i dlatego punkt ma kategorię krytyczną.
+  en: |
+    A driver is code executed in the kernel - at a level from which the whole of
+    the machine's memory is visible and any protection running above can be
+    switched off. The right to load drivers is therefore equivalent to full
+    control of the system, regardless of which account holds it.
+
+    Granting it to anybody but administrators effectively abolishes the division
+    between privileged and ordinary accounts. An account holding it does not
+    need to elevate - it need only load a driver that will do so on its behalf.
+    It is one of the shortest routes from an ordinary account to full control,
+    which is why the item is rated critical.
+
+disruption_description:
+  pl: |
+    Na maszynie skonfigurowanej normalnie uprawnienie i tak mają wyłącznie
+    administratorzy, więc zmiana nic nie zmienia.
+
+    Tam, gdzie ktoś dopisał do listy konto usługowe albo grupę operatorów,
+    zmiana odbierze im tę możliwość. Uderza to w oprogramowanie instalujące
+    sterowniki w trakcie pracy: narzędzia do obrazowania dysków, emulatory
+    napędów, część oprogramowania pomiarowego i zabezpieczającego. Objawem jest
+    odmowa przy uruchomieniu funkcji, a nie przy starcie programu — dlatego
+    problem ujawnia się później, niż wprowadzono zmianę.
+  en: |
+    On a normally configured machine only administrators hold the right anyway,
+    so the change changes nothing.
+
+    Where somebody added a service account or an operators group to the list,
+    the change takes that ability away. It hits software that installs drivers
+    while running: disk imaging tools, drive emulators, some measurement and
+    security software. The symptom is a refusal when the function is invoked
+    rather than when the program starts - which is why the problem surfaces later
+    than the change was made.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konta usługowe z tym uprawnieniem stracą możliwość ładowania sterowników
+      - Narzędzia instalujące sterowniki w trakcie pracy mogą przestać wykonywać część funkcji
+      - Odmowa pojawia się przy wywołaniu funkcji, a nie przy uruchomieniu programu
+    en:
+      - Service accounts holding this right lose the ability to load drivers
+      - Tools installing drivers while running may stop performing some functions
+      - The refusal appears when the function is invoked, not when the program starts
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa oprogramowanie ładujące sterowniki z konta bez uprawnień administracyjnych
+      - Nie ustalono, komu uprawnienie zostało przyznane i po co
+    en:
+      - The machine runs software loading drivers from an account without administrative rights
+      - It has not been established who was granted the right and why
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeLoadDriverPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeLoadDriverPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeLoadDriverPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeLoadDriverPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeLoadDriverPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/load-and-unload-device-drivers
+
+notes:
+  pl: |
+    Przypisanie uprawnienia zastępuje całą listę, a nie dopisuje się do niej.
+    Ta reguła robi to świadomie: celem jest wyłączność administratorów, więc
+    wszystko, co znajdowało się na liście wcześniej, ma z niej zniknąć.
+    W regułach odmawiających uprawnień postępujemy odwrotnie — tam dotychczasowe
+    wpisy trzeba przenieść, żeby zmiana nie odebrała przypadkiem odmowy komuś
+    innemu.
+
+    Identyfikatory zapisujemy liczbowo, nie nazwami grup. Nazwy grup wbudowanych
+    są tłumaczone razem z systemem i porównanie po nich nie działa poza wersją
+    angielską.
+  en: |
+    Assigning a right replaces the whole list rather than adding to it. This rule
+    does so deliberately: the aim is exclusivity for administrators, so whatever
+    was on the list before is meant to disappear from it. In rules that deny
+    rights we do the opposite - there the existing entries have to be carried
+    over, so that the change does not accidentally lift a denial from somebody
+    else.
+
+    Identifiers are written numerically rather than as group names. Built-in
+    group names are translated along with the system and comparing by them does
+    not work outside the English version.

@@ -1,0 +1,183 @@
+id: win11-create-token-none
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Tworzenie obiektu tokenu nieprzyznane nikomu
+    en: Create a token object granted to no one
+
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Token to struktura, którą system nosi przy każdym procesie i z której
+    odczytuje, kim ten proces jest i do czego ma prawo. Uprawnienie do tworzenia
+    tokenu pozwala tę strukturę zbudować samodzielnie — czyli wpisać do niej
+    dowolną tożsamość i dowolny zestaw uprawnień.
+
+    Konto z tym uprawnieniem nie musi łamać żadnego hasła ani wykorzystywać
+    błędu: wystarczy, że zbuduje token systemu i zacznie działać jako system.
+    Obchodzi to cały mechanizm kontroli dostępu naraz, bo kontrola dostępu ufa
+    tokenowi. Dlatego uprawnienie nie ma być przyznane nikomu — łącznie
+    z administratorami.
+  en: |
+    A token is the structure the system carries with every process and reads to
+    learn who that process is and what it may do. The right to create a token
+    allows that structure to be built by hand - that is, to have any identity and
+    any set of privileges written into it.
+
+    An account holding this right need not break a password or exploit a bug: it
+    need only build the system's token and start acting as the system. That
+    bypasses the entire access control mechanism at once, because access control
+    trusts the token. Which is why the right is to be granted to nobody -
+    administrators included.
+
+disruption_description:
+  pl: |
+    Nic. Uprawnienie nie jest przyznawane w standardowej konfiguracji i żaden
+    normalnie działający składnik systemu z niego nie korzysta — procesy, które
+    tworzą tokeny, robią to jako konto systemowe, a konto systemowe nie potrzebuje
+    do tego wpisu na liście.
+
+    Punkt jest w praktyce sprawdzeniem, czy ktoś tego uprawnienia komuś nie
+    dopisał. Jeśli lista jest pusta, naprawa niczego nie zmienia; jeśli nie jest,
+    to sam ten fakt jest znaleziskiem wartym wyjaśnienia, zanim się go wyczyści.
+  en: |
+    Nothing. The right is not granted in a standard configuration and no normally
+    functioning system component uses it - processes that create tokens do so as
+    the system account, and the system account does not need a list entry for
+    that.
+
+    In practice the item is a check on whether somebody has added this right for
+    somebody. If the list is empty, the fix changes nothing; if it is not, that
+    fact alone is a finding worth explaining before it is cleared.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Żaden znany składnik systemu nie traci na tej zmianie niczego
+      - Oprogramowanie, któremu ktoś świadomie to uprawnienie przyznał, przestanie działać
+    en:
+      - No known system component loses anything by this change
+      - Software to which somebody deliberately granted this right stops working
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Uprawnienie zostało przyznane świadomie i nie ustalono jeszcze, co z niego korzysta
+    en:
+      - The right was granted deliberately and it has not yet been established what relies on it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreateTokenPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreateTokenPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreateTokenPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreateTokenPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreateTokenPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-a-token-object
+
+notes:
+  pl: |
+    Sprawdzenie uznaje dwa stany za spełnienie: brak wiersza w eksporcie
+    i wiersz pusty. To nie jest to samo — pierwszy oznacza, że polityka lokalna
+    w ogóle tego uprawnienia nie opisuje, drugi, że opisuje je jako nieprzyznane
+    nikomu. Skutek jest identyczny, więc reguła nie rozdziela ich w wyniku, ale
+    w zapisie kopii zachowuje różnicę, żeby wycofanie wróciło do stanu, który
+    faktycznie zastało.
+
+    Naprawa zapisuje wiersz pusty, a nie usuwa wiersza. Pusty wpis jest
+    deklaracją, która przetrwa nałożenie polityki i będzie widoczna dla każdego,
+    kto później zajrzy do konfiguracji — brak wiersza wygląda jak przeoczenie
+    i nie mówi nic.
+  en: |
+    The check treats two states as satisfying the item: no line in the export, and
+    an empty line. These are not the same - the first means local policy does not
+    describe this right at all, the second that it describes it as granted to
+    nobody. The effect is identical, so the rule does not separate them in the
+    result, but the backup record keeps the difference so that a rollback returns
+    to the state it actually found.
+
+    The fix writes an empty line rather than removing the line. An empty entry is
+    a declaration that survives a policy being applied and will be visible to
+    anybody who later looks at the configuration - a missing line looks like an
+    oversight and says nothing.

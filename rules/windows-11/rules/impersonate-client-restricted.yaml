@@ -1,0 +1,191 @@
+id: win11-impersonate-client-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Personifikacja klienta ograniczona do administratorów i kont usługowych
+    en: Impersonating a client restricted to administrators and service accounts
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Personifikacja to mechanizm, dzięki któremu usługa obsługująca żądanie może
+    na chwilę przyjąć tożsamość tego, kto je wysłał, i sprawdzić uprawnienia
+    jego, a nie swoje. Bez tego każda usługa musiałaby ręcznie porównywać
+    uprawnienia, a to prowadzi do błędów.
+
+    Kłopot zaczyna się, gdy uprawnienie ma proces, który nie jest usługą.
+    Potrafi on wtedy skłonić uprzywilejowany proces do połączenia się z nim
+    i przyjąć jego tożsamość — a dalej działać jako system z konta zwykłego
+    użytkownika. To rodzina technik wykorzystywana w praktyce do podnoszenia
+    uprawnień i właśnie dlatego lista uprawnionych ma obejmować tylko
+    administratorów i konta, na których działają usługi systemowe.
+  en: |
+    Impersonation is the mechanism by which a service handling a request can
+    briefly take on the identity of whoever sent it and check that party's
+    permissions rather than its own. Without it every service would have to
+    compare permissions by hand, which leads to mistakes.
+
+    Trouble starts when the right is held by a process that is not a service. It
+    can then induce a privileged process to connect to it and assume that
+    process's identity - and go on acting as the system from an ordinary user's
+    account. This is a family of techniques used in practice for elevation, which
+    is why the list of holders is to cover only administrators and the accounts
+    system services run under.
+
+disruption_description:
+  pl: |
+    Na maszynie skonfigurowanej standardowo lista już tak wygląda i zmiana nic
+    nie robi.
+
+    Ryzyko leży gdzie indziej: na maszynie, na której działa serwer aplikacji,
+    serwer bazy danych albo serwer WWW, uprawnienie bywa nadane grupie, w której
+    znajduje się pula robocza tej aplikacji. Zastąpienie listy odbierze je tej
+    grupie i aplikacja przestanie obsługiwać żądania w imieniu użytkowników —
+    zwykle błędem uwierzytelnienia, który wygląda na problem z kontem, a nie
+    z uprawnieniem maszyny. Stąd wymóg sprawdzenia przed wykonaniem.
+  en: |
+    On a machine configured as standard the list already looks like this and the
+    change does nothing.
+
+    The risk lies elsewhere: on a machine running an application server, a
+    database server or a web server, the right is sometimes granted to a group
+    containing that application's worker pool. Replacing the list takes it away
+    from that group and the application stops serving requests on behalf of users -
+    usually with an authentication error that looks like an account problem
+    rather than a machine rights problem. Hence the requirement to check first.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - web-server-services
+  what_breaks:
+    pl:
+      - Aplikacje serwerowe działające na własnym koncie stracą możliwość obsługi żądań w imieniu użytkownika
+      - Pule robocze serwera WWW spoza kont usługowych przestaną uwierzytelniać użytkowników
+      - Błąd zgłaszany użytkownikowi wygląda na problem z jego kontem, nie na brak uprawnienia maszyny
+    en:
+      - Server applications running under their own account lose the ability to serve requests on a user's behalf
+      - Web server worker pools outside the service accounts stop authenticating users
+      - The error the user sees looks like a problem with their account, not a missing machine right
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa serwer WWW albo aplikacyjny z pulą roboczą na własnym koncie
+      - Nie ustalono, którym kontom uprawnienie zostało przyznane poza domyślnymi
+    en:
+      - The machine runs a web or application server with a worker pool under its own account
+      - It has not been established which accounts hold the right beyond the default ones
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeImpersonatePrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-19,S-1-5-20,S-1-5-32-544,S-1-5-6|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeImpersonatePrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeImpersonatePrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeImpersonatePrivilege = *S-1-5-32-544,*S-1-5-19,*S-1-5-20,*S-1-5-6',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeImpersonatePrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/impersonate-a-client-after-authentication
+
+notes:
+  pl: |
+    Wymagana lista to administratorzy oraz trzy tożsamości usługowe: usługa
+    lokalna, usługa sieciowa i zbiorcza grupa procesów uruchomionych jako usługa.
+    Ta ostatnia jest tożsamością nadawaną automatycznie każdemu procesowi
+    startującemu przez menedżera usług, więc obejmuje także konta usługowe, które
+    nie mają nazwy na tej liście.
+
+    Sprawdzenie nie uznaje braku wiersza za spełnienie, choć przy innych
+    uprawnieniach tak robimy. Powód jest taki, że domyślna lista nie jest pusta
+    — brak wiersza oznacza tu, że polityka nie opisuje zestawu, który ma być
+    opisany, a nie że uprawnienia nikt nie ma. Pusty wiersz przechodzi, bo jest
+    stanem jeszcze węższym od wymaganego.
+  en: |
+    The required list is administrators plus three service identities: the local
+    service, the network service, and the collective group of processes started
+    as a service. The last of these is an identity granted automatically to every
+    process started by the service manager, so it also covers service accounts
+    not named on the list.
+
+    The check does not treat a missing line as satisfying the item, although with
+    other rights we do. The reason is that the default list is not empty - here a
+    missing line means the policy does not describe a set that is meant to be
+    described, not that nobody holds the right. An empty line passes, because it
+    is a state narrower still than the one required.

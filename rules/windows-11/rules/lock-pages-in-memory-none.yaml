@@ -1,0 +1,181 @@
+id: win11-lock-pages-in-memory-none
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Blokowanie stron w pamięci nieprzyznane nikomu
+    en: Lock pages in memory granted to no one
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System w normalnej pracy przenosi rzadziej używane fragmenty pamięci na dysk,
+    żeby zwolnić miejsce dla tego, co jest właśnie potrzebne. Uprawnienie do
+    blokowania stron pozwala procesowi oznaczyć swoją pamięć jako nieprzenoszalną
+    i tym samym wyłączyć się z tego mechanizmu.
+
+    Konto z tym uprawnieniem może zablokować tyle pamięci, że systemowi zabraknie
+    jej dla pozostałych procesów. Maszyna nie zostaje przejęta, ale przestaje
+    odpowiadać — a efekt osiąga zwykły proces użytkownika, bez podnoszenia
+    uprawnień i bez wykorzystania jakiegokolwiek błędu. Nieprzyznawanie
+    uprawnienia nikomu zamyka ten sposób unieruchomienia maszyny.
+  en: |
+    In normal operation the system moves less-used fragments of memory to disk to
+    free room for whatever is needed right now. The right to lock pages lets a
+    process mark its memory as non-pageable and so opt out of that mechanism.
+
+    An account holding this right can lock enough memory that the system runs
+    short for every other process. The machine is not taken over, but it stops
+    responding - and the effect is achieved by an ordinary user process, without
+    elevation and without exploiting any bug. Granting the right to nobody closes
+    this way of bringing a machine to a halt.
+
+disruption_description:
+  pl: |
+    Na stacji roboczej nic. Uprawnienie nie jest przyznawane domyślnie i nie
+    korzysta z niego żaden składnik systemu ani typowe oprogramowanie biurowe.
+
+    Wyjątkiem są silniki baz danych i maszyny wirtualne, które potrafią z niego
+    skorzystać dla wydajności — trzymają wtedy swoją pamięć podręczną poza
+    mechanizmem przenoszenia na dysk. Na stacji roboczej to konfiguracja rzadka,
+    ale jeśli występuje, odebranie uprawnienia nie zatrzyma takiego programu:
+    wróci on do zwykłego trybu pracy i będzie wolniejszy. Spadek wydajności,
+    nie awaria.
+  en: |
+    On a workstation, nothing. The right is not granted by default and no system
+    component or typical office software uses it.
+
+    The exception is database engines and virtual machines, which can use it for
+    performance - they then keep their cache outside the paging mechanism. On a
+    workstation that is a rare configuration, but where it exists, taking the
+    right away will not stop such a program: it falls back to ordinary operation
+    and becomes slower. A performance drop, not a failure.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Silnik bazy danych korzystający z tego uprawnienia wróci do zwykłego trybu pracy i zwolni
+      - Maszyny wirtualne z przypiętą pamięcią stracą tę optymalizację
+    en:
+      - A database engine using this right falls back to ordinary operation and slows down
+      - Virtual machines with pinned memory lose that optimisation
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa silnik bazy danych skonfigurowany do przypinania pamięci podręcznej
+      - Wydajność maszyny wirtualnej na tym hoście zależy od przypiętej pamięci
+    en:
+      - The machine runs a database engine configured to pin its cache in memory
+      - Virtual machine performance on this host depends on pinned memory
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeLockMemoryPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeLockMemoryPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeLockMemoryPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeLockMemoryPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeLockMemoryPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/lock-pages-in-memory
+
+notes:
+  pl: |
+    Kategoria ryzyka jest średnia, nie wyższa, bo skutkiem nadużycia jest
+    unieruchomienie maszyny, a nie przejęcie jej ani kradzież poświadczeń.
+    Osoba, która może wykonać na maszynie własny kod, ma zresztą prostsze sposoby
+    zająć jej pamięć — to uprawnienie tylko czyni to skuteczniejszym.
+
+    Na serwerze bazodanowym ten sam punkt wygląda inaczej: tam przypięta pamięć
+    bywa konfiguracją zalecaną przez producenta silnika, a zapisany wyjątek jest
+    właściwszą odpowiedzią niż naprawa. Reguła jest napisana pod stację roboczą
+    i w paczce serwerowej wymaga własnej oceny, a nie przeniesienia.
+  en: |
+    The risk category is medium rather than higher because the consequence of
+    abuse is a halted machine, not a captured one or stolen credentials. Somebody
+    able to run their own code on the machine has simpler ways of consuming its
+    memory anyway - this right merely makes doing so more effective.
+
+    On a database server the same item looks different: there, pinned memory is
+    sometimes the configuration the engine vendor recommends, and a recorded
+    exception is a more fitting answer than a fix. The rule is written for a
+    workstation and in a server pack needs its own assessment rather than a copy.

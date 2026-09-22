@@ -1,0 +1,187 @@
+id: win11-backup-files-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Tworzenie kopii zapasowych zastrzeżone dla administratorów
+    en: Backing up files restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uprawnienie do tworzenia kopii zapasowych pozwala odczytać dowolny plik
+    z pominięciem jego uprawnień. Program kopiujący musi to potrafić, bo inaczej
+    nie skopiowałby cudzych katalogów — ale ta sama zdolność działa poza
+    programem kopiującym i nie odróżnia kopii od odczytu.
+
+    Konto z tym uprawnieniem czyta wszystko: dokumenty innych użytkowników,
+    pliki bazy poświadczeń, klucze prywatne zapisane na dysku. Nie musi zmieniać
+    uprawnień ani przejmować właściciela, więc nie zostawia po sobie takiego
+    śladu jak przejęcie pliku. Ograniczenie listy do administratorów sprawia, że
+    ta zdolność nie wychodzi poza konta, które i tak mają dostęp do całej maszyny.
+  en: |
+    The backup right allows any file to be read regardless of its permissions.
+    Backup software has to be able to do this, or it could not copy other
+    people's folders - but the same ability works outside backup software and
+    does not distinguish copying from reading.
+
+    An account holding it reads everything: other users' documents, credential
+    store files, private keys saved to disk. It need not change permissions or
+    take ownership, so it leaves nothing like the trail that taking ownership
+    leaves. Restricting the list to administrators keeps this ability from
+    reaching beyond accounts that have access to the whole machine anyway.
+
+disruption_description:
+  pl: |
+    Zmiana uderza dokładnie w to, do czego uprawnienie służy: w oprogramowanie
+    kopii zapasowych działające z konta innego niż administrator. Taka konfiguracja
+    jest częsta, bo konta usługowe celowo tworzy się bez pełnych uprawnień —
+    i właśnie dlatego punkt wymaga sprawdzenia, a nie wykonania w ciemno.
+
+    Objawem jest niekompletna kopia, nie jej brak. Zadanie wykonuje się do końca
+    i kończy powodzeniem, pomijając po cichu pliki, do których zabrakło dostępu.
+    To najgorszy możliwy sposób, w jaki ta zmiana może się ujawnić: dowiadujesz
+    się o niej przy odtwarzaniu.
+  en: |
+    The change hits exactly what the right is for: backup software running under
+    an account other than an administrator. That configuration is common, because
+    service accounts are deliberately created without full rights - which is
+    precisely why the item calls for a check rather than a blind fix.
+
+    The symptom is an incomplete backup, not a missing one. The job runs to the
+    end and reports success, silently skipping files it could not reach. That is
+    the worst possible way for this change to surface: you find out about it
+    during a restore.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - file-sharing
+  what_breaks:
+    pl:
+      - Kopie zapasowe wykonywane z konta innego niż administrator pominą pliki, do których nie mają uprawnień
+      - Zadanie kopii zakończy się powodzeniem mimo pominiętych plików — braku nie widać aż do odtwarzania
+      - Narzędzia migracyjne i synchronizujące profile użytkowników mogą stracić dostęp do części katalogów
+    en:
+      - Backups run under an account other than an administrator skip files they have no permissions for
+      - The backup job reports success despite skipped files - the gap is invisible until a restore
+      - Migration and profile synchronisation tools may lose access to some folders
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Kopie zapasowe wykonuje konto usługowe, które nie należy do administratorów
+      - Nie sprawdzono, z jakiego konta działa oprogramowanie kopii zapasowych na tej maszynie
+    en:
+      - Backups are performed by a service account that is not a member of the administrators group
+      - It has not been checked which account the backup software on this machine runs as
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeBackupPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeBackupPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeBackupPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeBackupPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeBackupPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/back-up-files-and-directories
+
+notes:
+  pl: |
+    Na maszynie z wbudowaną grupą operatorów kopii zapasowych uprawnienie ma
+    zwykle także ta grupa. Reguła jej nie zachowuje, bo istnienie takiej grupy
+    z przyznanym uprawnieniem jest dokładnie tym, co punkt ma ujawnić — grupa
+    bywa pusta i zapomniana, a uprawnienie zostaje gotowe do użycia przez
+    pierwsze konto, które ktoś do niej doda.
+
+    Uprawnienie do kopii i uprawnienie do odtwarzania są parą i w praktyce
+    nadaje się je razem, ale skutek ich nadużycia jest inny: to pierwsze pozwala
+    czytać, drugie nadpisywać. Trzymamy je jako osobne reguły, żeby raport
+    mówił, która z tych dwóch zdolności wyszła poza administratorów.
+  en: |
+    On a machine with the built-in backup operators group, that group usually
+    holds the right as well. The rule does not preserve it, because the existence
+    of such a group with the right granted is exactly what the item is meant to
+    reveal - the group is often empty and forgotten, while the right sits there
+    ready for the first account somebody adds to it.
+
+    The backup right and the restore right are a pair and in practice are granted
+    together, but the consequence of abusing them differs: the first allows
+    reading, the second overwriting. We keep them as separate rules so that the
+    report says which of the two abilities has reached beyond administrators.

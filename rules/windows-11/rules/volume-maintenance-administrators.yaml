@@ -1,0 +1,181 @@
+id: win11-volume-maintenance-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Konserwacja woluminów zastrzeżona dla administratorów
+    en: Volume maintenance restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uprawnienie do zadań konserwacyjnych na woluminach daje dostęp do dysku
+    z pominięciem systemu plików — na poziomie sektorów, a nie plików
+    i katalogów. Potrzebują tego narzędzia defragmentujące, sprawdzające
+    strukturę dysku i zmieniające rozmiar partycji.
+
+    Na tym poziomie uprawnienia do plików nie obowiązują, bo obowiązują one
+    w systemie plików, a nie pod nim. Konto z tym uprawnieniem może więc
+    odczytać zawartość dowolnego pliku, nie otwierając go — i zapisać w dowolne
+    miejsce dysku, nie modyfikując pliku. Żaden mechanizm kontroli dostępu
+    tego nie widzi, bo nie jest o to pytany.
+  en: |
+    The volume maintenance right gives access to the disk bypassing the file
+    system - at the level of sectors rather than files and folders. Defragmenters,
+    disk structure checkers and partition resizing tools need it.
+
+    At that level file permissions do not apply, because they apply within the
+    file system rather than beneath it. An account with this right can therefore
+    read the content of any file without opening it, and write to any place on the
+    disk without modifying a file. No access control mechanism sees this, because
+    it is not being asked.
+
+disruption_description:
+  pl: |
+    Nic. Uprawnienie mają domyślnie wyłącznie administratorzy, a narzędzia
+    konserwacyjne wbudowane w system działają jako system i nie potrzebują wpisu
+    na tej liście.
+
+    Zaplanowana optymalizacja dysków działa dalej bez zmian. Odczuwalne byłoby
+    to tylko na maszynie, na której ktoś przyznał uprawnienie konkretnemu kontu
+    pod narzędzie do obrazowania albo zmiany rozmiaru partycji uruchamiane bez
+    podnoszenia uprawnień — konfiguracja rzadka, ale wartą sprawdzenia, jeśli
+    takie narzędzie na maszynie stoi.
+  en: |
+    Nothing. By default only administrators hold the right, and the maintenance
+    tools built into the system run as the system and need no entry on this list.
+
+    Scheduled drive optimisation keeps working unchanged. It would be felt only on
+    a machine where somebody granted the right to a specific account for an
+    imaging or partition resizing tool run without elevation - a rare
+    configuration, but worth checking if such a tool is installed.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Narzędzia do obrazowania dysku i zmiany rozmiaru partycji uruchamiane bez podnoszenia uprawnień przestaną działać
+      - Konta dopisane do listy ręcznie stracą dostęp do dysku na poziomie sektorów
+    en:
+      - Disk imaging and partition resizing tools run without elevation stop working
+      - Accounts added to the list by hand lose sector-level disk access
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa narzędzie do obrazowania dysku uruchamiane z konta spoza grupy administratorów
+    en:
+      - The machine runs a disk imaging tool started from an account outside the administrators group
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeManageVolumePrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeManageVolumePrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeManageVolumePrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeManageVolumePrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeManageVolumePrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/perform-volume-maintenance-tasks
+
+notes:
+  pl: |
+    Uprawnienie bywa nadawane kontu silnika bazy danych, żeby pliki bazy
+    tworzyły się bez zerowania — na stacji roboczej to konfiguracja wyjątkowa,
+    na serwerze bazodanowym częsta. Dlatego reguła w paczce serwerowej będzie
+    wymagała innej klasy uciążliwości, a nie przepisania tej.
+
+    Dostęp na poziomie sektorów omija uprawnienia do plików, ale nie omija
+    szyfrowania dysku. Na maszynie z zaszyfrowanym woluminem odczytane sektory
+    są zaszyfrowane, o ile czyta je proces bez klucza — to jest właśnie ten
+    przypadek, w którym dwa zabezpieczenia z różnych warstw realnie się
+    uzupełniają.
+  en: |
+    The right is sometimes granted to a database engine account so that database
+    files are created without zeroing - on a workstation an exceptional
+    configuration, on a database server a common one. The rule in a server pack
+    will therefore need a different disruption class rather than a copy of this
+    one.
+
+    Sector-level access bypasses file permissions but does not bypass disk
+    encryption. On a machine with an encrypted volume the sectors read are
+    encrypted, as long as the process reading them holds no key - which is exactly
+    the case where two protections from different layers genuinely complement each
+    other.

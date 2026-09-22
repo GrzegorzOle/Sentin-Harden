@@ -1,0 +1,179 @@
+id: win11-firmware-environment-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Modyfikowanie wartości środowiska oprogramowania układowego zastrzeżone dla administratorów
+    en: Modifying firmware environment values restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wartości środowiska oprogramowania układowego to ustawienia przechowywane
+    poza systemem plików, w pamięci trwałej płyty głównej. Należy do nich
+    kolejność rozruchu i wskazanie programu ładującego, który ma wystartować.
+
+    Zmiana tych wartości dzieje się przed systemem i przed jakimkolwiek
+    zabezpieczeniem działającym w systemie. Konto, które je zmienia, wskazuje
+    maszynie, co ma uruchomić przy następnym starcie — a to jest pozycja
+    nadrzędna wobec wszystkiego, co potem zdąży się uruchomić. Odwrotnie niż
+    większość punktów z tej grupy, ten nie dotyczy tego, co można zrobić
+    w działającym systemie, tylko tego, czy ten system w ogóle wystartuje.
+  en: |
+    Firmware environment values are settings kept outside the file system, in
+    non-volatile memory on the motherboard. They include the boot order and the
+    pointer to the loader that is to start.
+
+    Changing them happens before the system and before any protection running
+    inside it. An account able to change them tells the machine what to run at the
+    next start - a position superior to everything that later gets to run. Unlike
+    most items in this group, this one is not about what can be done in a running
+    system, but about whether that system starts at all.
+
+disruption_description:
+  pl: |
+    Nic. Uprawnienie mają domyślnie wyłącznie administratorzy, a zwykłe
+    oprogramowanie nie ma powodu sięgać do ustawień rozruchu.
+
+    Z tym uprawnieniem pracują narzędzia do konfigurowania rozruchu i część
+    oprogramowania dwusystemowego, ale uruchamia się je z podniesionymi
+    uprawnieniami, więc zmiana ich nie dotyczy. Nie wpływa też na ustawienia
+    dostępne z poziomu interfejsu płyty głównej przed startem systemu — tam
+    obowiązuje hasło oprogramowania układowego, a nie uprawnienia systemu.
+  en: |
+    Nothing. By default only administrators hold the right, and ordinary software
+    has no reason to reach into boot settings.
+
+    Boot configuration tools and some dual-boot software work with this right, but
+    they are run elevated, so the change does not affect them. Nor does it affect
+    settings reachable from the motherboard interface before the system starts -
+    there a firmware password applies, not system rights.
+
+implementation_consequences:
+  impact_areas:
+    - boot-and-firmware
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Narzędzia konfigurujące rozruch uruchamiane bez podniesienia uprawnień przestaną działać
+      - Konta dopisane do listy ręcznie stracą możliwość zmiany ustawień rozruchu
+    en:
+      - Boot configuration tools run without elevation stop working
+      - Accounts added to the list by hand lose the ability to change boot settings
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa narzędzie zmieniające ustawienia rozruchu z konta spoza grupy administratorów
+    en:
+      - The machine runs a tool changing boot settings from an account outside the administrators group
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeSystemEnvironmentPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeSystemEnvironmentPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeSystemEnvironmentPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeSystemEnvironmentPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeSystemEnvironmentPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/modify-firmware-environment-values
+
+notes:
+  pl: |
+    Punkt należy czytać razem z bezpiecznym rozruchem. Tamten sprawdza, czy
+    maszyna weryfikuje to, co uruchamia; ten ogranicza, kto może jej wskazać, co
+    ma uruchomić. Same wpisy rozruchowe zmienione na maszynie z włączonym
+    bezpiecznym rozruchem nie wystarczą do uruchomienia niepodpisanego programu
+    ładującego, więc te dwa punkty realnie się wzmacniają.
+
+    Uprawnienie nie obejmuje ustawień, do których sięga się z interfejsu płyty
+    głównej przed startem systemu. Tam granicą jest hasło oprogramowania
+    układowego i żadna reguła tej aplikacji go nie ustawi — to ustawienie spoza
+    systemu i warto o tym pamiętać, zanim uzna się drogę rozruchu za zamkniętą.
+  en: |
+    The item should be read alongside secure boot. That one checks whether the
+    machine verifies what it starts; this one limits who may tell it what to
+    start. Boot entries changed on a machine with secure boot enabled are not
+    enough on their own to start an unsigned loader, so the two items genuinely
+    reinforce each other.
+
+    The right does not cover settings reached from the motherboard interface
+    before the system starts. There the boundary is a firmware password, and no
+    rule in this application will set it - that setting lives outside the system,
+    which is worth remembering before considering the boot route closed.

@@ -1,0 +1,201 @@
+id: win11-network-logon-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Dostęp z sieci ograniczony do administratorów i użytkowników pulpitu zdalnego
+    en: Network access restricted to administrators and remote desktop users
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Domyślnie z siecią tej maszyny wolno się uwierzytelnić każdemu, kto ma na
+    niej konto — łącznie z grupą „Wszyscy", jeśli ktoś jej tam nie usunął. To
+    znaczy, że stacja robocza wystawia swoje udziały i swoje interfejsy
+    zdalne szerzej, niż ktokolwiek świadomie zaplanował.
+
+    Stacja robocza rzadko ma powód, żeby ktokolwiek się do niej logował przez
+    sieć. Ograniczenie listy do administratorów i użytkowników pulpitu zdalnego
+    sprawia, że maszyna przestaje być celem wartym poświadczeń przypadkowego
+    konta: zdobyte hasło zwykłego użytkownika nie otwiera już z sieci niczego.
+    Zawęża to pole, po którym porusza się ktoś, kto zdobył jedno konto i szuka
+    następnej maszyny.
+  en: |
+    By default anybody with an account on this machine may authenticate to it
+    over the network - including the Everyone group, if nobody removed it. Which
+    means a workstation exposes its shares and its remote interfaces more widely
+    than anybody deliberately planned.
+
+    A workstation rarely has any reason for somebody to sign in to it over the
+    network. Restricting the list to administrators and remote desktop users means
+    the machine stops being a target worth an ordinary account's credentials: a
+    captured ordinary user password no longer opens anything from the network.
+    That narrows the ground somebody moves across after taking one account and
+    looking for the next machine.
+
+disruption_description:
+  pl: |
+    To punkt, po którym część rzeczy przestaje działać, i trzeba wiedzieć które,
+    zanim się go uruchomi.
+
+    Przestanie działać: dostęp zwykłego użytkownika do udostępnionych katalogów
+    tej maszyny, dostęp do jej drukarki udostępnionej w sieci, zdalne narzędzia
+    logujące się kontem zwykłego użytkownika. Zostaje dostęp administratorów
+    i osób z grupy użytkowników pulpitu zdalnego — czyli to, co na stacji
+    roboczej zwykle wystarcza.
+
+    Najczęstszy niedoceniany przypadek to maszyna, z której ktoś udostępnia
+    katalog zespołowi. Po zmianie zespół straci do niego dostęp, a osoba
+    udostępniająca niczego nie zauważy, bo u siebie nadal ten katalog widzi.
+    Objaw wystąpi u innych i zostanie zgłoszony z opóźnieniem.
+  en: |
+    This is an item after which some things stop working, and it is worth knowing
+    which before starting it.
+
+    What stops: an ordinary user's access to this machine's shared folders, access
+    to its network-shared printer, remote tools signing in with an ordinary user
+    account. What remains is access for administrators and for people in the
+    remote desktop users group - which on a workstation is usually enough.
+
+    The most commonly underestimated case is a machine somebody shares a folder
+    from for their team. After the change the team loses access to it, while the
+    person sharing notices nothing, because they still see the folder themselves.
+    The symptom occurs elsewhere and gets reported late.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - printing
+    - remote-management
+  what_breaks:
+    pl:
+      - Zwykli użytkownicy stracą dostęp do katalogów udostępnionych z tej maszyny
+      - Drukarka udostępniona z tej maszyny przestanie być dostępna dla zwykłych użytkowników
+      - Narzędzia zdalne logujące się kontem zwykłego użytkownika zgłoszą odmowę
+      - Osoba udostępniająca katalog nie zauważy problemu, bo u siebie widzi go dalej
+    en:
+      - Ordinary users lose access to folders shared from this machine
+      - A printer shared from this machine stops being available to ordinary users
+      - Remote tools signing in with an ordinary user account report a refusal
+      - The person sharing a folder notices nothing, because they still see it themselves
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Z tej maszyny udostępniane są katalogi albo drukarka dla zwykłych użytkowników
+      - Maszyna jest odpytywana zdalnie przez monitoring albo inwentaryzację na koncie zwykłego użytkownika
+      - Nie ustalono, kto i po co łączy się do tej maszyny przez sieć
+    en:
+      - Folders or a printer are shared from this machine for ordinary users
+      - The machine is polled remotely by monitoring or inventory under an ordinary user account
+      - It has not been established who connects to this machine over the network, and why
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeNetworkLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544,S-1-5-32-555|S-1-5-32-544|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeNetworkLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeNetworkLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeNetworkLogonRight = *S-1-5-32-544,*S-1-5-32-555',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeNetworkLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/access-this-computer-from-the-network
+
+notes:
+  pl: |
+    Sprawdzenie uznaje też listę zawierającą samych administratorów, bo na
+    maszynie bez pulpitu zdalnego grupa użytkowników pulpitu zdalnego nie jest
+    potrzebna i jej brak nie jest niespełnieniem. Naprawa zapisuje oba wpisy,
+    bo usunięcie grupy pulpitu zdalnego na maszynie, która z niego korzysta,
+    odcięłoby dostęp bez zapowiedzi.
+
+    Ten punkt i odmowa dostępu z sieci opisują tę samą drogę z dwóch stron.
+    Przyznanie mówi, kto może; odmowa mówi, kto na pewno nie może, i ma
+    pierwszeństwo. Wdrożenie obu jest sensowne: odmowa broni przed kontem
+    dopisanym później do grupy, która na liście przyznania została.
+  en: |
+    The check also accepts a list containing administrators alone, because on a
+    machine without remote desktop the remote desktop users group is not needed
+    and its absence is not a failure. The fix writes both entries, because
+    removing the remote desktop group on a machine that uses it would cut off
+    access without warning.
+
+    This item and the denial of network access describe the same route from two
+    sides. The grant says who may; the denial says who definitely may not, and
+    takes precedence. Applying both makes sense: the denial defends against an
+    account added later to a group that stayed on the grant list.

@@ -1,0 +1,192 @@
+id: win11-remote-interactive-logon-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Logowanie przez pulpit zdalny ograniczone do administratorów i grupy pulpitu zdalnego
+    en: Remote desktop sign-in restricted to administrators and the remote desktop group
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Lista uprawnionych do logowania przez pulpit zdalny to jedyne miejsce, które
+    mówi, kto może otworzyć na tej maszynie pełną sesję, nie będąc przy niej.
+    Grupa użytkowników pulpitu zdalnego powstała po to, żeby ta lista była
+    czytelna: dodaje się do niej konkretne osoby i widać, kto to jest.
+
+    Kiedy na liście znajdą się grupy szersze — zwykli użytkownicy, wszyscy
+    uwierzytelnieni — pytanie „kto może wejść na tę maszynę zdalnie" przestaje
+    mieć prostą odpowiedź, a każde nowe konto na maszynie dostaje tę możliwość
+    przy okazji, bez niczyjej decyzji. Utrzymanie listy w zamierzonym kształcie
+    przywraca tej decyzji wyraźny charakter.
+  en: |
+    The list of those allowed to sign in through remote desktop is the only place
+    that says who can open a full session on this machine without being at it. The
+    remote desktop users group exists so that this list stays legible: specific
+    people are added to it and it is visible who they are.
+
+    Once broader groups appear on it - ordinary users, all authenticated - the
+    question "who can get into this machine remotely" stops having a simple
+    answer, and every new account on the machine gains the ability incidentally,
+    without anybody deciding. Keeping the list in its intended shape restores that
+    decision to something explicit.
+
+disruption_description:
+  pl: |
+    Na maszynie, na której pulpit zdalny nie jest używany, zmiana nie robi nic
+    widocznego.
+
+    Tam, gdzie jest używany, wszystko zależy od tego, jak dziś wygląda lista.
+    Jeśli ktoś przyznał dostęp przez grupę zwykłych użytkowników zamiast przez
+    grupę pulpitu zdalnego — a to skrót spotykany, bo działa od razu i nie wymaga
+    zarządzania członkostwem — to po zmianie te osoby stracą dostęp do czasu,
+    aż ktoś dopisze je do właściwej grupy. Zmiana jest wtedy odwracalna, ale
+    odczuwalna natychmiast i przez konkretne osoby.
+
+    Sesja już otwarta nie zostaje zerwana; odmowa pojawia się przy następnym
+    logowaniu.
+  en: |
+    On a machine where remote desktop is not used the change does nothing visible.
+
+    Where it is used, everything depends on how the list looks today. If somebody
+    granted access through the ordinary users group instead of the remote desktop
+    group - a shortcut that does get taken, because it works immediately and needs
+    no membership management - then after the change those people lose access
+    until somebody adds them to the right group. The change is reversible, but
+    felt immediately and by specific people.
+
+    A session already open is not torn down; the refusal appears at the next
+    sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Osoby mające dostęp zdalny przez szerszą grupę stracą go do czasu dopisania do grupy pulpitu zdalnego
+      - Odmowa pojawia się przy następnym logowaniu, więc bieżąca sesja niczego nie zdradza
+      - Narzędzia wsparcia łączące się na koncie spoza obu grup przestaną działać
+    en:
+      - People whose remote access came through a broader group lose it until added to the remote desktop group
+      - The refusal appears at the next sign-in, so the current session reveals nothing
+      - Support tools connecting under an account outside both groups stop working
+  interruption: logoff
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dostęp zdalny do tej maszyny jest przyznany przez grupę szerszą niż grupa pulpitu zdalnego
+      - Nie ustalono, kto korzysta z pulpitu zdalnego na tej maszynie i z jakiej grupy ma dostęp
+    en:
+      - Remote access to this machine is granted through a group broader than the remote desktop group
+      - It has not been established who uses remote desktop on this machine and through which group
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeRemoteInteractiveLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544,S-1-5-32-555|S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeRemoteInteractiveLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeRemoteInteractiveLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeRemoteInteractiveLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/allow-log-on-through-remote-desktop-services
+
+notes:
+  pl: |
+    Brak wiersza liczy się tutaj jako spełnienie, inaczej niż przy dostępie
+    z sieci. Powód jest taki, że bez wpisu prawo mają wyłącznie administratorzy,
+    czyli stan węższy od wymaganego — a nie szerszy. Przy dostępie z sieci brak
+    wpisu znaczy coś przeciwnego, stąd różnica między tymi dwiema regułami
+    mimo bliźniaczego wyglądu.
+
+    Sama lista uprawnionych to nie to samo co włączony pulpit zdalny. Maszyna
+    z wyłączoną usługą pulpitu zdalnego przechodzi ten punkt i nadal nie
+    przyjmuje połączeń — to dwa niezależne ustawienia i raport nie powinien
+    sugerować, że jedno zastępuje drugie.
+  en: |
+    A missing line counts as satisfying the item here, unlike with network access.
+    The reason is that without an entry only administrators hold the right - a
+    state narrower than required, not broader. With network access a missing entry
+    means the opposite, hence the difference between these two rules despite their
+    twin appearance.
+
+    The list of holders is not the same thing as remote desktop being enabled. A
+    machine with the remote desktop service switched off passes this item and
+    still accepts no connections - two independent settings, and the report should
+    not suggest that one substitutes for the other.

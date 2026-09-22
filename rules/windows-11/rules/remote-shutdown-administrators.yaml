@@ -1,0 +1,178 @@
+id: win11-remote-shutdown-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Wymuszanie zamknięcia z systemu zdalnego zastrzeżone dla administratorów
+    en: Forcing shutdown from a remote system restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uprawnienie pozwala zamknąć albo zrestartować maszynę przez sieć, bez
+    logowania się na nią i bez pytania kogokolwiek o zgodę. Zamknięcie jest
+    wymuszone, więc niezapisana praca użytkownika przepada.
+
+    Sama utrata pracy to jeszcze nie atak, ale restart bywa użytecznym krokiem
+    w większym ciągu: usuwa z pamięci to, co tam było, kończy sesje, przerywa
+    działanie narzędzi obserwujących maszynę i zmusza ją do ponownego
+    przeczytania konfiguracji — także tej zmienionej przed chwilą. Utrzymanie
+    uprawnienia przy administratorach sprawia, że ten krok wymaga konta, które
+    i tak ma na tej maszynie wszystko.
+  en: |
+    The right allows a machine to be shut down or restarted over the network,
+    without signing in to it and without asking anybody. The shutdown is forced,
+    so any unsaved work is lost.
+
+    Losing work is not in itself an attack, but a restart can be a useful step in
+    a longer sequence: it clears memory of whatever was there, ends sessions,
+    interrupts tools watching the machine, and forces it to reread its
+    configuration - including configuration changed a moment earlier. Keeping the
+    right with administrators means that step requires an account that has
+    everything on this machine anyway.
+
+disruption_description:
+  pl: |
+    Nic. Uprawnienie mają domyślnie wyłącznie administratorzy i w takim kształcie
+    obsługuje wszystko, co na stacji roboczej realnie zdalnie restartuje maszynę:
+    wdrażanie aktualizacji, narzędzia zarządzania, ręczny restart przez
+    administratora.
+
+    Zmiana nie dotyczy zamykania maszyny przy klawiaturze — to osobne
+    uprawnienie i zwykły użytkownik zachowa je bez zmian. Nie dotyczy też
+    restartów wywoływanych przez sam system po instalacji aktualizacji.
+  en: |
+    Nothing. By default only administrators hold the right, and in that shape it
+    serves everything that actually restarts a workstation remotely: update
+    deployment, management tools, a manual restart by an administrator.
+
+    The change does not affect shutting the machine down at the keyboard - that is
+    a separate right and an ordinary user keeps it unchanged. Nor does it affect
+    restarts triggered by the system itself after installing updates.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Narzędzia restartujące tę maszynę zdalnie na koncie innym niż administrator przestaną działać
+      - Konta dopisane do listy ręcznie stracą możliwość zdalnego restartu
+    en:
+      - Tools restarting this machine remotely under a non-administrator account stop working
+      - Accounts added to the list by hand lose the ability to restart it remotely
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdalny restart tej maszyny wykonuje narzędzie działające na koncie spoza grupy administratorów
+    en:
+      - This machine is restarted remotely by a tool running under an account outside the administrators group
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeRemoteShutdownPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeRemoteShutdownPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeRemoteShutdownPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeRemoteShutdownPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeRemoteShutdownPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/force-shutdown-from-a-remote-system
+
+notes:
+  pl: |
+    Zamykanie zdalne i zamykanie przy maszynie to dwa osobne uprawnienia i ta
+    reguła dotyczy wyłącznie pierwszego. Rozdzielenie jest celowe: przy maszynie
+    zamknięcie systemu jest czynnością zwykłą i odbieranie jej użytkownikowi
+    utrudnia pracę bez realnego zysku, przez sieć jest czynnością
+    administracyjną.
+
+    Wymuszone zamknięcie kończy procesy bez pytania o zapis. Reguła nie zmienia
+    tego zachowania — ogranicza tylko, kto może je wywołać. Zabezpieczenie przed
+    utratą pracy leży gdzie indziej i nie jest przedmiotem tego punktu.
+  en: |
+    Remote shutdown and shutdown at the machine are two separate rights and this
+    rule concerns only the first. The separation is deliberate: at the machine,
+    shutting the system down is an ordinary act and taking it from the user
+    hinders work for no real gain, whereas over the network it is an
+    administrative one.
+
+    A forced shutdown ends processes without asking about saving. The rule does
+    not change that behaviour - it limits only who can invoke it. Protection
+    against losing work lies elsewhere and is not what this item is about.

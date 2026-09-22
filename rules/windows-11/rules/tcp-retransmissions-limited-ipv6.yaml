@@ -1,0 +1,201 @@
+id: win11-tcp-retransmissions-limited-ipv6
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Liczba powtórzeń wysyłki danych ograniczona do trzech w protokole szóstej wersji
+    en: The number of data send repeats limited to three in the sixth version protocol
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna z systemem Windows ma dwa niezależne stosy sieciowe i używa obu
+    naraz. Nowszy protokół jest włączony domyślnie i w wielu sieciach obsługuje
+    większą część ruchu, niż zakłada administrator, bo system woli go, gdy tylko
+    jest dostępny.
+
+    Wszystko, co powiedziano o powtarzaniu wysyłki w protokole starszym, dotyczy
+    tu tak samo: niepotwierdzone dane są wysyłane ponownie, odstęp między próbami
+    rośnie dwukrotnie, a przez cały ten czas połączenie zajmuje miejsce w tablicy
+    i trzyma przypisaną mu pamięć. Napastnik nawiązujący połączenia i milknący
+    płaci jednym pakietem za minuty czekania maszyny.
+
+    Różnica jest wyłącznie administracyjna. Wpis nazywa się tak samo, ale leży
+    w osobnej gałęzi i jest liczony niezależnie, więc ustawienie jednego stosu
+    nie robi nic drugiemu. Ustawienie tylko jednego daje złudzenie utwardzenia
+    i jest to najczęstszy błąd przy tej parze punktów.
+
+    Punkt ustawia trzy powtórzenia zamiast domyślnych pięciu — po stronie
+    nowszego protokołu.
+  en: |
+    A Windows machine has two independent network stacks and uses both at once. The
+    newer protocol is on by default and on many networks carries a greater part of the
+    traffic than the administrator assumes, because the system prefers it whenever it
+    is available.
+
+    Everything said about repeating a send in the older protocol holds here in the
+    same way: unacknowledged data is sent again, the interval between attempts
+    doubles, and through all that time the connection takes up a place in the table
+    and holds the memory tied to it. An attacker making connections and falling silent
+    pays one packet for minutes of the machine's waiting.
+
+    The difference is purely administrative. The entry is named the same but lies in a
+    separate key and is counted independently, so setting one stack does nothing to
+    the other. Setting only one gives an illusion of hardening and is the commonest
+    mistake with this pair of items.
+
+    The item sets three repeats in place of the default five - on the newer protocol's
+    side.
+
+disruption_description:
+  pl: |
+    Zmiana zaczyna obowiązywać po ponownym uruchomieniu maszyny i wymaga
+    świadomego wdrożenia.
+
+    Koszt jest ten sam co przy protokole starszym: maszyna szybciej uznaje
+    połączenie za zerwane, a widać to wyłącznie na łączach, na których pakiety
+    giną. W sieci przewodowej nie zmienia się nic.
+
+    Jest jednak różnica w tym, kogo to dotknie. Ruch przez nowszy protokół bywa
+    prowadzony tunelem przez sieć starszą — w połączeniach do dostawców usług,
+    w sieciach domowych i u operatorów komórkowych. Tunel dokłada własną
+    zawodność do zawodności łącza, więc powtórzenia zdarzają się tam częściej
+    niż w ruchu prowadzonym wprost. Skutek ograniczenia bywa więc na tym samym
+    łączu wyraźniejszy niż po stronie protokołu starszego.
+
+    Objaw jest identyczny i tak samo mylący: przerwane pobieranie albo
+    rozłączona sesja, bez śladu wskazującego na ustawienie.
+
+    Wymagane jest ponowne uruchomienie maszyny.
+  en: |
+    The change takes effect once the machine is restarted and calls for a deliberate
+    rollout.
+
+    The cost is the same as with the older protocol: the machine counts a connection
+    as broken sooner, and it shows only on links where packets go missing. On a wired
+    network nothing changes.
+
+    There is a difference in whom it touches, though. Traffic over the newer protocol
+    is sometimes carried in a tunnel across the older network - in connections to
+    service providers, on household networks and at mobile operators. A tunnel adds
+    its own unreliability to the link's, so repeats happen there more often than in
+    traffic carried directly. The effect of the limit can therefore be plainer on the
+    same link than on the older protocol's side.
+
+    The symptom is identical and just as misleading: a broken download or a
+    disconnected session, with nothing pointing to a setting.
+
+    A restart of the machine is required.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Na łączu o wysokiej stratności połączenia nowszego protokołu zrywają się szybciej
+      - Ruch prowadzony tunelem przez sieć starszą jest na tę zmianę bardziej wrażliwy
+      - Przesyłanie dużych plików przez sieć komórkową bywa przerywane
+      - W sieci przewodowej bez strat nie zmienia się nic
+    en:
+      - On a link with high loss the newer protocol's connections break sooner
+      - Traffic carried in a tunnel across the older network is more sensitive to this change
+      - Sending large files over a mobile network can be interrupted
+      - On a wired network without loss nothing changes
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko pracuje w terenie, na łączu komórkowym albo satelitarnym
+      - Ruch nowszego protokołu jest prowadzony tunelem o zmiennej jakości
+    en:
+      - The station works in the field, on a mobile or a satellite link
+      - The newer protocol's traffic is carried in a tunnel of uneven quality
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry is named as in the older stack, but lives in the key of the
+      # sixth version protocol and is counted separately from it.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+      $name = 'TcpMaxDataRetransmissions'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { ([string]$item.$name).Trim() }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+    $name = 'TcpMaxDataRetransmissions'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' `
+      -Name 'TcpMaxDataRetransmissions' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/tcpip-and-nbt-configuration-parameters
+
+notes:
+  pl: |
+    Reguła powtarza kształt swojej pary po stronie protokołu starszego i jest to
+    zamierzone. Oba punkty czyta się razem i oba wdraża razem; wdrożenie jednego
+    zostawia drugi stos przy wartości domyślnej.
+
+    Wyłączenie nowszego protokołu nie jest właściwą drogą do spełnienia tego
+    punktu. System korzysta z niego wewnętrznie, a jego wyłączenie ma skutki
+    znacznie poważniejsze niż cokolwiek, co ten punkt wnosi.
+
+    Brak wpisu znaczy, że obowiązuje wartość domyślna, czyli pięć.
+
+    Gałąź parametrów nowszego stosu jest odrębna od gałęzi stosu starszego —
+    przy sprawdzaniu ręcznym łatwo zajrzeć w niewłaściwą.
+  en: |
+    The rule repeats the shape of its pair on the older protocol's side and that is
+    deliberate. Both items are read together and applied together; applying one leaves
+    the other stack at its default.
+
+    Switching the newer protocol off is not the right way to meet this item. The
+    system uses it internally, and switching it off has effects far graver than
+    anything this item brings.
+
+    A missing entry means the default holds, that is five.
+
+    The newer stack's parameters key is separate from the older stack's - when
+    checking by hand it is easy to look into the wrong one.

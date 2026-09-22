@@ -1,0 +1,200 @@
+id: win11-tcp-retransmissions-limited
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Liczba powtórzeń wysyłki danych ograniczona do trzech
+    en: The number of data send repeats limited to three
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy wysłane dane nie zostaną potwierdzone, system wysyła je ponownie.
+    Odstęp między kolejnymi próbami rośnie dwukrotnie, więc pięć prób trwa
+    znacznie dłużej niż trzy — nie o dwie próby, lecz o kilkakrotność całego
+    czasu.
+
+    Przez ten czas połączenie zajmuje miejsce w tablicy połączeń i trzyma
+    przypisaną mu pamięć. Napastnik, który nawiązuje połączenia i przestaje
+    odpowiadać, płaci za każde z nich jednym pakietem, a maszyna płaci
+    minutami czekania. Nierówność tego rachunku jest całą treścią zalewania
+    maszyny połączeniami nienawiązanymi do końca: im dłużej maszyna czeka, tym
+    mniej pakietów potrzeba, żeby zapełnić jej tablicę.
+
+    Ograniczenie liczby powtórzeń skraca czekanie. Nie zamyka żadnej drogi
+    ataku i nie należy tego punktu przeceniać — zmienia proporcję kosztów
+    między napastnikiem a maszyną i tyle właśnie wnosi.
+
+    Punkt ustawia trzy powtórzenia zamiast domyślnych pięciu.
+  en: |
+    When sent data goes unacknowledged, the system sends it again. The interval
+    between attempts doubles each time, so five attempts take far longer than three -
+    not by two attempts but by several times the whole span.
+
+    Through that time the connection takes up a place in the connection table and
+    holds the memory tied to it. An attacker who makes connections and stops answering
+    pays one packet for each of them, and the machine pays minutes of waiting. The
+    unevenness of that reckoning is the whole substance of flooding a machine with
+    half-made connections: the longer the machine waits, the fewer packets are needed
+    to fill its table.
+
+    Limiting the number of repeats shortens the wait. It closes no route of attack and
+    the item should not be overrated - it changes the proportion of costs between the
+    attacker and the machine, and that is all it brings.
+
+    The item sets three repeats in place of the default five.
+
+disruption_description:
+  pl: |
+    Zmiana zaczyna obowiązywać po ponownym uruchomieniu maszyny i wymaga
+    świadomego wdrożenia.
+
+    Koszt jest jeden i trzeba go rozumieć dosłownie: maszyna szybciej uznaje
+    połączenie za zerwane. W sieci przewodowej, w której pakiety nie giną,
+    nie zmienia to nic — do trzeciego powtórzenia i tak nigdy nie dochodzi.
+    W sieci, w której pakiety giną, zmienia to dużo.
+
+    Dotyczy to łączy o wysokiej stratności: sieci bezprzewodowej na granicy
+    zasięgu, połączenia przez sieć komórkową w ruchu, łącza satelitarnego,
+    tunelu przez internet do odległej lokalizacji. Przesłanie dużego pliku albo
+    długo otwarta sesja do bazy danych, które dotąd przeżywały chwilową
+    stratność, po wdrożeniu bywają zrywane.
+
+    Objaw jest mylący: użytkownik zobaczy przerwane pobieranie albo rozłączoną
+    sesję, a nie ma nic, co wskazywałoby na zmianę ustawienia. Na stanowiskach
+    pracujących w terenie warto to rozważyć osobno.
+
+    Wymagane jest ponowne uruchomienie maszyny.
+  en: |
+    The change takes effect once the machine is restarted and calls for a deliberate
+    rollout.
+
+    There is one cost and it should be understood literally: the machine counts a
+    connection as broken sooner. On a wired network where packets do not go missing it
+    changes nothing - a third repeat never comes about anyway. On a network where
+    packets do go missing it changes a great deal.
+
+    This concerns links with high loss: a wireless network at the edge of its range, a
+    connection over a mobile network while moving, a satellite link, a tunnel across
+    the internet to a distant location. Sending a large file or a long-open session to
+    a database, which used to survive a moment of loss, can be dropped after the
+    rollout.
+
+    The symptom is misleading: the user sees a broken download or a disconnected
+    session, and there is nothing pointing to a changed setting. At stations working
+    in the field it is worth weighing separately.
+
+    A restart of the machine is required.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Na łączu o wysokiej stratności połączenia zrywają się szybciej niż dotąd
+      - Przesyłanie dużych plików przez sieć komórkową w ruchu bywa przerywane
+      - Długo otwarta sesja do bazy danych przez tunel do odległej lokalizacji może się rozłączać
+      - W sieci przewodowej bez strat nie zmienia się nic
+    en:
+      - On a link with high loss connections break sooner than before
+      - Sending large files over a mobile network while moving can be interrupted
+      - A long-open session to a database through a tunnel to a distant location may disconnect
+      - On a wired network without loss nothing changes
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko pracuje w terenie, na łączu komórkowym albo satelitarnym
+      - Aplikacja utrzymuje długie sesje przez tunel o zmiennej jakości
+    en:
+      - The station works in the field, on a mobile or a satellite link
+      - An application keeps long sessions through a tunnel of uneven quality
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+      $name = 'TcpMaxDataRetransmissions'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { ([string]$item.$name).Trim() }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    $name = 'TcpMaxDataRetransmissions'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' `
+      -Name 'TcpMaxDataRetransmissions' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/tcpip-and-nbt-configuration-parameters
+
+notes:
+  pl: |
+    Punkt ma bliźniaka dla protokołu w szóstej wersji, opisanego osobną regułą.
+    Wpis nazywa się tam tak samo, ale leży w innej gałęzi i jest liczony
+    niezależnie. Wdrożenie tylko jednego zostawia drugi stos przy wartości
+    domyślnej, a maszyna używa obu.
+
+    Wartość niższa niż trzy jest zgodnością — punkt stawia górne ograniczenie,
+    a nie wartość dokładną. Schodzenie poniżej trzech nie jest jednak zalecane:
+    zysk jest znikomy, a zrywanie połączeń rośnie szybko.
+
+    Brak wpisu znaczy, że obowiązuje wartość domyślna, czyli pięć.
+
+    Gałąź parametrów stosu sieciowego jest wspólna dla kilku punktów tej paczki,
+    więc wycofanie usuwa wyłącznie sam wpis.
+  en: |
+    The item has a twin for the protocol's sixth version, described by a rule of its
+    own. The entry is named the same there but lies in a different key and is counted
+    independently. Applying only one leaves the other stack at its default, and the
+    machine uses both.
+
+    A value lower than three is compliance - the item sets an upper bound rather than
+    an exact value. Going below three is not advised, though: the gain is slight and
+    broken connections grow quickly.
+
+    A missing entry means the default holds, that is five.
+
+    The network stack's parameters key is shared by several items in this pack, so
+    rollback removes the entry alone.

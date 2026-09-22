@@ -1,0 +1,236 @@
+id: win11-logon-hours-expiry-forced-logoff
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Wylogowanie po upływie dozwolonych godzin pracy wymuszane
+    en: Signing out once the allowed working hours pass enforced
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kontu można przypisać godziny, w których wolno się nim posługiwać.
+    Ograniczenie to działa jednak tylko w chwili logowania: sesja rozpoczęta
+    w dozwolonym czasie trwa dalej, kiedy ten czas minie, i trwa tak długo, jak
+    długo nikt jej nie zakończy.
+
+    Jest to dziura zostawiona świadomie, dla wygody, i napastnik korzysta z niej
+    wprost. Konto z godzinami ograniczonymi do zmiany dziennej wygląda na
+    zabezpieczone, a w rzeczywistości pozwala pracować w nocy każdemu, kto
+    zalogował się przed końcem zmiany — albo kto przejął sesję już otwartą.
+    Ograniczenie, które da się obejść przez niezamykanie sesji, nie jest
+    ograniczeniem.
+
+    Skutek widać także od strony wykrywania. Zapis w dzienniku pokazuje
+    logowanie w godzinach dozwolonych, więc nic nie zwraca uwagi; to, co dzieje
+    się potem, nie zostawia osobnego śladu.
+
+    Punkt każe kończyć sesję, gdy dozwolony czas minie. Ograniczenie godzin
+    zaczyna znaczyć to, co obiecuje.
+  en: |
+    An account can have hours attached in which it may be used. That restriction,
+    however, works only at the moment of signing in: a session begun within the
+    allowed time carries on once that time passes, and carries on as long as nobody
+    ends it.
+
+    It is a gap left deliberately, for convenience, and an attacker uses it outright.
+    An account with hours limited to the day shift looks secured, while in truth it
+    lets anyone work through the night who signed in before the shift ended - or who
+    took over a session already open. A restriction that can be got round by not
+    closing a session is not a restriction.
+
+    The effect shows from the detection side as well. The log record shows a sign-in
+    within the allowed hours, so nothing draws attention; what happens afterwards
+    leaves no separate trace.
+
+    The item has the session ended once the allowed time passes. The restriction on
+    hours starts to mean what it promises.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy na maszynie w ogóle używa się ograniczeń
+    godzinowych.
+
+    Na większości stanowisk nie używa się ich wcale i wtedy zmiana nie robi nic
+    — nie ma godzin, więc nie ma czego egzekwować. Tak jest w szczególności na
+    maszynach poza domeną, gdzie ograniczenie godzin dla kont lokalnych bywa
+    ustawiane rzadko.
+
+    Tam, gdzie godziny są ustawione, skutek jest dotkliwy i dokładnie taki, jak
+    zapowiada nazwa punktu: sesja zostaje zakończona w trakcie pracy.
+    Niezapisany dokument, otwarte połączenie do bazy, trwające przesyłanie
+    pliku — wszystko to kończy się razem z sesją. Użytkownik nie dostaje
+    okresu na dokończenie pracy dłuższego niż ostrzeżenie systemu.
+
+    Dotyczy to również kont używanych przez usługi i zadania, jeżeli ktoś
+    przypisał im godziny. Zadanie nocne uruchomione na koncie ograniczonym do
+    dnia zostanie przerwane w połowie.
+
+    Wdrożenie ma sens razem z przejrzeniem, komu godziny są przypisane
+    i czy kończą się w chwili, w której nikt nie pracuje.
+
+    Nie ma restartu.
+  en: |
+    What needs checking is whether hour restrictions are used on the machine at all.
+
+    At most stations they are not used, and then the change does nothing - there are
+    no hours, so there is nothing to enforce. That is so in particular on machines
+    outside a domain, where hours for local accounts are rarely set.
+
+    Where hours are set, the effect is severe and exactly what the item's name
+    promises: the session is ended in the middle of work. An unsaved document, an open
+    connection to a database, a transfer in progress - all of it ends along with the
+    session. The user gets no period to finish their work beyond the system's warning.
+
+    This concerns accounts used by services and tasks as well, if somebody has
+    attached hours to them. A night task running on an account limited to the day is
+    broken off halfway.
+
+    The rollout makes sense together with a review of who has hours attached and
+    whether they end at a moment when nobody is working.
+
+    There is no restart.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Sesja użytkownika z ograniczonymi godzinami zostanie zakończona w trakcie pracy
+      - Niezapisane dokumenty i otwarte połączenia do bazy przepadają razem z sesją
+      - Zadanie uruchomione na koncie z ograniczonymi godzinami zostanie przerwane w połowie
+      - Tam, gdzie godzin nie ustawiono, nie zmienia się nic
+    en:
+      - The session of a user with restricted hours is ended in the middle of their work
+      - Unsaved documents and open connections to a database are lost along with the session
+      - A task running on an account with restricted hours is broken off halfway
+      - Where no hours are set on any account, nothing changes at all
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Konta z ograniczonymi godzinami są używane przez zadania wykraczające poza te godziny
+      - Praca zmianowa przechodzi przez granicę dozwolonych godzin i sesji nie da się zamykać
+    en:
+      - Accounts with restricted hours are used by tasks reaching beyond those hours
+      - Shift work crosses the boundary of the allowed hours and sessions cannot be closed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The setting lives in the security policy rather than in the registry,
+      # so it is read from an export of that policy.
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^ForceLogoffWhenHourExpire\s*=\s*(\d+)') { $Matches[1] }
+        else { 'MISSING' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $current = ''
+    if ($text -match '(?m)^ForceLogoffWhenHourExpire\s*=\s*(\d+)') { $current = $Matches[1] }
+    [pscustomobject]@{
+      name    = 'ForceLogoffWhenHourExpire'
+      value   = $current
+      existed = ($current -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      'ForceLogoffWhenHourExpire = 1',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      ('ForceLogoffWhenHourExpire = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-force-logoff-when-logon-hours-expire
+
+notes:
+  pl: |
+    Punkt bywa mylony ze swoim sąsiadem, który rozłącza połączenia sieciowe do
+    udziałów po upływie dozwolonych godzin i ma w tej paczce osobną regułę.
+    Tamten dotyczy sesji do zasobów udostępnionych i działa po stronie usługi
+    serwera; ten dotyczy sesji użytkownika przy maszynie. Wdrożenie jednego nie
+    załatwia drugiego, a objawy są na tyle podobne, że łatwo uznać sprawę za
+    zamkniętą po wdrożeniu połowy.
+
+    Sprawdzenie i naprawa idą przez zasady zabezpieczeń, a nie przez rejestr.
+    Wymaga to uprawnień administratora także do samego odczytu — bez nich
+    sprawdzenie zwraca stan błędu, a nie niezgodność.
+
+    Na maszynie, na której nikomu nie przypisano godzin, punkt jest zgodnością
+    bez skutków. Nie znaczy to jednak, że jest zbędny: przypisanie godzin
+    komukolwiek później zadziała wtedy od razu tak, jak powinno.
+  en: |
+    The item is sometimes confused with its neighbour, which disconnects network
+    connections to shares once the allowed hours pass and has a rule of its own in
+    this pack. That one concerns sessions to shared resources and works on the server
+    service's side; this one concerns a user's session at the machine. Applying one
+    does not settle the other, and the symptoms are alike enough that the matter is
+    easily counted as closed after half of it is applied.
+
+    The check and the fix go through the security policy rather than the registry.
+    That takes administrator rights for the read itself - without them the check
+    returns the error state rather than a deviation.
+
+    On a machine where nobody has hours attached, the item is compliance without
+    effects. That does not make it needless: attaching hours to anybody later will
+    then work at once as it should.

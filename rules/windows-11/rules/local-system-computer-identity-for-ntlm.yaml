@@ -1,0 +1,215 @@
+id: win11-local-system-computer-identity-for-ntlm
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Konto systemowe uwierzytelniane tożsamością maszyny
+    en: The system account authenticated with the machine's identity
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usługi pracujące na koncie systemowym sięgają czasem po zasoby na innych
+    maszynach. Konto systemowe nie ma jednak własnej tożsamości sieciowej —
+    istnieje tylko wewnątrz maszyny. Trzeba więc rozstrzygnąć, czym takie
+    połączenie ma się przedstawić.
+
+    Są dwie możliwości. Pierwsza: przedstawić się kontem maszyny, które
+    w sieci istnieje, ma hasło zmieniane samoczynnie i da się wobec niego nadać
+    uprawnienia. Druga: nie przedstawiać się wcale i sięgnąć po zasób jako nikt.
+
+    Druga jest ustawieniem domyślnym i niesie dwa skutki. Po stronie dostępu
+    zmusza do otwierania zasobów dla połączeń bez tożsamości — a taki zasób jest
+    otwarty nie tylko dla usługi, o którą chodziło, lecz dla każdego, kto
+    zapyta. Po stronie zapisu odbiera możliwość rozliczenia: w dzienniku widać
+    połączenie bez nadawcy, więc nie da się ustalić, skąd przyszło ani czy
+    powinno było przyjść.
+
+    Punkt każe używać tożsamości maszyny. Zasoby mogą być zamknięte dla
+    połączeń bez tożsamości, a każde połączenie ma w dzienniku nazwę maszyny,
+    z której wyszło.
+  en: |
+    Services running on the system account sometimes reach for resources on other
+    machines. The system account, however, has no network identity of its own - it
+    exists only inside the machine. So it has to be settled what such a connection
+    should present itself as.
+
+    There are two possibilities. The first: present the machine account, which does
+    exist on the network, has a password changed by itself and can have rights granted
+    to it. The second: present nothing at all and reach for the resource as nobody.
+
+    The second is the default and carries two effects. On the access side it forces
+    resources to be opened to connections without an identity - and such a resource is
+    open not only to the service meant but to anybody who asks. On the record side it
+    takes away accountability: the log shows a connection with no sender, so there is
+    no working out where it came from or whether it should have.
+
+    The item has the machine's identity used. Resources can be closed to connections
+    without an identity, and every connection carries in the log the name of the
+    machine it left.
+
+disruption_description:
+  pl: |
+    Sprawdzenia wymaga to, czy usługi na tej maszynie sięgają po zasoby
+    udostępnione dla połączeń bez tożsamości.
+
+    Po wdrożeniu takie połączenie przedstawia się kontem maszyny. Zasób, który
+    był otwarty dla wszystkich, przyjmie je bez zmian. Zasób, który jest
+    otwarty wyłącznie dla wskazanych kont, odrzuci je, dopóki konto maszyny
+    nie dostanie uprawnień — i to jest jedyny realny skutek tej zmiany.
+
+    Dotyczy to przede wszystkim rzeczy zbudowanych dawno i po cichu: usługi
+    kopii zapasowej zapisującej na udział, agenta odkładającego dane na serwer
+    plików, skryptu uruchamianego przez zadanie na koncie systemowym. Objawem
+    jest odmowa dostępu w narzędziu, a nie na stanowisku — użytkownik nie
+    zobaczy niczego.
+
+    Naprawą jest nadanie uprawnień kontu maszyny na docelowym zasobie. Jest to
+    zmiana po stronie serwera, więc wdrożenie warto uzgodnić z osobą, która nim
+    zarządza.
+
+    Zmiana obowiązuje dla połączeń nawiązywanych po jej wprowadzeniu.
+
+    Nie ma restartu.
+  en: |
+    What needs checking is whether services on this machine reach for resources shared
+    to connections without an identity.
+
+    After the rollout such a connection presents the machine account. A resource that
+    was open to everybody takes it unchanged. A resource open only to named accounts
+    refuses it until the machine account is granted rights - and that is this change's
+    only real effect.
+
+    This concerns things built long ago and quietly above all: a backup service
+    writing to a share, an agent putting data on a file server, a script run by a task
+    on the system account. The symptom is a refusal of access in a tool rather than at
+    a station - the user sees nothing.
+
+    The fix is granting rights to the machine account on the resource it reaches. That
+    is a change on the server's side, so the rollout is worth agreeing with whoever
+    manages it.
+
+    The change holds for connections made after it.
+
+    There is no restart.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - file-sharing
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Usługa zapisująca na zdalny udział może dostać odmowę, dopóki konto maszyny nie ma uprawnień
+      - Zadanie uruchamiane na koncie systemowym przedstawi się kontem maszyny zamiast nie przedstawiać się wcale
+      - Zasoby otwarte dla wszystkich przyjmują takie połączenie bez zmian
+      - Praca użytkownika nie zmienia się w żaden sposób
+    en:
+      - A service writing to a remote share may be refused until the machine account has rights
+      - A task run on the system account presents the machine account instead of presenting nothing
+      - Resources open to everybody take such a connection unchanged
+      - A user's work does not change in any way
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Usługi sięgają po zasoby udostępnione wyłącznie dla połączeń bez tożsamości
+      - Nie da się nadać uprawnień kontu maszyny na docelowym serwerze
+    en:
+      - Services reach for resources shared only to connections without an identity
+      - Rights cannot be granted to the machine account on the target server
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'UseMachineId'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'UseMachineId'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+      -Name 'UseMachineId' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-allow-local-system-to-use-computer-identity-for-ntlm
+
+notes:
+  pl: |
+    Punkt należy do tej samej rodziny co ustawienia ograniczające dostęp bez
+    podania tożsamości, opisane osobnymi regułami. Kolejność wdrażania ma
+    znaczenie: najpierw ten punkt, potem zamykanie dostępu bez tożsamości.
+    Odwrotna kolejność odcina usługi systemowe od zasobów, zanim dostaną czym
+    się przedstawić.
+
+    Ustawienie dotyczy wyłącznie starszego mechanizmu uwierzytelniania.
+    Połączenia uwierzytelniane mechanizmem nowszym i tak posługują się
+    tożsamością maszyny i ten punkt ich nie zmienia.
+
+    Konto maszyny nie jest kontem zwykłym: jego hasło zmienia się samoczynnie
+    i nie da się go podać ręcznie. Nadając mu uprawnienia na serwerze, wskazuje
+    się je nazwą maszyny zakończoną znakiem dolara — pominięcie tego znaku jest
+    najczęstszą przyczyną nieudanego nadania.
+
+    Gałąź urzędu zabezpieczeń lokalnych jest wspólna z kilkunastoma innymi
+    ustawieniami, więc wycofanie usuwa wyłącznie sam wpis.
+  en: |
+    The item belongs to the same family as the settings limiting access without an
+    identity, described by rules of their own. The order of the rollout matters: this
+    item first, the closing of access without an identity after. The reverse order
+    cuts system services off from resources before they are given anything to present.
+
+    The setting concerns the older authentication mechanism alone. Connections
+    authenticated by the newer mechanism use the machine's identity anyway and this
+    item does not change them.
+
+    A machine account is not an ordinary account: its password changes by itself and
+    cannot be given by hand. When granting it rights on a server it is named by the
+    machine's name ending in a dollar sign - leaving that sign out is the commonest
+    cause of a grant that does not take.
+
+    The local security authority's key is shared with a dozen or so other settings, so
+    rollback removes the entry alone.

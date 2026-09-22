@@ -1,0 +1,180 @@
+id: win11-automatic-updates-scheduled-day
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update > Manage end user experience
+  title:
+    pl: Dzień instalacji aktualizacji ustawiony na codziennie
+    en: Update installation day set to every day
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy aktualizacje instalują się według harmonogramu, trzeba powiedzieć,
+    w który dzień. Wybór wygląda niewinnie, ale rozstrzyga o tym, jak długo
+    poprawka czeka na dysku, zanim zadziała.
+
+    Wskazanie jednego dnia w tygodniu daje okno sięgające siedmiu dni. Poprawka
+    wydana we wtorek na maszynie instalującej w poniedziałki leży bezczynnie
+    prawie tydzień — a jest to dokładnie ten tydzień, w którym podatność jest już
+    opisana publicznie i najintensywniej wykorzystywana. Ustawienie instalacji
+    codziennie skraca to okno do godzin.
+
+    Punkt nie zamyka żadnej drogi wejścia, tylko skraca czas, przez który każda
+    kolejna pozostaje otwarta — i dlatego kategoria jest średnia, a nie wysoka.
+    Sam z siebie nic nie wnosi, jeśli aktualizacje nie instalują się według
+    harmonogramu.
+  en: |
+    When updates install on a schedule, the day has to be stated. The choice looks
+    innocent, but it settles how long a fix waits on the disk before doing
+    anything.
+
+    Naming one day of the week gives a window of up to seven days. A fix released
+    on a Tuesday, on a machine that installs on Mondays, lies idle for nearly a
+    week - and that is precisely the week in which the weakness is already
+    publicly described and most heavily used. Setting installation to every day
+    cuts the window to hours.
+
+    The item closes no route in; it shortens the time each successive route stays
+    open - hence the medium rather than high category. On its own it adds nothing
+    if updates do not install on a schedule at all.
+
+disruption_description:
+  pl: |
+    Zmiana jest odczuwalna dla osoby pracującej na maszynie, bo przesuwa moment
+    instalacji z jednego dnia w tygodniu na każdy.
+
+    Znaczy to, że restart po aktualizacji może wypaść dowolnego dnia, a nie
+    w przewidywalnym terminie. Tam, gdzie zespół nauczył się, że „w poniedziałki
+    rano komputer się restartuje", zniknie ta przewidywalność. Sam restart nie
+    staje się częstszy — poprawek nie przybywa od zmiany harmonogramu — ale staje
+    się mniej oczekiwany.
+
+    Sprawdzenia wymagają stanowiska, przy których dzień ma znaczenie: maszyny
+    obsługujące cykliczne procesy, stanowiska używane wyłącznie w wybrane dni,
+    komputery sterujące urządzeniami pracującymi w harmonogramie.
+
+    Na zwykłym stanowisku biurowym zmiana jest niezauważalna, bo instalacja
+    i tak trafia w godziny poza pracą.
+  en: |
+    The change is felt by the person working on the machine, because it moves the
+    moment of installation from one day a week to any day.
+
+    It means a post-update restart can fall on any day rather than at a
+    predictable time. Where a team has learnt that "the computer restarts on
+    Monday mornings", that predictability disappears. The restart itself does not
+    become more frequent - changing the schedule does not create more fixes - but
+    it becomes less expected.
+
+    What needs checking are stations where the day matters: machines running
+    cyclical processes, stations used only on particular days, computers driving
+    equipment that works to a timetable.
+
+    On an ordinary office station the change goes unnoticed, because the
+    installation falls outside working hours anyway.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - user-interface
+  what_breaks:
+    pl:
+      - Restart po aktualizacji przestanie wypadać w przewidywalnym dniu tygodnia
+      - Stanowiska używane tylko w wybrane dni zastaną instalację w niespodziewanym momencie
+    en:
+      - A post-update restart stops falling on a predictable day of the week
+      - Stations used only on particular days meet the installation at an unexpected moment
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna obsługuje proces cykliczny, w którym instalacja w wybranym dniu jest błędem
+      - Zespół opiera się na tym, że restart po aktualizacji wypada zawsze tego samego dnia
+    en:
+      - The machine runs a cyclical process in which installing on a given day is a mistake
+      - The team relies on the post-update restart always falling on the same day
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+      $name = 'ScheduledInstallDay'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    $name = 'ScheduledInstallDay'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ScheduledInstallDay' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/waas-wu-settings
+
+notes:
+  pl: |
+    Zero znaczy tu codziennie, a nie niedzielę — numeracja dni zaczyna się od
+    jedynki i zero jest wartością osobną. Warto to wiedzieć przy czytaniu
+    raportu, bo wynik „0" wygląda jak wyłączenie czegoś, a jest przeciwieństwem.
+
+    Punkt ma sens wyłącznie razem z trybem instalowania według harmonogramu.
+    Przy trybie pytającym harmonogram nie jest w ogóle brany pod uwagę,
+    więc samo spełnienie tego punktu nie skraca żadnego okna. Raport pokaże
+    wtedy zieleń, która nic nie znaczy — i to jest powód, dla którego oba punkty
+    powinny iść razem.
+  en: |
+    Zero here means every day, not Sunday - the numbering of days starts at one
+    and zero is a value apart. Worth knowing when reading the report, because a
+    result of "0" looks like something being switched off and is the opposite.
+
+    The item makes sense only alongside the mode that installs on a schedule.
+    With a mode that asks, the schedule is not consulted at all, so satisfying
+    this item alone shortens no window. The report will then show a green that
+    means nothing - which is why the two items should go together.

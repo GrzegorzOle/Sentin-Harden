@@ -1,0 +1,156 @@
+id: win11-rdp-encryption-level
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services
+  title:
+    pl: Wysoki poziom szyfrowania połączeń pulpitu zdalnego
+    en: High encryption level for Remote Desktop connections
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sesja pulpitu zdalnego przenosi wszystko, co użytkownik widzi i wpisuje —
+    łącznie z hasłami wpisywanymi w trakcie pracy. Niższe poziomy szyfrowania
+    istnieją wyłącznie dla zgodności ze starymi klientami i dopuszczają
+    algorytmy, które dziś nie stanowią realnej przeszkody dla kogoś, kto
+    przechwycił ruch.
+
+    Wymuszenie wysokiego poziomu sprawia, że ruch w obie strony jest szyfrowany
+    najsilniejszym wariantem obsługiwanym przez usługę, a klient, który tego nie
+    potrafi, zostaje odrzucony zamiast po cichu obniżyć poziom zabezpieczeń.
+    Brak cichego obniżenia jest tu równie ważny, jak sam algorytm.
+  en: |
+    A Remote Desktop session carries everything the user sees and types -
+    including passwords typed during the work. Lower encryption levels exist
+    only for compatibility with old clients and permit algorithms that today
+    pose no real obstacle to somebody who has captured the traffic.
+
+    Forcing the high level means traffic in both directions is encrypted with
+    the strongest variant the service supports, and a client that cannot manage
+    it is refused rather than quietly dropping to a weaker level. The absence of
+    a silent downgrade matters here as much as the algorithm itself.
+
+disruption_description:
+  pl: |
+    Ryzyko sprowadza się do tego samego pytania, co przy uwierzytelnianiu na
+    poziomie sieci: czy ktoś łączy się do tej maszyny bardzo starym klientem.
+    Jeśli tak, połączenie zostanie odrzucone — i tym razem bez czytelnego
+    komunikatu o przyczynie, bo klient zwykle raportuje ogólny błąd połączenia.
+
+    Poza tym zmiana jest niewidoczna. Nie wymaga ponownego uruchomienia systemu,
+    a sesje już nawiązane pracują do końca na dotychczasowych warunkach.
+  en: |
+    The risk comes down to the same question as with Network Level
+    Authentication: does anyone connect to this machine with a very old client.
+    If so, the connection is refused - and this time without a legible message
+    about the cause, because the client usually reports a generic connection
+    error.
+
+    Beyond that the change is invisible. It requires no restart, and sessions
+    already established run to their end on the previous terms.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - encryption-and-tls
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Bardzo stare klienty pulpitu zdalnego zostaną odrzucone z ogólnym błędem połączenia
+      - Cienkie terminale sprzed lat mogą stracić możliwość połączenia się z tą maszyną
+      - Klienty pulpitu zdalnego na innych platformach mogą wymagać aktualizacji do nowszej wersji
+    en:
+      - Very old Remote Desktop clients are refused with a generic connection error
+      - Years-old thin terminals may lose the ability to connect to this machine
+      - Remote Desktop clients on other platforms may need updating to a newer version
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Do maszyny łączą się terminale, dla których producent nie wydaje już aktualizacji
+      - Pulpit zdalny jest jedyną drogą do maszyny, a klient po drugiej stronie jest przestarzały
+    en:
+      - Terminals connect to the machine for which the vendor no longer ships updates
+      - Remote Desktop is the only route to the machine and the client on the other end is outdated
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $ts = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+      $deny = (Get-ItemProperty -Path $ts -Name 'fDenyTSConnections' -ErrorAction Stop).fDenyTSConnections
+      if ($deny -eq 1) {
+        # Remote Desktop is switched off, so there is no session to encrypt.
+        'NOT_APPLICABLE'
+      } else {
+        $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+        $name = 'MinEncryptionLevel'
+        if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+        else {
+          $item = Get-ItemProperty -Path $path -ErrorAction Stop
+          if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: not-less-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+    $name = 'MinEncryptionLevel'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+      -Name 'MinEncryptionLevel' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access
+
+notes:
+  pl: |
+    Porównanie jest „nie mniej niż", więc poziom wyższy od wymaganego też
+    przechodzi — punkt pilnuje dolnej granicy, a nie konkretnej wartości.
+    Gdy pulpit zdalny jest wyłączony, wynikiem jest „nie dotyczy", tak samo jak
+    w punkcie o uwierzytelnianiu na poziomie sieci; te dwa punkty ocenia się
+    razem albo wcale.
+  en: |
+    The comparison is "not less than", so a level above the required one also
+    passes - the item guards a lower bound rather than a specific value. When
+    Remote Desktop is switched off the result is "not applicable", the same as
+    in the Network Level Authentication item; these two are assessed together or
+    not at all.

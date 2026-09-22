@@ -1,0 +1,164 @@
+id: win11-local-account-token-filter
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Filtrowanie tokenu kont lokalnych przy dostępie sieciowym zachowane
+    en: Local account token filtering for network access preserved
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Windows domyślnie odbiera kontom lokalnym pełne uprawnienia administratora,
+    gdy łączą się przez sieć. Konto pozostaje administratorem przy konsoli, ale
+    zdalnie dostaje token okrojony — i właśnie to zatrzymuje najgroźniejszy
+    scenariusz w sieci biurowej.
+
+    Scenariusz wygląda tak: napastnik zdobywa skrót hasła lokalnego
+    administratora z jednej stacji, a ponieważ obraz systemu był ten sam na
+    wszystkich, to samo hasło otwiera pozostałe. Z filtrowaniem tokenu skrót
+    nadal działa, ale nie daje zdalnie praw administratora, więc przejęcie
+    jednej maszyny nie zamienia się w przejęcie całego piętra. Wyłączenie
+    filtrowania usuwa dokładnie tę barierę.
+  en: |
+    By default Windows strips local accounts of full administrator rights when
+    they connect over the network. The account stays an administrator at the
+    console but receives a reduced token remotely - and that is what stops the
+    most dangerous scenario on an office network.
+
+    The scenario runs like this: an attacker obtains a local administrator's
+    password hash from one workstation, and because the system image was the
+    same everywhere, the same password opens the rest. With token filtering the
+    hash still works but grants no administrator rights remotely, so taking one
+    machine does not turn into taking the whole floor. Disabling the filtering
+    removes exactly that barrier.
+
+disruption_description:
+  pl: |
+    Ten punkt zwykle nie wymaga niczego zmieniać — domyślny stan systemu jest
+    już poprawny. Zgłasza się dopiero wtedy, gdy ktoś filtrowanie świadomie
+    wyłączył, a robi się to z jednego powodu: żeby zadziałało zdalne zarządzanie
+    na kontach lokalnych, bez domeny.
+
+    Przywrócenie filtrowania odetnie właśnie te narzędzia. Skrypty łączące się
+    do maszyny na konto lokalnego administratora wykonają się, ale bez
+    uprawnień — objaw jest mylący, bo logowanie przechodzi, a dopiero operacja
+    kończy się odmową.
+  en: |
+    This item usually requires no change - the system's default state is already
+    correct. It raises a finding only when somebody has deliberately switched
+    the filtering off, and that is done for one reason: to make remote
+    management work with local accounts, without a domain.
+
+    Restoring the filtering cuts off exactly those tools. Scripts connecting to
+    the machine as a local administrator will run, but without privileges - a
+    misleading symptom, because the sign-in succeeds and only the operation ends
+    in a refusal.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - accounts-and-passwords
+    - scripting-and-automation
+    - file-sharing
+  what_breaks:
+    pl:
+      - Zdalne zarządzanie na koncie lokalnego administratora przestanie mieć pełne uprawnienia
+      - Skrypty wdrożeniowe łączące się do maszyny bez konta domenowego zaczną kończyć się odmową operacji
+      - Dostęp do udziałów administracyjnych z konta lokalnego przestanie być możliwy przez sieć
+    en:
+      - Remote management as a local administrator stops having full privileges
+      - Deployment scripts connecting to the machine without a domain account start failing on the operation
+      - Access to administrative shares from a local account stops being possible over the network
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna jest zarządzana zdalnie wyłącznie przez konta lokalne, bez domeny i bez zamiennika
+      - Wdrożenia na tej stacji opierają się na skryptach łączących się na lokalnego administratora
+    en:
+      - The machine is managed remotely only through local accounts, with no domain and no replacement
+      - Deployments on this workstation rest on scripts connecting as a local administrator
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'LocalAccountTokenFilterPolicy'
+      $value = $null
+      if (Test-Path -Path $path -ErrorAction Stop) {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).$name
+      }
+      # Here the missing value is the secure state: filtering is the system
+      # default and only an explicit 1 switches it off.
+      if ($null -eq $value -or [int]$value -eq 0) { 'FILTERED' } else { 'NOT_FILTERED' }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: FILTERED
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'LocalAccountTokenFilterPolicy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name 'LocalAccountTokenFilterPolicy' -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/windows-security/user-account-control-and-remote-restriction
+
+notes:
+  pl: |
+    Ten punkt łamie konwencję pozostałych w paczce: **brak wartości w rejestrze
+    jest tutaj stanem poprawnym**, bo filtrowanie jest domyślnym zachowaniem
+    systemu, a dopiero jawna jedynka je wyłącza. Naprawa polega więc na
+    usunięciu wpisu, nie na jego dodaniu.
+
+    Polecenie zmiany usuwa wartość zamiast ustawiać ją na zero — zero działa
+    tak samo, ale zostawia ślad sugerujący świadomą konfigurację tam, gdzie
+    wystarczy domyślne zachowanie.
+  en: |
+    This item breaks the convention of the others in the pack: **a missing
+    registry value is the correct state here**, because filtering is the
+    system's default behaviour and only an explicit 1 switches it off. The
+    remediation therefore removes the entry rather than adding one.
+
+    The change command deletes the value instead of setting it to zero - zero
+    behaves the same way, but leaves a trace suggesting deliberate configuration
+    where the default behaviour is enough.

@@ -1,0 +1,158 @@
+id: win11-null-session-access-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Dostęp bez uwierzytelnienia do potoków i udziałów ograniczony
+    en: Unauthenticated access to pipes and shares restricted
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sesja pusta to połączenie nawiązane bez podania jakichkolwiek poświadczeń.
+    Kiedyś było potrzebne do działania usług sieciowych między maszynami;
+    dziś zostaje głównie jako powierzchnia, przez którą da się odpytać maszynę,
+    nie zostawiając po sobie konta w dzienniku.
+
+    Ograniczenie sprawia, że takie połączenie ma dostęp wyłącznie do tego, co
+    zostało wprost wymienione jako dozwolone, a nie do wszystkiego, czego
+    uprawnienia przypadkiem na to pozwalają. Zamyka etap rozpoznania i zbierania
+    informacji przed właściwym atakiem — ten sam, który ogranicza blokada
+    anonimowego wyliczania kont.
+  en: |
+    A null session is a connection established without supplying any credentials
+    at all. It was once needed for network services to work between machines;
+    today it mostly remains as a surface through which a machine can be queried
+    without leaving an account behind in the log.
+
+    The restriction means such a connection reaches only what has been
+    explicitly listed as allowed, rather than everything the permissions happen
+    to admit. It closes the reconnaissance and information-gathering stage
+    before the actual attack - the same one that blocking anonymous account
+    enumeration narrows.
+
+disruption_description:
+  pl: |
+    Na współczesnej stacji roboczej zmiana jest zwykle niewidoczna, bo nic
+    sensownego nie łączy się tu bez poświadczeń. Zabolą wyłącznie te miejsca,
+    w których takie połączenie jest częścią czyjegoś procesu.
+
+    Najczęstsze przypadki to starsze systemy monitorujące odpytujące maszyny
+    anonimowo oraz urządzenia sprawdzające dostępność udziału przed
+    połączeniem. Objaw pojawia się nie na tej stacji, tylko po stronie systemu,
+    który ją odpytywał — dlatego bywa zauważony z opóźnieniem i wiązany z inną
+    przyczyną.
+  en: |
+    On a modern workstation the change is usually invisible, because nothing
+    sensible connects here without credentials. Only the places where such a
+    connection is part of somebody's process will hurt.
+
+    The most common cases are older monitoring systems querying machines
+    anonymously and devices checking a share's availability before connecting.
+    The symptom appears not on this workstation but on the side of the system
+    that was querying it - so it tends to be noticed late and blamed on
+    something else.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - remote-management
+    - network-and-firewall
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Systemy monitorujące odpytujące maszynę bez poświadczeń przestaną otrzymywać odpowiedź
+      - Urządzenia sprawdzające dostępność udziału przed połączeniem mogą uznać maszynę za niedostępną
+      - Starsze narzędzia inwentaryzacyjne korzystające z połączeń bez uwierzytelnienia stracą dostęp do danych
+    en:
+      - Monitoring systems querying the machine without credentials stop receiving an answer
+      - Devices checking a share's availability before connecting may consider the machine unreachable
+      - Older inventory tools relying on unauthenticated connections lose access to the data
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszynę odpytuje system monitorujący, który nie potrafi podać poświadczeń
+      - Do udziałów tej stacji łączą się urządzenia sprawdzające ich dostępność bez logowania
+    en:
+      - The machine is queried by a monitoring system that cannot supply credentials
+      - Devices connect to this workstation's shares checking availability without signing in
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      $name = 'RestrictNullSessAccess'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'RestrictNullSessAccess'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' `
+      -Name 'RestrictNullSessAccess' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-restrict-anonymous-access-to-named-pipes-and-shares
+
+notes:
+  pl: |
+    Ograniczenie działa na zasadzie listy: dostęp bez uwierzytelnienia zostaje
+    wyłącznie dla potoków i udziałów wymienionych w osobnych wpisach rejestru.
+    Punkt sprawdza samo włączenie mechanizmu, nie zawartość tych list — pusta
+    lista przy włączonym ograniczeniu jest stanem najbardziej zamkniętym.
+
+    Zmiana zaczyna obowiązywać po ponownym uruchomieniu usługi serwera, więc
+    połączenia już nawiązane pracują jeszcze na starych warunkach.
+  en: |
+    The restriction works as a list: unauthenticated access remains only for the
+    pipes and shares named in separate registry entries. The item checks that
+    the mechanism is enabled, not the contents of those lists - an empty list
+    with the restriction on is the most closed state.
+
+    The change takes effect after the server service restarts, so connections
+    already established still run on the old terms.

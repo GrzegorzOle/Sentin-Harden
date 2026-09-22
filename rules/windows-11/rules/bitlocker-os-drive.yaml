@@ -1,0 +1,164 @@
+id: win11-bitlocker-os-drive
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > BitLocker Drive Encryption
+  title:
+    pl: Szyfrowanie dysku systemowego włączone
+    en: System drive encryption enabled
+
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wszystkie zabezpieczenia systemu operacyjnego opierają się na założeniu, że
+    to on decyduje, kto czyta dysk. Założenie znika w chwili, gdy dysk trafia do
+    innego komputera albo gdy maszyna startuje z nośnika: pliki czyta się wtedy
+    bez logowania, bez uprawnień i bez śladu w jakimkolwiek dzienniku.
+
+    Szyfrowanie dysku jest jedynym zabezpieczeniem, które działa wtedy, gdy
+    maszyna jest w cudzych rękach — a to najczęstszy scenariusz utraty danych
+    z laptopa: kradzież, zgubienie, oddanie sprzętu bez wyczyszczenia. Bez niego
+    zamek w drzwiach jest w środku, a ktoś właśnie wyniósł całe drzwi.
+  en: |
+    Every safeguard in the operating system rests on the assumption that it
+    decides who reads the disk. That assumption disappears the moment the disk
+    goes into another computer, or the machine boots from media: the files are
+    then read with no sign-in, no permissions and no trace in any log.
+
+    Drive encryption is the only safeguard that works while the machine is in
+    someone else's hands - and that is the most common way data is lost from a
+    laptop: theft, loss, hardware handed back without wiping. Without it the
+    lock is on the inside of the door, and somebody has just carried the whole
+    door away.
+
+disruption_description:
+  pl: |
+    To zmiana o najdłuższym czasie wykonania i najpoważniejszych skutkach
+    w razie błędu. Szyfrowanie dysku trwa od kilkudziesięciu minut do wielu
+    godzin, obciąża maszynę i nie znosi przerwania zasilania w trakcie.
+
+    Kluczowa jest jednak nie sama operacja, tylko klucz odzyskiwania. Bez niego
+    zmiana konfiguracji rozruchu — aktualizacja oprogramowania układowego,
+    wymiana płyty, przestawienie ustawień w interfejsie rozruchowym — potrafi
+    zamienić działającą maszynę w cegłę z danymi w środku. Klucz musi być
+    zapisany **poza tą maszyną**, zanim szyfrowanie ruszy, i to jest właściwa
+    treść wdrożenia, nie samo polecenie.
+  en: |
+    This is the change with the longest run time and the most serious
+    consequences if something goes wrong. Encrypting a drive takes from tens of
+    minutes to many hours, loads the machine and does not tolerate a power loss
+    midway.
+
+    The crucial part, however, is not the operation itself but the recovery key.
+    Without it a change to the boot configuration - a firmware update, a
+    mainboard replacement, a setting altered in the boot interface - can turn a
+    working machine into a brick with the data inside. The key must be stored
+    **off this machine** before encryption starts, and that is the real content
+    of the rollout, not the command.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - boot-and-firmware
+    - updates-and-servicing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Zmiana ustawień rozruchu lub aktualizacja oprogramowania układowego zażąda klucza odzyskiwania przy starcie
+      - Maszyna pracuje wolniej w trakcie pierwszego szyfrowania, które potrafi trwać wiele godzin
+      - Przeniesienie dysku do innego komputera uniemożliwi odczyt danych bez klucza odzyskiwania
+      - Narzędzia serwisowe startujące z nośnika przestaną widzieć zawartość dysku systemowego
+    en:
+      - Changing boot settings or updating firmware demands the recovery key at start-up
+      - The machine runs slower during the first encryption pass, which can take many hours
+      - Moving the disk to another computer makes the data unreadable without the recovery key
+      - Service tools booting from media stop seeing the contents of the system drive
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Nie ma ustalonego miejsca przechowywania klucza odzyskiwania poza tą maszyną
+      - Maszyna nie ma modułu zabezpieczeń sprzętowych i wymagałaby podawania hasła przy każdym rozruchu
+      - Stanowisko startuje bez obsługi i nie ma komu wpisać klucza, gdyby system o niego poprosił
+    en:
+      - There is no agreed place to keep the recovery key off this machine
+      - The machine has no hardware security module and would require a password at every boot
+      - The station boots unattended and nobody is present to type the key if the system asks for it
+  reversibility: difficult
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $volume = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+      if ($null -eq $volume) { 'CHECK_ERROR' } else { [string]$volume.ProtectionStatus }
+    } catch {
+      # Reading BitLocker state needs elevation, and the feature is absent from
+      # some editions. Neither case may be reported as an encrypted drive.
+      'CHECK_ERROR'
+    }
+  expected: 'On'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $volume = Get-BitLockerVolume -MountPoint $env:SystemDrive
+    [pscustomobject]@{
+      mount_point       = $volume.MountPoint
+      protection_status = [string]$volume.ProtectionStatus
+      volume_status     = [string]$volume.VolumeStatus
+      key_protectors    = @($volume.KeyProtector | ForEach-Object { [string]$_.KeyProtectorType })
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Store the recovery key somewhere off this machine BEFORE going further.
+    # Without it, a boot configuration change can leave the data unreachable.
+    $drive = $env:SystemDrive
+    Add-BitLockerKeyProtector -MountPoint $drive -RecoveryPasswordProtector
+    (Get-BitLockerVolume -MountPoint $drive).KeyProtector |
+      Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } |
+      Select-Object -Property KeyProtectorId, RecoveryPassword |
+      Format-List
+    Enable-BitLocker -MountPoint $drive -TpmProtector -SkipHardwareTest
+
+privileges: administrator
+runnable: false
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/data-protection/bitlocker/
+
+notes:
+  pl: |
+    Ten punkt nie ma przycisku „Uruchom" i nie jest to przeoczenie. Powodów jest
+    trzy: szyfrowanie trwa godzinami i nie mieści się w modelu „wykonaj
+    i sprawdź ponownie", wycofanie oznacza odszyfrowanie całego dysku, a przed
+    startem trzeba zabezpieczyć klucz odzyskiwania — czego żadne polecenie nie
+    zrobi za człowieka.
+
+    Polecenie wypisuje hasło odzyskiwania na ekran zaraz po jego utworzeniu.
+    **Zapisz je poza tą maszyną, zanim uruchomisz szyfrowanie** — po zaszyfrowaniu
+    dysku odczytanie go z tej maszyny bywa niemożliwe dokładnie wtedy, gdy jest
+    potrzebne.
+  en: |
+    This item has no "Run" button, and that is not an oversight. There are three
+    reasons: encryption takes hours and does not fit the "execute and re-audit"
+    model, a rollback means decrypting the whole drive, and the recovery key has
+    to be secured before starting - which no command can do on a person's behalf.
+
+    The command prints the recovery password to the screen right after creating
+    it. **Save it off this machine before starting the encryption** - once the
+    drive is encrypted, reading it from this machine can be impossible at
+    exactly the moment it is needed.

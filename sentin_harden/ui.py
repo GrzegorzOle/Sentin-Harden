@@ -122,6 +122,7 @@ class ResultsModel(QAbstractTableModel):
         self._rows: list[AuditResult] = []
         self._risk_filter = ""
         self._disruption_filter = ""
+        self._outcome_filter = ""
 
     # -- data --------------------------------------------------------------
 
@@ -133,10 +134,11 @@ class ResultsModel(QAbstractTableModel):
         self._apply_filters()
         self.endResetModel()
 
-    def set_filters(self, risk: str, disruption: str) -> None:
+    def set_filters(self, risk: str, disruption: str, outcome: str = "") -> None:
         self.beginResetModel()
         self._risk_filter = risk
         self._disruption_filter = disruption
+        self._outcome_filter = outcome
         self._apply_filters()
         self.endResetModel()
 
@@ -146,7 +148,12 @@ class ResultsModel(QAbstractTableModel):
             for item in self._all
             if (not self._risk_filter or item.rule.risk == self._risk_filter)
             and (not self._disruption_filter or item.rule.disruption == self._disruption_filter)
+            and (not self._outcome_filter or item.outcome.value == self._outcome_filter)
         ]
+
+    def has_results(self) -> bool:
+        """Whether a scan has produced anything, regardless of the filters."""
+        return bool(self._all)
 
     def result_at(self, row: int) -> AuditResult | None:
         return self._rows[row] if 0 <= row < len(self._rows) else None
@@ -395,8 +402,9 @@ class MainWindow(QMainWindow):
 
         self.risk_filter = QComboBox()
         self.disruption_filter = QComboBox()
-        self.risk_filter.currentIndexChanged.connect(self._filters_changed)
-        self.disruption_filter.currentIndexChanged.connect(self._filters_changed)
+        self.outcome_filter = QComboBox()
+        for box in (self.risk_filter, self.disruption_filter, self.outcome_filter):
+            box.currentIndexChanged.connect(self._filters_changed)
 
         self.system_label = QLabel()
         self.copy_button = QPushButton()
@@ -414,6 +422,7 @@ class MainWindow(QMainWindow):
         top.addSpacing(12)
         top.addWidget(self.risk_filter)
         top.addWidget(self.disruption_filter)
+        top.addWidget(self.outcome_filter)
         top.addStretch(1)
         top.addWidget(self.system_label)
         top.addSpacing(12)
@@ -492,6 +501,7 @@ class MainWindow(QMainWindow):
         for box, key, vocabulary in (
             (self.risk_filter, "filter_risk", "risk_category"),
             (self.disruption_filter, "filter_disruption", "disruption"),
+            (self.outcome_filter, "filter_result", "audit_result"),
         ):
             current = box.currentData()
             box.blockSignals(True)
@@ -556,6 +566,7 @@ class MainWindow(QMainWindow):
         self.model.set_filters(
             self.risk_filter.currentData() or "",
             self.disruption_filter.currentData() or "",
+            self.outcome_filter.currentData() or "",
         )
         self._update_summary()
 
@@ -578,6 +589,10 @@ class MainWindow(QMainWindow):
         ]
         results = [item for item in results if item is not None]
         if not results:
+            # Only meaningful once something has been scanned; before that the
+            # status bar belongs to whatever the scan is saying.
+            if self.model.has_results():
+                self.statusBar().showMessage(ui("no_matches", self.language))
             return
         counts = summarise(results)
         self.statusBar().showMessage(ui("summary", self.language, **counts))

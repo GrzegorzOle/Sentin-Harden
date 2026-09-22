@@ -66,6 +66,7 @@ UI_TEXT: dict[str, dict[str, str]] = {
     "copied": {"pl": "Skopiowano do schowka", "en": "Copied to clipboard"},
     "filter_risk": {"pl": "Ryzyko", "en": "Risk"},
     "filter_disruption": {"pl": "Uciążliwość", "en": "Disruption"},
+    "filter_result": {"pl": "Wynik", "en": "Result"},
     "filter_all": {"pl": "wszystkie", "en": "all"},
     "col_item": {"pl": "Punkt", "en": "Item"},
     "col_risk": {"pl": "Ryzyko", "en": "Risk"},
@@ -98,6 +99,10 @@ UI_TEXT: dict[str, dict[str, str]] = {
     "summary": {
         "pl": "{total} reguł: {passed} spełnionych, {failed} niespełnionych, {errors} bez rozstrzygnięcia",
         "en": "{total} rules: {passed} compliant, {failed} non-compliant, {errors} undetermined",
+    },
+    "no_matches": {
+        "pl": "Żaden punkt nie pasuje do ustawionych filtrów.",
+        "en": "No item matches the selected filters.",
     },
     "no_rules": {
         "pl": "Dla wykrytego systemu nie ma jeszcze reguł w bazie.",

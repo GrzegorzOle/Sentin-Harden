@@ -1,0 +1,169 @@
+id: win11-kerberos-encryption-types
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Security Options > Network security
+  title:
+    pl: Dozwolone typy szyfrowania dla protokołu Kerberos
+    en: Permitted encryption types for Kerberos
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kerberos potrafi uzgodnić kilka algorytmów szyfrowania, w tym takie, które
+    powstały w latach dziewięćdziesiątych. Najsłabszy z nich opiera się na tym
+    samym skrócie hasła co mechanizmy uznane za przestarzałe — a to znaczy, że
+    zdobyty bilet daje się złamać poza siecią, w tempie zależnym wyłącznie od
+    sprzętu atakującego.
+
+    Ograniczenie listy do algorytmów współczesnych odbiera możliwość wymuszenia
+    słabszego wariantu. Bez tego wystarczy, że jedna strona poprosi o stary
+    algorytm, a druga się zgodzi — i cała siła nowszych przestaje mieć
+    znaczenie.
+  en: |
+    Kerberos can negotiate several encryption algorithms, including ones created
+    in the nineteen-nineties. The weakest of them rests on the same password hash
+    as mechanisms considered obsolete - which means a captured ticket can be
+    cracked offline, at a pace determined solely by the attacker's hardware.
+
+    Restricting the list to modern algorithms removes the ability to force a
+    weaker variant. Without it, one side need only ask for the old algorithm and
+    the other agree - and the strength of the newer ones stops mattering.
+
+disruption_description:
+  pl: |
+    Na maszynie poza domeną zmiana nie robi praktycznie nic, bo Kerberos nie
+    jest tam używany do logowania.
+
+    W domenie skutki zależą od tego, co jeszcze w niej stoi. Starsze kontrolery
+    domeny, urządzenia uwierzytelniające się w domenie i usługi z kontami
+    założonymi dawno temu mogą nie obsługiwać nowszych algorytmów — wtedy
+    logowanie do takiej usługi przestanie działać. Objaw jest mylący: wygląda
+    jak problem z hasłem albo z zaufaniem, a nie jak ustawienie szyfrowania.
+
+    Zmiana obowiązuje dla nowych biletów, więc skutki pojawiają się stopniowo,
+    a nie natychmiast po zapisaniu wartości.
+  en: |
+    On a machine outside a domain the change does practically nothing, because
+    Kerberos is not used for signing in there.
+
+    In a domain the consequences depend on what else stands in it. Older domain
+    controllers, devices authenticating to the domain and services with accounts
+    created long ago may not support the newer algorithms - then signing in to
+    such a service stops working. The symptom misleads: it looks like a password
+    or trust problem rather than an encryption setting.
+
+    The change applies to new tickets, so the consequences appear gradually
+    rather than immediately after the value is written.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - encryption-and-tls
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Logowanie do usług obsługujących wyłącznie starsze algorytmy przestanie działać
+      - Urządzenia uwierzytelniające się w domenie ze starszym oprogramowaniem mogą stracić dostęp
+      - Objaw wygląda na problem z hasłem albo zaufaniem, a nie na ustawienie szyfrowania
+      - Skutki pojawiają się stopniowo, wraz z wygasaniem dotychczasowych biletów
+    en:
+      - Signing in to services supporting only older algorithms stops working
+      - Devices authenticating to the domain with older software may lose access
+      - The symptom looks like a password or trust problem rather than an encryption setting
+      - Consequences appear gradually, as existing tickets expire
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W domenie działają kontrolery albo usługi obsługujące wyłącznie starsze algorytmy
+      - Nie ustalono, z jakimi usługami ta maszyna uwierzytelnia się w domenie
+    en:
+      - The domain holds controllers or services supporting only older algorithms
+      - It has not been established which services this machine authenticates to in the domain
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters'
+      $name = 'SupportedEncryptionTypes'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2147483640'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters'
+    $name = 'SupportedEncryptionTypes'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SupportedEncryptionTypes' -Value 2147483640 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-configure-encryption-types-allowed-for-kerberos
+
+notes:
+  pl: |
+    Wartość jest sumą bitów opisujących dozwolone algorytmy. Przyjęta tutaj
+    dopuszcza dwa warianty współczesne oraz typy zarezerwowane na przyszłość,
+    a odrzuca warianty oparte na starszych algorytmach. Zapis jako jedna liczba
+    jest nieczytelny i łatwo o pomyłkę — dlatego reguła porównuje dokładną
+    wartość, a nie zakres.
+
+    Wycofanie przywraca poprzednią liczbę, a nie brak ustawienia. To rozróżnienie
+    ma znaczenie w domenie: pusta wartość i wartość domyślna prowadzą tu do
+    różnych negocjacji.
+  en: |
+    The value is a sum of bits describing the permitted algorithms. The one
+    adopted here admits two modern variants plus the types reserved for the
+    future, and rejects variants based on older algorithms. Written as a single
+    number it is unreadable and easy to get wrong - which is why the rule
+    compares the exact value rather than a range.
+
+    The rollback restores the previous number, not the absence of the setting.
+    That distinction matters in a domain: an empty value and a default value lead
+    to different negotiations here.

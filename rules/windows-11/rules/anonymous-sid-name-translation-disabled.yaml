@@ -1,0 +1,174 @@
+id: win11-anonymous-sid-name-translation-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Security Options > Network access
+  title:
+    pl: Anonimowe tłumaczenie identyfikatorów na nazwy kont wyłączone
+    en: Anonymous translation of identifiers into account names disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Każde konto ma identyfikator, który kończy się numerem porządkowym.
+    Numery są przewidywalne: konto wbudowanego administratora ma zawsze ten
+    sam, kolejne konta dostają numery rosnąco od ustalonej wartości.
+
+    Jeżeli maszyna zgadza się zamienić identyfikator na nazwę bez
+    uwierzytelnienia, wystarczy przejść numery po kolei, żeby odtworzyć listę
+    kont — również wtedy, gdy samo wyliczanie kont jest zablokowane. To znaczy,
+    że bez tego punktu dwa pozostałe ograniczenia dostępu anonimowego dają się
+    obejść okrężną drogą, a raport pokazuje je jako spełnione.
+  en: |
+    Every account has an identifier ending in a sequential number. The numbers
+    are predictable: the built-in administrator account always has the same one,
+    and further accounts receive numbers counting up from a fixed value.
+
+    If the machine agrees to translate an identifier into a name without
+    authentication, walking the numbers in order is enough to reconstruct the
+    account list - even when enumeration itself is blocked. Which means that
+    without this item the other two anonymous access restrictions can be bypassed
+    by a detour, while the report shows them as met.
+
+disruption_description:
+  pl: |
+    Na stacji roboczej zmiana nie jest odczuwalna. Tłumaczenie identyfikatorów
+    bez uwierzytelnienia nie jest używane przez nic, co działa normalnie —
+    procesy, które tego potrzebują, robią to w kontekście zalogowanego konta
+    i zmiana ich nie dotyczy.
+
+    Realne ryzyko regresji sprowadza się do bardzo starych aplikacji
+    korzystających z tej drogi przy wyświetlaniu uprawnień do plików. Objawem
+    jest wtedy identyfikator pokazany zamiast nazwy konta, a nie błąd — funkcja
+    działa dalej, tylko mniej czytelnie.
+  en: |
+    On a workstation the change is not noticeable. Translating identifiers
+    without authentication is not used by anything that works normally -
+    processes that need it do so in the context of a signed-in account and the
+    change does not affect them.
+
+    The real regression risk comes down to very old applications using this
+    route when displaying file permissions. The symptom is then an identifier
+    shown instead of an account name rather than an error - the function keeps
+    working, just less legibly.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Bardzo stare aplikacje mogą pokazywać identyfikator zamiast nazwy konta przy wyświetlaniu uprawnień
+    en:
+      - Very old applications may show an identifier instead of an account name when displaying permissions
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa starsza aplikacja rozpoznająca konta wyłącznie tą drogą
+    en:
+      - The machine runs an older application that resolves accounts only by this route
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^LSAAnonymousNameLookup\s*=\s*(\d+)') { $Matches[1] }
+        else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^LSAAnonymousNameLookup\s*=\s*(\d+)') { $value = $Matches[1] }
+    [pscustomobject]@{
+      setting = 'LSAAnonymousNameLookup'
+      value   = $value
+      existed = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      'LSAAnonymousNameLookup = 0',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      ('LSAAnonymousNameLookup = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-allow-anonymous-sidname-translation
+
+notes:
+  pl: |
+    Ustawienie nie leży w rejestrze, tylko w lokalnej polityce zabezpieczeń,
+    dlatego czyta się je przez eksport polityki, a nie przez odczyt wartości.
+    Konsekwencja praktyczna: sprawdzenie wymaga uprawnień administratora i bez
+    nich kończy się stanem „nie udało się sprawdzić", nigdy niespełnieniem.
+
+    Punkt domyka rodzinę ograniczeń dostępu anonimowego. Wdrożony bez dwóch
+    pozostałych daje niewiele, a pominięty przy nich sprawia, że one same dają
+    mniej, niż pokazuje raport.
+  en: |
+    The setting does not live in the registry but in the local security policy,
+    so it is read through a policy export rather than a value read. The practical
+    consequence: the check needs administrator rights and without them ends in
+    "could not check", never in non-compliance.
+
+    The item closes off the anonymous access family. Deployed without the other
+    two it gives little, and omitted alongside them it makes those two give less
+    than the report shows.

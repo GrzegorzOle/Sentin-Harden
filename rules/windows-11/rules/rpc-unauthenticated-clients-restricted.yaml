@@ -1,0 +1,173 @@
+id: win11-rpc-unauthenticated-clients-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Remote Procedure Call
+  title:
+    pl: Nieuwierzytelnieni klienci zdalnych wywołań ograniczeni
+    en: Unauthenticated remote procedure call clients restricted
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mechanizm zdalnych wywołań procedur jest drogą, którą maszyny rozmawiają ze
+    sobą o wszystkim: usługach, harmonogramie, drukarkach, zarządzaniu. Domyślnie
+    część tych rozmów można zacząć bez przedstawienia się.
+
+    Rozmowa bez uwierzytelnienia to rozmowa, w której druga strona nie wie, kto
+    pyta — a po stronie tej maszyny pracuje kod przetwarzający przysłane dane.
+    Najpoważniejsze błędy ostatnich lat w tej warstwie dawały się wykorzystać
+    właśnie bez poświadczeń. Wymóg uwierzytelnienia nie naprawia takiego błędu,
+    ale odbiera możliwość sięgnięcia po niego komuś, kto nie ma żadnego konta.
+  en: |
+    The remote procedure call mechanism is the route by which machines talk to
+    each other about everything: services, the scheduler, printers, management.
+    By default some of those conversations can be started without introducing
+    oneself.
+
+    A conversation without authentication is one where the other side does not
+    know who is asking - and on this machine's side there is code processing the
+    data sent in. The most serious flaws of recent years in that layer were
+    exploitable precisely without credentials. Requiring authentication does not
+    fix such a flaw, but it takes away the ability to reach for it from somebody
+    holding no account at all.
+
+disruption_description:
+  pl: |
+    To jest zmiana o szerokim zasięgu i tak trzeba ją zaplanować. Dotyka warstwy,
+    z której korzysta wiele rzeczy naraz, a objawy pojawiają się w miejscach
+    pozornie niezwiązanych z tą zmianą.
+
+    Najczęściej zgłaszane skutki dotyczą drukowania: połączenia z serwerem
+    wydruku i instalacja sterowników przez sieć potrafią przestać działać.
+    Poza tym uderza w starsze narzędzia zarządzające i monitorujące, które łączą
+    się bez poświadczeń. Na maszynie w grupie roboczej, poza domeną, zasięg
+    skutków jest większy niż w domenie, bo mniej rozmów ma czym się
+    uwierzytelnić.
+  en: |
+    This is a change with wide reach and has to be planned as such. It touches a
+    layer many things use at once, and the symptoms appear in places seemingly
+    unrelated to it.
+
+    The most frequently reported consequences concern printing: connections to a
+    print server and driver installation over the network can stop working.
+    Beyond that it hits older management and monitoring tools that connect
+    without credentials. On a machine in a workgroup, outside a domain, the reach
+    is greater than in a domain, because fewer conversations have anything to
+    authenticate with.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - printing
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Połączenia z serwerem wydruku i instalacja sterowników przez sieć mogą przestać działać
+      - Starsze narzędzia zarządzające łączące się bez poświadczeń stracą dostęp
+      - Na maszynie poza domeną skutki są szersze, bo mniej połączeń ma czym się uwierzytelnić
+      - Objawy pojawiają się w miejscach pozornie niezwiązanych z tą zmianą
+    en:
+      - Connections to a print server and driver installation over the network may stop working
+      - Older management tools connecting without credentials lose access
+      - On a machine outside a domain the reach is wider, because fewer connections have anything to authenticate with
+      - Symptoms appear in places seemingly unrelated to this change
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna drukuje przez serwer wydruku i pobiera z niego sterowniki
+      - Maszyna pracuje poza domeną i korzysta z zarządzania zdalnego
+      - Nie ma okna serwisowego pozwalającego sprawdzić skutki po restarcie
+    en:
+      - The machine prints through a print server and fetches drivers from it
+      - The machine works outside a domain and uses remote management
+      - There is no maintenance window in which to check the consequences after a restart
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
+      $name = 'RestrictRemoteClients'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
+    $name = 'RestrictRemoteClients'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RestrictRemoteClients' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/rpc/rpc-security-best-practices
+
+notes:
+  pl: |
+    Reguła wymaga wariantu pośredniego, a nie najostrzejszego. Wariant ostrzejszy
+    odrzuca wszystkie połączenia nieuwierzytelnione bez wyjątku i na stacji
+    roboczej wywraca drukowanie w sposób, którego nie da się obejść
+    konfiguracją. Przyjęty tutaj zostawia wyjątki dla interfejsów, które
+    świadomie na to pozwalają.
+
+    Punkt jest poziomu 2 i odpuszczenie go bywa decyzją poprawną. Warto jednak
+    zapisać ją jako wyjątek z uzasadnieniem, a nie zostawić w raporcie jako
+    czerwony wiersz — to dokładnie ten przypadek, dla którego trzeci status
+    w ogóle istnieje.
+  en: |
+    The rule requires the intermediate variant rather than the strictest one.
+    The stricter variant refuses every unauthenticated connection without
+    exception and on a workstation topples printing in a way no configuration can
+    work around. The one adopted here leaves exceptions for interfaces that
+    deliberately permit them.
+
+    The item is level 2 and passing on it is often a correct decision. It is
+    worth recording that as an exception with a justification, though, rather
+    than leaving a red row in the report - this is exactly the case the third
+    status exists for.

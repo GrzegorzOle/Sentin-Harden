@@ -1,0 +1,156 @@
+id: win11-anonymous-share-enumeration-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Security Options > Network access
+  title:
+    pl: Anonimowe wyliczanie kont i udziałów zabronione
+    en: Anonymous enumeration of accounts and shares refused
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Połączenie anonimowe pozwala zapytać maszynę o listę kont i udziałów bez
+    podania jakichkolwiek poświadczeń. Odpowiedź jest gotowym planem pracy dla
+    kogoś, kto dopiero wszedł do sieci: nazwy kont do zgadywania haseł, nazwy
+    udziałów do sprawdzenia, obraz tego, do czego ta maszyna służy.
+
+    Zamknięcie tej drogi nie broni przed niczym samo w sobie — zabiera
+    rozpoznanie. Atak, który nie wie, czego szukać, musi zgadywać głośno,
+    a głośne zgadywanie widać w dzienniku. To jest realna różnica między
+    włamaniem cichym a zauważonym.
+  en: |
+    An anonymous connection makes it possible to ask the machine for a list of
+    accounts and shares without presenting any credentials. The answer is a
+    ready-made work plan for somebody who has just entered the network: account
+    names for password guessing, share names to check, a picture of what this
+    machine is for.
+
+    Closing that route defends against nothing by itself - it takes away
+    reconnaissance. An attack that does not know what to look for has to guess
+    loudly, and loud guessing shows in the log. That is the real difference
+    between a quiet break-in and a noticed one.
+
+disruption_description:
+  pl: |
+    Na współczesnej stacji roboczej zmiana zwykle nie jest odczuwalna, bo
+    dostęp anonimowy do listy kont nie jest już wykorzystywany przez nic, co
+    działa normalnie.
+
+    Zepsuć może starsze oprogramowanie inwentaryzacyjne i monitorujące, które
+    odpytuje maszyny właśnie tą drogą, żeby nie trzymać poświadczeń. Takie
+    narzędzie przestanie widzieć tę stację — nie zgłosi jednak błędu
+    uwierzytelnienia, tylko pustą odpowiedź, więc maszyna po prostu zniknie
+    z raportów. To najczęstszy i najbardziej mylący objaw tej zmiany.
+  en: |
+    On a modern workstation the change is usually not noticeable, because
+    anonymous access to the account list is no longer used by anything that
+    works normally.
+
+    It can break older inventory and monitoring software that queries machines by
+    this route precisely so as not to hold credentials. Such a tool stops seeing
+    this workstation - and it will not report an authentication error but an
+    empty answer, so the machine simply disappears from the reports. That is the
+    most common and most misleading symptom of this change.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-authentication
+    - remote-management
+  what_breaks:
+    pl:
+      - Narzędzia inwentaryzacyjne odpytujące maszyny anonimowo przestaną widzieć tę stację
+      - Starsze skrypty wyliczające udziały bez poświadczeń zwrócą pustą listę
+      - Maszyna znika z raportów bez komunikatu o błędzie uwierzytelnienia
+    en:
+      - Inventory tools querying machines anonymously stop seeing this workstation
+      - Older scripts enumerating shares without credentials return an empty list
+      - The machine disappears from reports with no authentication error message
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W sieci działa narzędzie inwentaryzacyjne odpytujące maszyny bez poświadczeń
+      - Maszyna udostępnia zasoby aplikacji, która łączy się bez uwierzytelnienia
+    en:
+      - The network runs an inventory tool querying machines without credentials
+      - The machine serves resources to an application connecting without authentication
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'RestrictAnonymous'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'RestrictAnonymous'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    Set-ItemProperty -Path $path -Name 'RestrictAnonymous' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-do-not-allow-anonymous-enumeration-of-sam-accounts-and-shares
+
+notes:
+  pl: |
+    Punkt uzupełnia ograniczenie anonimowego wyliczania samych kont, opisane
+    osobno. Tamten dotyczy listy kont, ten — kont razem z udziałami. Wdrożenie
+    tylko jednego zostawia drogę do zebrania połowy obrazu, więc oba idą razem.
+
+    Wycofanie nie usuwa klucza, bo klucz jest systemowy i istnieje zawsze.
+    Usuwana jest wyłącznie wartość, jeżeli wcześniej jej nie było.
+  en: |
+    The item complements the restriction on anonymous enumeration of accounts
+    alone, described separately. That one concerns the account list, this one
+    accounts together with shares. Deploying only one leaves a route to gathering
+    half the picture, so the two go together.
+
+    The rollback does not delete the key, because the key is a system one and
+    always exists. Only the value is removed, if it was not there before.

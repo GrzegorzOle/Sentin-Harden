@@ -1,0 +1,158 @@
+id: win11-everyone-permissions-exclude-anonymous
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Security Options > Network access
+  title:
+    pl: Uprawnienia grupy Wszyscy nie obejmują użytkowników anonimowych
+    en: Everyone permissions do not apply to anonymous users
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uprawnienie nadane grupie Wszyscy brzmi jak decyzja o wszystkich
+    użytkownikach maszyny. Przy niewłaściwym ustawieniu obejmuje jednak także
+    połączenia bez żadnego uwierzytelnienia — czyli kogoś, kto nie jest
+    użytkownikiem tej maszyny i nigdy nim nie był.
+
+    Różnica jest zasadnicza, bo grupa Wszyscy pojawia się w uprawnieniach
+    w wielu miejscach, często ustawiona kiedyś „żeby działało". Każde takie
+    miejsce staje się wtedy dostępne z sieci bez poświadczeń. Wyłączenie tego
+    powiązania sprawia, że nadane kiedyś uprawnienie nadal dotyczy ludzi, ale
+    przestaje dotyczyć nieznajomych.
+  en: |
+    A permission granted to the Everyone group sounds like a decision about all
+    users of the machine. With the wrong setting, however, it also covers
+    connections with no authentication at all - that is, somebody who is not a
+    user of this machine and never was.
+
+    The difference is fundamental, because the Everyone group appears in
+    permissions in many places, often set at some point "to make it work". Each
+    such place then becomes reachable from the network without credentials.
+    Breaking that association means a permission granted long ago still applies
+    to people but stops applying to strangers.
+
+disruption_description:
+  pl: |
+    Na maszynie skonfigurowanej normalnie zmiana nie jest odczuwalna: nic, co
+    działa poprawnie, nie polega na dostępie anonimowym.
+
+    Zepsuć może aplikację, która świadomie z tego korzystała — najczęściej
+    starsze oprogramowanie działające jako usługa i sięgające po zasób bez
+    podawania poświadczeń. Objaw to odmowa dostępu, ale zgłoszona przez
+    aplikację, nie przez system, więc trop prowadzi najpierw do jej
+    konfiguracji, a nie do tej zmiany.
+  en: |
+    On a normally configured machine the change is not noticeable: nothing that
+    works correctly relies on anonymous access.
+
+    It can break an application that deliberately relied on it - most often
+    older software running as a service and reaching for a resource without
+    presenting credentials. The symptom is access denied, but reported by the
+    application rather than the system, so the trail leads to its configuration
+    first rather than to this change.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Starsze aplikacje sięgające po zasoby bez poświadczeń otrzymają odmowę dostępu
+      - Udziały i gałęzie rejestru udostępnione grupie Wszyscy przestaną być dostępne anonimowo
+      - Błąd zgłasza aplikacja, a nie system, więc przyczyna nie jest oczywista
+    en:
+      - Older applications reaching for resources without credentials receive access denied
+      - Shares and registry branches granted to Everyone stop being reachable anonymously
+      - The error is reported by the application rather than the system, so the cause is not obvious
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa aplikacja sięgająca po zasoby bez uwierzytelnienia
+      - Nie ustalono, które zasoby mają uprawnienia nadane grupie Wszyscy
+    en:
+      - The machine runs an application reaching for resources without authentication
+      - It has not been established which resources carry permissions granted to Everyone
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'EveryoneIncludesAnonymous'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'EveryoneIncludesAnonymous'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    Set-ItemProperty -Path $path -Name 'EveryoneIncludesAnonymous' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-let-everyone-permissions-apply-to-anonymous-users
+
+notes:
+  pl: |
+    Brak wartości liczy się jako niespełniony, mimo że domyślne zachowanie
+    systemu jest zgodne z wymaganiem. Powód jest ten sam co przy domyślnym
+    blokowaniu połączeń przychodzących w zaporze: zachowanie domyślne da się
+    zmienić jedną wartością, a zapis jawny przeżyje taką zmianę i zostawia po
+    niej ślad w kopii zapasowej.
+
+    Punkt jest trzecim z rodziny ograniczeń dostępu anonimowego, obok wyliczania
+    kont i wyliczania udziałów. Tamte odbierają rozpoznanie, ten odbiera dostęp.
+  en: |
+    A missing value counts as unmet even though the system's default behaviour
+    matches the requirement. The reason is the same as with the firewall's
+    default inbound block: default behaviour can be changed by a single value,
+    while an explicit entry survives such a change and leaves a trace of it in
+    the backup.
+
+    The item is the third of the anonymous access family, alongside enumeration
+    of accounts and enumeration of shares. Those take away reconnaissance, this
+    one takes away access.

@@ -1,0 +1,158 @@
+id: win11-smb-insecure-guest-logons-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Lanman Workstation
+  title:
+    pl: Niezabezpieczone logowanie gościa do udziałów wyłączone
+    en: Insecure guest logons to shares disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Logowanie gościa do udziału odbywa się bez uwierzytelnienia i bez podpisu.
+    Znaczy to, że maszyna nie ma jak stwierdzić, czy rozmawia z serwerem, po
+    który sięgnęła, czy z kimś, kto na to pytanie odpowiedział szybciej.
+
+    Skutek jest poważniejszy, niż sugeruje słowo „gość". Podstawiony serwer może
+    podać dowolną treść plików — w tym skrypt, dokument z makrem albo plik
+    wykonywalny — a maszyna przyjmie je jako pochodzące z udziału, któremu ufa.
+    Wyłączenie tego wariantu odbiera atakującemu sposób na dostarczenie treści
+    pod cudzym adresem.
+  en: |
+    A guest logon to a share happens without authentication and without signing.
+    Which means the machine has no way of telling whether it is talking to the
+    server it reached for or to somebody who answered that question faster.
+
+    The consequence is more serious than the word "guest" suggests. A substituted
+    server can supply arbitrary file content - including a script, a document
+    with a macro or an executable - and the machine will accept it as coming from
+    a share it trusts. Disabling this variant takes away the attacker's way of
+    delivering content under somebody else's address.
+
+disruption_description:
+  pl: |
+    W sieci firmowej z uwierzytelnianiem domenowym zmiana zwykle nie jest
+    odczuwalna, bo połączenia gościa i tak nie występują.
+
+    Odczuwalna staje się tam, gdzie w sieci stoi urządzenie udostępniające pliki
+    bez haseł: dysk sieciowy kupiony do biura, skaner zapisujący dokumenty do
+    udziału, starsza drukarka wielofunkcyjna, kamera zapisująca nagrania.
+    Wszystkie takie udziały przestaną być dostępne z tej maszyny, a komunikat
+    mówi o odmowie dostępu i nie naprowadza na przyczynę.
+  en: |
+    On a company network with domain authentication the change is usually not
+    noticeable, because guest connections do not occur anyway.
+
+    It becomes noticeable where the network holds a device sharing files without
+    passwords: a network drive bought for the office, a scanner writing documents
+    to a share, an older multifunction printer, a camera saving recordings. All
+    such shares stop being reachable from this machine, and the message speaks of
+    access denied without pointing at the cause.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-authentication
+    - printing
+  what_breaks:
+    pl:
+      - Udziały udostępniane bez uwierzytelnienia przestaną być dostępne z tej maszyny
+      - Dyski sieciowe, skanery i drukarki wielofunkcyjne zapisujące do udziału bez hasła stracą łączność
+      - Komunikat mówi o odmowie dostępu i nie wskazuje, że przyczyną jest ta zmiana
+    en:
+      - Shares offered without authentication stop being reachable from this machine
+      - Network drives, scanners and multifunction printers writing to a passwordless share lose connectivity
+      - The message speaks of access denied and does not indicate this change as the cause
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - W sieci działa urządzenie udostępniające pliki bez uwierzytelnienia i nie da się go przestawić
+      - Nie ustalono, z jakimi udziałami łączy się ta maszyna
+    en:
+      - The network holds a device sharing files without authentication that cannot be reconfigured
+      - It has not been established which shares this machine connects to
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation'
+      $name = 'AllowInsecureGuestAuth'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation'
+    $name = 'AllowInsecureGuestAuth'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowInsecureGuestAuth' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } elseif ($b.key_existed) {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    } else {
+      Remove-Item -Path $b.path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/guest-access-in-smb2-is-disabled-by-default
+
+notes:
+  pl: |
+    Punkt dotyczy wyłącznie strony klienckiej — tego, czy ta maszyna zgodzi się
+    połączyć jako gość. Nie zmienia niczego w udziałach, które ona sama
+    udostępnia.
+
+    To jeden z niewielu punktów, którego skutki najlepiej sprawdzić przez
+    inwentaryzację opisaną w założeniach aplikacji: lista podłączonych dysków
+    sieciowych i adresów, z których ta maszyna czyta, odpowiada na pytanie
+    o ryzyko lepiej niż jakikolwiek opis ogólny.
+  en: |
+    The item concerns the client side alone - whether this machine agrees to
+    connect as a guest. It changes nothing about the shares it offers itself.
+
+    It is one of the few items whose consequences are best checked through the
+    inventory described in the application's premises: the list of mapped network
+    drives and addresses this machine reads from answers the risk question better
+    than any general description.

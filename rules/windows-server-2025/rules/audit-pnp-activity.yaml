@@ -1,0 +1,217 @@
+id: win2025-audit-pnp-activity
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Detailed Tracking
+  title:
+    pl: Inspekcja podłączania urządzeń
+    en: Audit device connection activity
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje rozpoznanie przez system nowego urządzenia —
+    moment, w którym sprzęt zostaje podłączony i przypisany do
+    sterownika.
+
+    Punkt jest bliski inspekcji nośników wymiennych, ale odpowiada na
+    wcześniejsze pytanie. Tamta mówi, że z nośnika odczytano dane; ta
+    mówi, że urządzenie w ogóle się pojawiło — także takie, z którego
+    niczego nie odczytano i takie, które nośnikiem nie jest.
+
+    Na serwerze różnica ta ma konkretne znaczenie. Urządzenia
+    udające klawiaturę, karty sieciowe podłączane przez port
+    uniwersalny i urządzenia pośredniczące w dostępie do konsoli nie
+    przechowują danych, więc nie dadzą zdarzenia w podkategorii
+    nośników. Tutaj dadzą.
+
+    Wykaz jest krótki z tego samego powodu co poprzedni: do serwera nikt
+    niczego nie podłącza na co dzień. Wpis w środku nocy albo wpis
+    w dniu, w którym nikt nie zgłaszał pracy przy sprzęcie, jest
+    sygnałem sam w sobie.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    podłączenia sprzętu do serwera bez pozostawienia śladu w dzienniku
+    zabezpieczeń. Zapis o sterowniku trafi do dziennika systemowego, ale
+    to zupełnie inne miejsce i zwykle poza zakresem zbierania zdarzeń.
+  en: |
+    The subcategory records the system's recognition of a new device - the moment at which
+    hardware is plugged in and matched to a driver.
+
+    The item is close to the auditing of removable media but answers an earlier question.
+    That one says data were read off a medium; this one says a device appeared at all -
+    including one nothing was read off and one that is no medium.
+
+    On a server that difference has a concrete weight. Devices posing as a keyboard, network
+    cards plugged into a universal port and devices standing between a person and the
+    console hold no data, so they will give no event in the media subcategory. Here they
+    will.
+
+    The list is short for the same reason as the preceding one: nobody plugs anything into a
+    server day to day. An entry in the middle of the night, or an entry on a day nobody
+    reported work at the hardware, is a sign in itself.
+
+    What an attacker gains while the item goes unmet: the means of plugging hardware into
+    the server while leaving no trace in the security log. A record about the driver will
+    land in the system log, but that is an altogether different place and usually outside
+    the reach of event gathering.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Urządzenia podłącza się i rozpoznaje tak
+    samo jak wcześniej — zmienia się wyłącznie to, że rozpoznanie zostaje
+    zapisane w dzienniku zabezpieczeń.
+
+    Objętość jest znikoma na serwerze fizycznym o ustalonej konfiguracji
+    sprzętowej. Wpisy pojawiają się przy starcie systemu, kiedy
+    urządzenia są rozpoznawane na nowo, i praktycznie nigdy poza tym.
+
+    Na maszynie wirtualnej obraz bywa inny. Podłączanie i odłączanie
+    dysków wirtualnych, zmiana konfiguracji sprzętu i migracja między
+    hostami generują zdarzenia tego rodzaju bez udziału człowieka.
+    Nie jest to dużo, ale warto wiedzieć, skąd te wpisy się biorą.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. Devices are plugged in and recognised just as before - what
+    changes is only that the recognition gets recorded in the security log.
+
+    The volume is negligible on a physical server of settled hardware configuration. Entries
+    appear at the system's start, when devices are recognised anew, and in effect never
+    outside that.
+
+    On a virtual machine the picture is at times other. The attaching and detaching of
+    virtual disks, a change of hardware configuration and a migration between hosts make
+    events of this kind with no person's part in it. It is not much, but it is worth knowing
+    where those entries come from.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - drivers-and-devices
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Brak znanych regresji — urządzenia rozpoznaje się tak samo jak wcześniej
+      - Na serwerze fizycznym wpisy pojawiają się głównie przy starcie systemu
+      - Na maszynie wirtualnej zdarzenia dają też zmiany konfiguracji sprzętu i migracja
+    en:
+      - No known regressions - devices are recognised just as before
+      - On a physical server entries appear mostly at the system's start
+      - On a virtual machine changes of hardware configuration and migration give events too
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9248-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9248-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9248-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9248-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9248-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-pnp-activity
+
+notes:
+  pl: |
+    Wymagane jest rejestrowanie powodzeń. Zdarzenie opisuje urządzenie
+    rozpoznane — odrzucenie urządzenia jest zapisywane innym
+    mechanizmem i nie należy do tej podkategorii.
+
+    Punkt uzupełnia inspekcję nośników wymiennych i jest od niej
+    szerszy. Obejmuje urządzenia, które nie przechowują danych,
+    a więc takie, z których nic nie zostanie odczytane i które w tamtej
+    podkategorii nie zostawią śladu.
+
+    Zapis trafia do dziennika zabezpieczeń, a nie do systemowego.
+    Jest to różnica praktyczna, bo systemy zbierające zdarzenia
+    czytają zwykle ten pierwszy.
+  en: |
+    Recording of successes is taken. The event describes a device recognised - a device
+    being turned away is recorded by another mechanism and does not belong to this
+    subcategory.
+
+    The item fills out the auditing of removable media and is wider than it. It takes in
+    devices that hold no data, and so ones nothing will be read off and which leave no trace
+    in that subcategory.
+
+    The record lands in the security log rather than the system one. That is a practical
+    difference, since event-gathering systems usually read the former.

@@ -1,0 +1,207 @@
+id: win2025-audit-removable-storage
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Object Access
+  title:
+    pl: Inspekcja dostępu do nośników wymiennych
+    en: Audit access to removable storage
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje odczyt i zapis na nośnikach wymiennych
+    podłączonych do tej maszyny.
+
+    Na stanowisku roboczym punkt ten dotyczy głównie wynoszenia danych
+    przez użytkownika. Na serwerze sytuacja jest inna i prostsza:
+    do serwera nikt nie podłącza nośników w codziennej pracy, bo nikt
+    przy nim nie siedzi. Każde zdarzenie z tej podkategorii oznacza
+    więc, że ktoś był fizycznie przy maszynie albo że nośnik został
+    podłączony przez warstwę wirtualizacji.
+
+    To czyni wykaz bardzo krótkim i bardzo czytelnym. Podłączenie
+    nośnika do serwera jest zdarzeniem, które powinno dać się przypisać
+    do konkretnej pracy — wymiany danych, kopii ratunkowej, instalacji
+    ze wskazanego obrazu.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    skopiowania danych z serwera na nośnik bez pozostawienia zapisu
+    o tym, że cokolwiek stąd wyszło. Dotyczy to zarówno osoby
+    z dostępem fizycznym, jak i obrazu dysku podłączonego zdalnie do
+    maszyny wirtualnej — a ta druga droga nie wymaga wejścia do
+    serwerowni.
+  en: |
+    The subcategory records reading from and writing to removable media plugged into this
+    machine.
+
+    At a working station this item concerns mostly the carrying of data out by the user. On
+    a server the case is other and simpler: nobody plugs media into a server in everyday
+    work, since nobody sits at it. Every event of this subcategory thus means that somebody
+    was physically at the machine or that a medium was plugged in through the virtualisation
+    layer.
+
+    That makes the list very short and very readable. A medium being plugged into a server
+    is an event that ought to be matchable to a particular piece of work - an exchange of
+    data, a rescue copy, an installation from a named image.
+
+    What an attacker gains while the item goes unmet: the means of copying data off the
+    server onto a medium while leaving no record that anything went out of here. That holds
+    both for a person with physical access and for a disk image attached remotely to a
+    virtual machine - and the latter road takes no entering of a server room.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Nośniki działają tak samo jak wcześniej —
+    zmienia się wyłącznie to, że odwołania do nich są zapisywane.
+
+    Objętość jest na serwerze znikoma i wynika wprost z tego, że nośników
+    wymiennych zwykle tu nie ma. Wykaz pusty jest wynikiem spodziewanym.
+
+    Jeden przypadek trzeba jednak wymienić, bo bywa zaskoczeniem: jeżeli
+    kopia zapasowa serwera zapisuje się na dysk wymienny, to ta
+    podkategoria zapisze każdy plik tej kopii. Wtedy objętość przestaje
+    być znikoma i staje się największa w całym dzienniku — a dzieje się
+    to w nocy i raz na dobę.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. Media work just as before - what changes is only that calls on
+    them are recorded.
+
+    The volume on a server is negligible and follows directly from there usually being no
+    removable media here. An empty list is the expected outcome.
+
+    One case has to be named, though, since it is at times a surprise: where the server's
+    backup writes itself to a removable disk, this subcategory will record every file of
+    that backup. The volume then stops being negligible and becomes the largest in the whole
+    log - and it happens at night and once a day.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - removable-media
+  what_breaks:
+    pl:
+      - Brak znanych regresji — nośniki wymienne działają tak samo jak wcześniej
+      - Na serwerze bez nośników wykaz pozostaje pusty i jest to wynik spodziewany
+      - Kopia zapasowa zapisywana na dysk wymienny da wpis dla każdego pliku
+    en:
+      - No known regressions - removable media work just as before
+      - On a server with no media the list stays empty and that is the expected outcome
+      - A backup written to a removable disk will give an entry for every file
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Kopia zapasowa serwera zapisuje się na dysk wymienny, a strumień zdarzeń nie został policzony
+    en:
+      - The server's backup writes itself to a removable disk and the stream of events has not been counted
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9245-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9245-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9245-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9245-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9245-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-removable-storage
+
+notes:
+  pl: |
+    Wymagane są oba rodzaje zapisu. Odmowa dostępu do nośnika jest
+    równie interesująca jak dostęp udany, bo oznacza, że ktoś próbował
+    z niego skorzystać mimo ograniczenia.
+
+    Na maszynie wirtualnej podkategoria ta obejmuje również obrazy
+    podłączane przez warstwę wirtualizacji. Jest to droga wyniesienia
+    danych niewymagająca dostępu fizycznego i warto o niej pamiętać
+    przy czytaniu wykazu.
+
+    Punkt nie blokuje nośników wymiennych. Blokowanie jest osobnym
+    ustawieniem — ten punkt zapewnia wyłącznie, że użycie nośnika
+    zostawia ślad.
+  en: |
+    Both kinds of record are taken. A refusal of access to a medium is as interesting as
+    successful access, since it means somebody tried to use it in spite of a restriction.
+
+    On a virtual machine this subcategory takes in images attached through the
+    virtualisation layer as well. It is a road of carrying data out that takes no physical
+    access, and it is worth remembering at the reading of the list.
+
+    The item does not block removable media. Blocking is a separate setting - this item
+    ensures only that a medium's use leaves a trace.

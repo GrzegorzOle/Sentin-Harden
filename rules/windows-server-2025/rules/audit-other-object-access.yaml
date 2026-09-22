@@ -1,0 +1,208 @@
+id: win2025-audit-other-object-access
+
+benchmark:
+  name: CIS Microsoft Windows Server 2025 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Object Access
+  title:
+    pl: Inspekcja pozostałego dostępu do obiektów
+    en: Audit other object access
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2025
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zbiera dostęp do obiektów systemowych spoza plików
+    i udziałów — w praktyce przede wszystkim do zadań zaplanowanych
+    i do obiektów usługi zarządzania zdalnego.
+
+    Zadania zaplanowane są tym, co czyni tę podkategorię ważną. Zadanie
+    dodane do harmonogramu uruchamia się samo, cyklicznie, z wybranym
+    kontem i bez niczyjej obecności. Jest to najstarszy i wciąż
+    najskuteczniejszy sposób utrzymania dostępu do maszyny: nie wymaga
+    otwartego połączenia, przeżywa restart i wygląda jak element
+    normalnej administracji.
+
+    Na serwerze zadań zaplanowanych jest wiele i są rzeczą oczekiwaną.
+    Właśnie to czyni je dobrym miejscem na ukrycie jednego dodatkowego —
+    nikt nie zna całej listy na pamięć, a każde zadanie ma sensownie
+    brzmiącą nazwę.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    dodania, zmiany albo odczytania zadania zaplanowanego bez
+    pozostawienia śladu. Wykaz zadań pokaże stan bieżący, ale nie powie,
+    kiedy i przez kogo to zadanie powstało.
+  en: |
+    The subcategory gathers access to system objects outside files and shares - in practice
+    above all to scheduled tasks and to the remote management service's objects.
+
+    Scheduled tasks are what makes this subcategory matter. A task added to the schedule
+    runs by itself, on a cycle, with a chosen account and with nobody present. It is the
+    oldest and still the most effective way of keeping access to a machine: it takes no open
+    connection, survives a restart and looks like a piece of normal administration.
+
+    On a server there are many scheduled tasks and they are an expected thing. That is
+    exactly what makes them a good place to hide one more in - nobody knows the whole list
+    by heart, and every task has a sensible-sounding name.
+
+    What an attacker gains while the item goes unmet: the means of adding, changing or
+    reading a scheduled task while leaving no trace. The list of tasks will show the present
+    state but will not say when and by whom that task arose.
+
+disruption_description:
+  pl: |
+    Zmiana nie ma znanych skutków ubocznych i nie wymaga przerwy.
+
+    Nic nie przestaje działać. Zadania zaplanowane uruchamiają się tak
+    samo jak wcześniej — zmienia się wyłącznie to, że dostęp do nich
+    zostaje zapisany.
+
+    Objętość jest umiarkowana i nie zależy od tego, jak często zadania
+    się wykonują. Zapisywany jest dostęp do samego obiektu zadania,
+    czyli jego dodanie, zmiana, odczyt definicji i usunięcie — a nie
+    każde uruchomienie.
+
+    Jest to rozróżnienie warte podkreślenia, bo bez niego punkt brzmi
+    znacznie groźniej objętościowo, niż jest w rzeczywistości. Zadanie
+    wykonujące się co minutę nie daje z tego powodu ani jednego
+    dodatkowego wpisu w tej podkategorii.
+  en: |
+    The change has no known side effects and takes no break.
+
+    Nothing stops working. Scheduled tasks run just as before - what changes is only that
+    access to them gets recorded.
+
+    The volume is moderate and does not hang on how often the tasks run. What is recorded is
+    access to the task object itself, that is, its addition, alteration, the reading of its
+    definition and its deletion - rather than every running.
+
+    That distinction is worth stressing, since without it the item sounds far more alarming
+    in volume than it truly is. A task running every minute gives not one extra entry in
+    this subcategory on that account.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+    - remote-management
+  what_breaks:
+    pl:
+      - Brak znanych regresji — zadania zaplanowane uruchamiają się tak samo
+      - Zapisywany jest dostęp do obiektu zadania, a nie każde jego wykonanie
+      - Zadanie wykonujące się co minutę nie daje z tego powodu dodatkowych wpisów
+    en:
+      - No known regressions - scheduled tasks run just the same
+      - What is recorded is access to the task object rather than each running of it
+      - A task running every minute gives no extra entries on that account
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten punkt byłby błędem
+    en:
+      - No known cases in which this item would be a mistake
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9227-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9227-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9227-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9227-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9227-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-object-access-events
+
+notes:
+  pl: |
+    Wymagane są oba rodzaje zapisu. Odmowa dostępu do obiektu zadania
+    jest tu zdarzeniem istotnym — oznacza, że ktoś sięgnął do harmonogramu
+    bez uprawnień do niego.
+
+    Punkt czyta się razem z inspekcją tworzenia procesów. Ta pokazuje
+    dodanie zadania, tamta pokazuje jego wykonanie — i dopiero razem
+    tłumaczą, skąd na maszynie wziął się proces, którego nikt nie
+    uruchamiał ręcznie.
+
+    Podkategoria obejmuje także obiekty usługi zarządzania zdalnego.
+    Na serwerze zarządzanym zdalnie warto to wiedzieć przy czytaniu
+    wykazu, bo część wpisów pochodzi wtedy z normalnej administracji.
+  en: |
+    Both kinds of record are taken. A refusal of access to a task object is here a telling
+    event - it means somebody reached into the schedule with no rights to it.
+
+    The item is read together with the auditing of process creation. That one shows a task's
+    running, this one its addition - and only together do they explain where a process
+    nobody started by hand came from on the machine.
+
+    The subcategory takes in the remote management service's objects as well. On a remotely
+    managed server that is worth knowing at the reading of the list, since some of the
+    entries then come from normal administration.

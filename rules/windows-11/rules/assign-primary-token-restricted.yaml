@@ -1,0 +1,188 @@
+id: win11-assign-primary-token-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Zastępowanie tokenu procesu ograniczone do kont usługowych
+    en: Replacing a process token restricted to service accounts
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uprawnienie pozwala uruchomić nowy proces z tokenem innym niż własny, czyli
+    nadać mu tożsamość, której uruchamiający sam nie ma. Odróżnia je to od
+    personifikacji: tam tożsamość przyjmuje się na czas obsługi żądania, tutaj
+    powstaje nowy proces, który tę tożsamość ma od początku i zachowuje do końca.
+
+    Konto z tym uprawnieniem może więc wystartować proces działający jako ktoś
+    inny — i proces ten będzie wyglądał na normalnie uruchomiony, bo formalnie
+    jest. Zdobycie tokenu jest osobnym krokiem, ale to uprawnienie sprawia, że po
+    jego zdobyciu nie trzeba już nic obchodzić. Dlatego ma pozostać przy kontach,
+    na których menedżer usług uruchamia procesy, i nie wychodzić poza nie.
+  en: |
+    The right allows a new process to be started with a token other than one's
+    own - that is, to give it an identity the person starting it does not
+    themselves hold. This is what separates it from impersonation: there an
+    identity is assumed for the duration of a request, here a new process is
+    created that holds the identity from the start and keeps it to the end.
+
+    An account with this right can therefore start a process running as somebody
+    else - and that process will look normally started, because formally it is.
+    Obtaining a token is a separate step, but this right means that once obtained,
+    nothing else has to be circumvented. Which is why it is to stay with the
+    accounts the service manager starts processes under, and go no further.
+
+disruption_description:
+  pl: |
+    Lista domyślna obejmuje wyłącznie dwie tożsamości usługowe i nie ma na niej
+    administratorów — inaczej niż przy większości uprawnień z tej grupy. Na
+    maszynie nietkniętej zmiana nie robi więc nic.
+
+    Odczuwalna jest tam, gdzie uprawnienie zostało dopisane pod konkretne
+    oprogramowanie: narzędzia uruchamiające zadania w imieniu użytkowników,
+    starsze serwery aplikacji, część systemów kolejkowania zadań. Taki program
+    przestanie startować procesy potomne i zgłosi odmowę przy uruchomieniu
+    zadania, a nie przy starcie własnej usługi — więc przyczyna nie jest widoczna
+    od razu.
+  en: |
+    The default list covers only two service identities and does not include
+    administrators - unlike most rights in this group. On an untouched machine the
+    change therefore does nothing.
+
+    It is felt where the right was added for a particular piece of software:
+    tools running jobs on users' behalf, older application servers, some job
+    queueing systems. Such a program stops starting child processes and reports a
+    refusal when a job is launched rather than when its own service starts - so
+    the cause is not immediately visible.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Oprogramowanie uruchamiające zadania w imieniu innych użytkowników przestanie startować procesy potomne
+      - Odmowa pojawia się przy uruchomieniu zadania, a nie przy starcie usługi
+      - Konta dopisane do listy pod konkretną aplikację stracą tę możliwość bez ostrzeżenia
+    en:
+      - Software running jobs on other users' behalf stops starting child processes
+      - The refusal appears when a job is launched, not when the service starts
+      - Accounts added to the list for a particular application lose the ability without warning
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa system kolejkowania zadań uruchamiający je na kontach użytkowników
+      - Uprawnienie zostało dopisane konkretnemu kontu i nie wiadomo, co z niego korzysta
+    en:
+      - The machine runs a job queueing system launching jobs under user accounts
+      - The right was added for a specific account and it is not known what relies on it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeAssignPrimaryTokenPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-19,S-1-5-20|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeAssignPrimaryTokenPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeAssignPrimaryTokenPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeAssignPrimaryTokenPrivilege = *S-1-5-19,*S-1-5-20',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeAssignPrimaryTokenPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/replace-a-process-level-token
+
+notes:
+  pl: |
+    To jeden z nielicznych punktów z tej grupy, w którym administratorzy nie
+    znajdują się na liście wymaganej — i nie jest to przeoczenie. Administrator
+    potrzebujący uruchomić proces jako ktoś inny może sobie to uprawnienie nadać,
+    więc jego obecność na liście niczego nie dodaje, a poszerza zbiór procesów,
+    które mają je od razu.
+
+    Warto zestawić ten punkt z personifikacją klienta. Oba dotyczą działania pod
+    cudzą tożsamością, ale różnią się trwałością skutku: personifikacja kończy
+    się wraz z obsługą żądania, zastąpienie tokenu tworzy proces, który zostaje.
+  en: |
+    This is one of the few items in this group where administrators are not on
+    the required list - and that is not an oversight. An administrator who needs
+    to start a process as somebody else can grant themselves the right, so their
+    presence on the list adds nothing while widening the set of processes that
+    hold it from the outset.
+
+    It is worth reading this item alongside impersonating a client. Both concern
+    acting under somebody else's identity, but they differ in how long the effect
+    lasts: impersonation ends with the request, replacing a token creates a
+    process that stays.

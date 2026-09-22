@@ -1,0 +1,175 @@
+id: win11-create-pagefile-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Tworzenie pliku stronicowania zastrzeżone dla administratorów
+    en: Creating a pagefile restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Plik stronicowania to miejsce na dysku, do którego system odkłada fragmenty
+    pamięci, gdy brakuje jej fizycznie. Uprawnienie pozwala ten plik utworzyć,
+    przenieść na inny dysk i zmienić jego rozmiar.
+
+    Treść pliku stronicowania to surowa zawartość pamięci, a więc także to, co
+    znalazło się w niej przelotnie: fragmenty dokumentów, klucze, dane sesji.
+    Konto, które może przenieść ten plik, wskazuje systemowi, gdzie ma tę
+    zawartość zapisywać — a wybrane miejsce może mieć zupełnie inne uprawnienia
+    niż domyślne. Osobno, samo ustawienie skrajnie małego rozmiaru potrafi
+    doprowadzić maszynę do zatrzymania.
+  en: |
+    The pagefile is the place on disk where the system sets aside fragments of
+    memory when physical memory runs short. The right allows that file to be
+    created, moved to another disk and resized.
+
+    The content of a pagefile is raw memory, including whatever passed through it
+    briefly: fragments of documents, keys, session data. An account able to move
+    the file tells the system where to write that content - and the chosen
+    location may carry entirely different permissions from the default one.
+    Separately, setting an extremely small size can bring the machine to a halt.
+
+disruption_description:
+  pl: |
+    Nic. Uprawnienie mają domyślnie wyłącznie administratorzy i w takim kształcie
+    wystarcza wszystkiemu, co normalnie na maszynie działa.
+
+    Wyjątkiem są narzędzia do strojenia wydajności i skrypty przygotowujące obraz
+    maszyny, które ustawiają rozmiar pliku stronicowania w trakcie wdrożenia.
+    Takie skrypty i tak zwykle działają z uprawnieniami administratora, więc
+    zmiana ich nie dotyczy — trzeba tylko sprawdzić, czy faktycznie tak jest,
+    zanim uzna się punkt za bezkosztowy.
+  en: |
+    Nothing. By default only administrators hold the right, and in that shape it
+    suffices for everything that normally runs on the machine.
+
+    The exception is performance tuning tools and image preparation scripts that
+    set the pagefile size during deployment. Such scripts usually run with
+    administrator rights anyway, so the change does not affect them - it is only
+    worth confirming that this is in fact the case before declaring the item free
+    of cost.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Skrypty wdrożeniowe ustawiające rozmiar pliku stronicowania z konta innego niż administrator przestaną działać
+      - Narzędzia do strojenia wydajności stracą możliwość przeniesienia pliku stronicowania
+    en:
+      - Deployment scripts setting the pagefile size under a non-administrator account stop working
+      - Performance tuning tools lose the ability to move the pagefile
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Przygotowanie obrazu maszyny ustawia plik stronicowania z konta bez uprawnień administracyjnych
+    en:
+      - Machine image preparation sets the pagefile from an account without administrative rights
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreatePagefilePrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreatePagefilePrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreatePagefilePrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreatePagefilePrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreatePagefilePrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-a-pagefile
+
+notes:
+  pl: |
+    Punkt ogranicza, kto może plik stronicowania utworzyć i przenieść, ale nie
+    odpowiada na pytanie, co się dzieje z jego zawartością przy zamykaniu
+    systemu. To osobne ustawienie i osobna reguła — same razem dopiero domykają
+    temat danych zostawianych w tym pliku.
+
+    Rozmiar pliku stronicowania bywa przedmiotem sporu o wydajność, a nie
+    o bezpieczeństwo, i reguła świadomie go nie dotyka. Ustala wyłącznie, kto ma
+    prawo go zmieniać.
+  en: |
+    The item limits who may create and move the pagefile, but does not answer what
+    happens to its content at shutdown. That is a separate setting and a separate
+    rule - only together do they close the subject of data left behind in this
+    file.
+
+    Pagefile size is often argued about on performance grounds rather than
+    security ones, and the rule deliberately leaves it alone. It establishes only
+    who has the right to change it.

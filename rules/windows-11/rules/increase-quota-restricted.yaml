@@ -1,0 +1,179 @@
+id: win11-increase-quota-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Zmiana przydziału pamięci procesu ograniczona do administratorów i kont usługowych
+    en: Adjusting a process memory quota restricted to administrators and service accounts
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Każdy proces ma określony górny pułap pamięci, którą wolno mu zająć. To
+    uprawnienie pozwala ten pułap zmienić — i nie tylko sobie, lecz dowolnemu
+    procesowi w systemie.
+
+    Wykorzystuje się to w dwie strony. W górę: proces podnosi sobie limit
+    i zajmuje pamięć, której zabraknie pozostałym. W dół, co jest ciekawsze:
+    obniżenie limitu cudzemu procesowi potrafi go zatrzymać albo zmusić do
+    zachowania, którego autor nie przewidział. Drugi wariant bywa używany
+    przeciwko procesom zabezpieczającym, bo nie wymaga ich zatrzymywania ani
+    modyfikowania — wystarczy odebrać im pamięć.
+  en: |
+    Every process has an upper limit on the memory it may occupy. This right
+    allows that limit to be changed - and not only for oneself, but for any
+    process in the system.
+
+    It is used in both directions. Upward: a process raises its own limit and
+    occupies memory the others then go without. Downward, which is the more
+    interesting case: lowering another process's limit can stall it or force
+    behaviour its author never anticipated. The second variant is sometimes used
+    against security processes, because it requires neither stopping nor
+    modifying them - it is enough to take their memory away.
+
+disruption_description:
+  pl: |
+    Nic. Lista domyślna obejmuje administratorów i dwie tożsamości usługowe,
+    a poza nimi uprawnienie nie jest potrzebne żadnemu normalnie działającemu
+    programowi.
+
+    Na stacji roboczej to jeden z punktów, które albo już są spełnione, albo
+    zostały zmienione ręcznie i wtedy sam ten fakt wymaga wyjaśnienia. Zmiana nie
+    wymaga restartu ani wylogowania w tym sensie, że system działa dalej, ale
+    procesy już uruchomione zachowują uprawnienie do zakończenia — żeby pozbyć
+    się go wszędzie, trzeba się wylogować.
+  en: |
+    Nothing. The default list covers administrators and two service identities,
+    and beyond them no normally functioning program needs the right.
+
+    On a workstation this is one of those items that is either already satisfied
+    or has been changed by hand, in which case that fact itself needs explaining.
+    The change requires no restart or sign-out in the sense that the system keeps
+    running, but processes already started keep the right until they exit - to be
+    rid of it everywhere, a sign-out is needed.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konta dopisane do listy stracą możliwość zmiany przydziału pamięci innym procesom
+      - Procesy już uruchomione zachowują uprawnienie do momentu zakończenia
+    en:
+      - Accounts added to the list lose the ability to change other processes' memory quota
+      - Processes already started keep the right until they exit
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa narzędzie zarządzania zasobami, które reguluje przydziały pamięci procesom
+    en:
+      - The machine runs a resource management tool that regulates process memory quotas
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeIncreaseQuotaPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-19,S-1-5-20,S-1-5-32-544|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeIncreaseQuotaPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeIncreaseQuotaPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeIncreaseQuotaPrivilege = *S-1-5-32-544,*S-1-5-19,*S-1-5-20',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeIncreaseQuotaPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/adjust-memory-quotas-for-a-process
+
+notes:
+  pl: |
+    Nazwa uprawnienia mówi o zwiększaniu przydziału, a w rzeczywistości pozwala
+    go zmieniać w obie strony. Opis reguły celowo prostuje to mylące nazewnictwo,
+    bo obniżenie limitu cudzemu procesowi jest tu groźniejszym zastosowaniem niż
+    podniesienie własnego.
+
+    Kategoria ryzyka jest średnia: skutkiem jest zakłócenie pracy procesów, a nie
+    przejęcie maszyny czy dostęp do danych. Punkt zyskuje na wadze dopiero
+    w zestawieniu z innymi — jako jeden z kroków ciągu, w którym najpierw
+    wycisza się to, co obserwuje, a dopiero potem robi resztę.
+  en: |
+    The name of the right speaks of increasing a quota, while in reality it allows
+    the quota to be changed in both directions. The rule's description corrects
+    that misleading naming deliberately, because lowering another process's limit
+    is the more dangerous use here than raising one's own.
+
+    The risk category is medium: the consequence is disruption to processes, not
+    a captured machine or access to data. The item gains weight only alongside
+    others - as one step in a sequence where what observes is quietened first and
+    the rest done afterwards.

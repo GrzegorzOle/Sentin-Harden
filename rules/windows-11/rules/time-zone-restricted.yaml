@@ -1,0 +1,173 @@
+id: win11-time-zone-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Zmiana strefy czasowej ograniczona do administratorów, usługi lokalnej i użytkowników
+    en: Changing the time zone restricted to administrators, the local service and users
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Strefa czasowa to przesunięcie, które system dokłada przy wyświetlaniu czasu.
+    Zegar wewnętrzny pracuje w czasie uniwersalnym i zmiana strefy go nie rusza —
+    dlatego to uprawnienie jest czymś zupełnie innym niż zmiana czasu systemowego,
+    mimo podobnej nazwy.
+
+    Nie znaczy to, że nie ma znaczenia. Wpisy w dzienniku zdarzeń czyta się
+    zwykle w czasie lokalnym, więc przestawiona strefa przesuwa cały dziennik
+    w oczach osoby, która go przegląda. To nie unieważnia zapisów, ale potrafi
+    zaciemnić moment zdarzenia i utrudnić zestawienie dziennika z innym źródłem.
+    Stąd punkt istnieje, ale ma najniższą kategorię ryzyka.
+  en: |
+    A time zone is an offset the system applies when displaying the time. The
+    internal clock runs in universal time and changing the zone does not move it -
+    which is why this right is something quite different from changing the system
+    time, despite the similar name.
+
+    That does not make it irrelevant. Event log entries are usually read in local
+    time, so a shifted zone moves the whole log in the eyes of whoever is
+    reviewing it. It does not invalidate the records, but it can obscure when an
+    event happened and complicate lining the log up against another source. Hence
+    the item exists, but carries the lowest risk category.
+
+disruption_description:
+  pl: |
+    Nic. Lista wymagana obejmuje grupę użytkowników, czyli w praktyce każdego, kto
+    loguje się na maszynę. Punkt nie odbiera niczego użytkownikowi — porządkuje
+    tylko listę, żeby nie było na niej wpisów dodanych poza tym zestawem.
+
+    Osoba podróżująca nadal zmieni sobie strefę i nadal zobaczy poprawną godzinę
+    lokalną. Automatyczne ustawianie strefy na podstawie lokalizacji działa
+    z konta usługi lokalnej, które na liście zostaje.
+  en: |
+    Nothing. The required list includes the users group, meaning in practice
+    everybody who signs in to the machine. The item takes nothing away from the
+    user - it merely tidies the list so that it holds no entries beyond that set.
+
+    A travelling person can still change their zone and will still see the correct
+    local time. Automatic zone setting based on location runs under the local
+    service account, which stays on the list.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Konta spoza grupy użytkowników, którym uprawnienie dopisano ręcznie, stracą możliwość zmiany strefy
+    en:
+      - Accounts outside the users group that had the right added by hand lose the ability to change the zone
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa usługa zmieniająca strefę czasową z konta spoza tej listy
+    en:
+      - The machine runs a service changing the time zone from an account outside this list
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeTimeZonePrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-19,S-1-5-32-544,S-1-5-32-545|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeTimeZonePrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeTimeZonePrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeTimeZonePrivilege = *S-1-5-32-544,*S-1-5-19,*S-1-5-32-545',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeTimeZonePrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/change-the-time-zone
+
+notes:
+  pl: |
+    To jedyny punkt w tej grupie, w którym na liście wymaganej znajduje się grupa
+    użytkowników. Warto o tym pamiętać przy przenoszeniu reguły do paczki
+    serwerowej — tam obecność zwykłych użytkowników na jakiejkolwiek liście
+    uprawnień jest znacznie mniej oczywista i wymaga własnej decyzji.
+
+    Reguła wygląda na drobiazg i nim jest, ale w zestawieniu macierzowym trafia
+    dokładnie tam, gdzie powinna: niskie ryzyko, brak uciążliwości, czyli „zrób
+    przy okazji". To jest ta kategoria, dla której tryb zbiorczy istnieje.
+  en: |
+    This is the only item in the group whose required list includes the users
+    group. Worth remembering when carrying the rule over to a server pack - there,
+    the presence of ordinary users on any rights list is far less obvious and
+    calls for its own decision.
+
+    The rule looks like a small thing and is one, but on the decision matrix it
+    lands exactly where it should: low risk, no disruption, meaning "do it while
+    you are there". That is the category bulk mode exists for.

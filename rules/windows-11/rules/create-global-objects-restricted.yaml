@@ -1,0 +1,187 @@
+id: win11-create-global-objects-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Tworzenie obiektów globalnych ograniczone do administratorów i kont usługowych
+    en: Creating global objects restricted to administrators and service accounts
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sesje zalogowanych użytkowników są od siebie oddzielone również nazwami
+    obiektów, którymi procesy się porozumiewają: każda sesja ma własną przestrzeń
+    nazw. Obiekt globalny wyłamuje się z tego podziału i jest widoczny we
+    wszystkich sesjach naraz.
+
+    Uprawnienie pozwala taki obiekt utworzyć. Proces, który ma je w zwykłej sesji
+    użytkownika, może zawczasu zająć nazwę, pod którą spodziewa się zgłosić
+    składnik uprzywilejowany — i wtedy to on obsłuży połączenie, którego tamten
+    oczekiwał. Wariant łagodniejszy to zajęcie nazwy, żeby uprzywilejowany
+    składnik w ogóle nie wystartował. Ograniczenie listy do administratorów
+    i kont usługowych zamyka obie drogi.
+  en: |
+    Sessions of signed-in users are separated from one another also by the names
+    of the objects their processes communicate through: each session has its own
+    namespace. A global object breaks out of that division and is visible in all
+    sessions at once.
+
+    The right allows such an object to be created. A process holding it in an
+    ordinary user session can claim, in advance, the name a privileged component
+    expects to register under - and then it, rather than that component, serves
+    the connection. The milder variant is claiming the name so the privileged
+    component does not start at all. Restricting the list to administrators and
+    service accounts closes both routes.
+
+disruption_description:
+  pl: |
+    Na maszynie skonfigurowanej standardowo lista wygląda tak, jak wymaga punkt,
+    i zmiana nic nie robi.
+
+    Uwagi wymaga maszyna, na której pracuje wielu użytkowników jednocześnie — po
+    stronie pulpitu zdalnego albo usług terminalowych. Starsze oprogramowanie
+    bywa napisane tak, że tworzy obiekty globalne z konta użytkownika, bo powstało
+    w czasach, gdy sesja była jedna. Taki program po zmianie przestaje startować
+    albo uruchamia się w jednej sesji i odmawia w pozostałych, co jest objawem
+    trudnym do powiązania z przyczyną.
+  en: |
+    On a machine configured as standard the list looks the way the item requires
+    and the change does nothing.
+
+    Attention is due on a machine where several people work at once - via remote
+    desktop or terminal services. Older software is sometimes written to create
+    global objects from a user account, because it was built when there was only
+    one session. After the change such a program stops starting, or starts in one
+    session and refuses in the others, which is a symptom hard to connect with its
+    cause.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - remote-desktop
+  what_breaks:
+    pl:
+      - Starsze programy tworzące obiekty globalne z konta użytkownika przestaną startować
+      - Na maszynie z wieloma sesjami program może działać w jednej sesji i odmawiać w pozostałych
+      - Objaw jest trudny do powiązania z przyczyną, bo komunikat nie wskazuje na uprawnienie
+    en:
+      - Older programs creating global objects from a user account stop starting
+      - On a multi-session machine a program may work in one session and refuse in the others
+      - The symptom is hard to connect with its cause, because the message does not point at a right
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna obsługuje jednocześnie wiele sesji pulpitu zdalnego ze starszym oprogramowaniem
+      - Uprawnienie zostało dopisane pod konkretny program i nie ma go czym zastąpić
+    en:
+      - The machine serves several remote desktop sessions at once with older software
+      - The right was added for a specific program and there is nothing to replace it with
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreateGlobalPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-19,S-1-5-20,S-1-5-32-544,S-1-5-6|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreateGlobalPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreateGlobalPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreateGlobalPrivilege = *S-1-5-32-544,*S-1-5-19,*S-1-5-20,*S-1-5-6',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreateGlobalPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-global-objects
+
+notes:
+  pl: |
+    Wymagany zestaw jest ten sam co przy personifikacji klienta: administratorzy
+    plus trzy tożsamości usługowe. To nie przypadek — oba uprawnienia opisują
+    granicę między tym, co robi usługa systemowa, a tym, co robi proces
+    użytkownika, i granica ta biegnie w obu przypadkach tak samo.
+
+    Na stacji roboczej z jedną sesją skutek nadużycia jest ograniczony, bo nie ma
+    cudzej sesji, do której można by sięgnąć. Ryzyko jest tu ocenione wysoko,
+    ponieważ ta sama reguła obsługuje maszyny z pulpitem zdalnym, a ocena ma
+    dotyczyć gorszego z realnych przypadków, nie najlepszego.
+  en: |
+    The required set is the same as for impersonating a client: administrators
+    plus three service identities. That is no coincidence - both rights describe
+    the boundary between what a system service does and what a user process does,
+    and the boundary runs the same way in both cases.
+
+    On a single-session workstation the consequence of abuse is limited, because
+    there is no other session to reach into. The risk is rated high here because
+    the same rule serves machines with remote desktop, and an assessment should
+    describe the worse of the realistic cases rather than the best.

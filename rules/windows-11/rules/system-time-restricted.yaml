@@ -1,0 +1,192 @@
+id: win11-system-time-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: User Rights Assignment
+  title:
+    pl: Zmiana czasu systemowego ograniczona do administratorów i usługi lokalnej
+    en: Changing the system time restricted to administrators and the local service
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Czas systemowy nie jest wygodą interfejsu, tylko danymi wejściowymi dla kilku
+    mechanizmów zabezpieczeń naraz. Uwierzytelnianie Kerberos odrzuca bilety
+    spoza wąskiego okna czasowego. Sprawdzanie certyfikatów porównuje datę
+    ważności z zegarem. Wpisy w dzienniku zdarzeń są uporządkowane według czasu,
+    z którego korzysta się przy dochodzeniu.
+
+    Konto, które może przestawić zegar, może więc unieważnić wszystkie trzy
+    zabezpieczenia bez dotykania żadnego z nich. Przesunięcie zegara wstecz
+    ożywia certyfikat, który wygasł; przesunięcie w przód i z powrotem rozrzuca
+    zapisy dziennika tak, że kolejność zdarzeń przestaje być czytelna. Żadna
+    z tych operacji nie wygląda na atak — wygląda na źle ustawiony czas.
+  en: |
+    The system clock is not an interface convenience but an input to several
+    security mechanisms at once. Kerberos authentication rejects tickets outside a
+    narrow time window. Certificate validation compares an expiry date with the
+    clock. Event log entries are ordered by a time that is relied on in an
+    investigation.
+
+    An account able to move the clock can therefore invalidate all three
+    protections without touching any of them. Moving the clock back revives a
+    certificate that has expired; moving it forward and back scatters log entries
+    so that the order of events stops being readable. Neither operation looks like
+    an attack - it looks like a badly set clock.
+
+disruption_description:
+  pl: |
+    Na maszynie w domenie zmiana nie jest odczuwalna: czas przychodzi
+    z kontrolera domeny, a użytkownik i tak nie ma powodu go przestawiać.
+
+    Poza domeną trzeba spojrzeć. Jeśli synchronizacja czasu nie działa — bo
+    maszyna stoi w sieci odciętej od internetu albo usługa czasu jest wyłączona —
+    to ręczne przestawianie zegara bywa jedynym sposobem utrzymania go w ryzach,
+    a odebranie tej możliwości użytkownikowi oznacza, że zegar zacznie dryfować.
+    Skutkiem nie jest wtedy komunikat o braku uprawnień, tylko wolno narastający
+    problem z logowaniem i certyfikatami.
+
+    Zmiana strefy czasowej to osobne uprawnienie i ta reguła go nie dotyka.
+    Użytkownik podróżujący nadal zmieni sobie strefę.
+  en: |
+    On a domain-joined machine the change is not noticeable: time comes from a
+    domain controller and the user has no reason to move it anyway.
+
+    Outside a domain it is worth a look. If time synchronisation does not work -
+    because the machine sits on a network cut off from the internet, or the time
+    service is disabled - setting the clock by hand is sometimes the only way to
+    keep it in check, and taking that away from the user means the clock starts
+    drifting. The consequence is then not a permissions message but a slowly
+    growing problem with sign-in and certificates.
+
+    Changing the time zone is a separate right and this rule does not touch it. A
+    travelling user can still change their zone.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Użytkownik bez uprawnień administracyjnych nie przestawi już zegara ręcznie
+      - W sieci bez synchronizacji czasu zegar zacznie dryfować, a objawem będą problemy z logowaniem i certyfikatami
+      - Skrypty ustawiające czas przy starcie maszyny przestaną działać, jeśli nie działają jako administrator
+    en:
+      - A user without administrative rights can no longer set the clock by hand
+      - On a network without time synchronisation the clock starts drifting, showing up as sign-in and certificate problems
+      - Scripts setting the time at startup stop working unless they run as administrator
+  interruption: logoff
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna stoi w sieci bez synchronizacji czasu i zegar jest ustawiany ręcznie
+      - Oprogramowanie pomiarowe wymaga ustawiania czasu z konta operatora
+    en:
+      - The machine sits on a network without time synchronisation and the clock is set by hand
+      - Measurement software requires the time to be set from an operator account
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeSystemTimePrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-19,S-1-5-32-544|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeSystemTimePrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeSystemTimePrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeSystemTimePrivilege = *S-1-5-32-544,*S-1-5-19',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeSystemTimePrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/change-the-system-time
+
+notes:
+  pl: |
+    Usługa lokalna zostaje na liście, bo to z jej konta działa usługa czasu
+    synchronizująca zegar ze źródłem zewnętrznym. Usunięcie jej zatrzymałoby
+    dokładnie ten mechanizm, który sprawia, że ręczne przestawianie zegara jest
+    zbędne — i zamieniłoby punkt zabezpieczający w punkt psujący.
+
+    Zmiana czasu jest zdarzeniem rejestrowanym osobno w podkategorii inspekcji
+    dotyczącej zmian polityki. Punkt o przypisaniu uprawnienia ogranicza, kto
+    może to zrobić; punkt o inspekcji odpowiada na pytanie, czy się dowiemy, gdy
+    ktoś to zrobi. Warto mieć oba.
+  en: |
+    The local service stays on the list because the time service that synchronises
+    the clock with an external source runs under that account. Removing it would
+    stop precisely the mechanism that makes setting the clock by hand unnecessary -
+    turning a protective item into a destructive one.
+
+    A time change is logged separately under the audit subcategory covering policy
+    changes. The rights assignment item limits who can do it; the audit item
+    answers whether we will learn that somebody did. Both are worth having.

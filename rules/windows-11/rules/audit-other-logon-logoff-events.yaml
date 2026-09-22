@@ -1,0 +1,158 @@
+id: win11-audit-other-logon-logoff-events
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja innych zdarzeń logowania i wylogowania
+    en: Auditing of other logon and logoff events
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zwykłe logowanie i wylogowanie mają własne podkategorie inspekcji. Ta zbiera
+    to, co do nich nie pasuje, a bywa najciekawsze: odblokowanie stacji,
+    połączenie i rozłączenie sesji zdalnej, przełączenie użytkownika, wybudzenie
+    maszyny ze stanu uśpienia.
+
+    To właśnie te zdarzenia mówią, co działo się z maszyną między jednym
+    zalogowaniem a drugim. Bez nich w dzienniku widać, że ktoś się rano zalogował
+    i wieczorem wylogował, a nie widać, że maszynę odblokowano w nocy albo że
+    sesja zdalna została przejęta z innego miejsca. Różnica między tymi dwoma
+    obrazami bywa całą treścią dochodzenia.
+  en: |
+    Ordinary logon and logoff have their own audit subcategories. This one
+    collects what does not fit them, and that is sometimes the most interesting
+    part: unlocking a workstation, connecting to and disconnecting from a remote
+    session, switching users, waking the machine from sleep.
+
+    These are the events that say what happened to the machine between one sign-in
+    and the next. Without them the log shows somebody signing in in the morning
+    and out in the evening, but not that the machine was unlocked at night or that
+    a remote session was taken over from somewhere else. The difference between
+    those two pictures is sometimes the whole substance of an investigation.
+
+disruption_description:
+  pl: |
+    Nic. Inspekcja nie zmienia zachowania systemu ani niczego nie blokuje —
+    dopisuje wpisy do dziennika zabezpieczeń.
+
+    Jedyny mierzalny koszt to objętość dziennika. Ta podkategoria generuje
+    umiarkowaną liczbę wpisów, mniej niż inspekcja logowania, bo odblokowania
+    i połączenia zdarzają się rzadziej niż same logowania. Przy dzienniku
+    o rozmiarze zalecanym w tej paczce nie wypycha to starszych zdarzeń
+    zauważalnie szybciej.
+  en: |
+    Nothing. Auditing changes no system behaviour and blocks nothing - it adds
+    entries to the security log.
+
+    The only measurable cost is log volume. This subcategory produces a moderate
+    number of entries, fewer than logon auditing, because unlocks and connections
+    happen less often than sign-ins themselves. With the log size recommended in
+    this pack it does not push older events out noticeably faster.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń zapełnia się nieco szybciej, bez innych skutków
+    en:
+      - The security log fills somewhat faster, with no other effect
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zabezpieczeń ma rozmiar domyślny i nie jest zbierany poza maszynę, a starsze zdarzenia są potrzebne
+    en:
+      - The security log is at its default size and is not collected off the machine, while older events are needed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE921C-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE921C-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE921C-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE921C-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE921C-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-logonlogoff-events
+
+notes:
+  pl: |
+    Podkategorię adresujemy identyfikatorem, nie nazwą. Nazwy podkategorii są
+    tłumaczone razem z systemem — sprawdziłem to na maszynie testowej, gdzie
+    lista podkategorii wypisała się po polsku. Porównanie po nazwie działałoby
+    wyłącznie na wersji angielskiej.
+
+    Ta podkategoria jest wartościowa właśnie dlatego, że zbiera zdarzenia
+    nietypowe. Odblokowanie stacji i ponowne podłączenie do sesji zdalnej to
+    dwa zdarzenia, które w zwykłej inspekcji logowania nie zostawiają śladu,
+    a w dochodzeniu odpowiadają na pytanie, kto i kiedy był przy tej maszynie.
+  en: |
+    The subcategory is addressed by identifier rather than by name. Subcategory
+    names are translated along with the system - I confirmed this on a test
+    machine, where the subcategory list printed in Polish. Matching by name would
+    work only on the English version.
+
+    This subcategory is valuable precisely because it collects the unusual events.
+    Unlocking a workstation and reconnecting to a remote session are two events
+    that leave no trace in ordinary logon auditing, yet in an investigation they
+    answer who was at this machine and when.

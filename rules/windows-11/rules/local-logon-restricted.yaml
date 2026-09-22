@@ -1,0 +1,190 @@
+id: win11-local-logon-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Logowanie lokalne ograniczone do administratorów i użytkowników
+    en: Local sign-in restricted to administrators and users
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Lista uprawnionych do logowania przy maszynie odpowiada na pytanie, kto może
+    usiąść przed tym komputerem i otworzyć sesję. Na stacji roboczej odpowiedź
+    powinna brzmieć: administratorzy i zwykli użytkownicy — i nic poza tym.
+
+    Wpisy wykraczające poza ten zestaw pojawiają się zwykle przypadkiem,
+    przy kopiowaniu ustawień albo przy instalacji oprogramowania, które dopisało
+    sobie konto na wszelki wypadek. Każde takie konto to kolejna tożsamość
+    zdolna otworzyć na maszynie pełną sesję — a sesja przy klawiaturze jest
+    punktem wyjścia dla wszystkiego, co wymaga uruchomienia własnego kodu.
+  en: |
+    The list of those allowed to sign in at the machine answers the question of
+    who may sit down at this computer and open a session. On a workstation the
+    answer should be: administrators and ordinary users - and nothing else.
+
+    Entries beyond that set usually appear by accident, while copying settings or
+    installing software that added an account for itself just in case. Every such
+    account is one more identity able to open a full session on the machine - and
+    a session at the keyboard is the starting point for everything that requires
+    running one's own code.
+
+disruption_description:
+  pl: |
+    Na maszynie skonfigurowanej standardowo lista już tak wygląda i zmiana nic
+    nie robi.
+
+    Sprawdzenia wymaga maszyna, na której ktoś dopisał do listy konto usługowe
+    albo grupę spoza tych dwóch. Zdarza się to przy oprogramowaniu kasowym,
+    pomiarowym i przy stanowiskach obsługiwanych przez konto dedykowane, które
+    nie należy do grupy użytkowników. Po zmianie takie konto nie zaloguje się
+    przy maszynie — a jeśli jest to konto, na którym stanowisko pracuje, to
+    stanowisko po prostu przestaje działać.
+
+    Zmiana nie wylogowuje nikogo zalogowanego. Skutek pojawi się przy następnym
+    logowaniu, czyli zwykle następnego dnia rano.
+  en: |
+    On a machine configured as standard the list already looks like this and the
+    change does nothing.
+
+    A check is due on a machine where somebody added a service account or a group
+    outside those two. This happens with point-of-sale and measurement software,
+    and with stations operated by a dedicated account that is not a member of the
+    users group. After the change such an account will not sign in at the machine -
+    and if it is the account the station works under, the station simply stops
+    working.
+
+    The change signs nobody out. The effect appears at the next sign-in, which is
+    usually the following morning.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Konta usługowe dopisane do listy przestaną logować się przy maszynie
+      - Stanowisko pracujące na koncie dedykowanym spoza grupy użytkowników przestanie działać
+      - Skutek pojawia się przy następnym logowaniu, więc zwykle następnego dnia rano
+    en:
+      - Service accounts added to the list stop signing in at the machine
+      - A station running under a dedicated account outside the users group stops working
+      - The effect appears at the next sign-in, so usually the following morning
+  interruption: logoff
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna pracuje na koncie dedykowanym, które nie należy do grupy użytkowników
+      - Nie ustalono, czemu na liście znajdują się wpisy spoza dwóch wymaganych grup
+    en:
+      - The machine runs under a dedicated account that is not a member of the users group
+      - It has not been established why entries outside the two required groups are on the list
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeInteractiveLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544,S-1-5-32-545|S-1-5-32-544|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeInteractiveLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeInteractiveLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-545',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeInteractiveLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/allow-log-on-locally
+
+notes:
+  pl: |
+    Ten punkt i odmowa logowania lokalnego dla gości opisują tę samą drogę
+    z dwóch stron. Przyznanie mówi, kto może; odmowa mówi, kto na pewno nie
+    może, i ma pierwszeństwo. Warto mieć oba: samo przyznanie nie obroni się
+    przed kontem dopisanym jutro do grupy użytkowników.
+
+    Uciążliwość jest tu wyższa niż przy większości punktów o identycznym
+    wyglądzie, bo zmiana zastępuje całą listę. Stanowisko pracujące na koncie
+    dedykowanym to konfiguracja, której inwentaryzacja nie wykryje — nie widać
+    jej po zainstalowanym oprogramowaniu, tylko po tym, na jakim koncie ktoś
+    zwykle siedzi.
+  en: |
+    This item and the denial of local sign-in to guests describe the same route
+    from two sides. The grant says who may; the denial says who definitely may
+    not, and takes precedence. Both are worth having: the grant alone will not
+    defend against an account added to the users group tomorrow.
+
+    Disruption is higher here than for most items that look identical, because the
+    change replaces the whole list. A station running under a dedicated account is
+    a configuration the inventory will not detect - it is not visible from the
+    installed software, only from which account somebody usually sits at.

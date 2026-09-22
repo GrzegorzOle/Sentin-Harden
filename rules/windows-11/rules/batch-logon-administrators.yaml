@@ -1,0 +1,193 @@
+id: win11-batch-logon-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Logowanie w trybie wsadowym zastrzeżone dla administratorów
+    en: Batch job sign-in restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zadanie zaplanowane uruchamia się bez niczyjej obecności i bez otwartej
+    sesji. Konto, na którym ma działać, musi mieć prawo logowania w trybie
+    wsadowym — i to prawo, nie zaś samo istnienie zadania, przesądza, co się
+    uruchomi.
+
+    Zadanie zaplanowane jest wygodnym miejscem na kod działający stale: przeżywa
+    restart, uruchamia się o wybranej porze i nie wygląda podejrzanie na liście
+    procesów. Ograniczenie listy do administratorów sprawia, że dopisanie takiego
+    zadania na koncie zwykłego użytkownika nie wystarczy — trzeba jeszcze konta,
+    które i tak ma na maszynie wszystko.
+  en: |
+    A scheduled task starts with nobody present and no open session. The account
+    it is to run under must hold the batch sign-in right - and it is that right,
+    not the existence of the task, that decides what actually starts.
+
+    A scheduled task is a convenient home for code that runs continuously: it
+    survives a restart, starts at a chosen hour and does not look suspicious in a
+    process list. Restricting the list to administrators means adding such a task
+    under an ordinary user account is not enough - an account that has everything
+    on the machine anyway is also required.
+
+disruption_description:
+  pl: |
+    Zależy od tego, co na tej maszynie jest zaplanowane. Zadania systemowe działają
+    na koncie systemu i zmiana ich nie dotyczy — problem zaczyna się przy zadaniach
+    założonych ręcznie na koncie użytkownika.
+
+    Takie zadania są częstsze, niż się wydaje: synchronizacja plików, czyszczenie
+    katalogów, raport wysyłany rano, skrypt uruchamiany przy starcie. Po zmianie
+    przestaną się uruchamiać, a w historii zadania pojawi się błąd logowania.
+    Nikt tego nie zauważy w momencie zmiany, bo skutek wystąpi dopiero przy
+    następnym terminie uruchomienia — a jeśli zadanie robiło coś w tle, to być
+    może nie zauważy nikt przez długi czas.
+
+    Przed wdrożeniem warto przejrzeć listę zadań i sprawdzić, na jakich kontach
+    są ustawione. To jest ta minuta pracy, która oszczędza późniejszego szukania.
+  en: |
+    It depends what is scheduled on this machine. System tasks run under the
+    system account and the change does not touch them - the trouble starts with
+    tasks created by hand under a user account.
+
+    Such tasks are commoner than one thinks: file synchronisation, folder
+    cleanups, a report sent in the morning, a script run at startup. After the
+    change they stop running and a sign-in error appears in the task history.
+    Nobody notices at the moment of the change, because the effect only comes at
+    the next scheduled time - and if the task did something in the background,
+    possibly nobody notices for a long while.
+
+    Before deploying, it is worth reviewing the task list and checking which
+    accounts they are set to run under. That is the minute of work that saves the
+    later search.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Zadania zaplanowane na kontach zwykłych użytkowników przestaną się uruchamiać
+      - Błąd pojawia się w historii zadania dopiero przy następnym terminie uruchomienia
+      - Zadanie działające w tle może przestać działać niezauważone przez długi czas
+    en:
+      - Scheduled tasks under ordinary user accounts stop running
+      - The error appears in the task history only at the next scheduled time
+      - A background task may stop working unnoticed for a long while
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działają zadania zaplanowane ustawione na kontach zwykłych użytkowników
+      - Nie przejrzano listy zadań zaplanowanych i kont, na których są ustawione
+    en:
+      - The machine runs scheduled tasks set to ordinary user accounts
+      - The list of scheduled tasks and the accounts they run under has not been reviewed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeBatchLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeBatchLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeBatchLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeBatchLogonRight = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeBatchLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/log-on-as-a-batch-job
+
+notes:
+  pl: |
+    Punkt tworzy parę z odmową logowania w trybie wsadowym dla grupy gości.
+    Przyznanie zawęża, kto może; odmowa wyklucza konto, które nie należy do
+    nikogo. Zadziałają razem, ale opisują różne rzeczy i w raporcie mają
+    pozostać osobno.
+
+    Uciążliwość oceniam wyżej niż przy odmowie, bo tam wykluczone konto i tak
+    nie było używane, a tu zmiana może zatrzymać zadania faktycznie działające.
+    To jest ten przypadek, w którym pozorna symetria dwóch punktów nie przenosi
+    się na koszt ich wdrożenia.
+  en: |
+    The item pairs with the denial of batch sign-in for the guests group. The
+    grant narrows who may; the denial excludes an account that belongs to nobody.
+    They work together, but describe different things and are to stay separate in
+    the report.
+
+    I rate disruption higher than for the denial, because there the excluded
+    account was not in use anyway, whereas here the change can stop tasks that
+    actually run. This is the case where an apparent symmetry between two items
+    does not carry over to the cost of applying them.

@@ -1,0 +1,155 @@
+id: win11-audit-security-system-extension
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja rozszerzeń systemu zabezpieczeń
+    en: Auditing of security system extensions
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ta podkategoria rejestruje moment, w którym do systemu zabezpieczeń dokłada
+    się nowy element: pakiet uwierzytelniania, pakiet powiadomień o hasłach,
+    dostawca poświadczeń, a także rejestrację usługi w menedżerze usług.
+
+    To jest miejsce, w którym zostawia ślad jedna z trwalszych technik: pakiet
+    uwierzytelniania ładowany przez proces logowania widzi hasła w postaci
+    jawnej przy każdym logowaniu, ładuje się przy starcie systemu i nie wymaga
+    niczego więcej. Wpis o jego rejestracji jest zwykle jedynym momentem, w
+    którym da się to zauważyć — potem wygląda to już jak normalna praca systemu.
+  en: |
+    This subcategory records the moment a new element is added to the security
+    system: an authentication package, a password notification package, a
+    credential provider, as well as the registration of a service with the service
+    manager.
+
+    This is where one of the more persistent techniques leaves its trace: an
+    authentication package loaded by the logon process sees passwords in the clear
+    at every sign-in, loads at system start and needs nothing further. The entry
+    recording its registration is usually the one moment at which this can be
+    noticed - after that it looks like the system working normally.
+
+disruption_description:
+  pl: |
+    Nic. Inspekcja nie zmienia zachowania systemu i niczego nie blokuje.
+
+    Liczba wpisów jest tu niewielka — rozszerzenia systemu zabezpieczeń
+    rejestrują się przy starcie maszyny i przy instalacji oprogramowania, czyli
+    rzadko. To jedna z tańszych podkategorii inspekcji w całej paczce
+    i jednocześnie jedna z najbardziej wartościowych, bo rejestruje zdarzenia,
+    których nie da się wyprodukować przypadkiem.
+  en: |
+    Nothing. Auditing changes no system behaviour and blocks nothing.
+
+    The number of entries here is small - security system extensions register at
+    machine start and at software installation, that is, rarely. It is one of the
+    cheapest audit subcategories in the whole pack and at the same time one of the
+    most valuable, because it records events that cannot be produced by accident.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dziennik zabezpieczeń zapełnia się nieznacznie szybciej, bez innych skutków
+    en:
+      - The security log fills marginally faster, with no other effect
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zabezpieczeń ma rozmiar domyślny i nie jest zbierany poza maszynę, a starsze zdarzenia są potrzebne
+    en:
+      - The security log is at its default size and is not collected off the machine, while older events are needed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $null = auditpol /backup /file:$csv
+      if (-not (Test-Path -Path $csv)) { 'CHECK_ERROR' }
+      else {
+        $rows = Get-Content -Path $csv -ErrorAction Stop
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+        $line = $rows | Where-Object { $_ -match '0CCE9211-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+        if (-not $line) { 'CHECK_ERROR' }
+        else {
+          $value = ($line -split ',')[-1].Trim()
+          if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9211-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9211-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -match '^\d+$')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9211-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9211-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-security-system-extension
+
+notes:
+  pl: |
+    Sprawdzenie wymaga rejestrowania powodzeń i uznaje zarówno samo powodzenie,
+    jak i powodzenie z niepowodzeniem. Tutaj liczy się zdarzenie udane —
+    rozszerzenie, które faktycznie się załadowało. Nieudana próba rejestracji
+    jest ciekawa, ale nie jest tym, o co w punkcie chodzi.
+
+    Naprawa włącza wyłącznie powodzenia i celowo nie dotyka niepowodzeń.
+    Zakres zmiany ma się pokrywać z zakresem wymagania: dokładanie rejestrowania
+    niepowodzeń byłoby zmianą, której nikt nie prosił, a wycofanie i tak
+    przywraca dokładnie oba bity z kopii.
+  en: |
+    The check requires success auditing and accepts both success alone and success
+    together with failure. What counts here is the successful event - an extension
+    that actually loaded. A failed registration attempt is interesting, but is not
+    what the item is about.
+
+    The fix enables successes only and deliberately leaves failures alone. The
+    scope of a change should match the scope of the requirement: adding failure
+    auditing would be a change nobody asked for, and the rollback restores both
+    bits from the backup regardless.

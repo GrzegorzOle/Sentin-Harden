@@ -1,0 +1,201 @@
+id: win11-administrator-account-lockout
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Account Policies > Account Lockout Policy
+  title:
+    pl: Blokada konta wbudowanego administratora włączona
+    en: Lockout of the built-in administrator account enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Blokowanie konta po serii nieudanych prób to podstawowa obrona przed
+    zgadywaniem hasła. Konto wbudowanego administratora jest jednak z tej obrony
+    wyłączone: bez tego ustawienia można próbować haseł do niego bez końca
+    i nigdy się nie zablokuje.
+
+    To jest dokładnie to konto, którego ktoś będzie próbował. Jego nazwa jest
+    znana, jego identyfikator jest stały, a uprawnienia ma najwyższe z możliwych.
+    Wyłączenie go z blokady oznacza, że jedyne konto, na którym zgadywanie ma
+    największy sens, jest jednocześnie jedynym, w którym zgadywanie niczego nie
+    kosztuje. Włączenie blokady zamyka tę asymetrię.
+  en: |
+    Locking an account after a run of failed attempts is the basic defence against
+    password guessing. The built-in administrator account, however, is exempt from
+    it: without this setting, passwords can be tried against it endlessly and it
+    will never lock.
+
+    This is precisely the account somebody will try. Its name is known, its
+    identifier is fixed, and it holds the highest rights available. Exempting it
+    from lockout means the one account where guessing makes the most sense is also
+    the one where guessing costs nothing. Enabling lockout closes that asymmetry.
+
+disruption_description:
+  pl: |
+    Pojawia się realne ryzyko odcięcia się od maszyny i dlatego punkt wymaga
+    sprawdzenia, a nie kliknięcia.
+
+    Konto wbudowanego administratora jest często kontem awaryjnym — tym, którego
+    używa się, gdy nie działa nic innego. Po włączeniu blokady da się je
+    zablokować, a wtedy droga awaryjna przestaje być dostępna dokładnie w tej
+    chwili, w której jest potrzebna. Blokada mija po czasie ustawionym w polityce,
+    więc nie jest to stan trwały, ale czas oczekiwania może wypaść w bardzo złym
+    momencie.
+
+    Osobno: seria nieudanych prób nie musi pochodzić od człowieka. Zapisane stare
+    hasło w zadaniu, w narzędziu do kopii zapasowych albo w skrypcie potrafi
+    zablokować konto samo, bez niczyjego udziału i cyklicznie. Zanim włączysz ten
+    punkt, warto ustalić, czy coś na tej maszynie nie loguje się starym hasłem.
+  en: |
+    A real risk of locking yourself out of the machine appears, which is why the
+    item calls for a check rather than a click.
+
+    The built-in administrator account is often the emergency account - the one
+    used when nothing else works. Once lockout is enabled it can be locked, and
+    the emergency route then becomes unavailable at exactly the moment it is
+    needed. The lockout expires after the time set in policy, so the state is not
+    permanent, but the wait can fall at a very bad moment.
+
+    Separately: a run of failed attempts need not come from a person. An old
+    password saved in a task, in backup software or in a script can lock the
+    account by itself, with nobody involved, and repeatedly. Before enabling this
+    item it is worth establishing whether something on this machine signs in with
+    an old password.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - remote-management
+  what_breaks:
+    pl:
+      - Konto wbudowanego administratora da się zablokować, więc droga awaryjna może być niedostępna, gdy jest potrzebna
+      - Zapisane stare hasło w zadaniu albo skrypcie będzie blokowało konto cyklicznie, bez niczyjego udziału
+      - Blokada mija dopiero po czasie ustawionym w polityce blokady konta
+    en:
+      - The built-in administrator account can be locked, so the emergency route may be unavailable when needed
+      - An old password saved in a task or script will lock the account repeatedly, with nobody involved
+      - The lockout lifts only after the time set in the account lockout policy
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Konto wbudowanego administratora jest jedyną drogą awaryjną do maszyny bez dostępu fizycznego
+      - Nie ustalono, czy coś na tej maszynie loguje się zapisanym starym hasłem
+    en:
+      - The built-in administrator account is the only emergency route to a machine that cannot be reached physically
+      - It has not been established whether anything on this machine signs in with a saved old password
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^AllowAdministratorLockout\s*=\s*(\d+)') { $Matches[1] }
+        else {
+          # No line means the setting was never written. The built-in account is
+          # then outside the lockout policy, which is the state this item forbids.
+          'MISSING'
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas SECURITYPOLICY /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^AllowAdministratorLockout\s*=\s*(\d+)') { $value = $Matches[1] }
+    [pscustomobject]@{
+      setting = 'AllowAdministratorLockout'
+      value   = $value
+      existed = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      'AllowAdministratorLockout = 1',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    # No previous line means the setting was never written. Writing zero restores
+    # the effect of its absence, which is the closest honest return to that state.
+    $value = if ($b.existed) { $b.value } else { '0' }
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[System Access]',
+      ('AllowAdministratorLockout = ' + $value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas SECURITYPOLICY /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/account-lockout-policy
+
+notes:
+  pl: |
+    Punkt działa wyłącznie razem z progiem blokady konta. Sam z siebie niczego
+    nie blokuje — mówi tylko, że konto wbudowanego administratora podlega tej
+    samej polityce co pozostałe. Gdy próg blokady jest ustawiony na zero, to
+    ustawienie jest deklaracją bez skutku i raport powinien być czytany razem
+    z punktem o progu.
+
+    Wycofanie zapisuje zero, gdy kopia nie zawiera poprzedniego wiersza.
+    To świadomy wybór: usunięcie wiersza z polityki lokalnej nie jest możliwe tą
+    samą drogą, a zero odtwarza skutek jego braku. Zapis w kopii odróżnia oba
+    stany, więc widać, do czego wrócono.
+  en: |
+    The item works only together with the lockout threshold. By itself it locks
+    nothing - it says only that the built-in administrator account is subject to
+    the same policy as the rest. Where the threshold is set to zero this setting
+    is a declaration without effect, and the report should be read alongside the
+    threshold item.
+
+    The rollback writes zero when the backup holds no previous line. That is a
+    deliberate choice: removing a line from local policy is not possible by the
+    same route, and zero reproduces the effect of its absence. The backup record
+    distinguishes the two states, so what was returned to remains visible.

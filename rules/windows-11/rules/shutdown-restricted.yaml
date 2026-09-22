@@ -1,0 +1,179 @@
+id: win11-shutdown-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Zamykanie systemu ograniczone do administratorów i użytkowników
+    en: Shutting down the system restricted to administrators and users
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zamknięcie maszyny przy klawiaturze to czynność zwykła i nie ma powodu jej
+    zwykłemu użytkownikowi odbierać. Wartość tego punktu leży gdzie indziej:
+    w tym, żeby na liście nie znalazło się nic poza administratorami
+    i użytkownikami.
+
+    Konto gościa albo konto usługowe z prawem zamykania systemu daje sposób na
+    przerwanie pracy maszyny bez logowania się na konto osobowe. To niewiele,
+    ale bywa krokiem przygotowawczym: restart kończy sesje i przerywa działanie
+    tego, co maszynę obserwuje. Punkt pilnuje więc kształtu listy, a nie samej
+    możliwości zamykania.
+  en: |
+    Shutting a machine down at the keyboard is an ordinary act and there is no
+    reason to take it from an ordinary user. The value of this item lies
+    elsewhere: in keeping anything other than administrators and users off the
+    list.
+
+    A guest or service account with the right to shut the system down provides a
+    way of interrupting the machine without signing in to a personal account. That
+    is not much, but it can be a preparatory step: a restart ends sessions and
+    interrupts whatever watches the machine. The item therefore polices the shape
+    of the list rather than the ability to shut down as such.
+
+disruption_description:
+  pl: |
+    Nic. Lista wymagana to dokładnie stan domyślny, a zwykły użytkownik
+    zachowuje możliwość zamknięcia i zrestartowania maszyny przy klawiaturze.
+
+    Jeżeli ktoś wcześniej zawęził tę listę do samych administratorów — co bywa
+    robione z myślą o stanowiskach wspólnych, żeby nikt nie wyłączał maszyny
+    innym — naprawa tę możliwość użytkownikom przywróci. To zmiana w stronę
+    szerszej listy, więc warto wiedzieć, że reguła może działać odwrotnie, niż
+    się po utwardzaniu spodziewać.
+  en: |
+    Nothing. The required list is exactly the default state, and an ordinary user
+    keeps the ability to shut down and restart the machine at the keyboard.
+
+    If somebody previously narrowed this list to administrators alone - which does
+    get done for shared stations, so that nobody switches the machine off on
+    others - the fix will give the ability back to users. That is a change towards
+    a broader list, so it is worth knowing the rule can work the opposite way to
+    what one expects from hardening.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konta spoza grup administratorów i użytkowników stracą możliwość zamknięcia maszyny
+      - Na maszynie z listą zawężoną wcześniej do administratorów naprawa przywróci tę możliwość użytkownikom
+    en:
+      - Accounts outside the administrators and users groups lose the ability to shut the machine down
+      - On a machine whose list was previously narrowed to administrators, the fix gives the ability back to users
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Lista została świadomie zawężona do administratorów, żeby na stanowisku wspólnym nikt nie wyłączał maszyny innym
+    en:
+      - The list was deliberately narrowed to administrators so that nobody switches off a shared station on others
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeShutdownPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544,S-1-5-32-545|S-1-5-32-544|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeShutdownPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeShutdownPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeShutdownPrivilege = *S-1-5-32-544,*S-1-5-32-545',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeShutdownPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/shut-down-the-system
+
+notes:
+  pl: |
+    Sprawdzenie uznaje też listę z samymi administratorami, bo to stan węższy od
+    wymaganego i odbieranie go byłoby poprawianiem czegoś, co nikomu nie szkodzi.
+    Naprawa zapisuje jednak oba wpisy — reguła ma doprowadzać do stanu
+    zamierzonego, a nie do najwęższego możliwego, i ten szczegół trzeba przeczytać
+    przed uruchomieniem na maszynie ze stanowiskiem wspólnym.
+
+    Jeden z nielicznych punktów, w których utwardzenie może oznaczać poszerzenie
+    listy. Warto o tym pamiętać przy czytaniu raportu: niespełnienie tego punktu
+    nie zawsze znaczy, że maszyna jest ustawiona zbyt swobodnie.
+  en: |
+    The check also accepts a list of administrators alone, because that is a state
+    narrower than required and taking it away would be correcting something that
+    harms nobody. The fix, however, writes both entries - a rule is meant to reach
+    the intended state rather than the narrowest possible one, and that detail
+    needs reading before running it on a machine with a shared station.
+
+    One of the few items where hardening can mean widening a list. Worth
+    remembering when reading the report: failing this item does not always mean
+    the machine is set too loosely.

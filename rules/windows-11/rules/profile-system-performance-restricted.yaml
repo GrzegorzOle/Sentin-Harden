@@ -1,0 +1,181 @@
+id: win11-profile-system-performance-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Profilowanie wydajności systemu ograniczone do administratorów i usługi diagnostycznej
+    en: Profiling system performance restricted to administrators and the diagnostic service
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Profilowanie wydajności systemu obejmuje całą maszynę naraz, a nie wskazany
+    proces. Daje obraz tego, co się na niej dzieje: które procesy pracują, jak
+    obciążają procesor i dysk, kiedy startują i kiedy kończą.
+
+    Taki obraz jest wartościowy dla kogoś, kto chce się na maszynie
+    zorientować przed dalszym działaniem — mówi, jakie oprogramowanie
+    zabezpieczające tu stoi, kiedy działa kopia zapasowa, o której porze maszyna
+    jest bezczynna. Nie otwiera to żadnych drzwi samo z siebie, ale przygotowuje
+    grunt, a informacja o tym, co i kiedy działa, bywa najcenniejszym krokiem
+    przed resztą.
+  en: |
+    Profiling system performance covers the whole machine at once rather than a
+    named process. It gives a picture of what is happening on it: which processes
+    are working, how they load the processor and disk, when they start and when
+    they finish.
+
+    Such a picture is valuable to somebody wanting to get their bearings before
+    acting further - it says what security software is installed here, when the
+    backup runs, at what hour the machine sits idle. It opens no doors by itself,
+    but it prepares the ground, and knowing what runs and when is sometimes the
+    most valuable step before the rest.
+
+disruption_description:
+  pl: |
+    Nic. Na liście wymaganej są administratorzy i konto usługi diagnostycznej
+    systemu — czyli to, co domyślnie tam stoi i czego system potrzebuje do
+    własnych raportów wydajności.
+
+    Konta usługi diagnostycznej nie wolno z listy usuwać. Bez niego przestają
+    działać wbudowane raporty wydajności i część zbierania danych diagnostycznych,
+    a objawem są puste raporty, a nie komunikat o braku uprawnień. Reguła ma to
+    konto na liście właśnie po to, żeby naprawa go nie zgubiła przy okazji
+    porządkowania.
+  en: |
+    Nothing. The required list holds administrators and the system's diagnostic
+    service account - that is, what sits there by default and what the system
+    needs for its own performance reports.
+
+    The diagnostic service account must not be removed from the list. Without it,
+    the built-in performance reports and part of diagnostic data collection stop
+    working, and the symptom is empty reports rather than a permissions message.
+    The rule keeps that account on the list precisely so the fix does not lose it
+    in the course of tidying up.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konta dopisane do listy ręcznie stracą możliwość zbierania danych wydajnościowych całej maszyny
+      - Narzędzia monitorujące wydajność uruchamiane bez podnoszenia uprawnień przestaną zbierać dane
+    en:
+      - Accounts added to the list by hand lose the ability to collect machine-wide performance data
+      - Performance monitoring tools run without elevation stop collecting data
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Wydajność tej maszyny jest zbierana przez narzędzie działające na koncie spoza grupy administratorów
+    en:
+      - This machine's performance is collected by a tool running under an account outside the administrators group
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeSystemProfilePrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544(,S-1-5-80-3139157870-2983391045-3678747466-658725712-1809340420)?|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeSystemProfilePrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeSystemProfilePrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeSystemProfilePrivilege = *S-1-5-32-544,*S-1-5-80-3139157870-2983391045-3678747466-658725712-1809340420',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeSystemProfilePrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/profile-system-performance
+
+notes:
+  pl: |
+    Konto usługi diagnostycznej jest kontem wirtualnym i jego identyfikator jest
+    stały we wszystkich instalacjach systemu — sprawdziłem to na maszynie
+    testowej przez przetłumaczenie nazwy usługi na identyfikator. Nazwy użyć tu
+    nie można, bo część nazw wbudowanych jest tłumaczona razem z systemem.
+
+    Sprawdzenie uznaje listę z samymi administratorami, bo brak konta usługi
+    diagnostycznej nie jest luką w zabezpieczeniu — odbija się tylko na
+    raportach wydajności. Naprawa dopisuje je z powrotem, żeby maszyna wróciła
+    do stanu, w którym własna diagnostyka systemu działa.
+  en: |
+    The diagnostic service account is a virtual account and its identifier is the
+    same across every installation of the system - I confirmed this on a test
+    machine by translating the service name into an identifier. Names cannot be
+    used here, because some built-in names are translated along with the system.
+
+    The check accepts a list of administrators alone, because a missing diagnostic
+    service account is not a gap in protection - it only shows up in performance
+    reports. The fix adds it back, so the machine returns to a state where the
+    system's own diagnostics work.

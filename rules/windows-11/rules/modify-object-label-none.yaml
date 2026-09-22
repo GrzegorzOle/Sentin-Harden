@@ -1,0 +1,181 @@
+id: win11-modify-object-label-none
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Modyfikowanie etykiety obiektu nieprzyznane nikomu
+    en: Modifying an object label granted to no one
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Poza uprawnieniami do plików system prowadzi drugi, prostszy podział:
+    każdemu procesowi i każdemu obiektowi przypisuje poziom spójności. Proces
+    o poziomie niższym nie zapisze do obiektu o poziomie wyższym, nawet jeśli
+    uprawnienia na to pozwalają. Na tym mechanizmie stoi oddzielenie przeglądarki
+    od reszty systemu i większość dzisiejszych piaskownic.
+
+    Uprawnienie pozwala ten poziom zmienić. Konto, które je ma, może obniżyć
+    poziom obiektu, do którego chce zapisać, i tym samym wyłączyć barierę dla
+    siebie. Ominięcie nie polega tu na zdobyciu uprawnień, tylko na przesunięciu
+    granicy, która uprawnień nie dotyczy — dlatego uprawnienie nie ma być
+    przyznane nikomu, łącznie z administratorami.
+  en: |
+    Beyond file permissions the system maintains a second, simpler division: it
+    assigns an integrity level to every process and every object. A process at a
+    lower level will not write to an object at a higher one, even where
+    permissions allow it. This mechanism is what separates the browser from the
+    rest of the system and underpins most of today's sandboxes.
+
+    The right allows that level to be changed. An account holding it can lower the
+    level of an object it wants to write to, and so switch the barrier off for
+    itself. The bypass here is not about acquiring permissions but about moving a
+    boundary that permissions do not govern - which is why the right is to be
+    granted to nobody, administrators included.
+
+disruption_description:
+  pl: |
+    Nic. Lista jest pusta w standardowej konfiguracji i nie korzysta z niej żaden
+    składnik systemu ani żadne typowe oprogramowanie. Poziomy spójności ustawia
+    samo jądro przy tworzeniu obiektu.
+
+    Punkt sprowadza się do sprawdzenia, czy lista pozostała pusta. Wpis na niej
+    znaczy, że ktoś świadomie osłabił mechanizm, na którym stoi piaskownica
+    przeglądarki — to znalezisko warte wyjaśnienia bardziej niż sama poprawka.
+  en: |
+    Nothing. The list is empty in a standard configuration and no system component
+    or typical software uses it. Integrity levels are set by the kernel itself
+    when an object is created.
+
+    The item comes down to checking that the list stayed empty. An entry on it
+    means somebody deliberately weakened the mechanism the browser sandbox rests
+    on - a finding worth explaining more than the correction itself is worth
+    making.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Na maszynie skonfigurowanej standardowo nie przestaje działać nic
+      - Konta dopisane do listy ręcznie stracą możliwość zmiany poziomu spójności obiektów
+    en:
+      - On a machine configured as standard nothing stops working
+      - Accounts added to the list by hand lose the ability to change objects' integrity level
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Uprawnienie zostało przyznane konkretnemu kontu i nie ustalono, jakie oprogramowanie z niego korzysta
+    en:
+      - The right was granted to a specific account and it has not been established what software relies on it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeRelabelPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeRelabelPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeRelabelPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeRelabelPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeRelabelPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/modify-an-object-label
+
+notes:
+  pl: |
+    Poziom spójności to mechanizm niezależny od uprawnień do plików i właśnie ta
+    niezależność jest jego wartością. Konto, które ma pełne uprawnienia do pliku,
+    i tak do niego nie zapisze, jeśli działa na poziomie niższym — a to jest
+    dokładnie ten przypadek, w którym przeglądarka nie może dotknąć plików
+    użytkownika mimo działania na jego koncie.
+
+    Nie mylić z uprawnieniem do przejmowania własności. Tamto pozwala zmienić,
+    kto jest właścicielem obiektu, i działa w warstwie uprawnień; to zmienia
+    poziom obiektu i działa poniżej niej. Oba prowadzą do zapisu tam, gdzie nie
+    było wolno, ale różnymi drogami i osobno trzeba je zamykać.
+  en: |
+    Integrity level is a mechanism independent of file permissions, and that
+    independence is its value. An account with full permissions to a file still
+    will not write to it while running at a lower level - which is exactly the case
+    in which the browser cannot touch the user's files despite running under their
+    account.
+
+    Not to be confused with the right to take ownership. That one changes who owns
+    an object and operates in the permissions layer; this changes an object's level
+    and operates beneath it. Both lead to writing where it was not allowed, but by
+    different routes, and each has to be closed separately.

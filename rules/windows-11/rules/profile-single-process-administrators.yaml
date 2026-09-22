@@ -1,0 +1,175 @@
+id: win11-profile-single-process-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Profilowanie pojedynczego procesu zastrzeżone dla administratorów
+    en: Profiling a single process restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Profilowanie pozwala odczytać, co dokładnie robi wskazany proces: ile zajmuje
+    czasu procesora, jak używa pamięci, jak zmieniają się te wielkości w czasie.
+    Narzędzia do diagnozowania wydajności działają właśnie na tym uprawnieniu.
+
+    Obserwacja procesu z zewnątrz mówi więcej, niż się wydaje. Z samego
+    przebiegu zużycia procesora da się wnioskować o tym, co proces właśnie robi —
+    a przy procesach wykonujących operacje kryptograficzne pomiar czasu bywa
+    drogą do odtworzenia klucza. To zastosowanie odległe i wymagające, ale
+    właśnie dlatego uprawnienie nie ma powodu leżeć poza administratorami.
+  en: |
+    Profiling allows the reading of exactly what a given process does: how much
+    processor time it takes, how it uses memory, how those figures change over
+    time. Performance diagnostic tools run on precisely this right.
+
+    Watching a process from outside says more than it seems. From the shape of
+    processor use alone one can infer what a process is doing - and with processes
+    performing cryptographic operations, timing measurement is sometimes a route
+    to recovering a key. A distant and demanding use, but exactly why the right
+    has no reason to sit outside administrators.
+
+disruption_description:
+  pl: |
+    Nic. Uprawnienie mają domyślnie wyłącznie administratorzy, a narzędzia
+    diagnostyczne wbudowane w system uruchamia się z podniesionymi uprawnieniami.
+
+    Zwykły użytkownik nadal widzi listę procesów i ich zużycie zasobów
+    w menedżerze zadań — to zupełnie inna droga i ta reguła jej nie dotyka.
+    Odczuwalne byłoby tylko dla narzędzia profilującego uruchamianego z konta
+    dewelopera bez podnoszenia uprawnień, co na stacji roboczej zdarza się przy
+    pracy programistycznej.
+  en: |
+    Nothing. By default only administrators hold the right, and the diagnostic
+    tools built into the system are run elevated.
+
+    An ordinary user still sees the process list and its resource use in the task
+    manager - an entirely different route, untouched by this rule. It would be
+    felt only by a profiling tool started from a developer account without
+    elevation, which on a workstation happens during development work.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Narzędzia profilujące uruchamiane bez podnoszenia uprawnień przestaną odczytywać dane wydajnościowe procesów
+      - Praca programistyczna oparta na profilowaniu z konta użytkownika będzie wymagała podniesienia uprawnień
+    en:
+      - Profiling tools run without elevation stop reading process performance data
+      - Development work relying on profiling from a user account will require elevation
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie prowadzona jest praca programistyczna oparta na profilowaniu procesów z konta użytkownika
+    en:
+      - The machine is used for development work relying on process profiling from a user account
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeProfileSingleProcessPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeProfileSingleProcessPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeProfileSingleProcessPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeProfileSingleProcessPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeProfileSingleProcessPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/profile-single-process
+
+notes:
+  pl: |
+    Profilowanie pojedynczego procesu i profilowanie wydajności systemu to dwa
+    osobne uprawnienia o podobnej nazwie i różnym zasięgu. Tamto obejmuje
+    całą maszynę i ma na liście wymaganej dodatkowo konto usługi diagnostycznej;
+    to obejmuje wskazany proces i wystarczają mu sami administratorzy.
+
+    Uprawnienie nie daje wglądu w zawartość pamięci procesu — to osobna
+    zdolność, związana z uprawnieniem do debugowania. Opis celowo tego nie
+    skleja, bo z raportu ma wynikać, co dokładnie ten punkt zamyka, a czego nie.
+  en: |
+    Profiling a single process and profiling system performance are two separate
+    rights with similar names and different reach. That one covers the whole
+    machine and has a diagnostic service account additionally on its required
+    list; this one covers a named process and administrators alone suffice.
+
+    The right does not give sight of a process's memory contents - that is a
+    separate ability, tied to the debug right. The description deliberately keeps
+    them apart, because the report should make clear what exactly this item closes
+    and what it does not.

@@ -1,0 +1,182 @@
+id: win11-increase-scheduling-priority-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 11 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Zwiększanie priorytetu planowania ograniczone do administratorów i menedżera okien
+    en: Increasing scheduling priority restricted to administrators and the window manager
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-11
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Priorytet planowania decyduje o tym, które procesy dostają czas procesora
+    jako pierwsze. Uprawnienie pozwala go podnieść — sobie albo dowolnemu innemu
+    procesowi.
+
+    Proces działający z priorytetem wyższym niż reszta systemu potrafi wypchnąć
+    z procesora wszystko inne, łącznie z tym, co miałoby go zatrzymać. Maszyna
+    przestaje reagować na klawiaturę i mysz, a narzędzia obserwujące ją z zewnątrz
+    dostają czas z takim opóźnieniem, że przestają być użyteczne. Nie jest to
+    przejęcie maszyny, ale skuteczny sposób na to, żeby nikt nie zdążył
+    zareagować — i dlatego uprawnienie nie ma wychodzić poza administratorów.
+  en: |
+    Scheduling priority decides which processes get processor time first. The
+    right allows it to be raised - for oneself or for any other process.
+
+    A process running at a priority above the rest of the system can push
+    everything else off the processor, including whatever would stop it. The
+    machine stops responding to keyboard and mouse, and tools watching it from
+    outside get their time with enough delay to stop being useful. This is not
+    taking the machine over, but it is an effective way of ensuring nobody reacts
+    in time - which is why the right is not to reach beyond administrators.
+
+disruption_description:
+  pl: |
+    Nic. Na liście wymaganej są administratorzy i grupa menedżera okien, czyli
+    dokładnie stan domyślny.
+
+    Grupa menedżera okien musi na liście zostać. To ona odpowiada za składanie
+    obrazu na ekranie i potrzebuje priorytetu wyższego niż zwykłe aplikacje, żeby
+    interfejs pozostawał płynny przy obciążonej maszynie. Usunięcie jej nie
+    zatrzymuje systemu, ale sprawia, że obraz zaczyna się zacinać przy większym
+    obciążeniu — objaw łatwy do przypisania sprzętowi, a nie tej zmianie.
+  en: |
+    Nothing. The required list holds administrators and the window manager group,
+    which is exactly the default state.
+
+    The window manager group must stay on the list. It is what composes the image
+    on screen and needs a priority above ordinary applications so the interface
+    stays smooth on a loaded machine. Removing it does not stop the system, but
+    the display starts stuttering under load - a symptom easily blamed on hardware
+    rather than on this change.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konta dopisane do listy ręcznie stracą możliwość podnoszenia priorytetu procesów
+      - Oprogramowanie czasu rzeczywistego podnoszące sobie priorytet z konta użytkownika przestanie to robić
+      - Usunięcie grupy menedżera okien powoduje zacinanie się obrazu przy obciążeniu, bez żadnego komunikatu
+    en:
+      - Accounts added to the list by hand lose the ability to raise process priority
+      - Real-time software raising its own priority from a user account stops doing so
+      - Removing the window manager group makes the display stutter under load, with no message at all
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa oprogramowanie pomiarowe albo dźwiękowe wymagające podniesionego priorytetu z konta użytkownika
+    en:
+      - The machine runs measurement or audio software requiring raised priority from a user account
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+      if (-not (Test-Path -Path $export)) { 'CHECK_ERROR' }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeIncreaseBasePriorityPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544(,S-1-5-90-0)?|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeIncreaseBasePriorityPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeIncreaseBasePriorityPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeIncreaseBasePriorityPrivilege = *S-1-5-32-544,*S-1-5-90-0',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeIncreaseBasePriorityPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/increase-scheduling-priority
+
+notes:
+  pl: |
+    Grupa menedżera okien ma identyfikator stały we wszystkich instalacjach
+    i sprawdziłem go na maszynie testowej przez przetłumaczenie nazwy. Zapis
+    liczbowy jest tu konieczny nie tylko z powodu tłumaczeń — nazwa tej grupy
+    zawiera odwrotny ukośnik, który w pliku konfiguracyjnym trzeba by osobno
+    rozważyć.
+
+    Reguła leży blisko punktu o zmianie przydziału pamięci: oba opisują
+    zakłócanie pracy maszyny przez gospodarowanie jej zasobami, a nie przez
+    sięganie do danych. Oceniam je tak samo, bo atakujący zyskuje w obu
+    przypadkach to samo — czas, w którym nikt nie zareaguje.
+  en: |
+    The window manager group has an identifier that is the same across every
+    installation and I confirmed it on a test machine by translating the name.
+    The numeric form is necessary here not only because of translations - the name
+    of this group contains a backslash, which in a configuration file would need
+    separate consideration.
+
+    The rule sits close to the item on changing memory quotas: both describe
+    disrupting a machine by managing its resources rather than by reaching for its
+    data. I rate them the same, because the attacker gains the same thing in both
+    cases - time in which nobody reacts.

@@ -1,0 +1,157 @@
+id: win10-logon-banner-title
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Tytuł komunikatu wyświetlanego przed zalogowaniem ustawiony
+    en: The title of the message shown before signing in set
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Tytuł jest drugą połową tego samego mechanizmu co treść komunikatu i bez
+    niego okno w ogóle się nie pojawia. Ustawienie samej treści daje stan, który
+    w raporcie wygląda na połowiczne spełnienie, a w praktyce nie daje nic.
+
+    Sam tytuł niesie niewiele znaczenia prawnego — ciężar leży w treści. Jego rola
+    jest inna: to on odróżnia komunikat organizacji od okna wystawionego przez
+    oprogramowanie i to on jest widoczny, zanim ktokolwiek zacznie czytać.
+
+    Dlatego oba punkty ocenia się razem i wdraża jednocześnie.
+  en: |
+    The title is the second half of the same mechanism as the message body, and
+    without it the window does not appear at all. Setting the body alone gives a
+    state that looks like half-compliance in a report and in practice gives
+    nothing.
+
+    The title itself carries little legal weight - that sits in the body. Its role
+    is different - it is what tells the organisation s message apart from a window
+    put up by some software, and it is what is visible before anybody starts
+    reading.
+
+    Hence the two items are judged together and deployed at the same time.
+
+disruption_description:
+  pl: |
+    Skutki pokrywają się z punktem o treści komunikatu i spadają w tym samym
+    momencie: okno stające przed pulpitem dotyka wszystkiego, co loguje się bez
+    udziału człowieka.
+
+    Wdrożenie osobne nie ma sensu w żadną stronę. Sam tytuł daje okno bez treści,
+    sama treść nie daje okna wcale. Warto ustawić oba naraz, jednym oknem
+    serwisowym.
+  en: |
+    The effects match the item about the message body and land at the same moment -
+    a window standing in front of the desktop touches everything that signs in
+    with no person present.
+
+    Deploying them apart makes sense in neither direction. The title alone gives a
+    window with no text, the body alone gives no window at all. They are worth
+    setting together, in one maintenance window.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - remote-desktop
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Komunikat przed zalogowaniem zacznie się wyświetlać i wymaga potwierdzenia przy każdym logowaniu interaktywnym
+      - Stanowiska kioskowe i maszyny startujące bez udziału człowieka zatrzymają się przed pulpitem
+      - Automaty łączące się pulpitem zdalnym mogą zgłosić błąd zamiast dokończyć połączenie
+      - Logowanie kontem usługi, zadania harmonogramu, dostęp do udziałów i praca po zalogowaniu pozostają bez zmian
+    en:
+      - The pre-sign-in message begins appearing and calls for acknowledgement at every interactive sign-in
+      - Kiosk stations and machines starting with nobody present stop short of the desktop
+      - Automata connecting over remote desktop may report an error instead of completing the connection
+      - Service account sign-in, scheduled tasks, access to shares and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska kioskowe i maszyny logujące się automatycznie, dopóki nie zostanie dla nich przewidziany wyjątek
+      - Środowiska, w których treść komunikatu nie została jeszcze uzgodniona — wtedy tytuł też czeka
+      - Maszyny obsługiwane wyłącznie zdalnie przez narzędzia nieradzące sobie z oknem przed pulpitem
+    en:
+      - Kiosk stations and machines signing in automatically, until an exception is made for them
+      - Environments where the message wording has not yet been agreed - then the title waits too
+      - Machines served only remotely by tools that cannot cope with a window in front of the desktop
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # An entry present but empty shows no message at all, so it is reported
+      # apart from one that is missing entirely.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'legalnoticecaption'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      $value = $item.$name
+      if ($null -eq $value) { 'MISSING' }
+      else {
+        $joined = if ($value -is [array]) { [string]::Join(' ', $value) } else { [string]$value }
+        if ($joined.Trim() -eq '') { 'EMPTY' } else { 'SET' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'SET'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'legalnoticecaption'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The wording below is a starting point, not a requirement of the item.
+    # Replace it with the organisation s own before rolling this out widely.
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name 'legalnoticecaption' -Value 'Authorised access only' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value ([string]$b.value) -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-message-title-for-users-attempting-to-log-on
+
+notes:
+  pl: |
+    Wpis obecny, ale pusty nie pokazuje żadnego komunikatu, więc sprawdzenie
+    zgłasza go osobno od wpisu brakującego. Brzmienie wpisywane przez polecenie
+    naprawcze jest przykładem — nazwa organizacji powinna stanąć w tytule, żeby
+    komunikat był rozpoznawalny.
+  en: |
+    An entry present but empty shows no message at all, so the check reports it
+    apart from one that is missing. The wording written by the remediation command
+    is an example - the organisation s name belongs in the title, so that the
+    message is recognisable.

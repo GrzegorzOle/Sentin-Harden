@@ -1,0 +1,172 @@
+id: win10-logon-mpr-notifications-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Przekazywanie zdarzeń logowania dostawcom sieciowym wyłączone
+    en: Passing of logon events to network providers disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dostawca sieciowy to składnik dorejestrowany do systemu, żeby obsługiwał
+    własny rodzaj zasobów: udziały, dyski, połączenia w rozwiązaniach innych
+    producentów. System potrafi powiadamiać takie składniki o zalogowaniu i o
+    zmianie hasła.
+
+    Powiadomienie nie jest samym sygnałem, że ktoś się zalogował. Niesie ze sobą
+    to, czym użytkownik się przy logowaniu posłużył — po to, żeby dostawca mógł
+    zalogować go również u siebie, bez pytania o hasło drugi raz.
+
+    Napastnikowi daje to sposób na odebranie hasła w postaci jawnej, w chwili
+    wpisywania, bez dotykania samego mechanizmu logowania. Wystarczy dorejestrować
+    własnego dostawcę — czynność wymagająca uprawnień administratora, ale
+    wykonywana w miejscu, którego nikt nie ogląda, i wyglądająca jak instalacja
+    zwykłego składnika sieciowego.
+  en: |
+    A network provider is a component registered into the system so as to handle a
+    kind of resource of its own - shares, drives, connections in another vendor s
+    arrangement. The system can notify such components about a sign-in and about a
+    password change.
+
+    The notification is not merely a signal that somebody signed in. It carries
+    what the user signed in with, so that the provider may sign them in on its
+    side as well, without asking for the password a second time.
+
+    To an attacker that is a way of taking a password in the clear, at the moment
+    it is typed, without touching the sign-in mechanism itself. Registering a
+    provider of their own is enough - an act calling for administrative rights,
+    but carried out in a place nobody looks at, and looking like the installation
+    of an ordinary network component.
+
+disruption_description:
+  pl: |
+    Na maszynie korzystającej wyłącznie ze składników systemowych zmiana jest
+    niewidoczna. Problem pojawia się tam, gdzie dostawca sieciowy innego
+    producenta jest częścią rozwiązania — klienci starszych systemów plików,
+    narzędzia mapujące dyski przy logowaniu, rozwiązania łączące z zasobami
+    innego dostawcy.
+
+    Takie składniki po zmianie przestaną dostawać poświadczenia z logowania i
+    zapytają użytkownika o hasło osobno albo przestaną działać. To jest dokładnie
+    ta rzecz, którą trzeba sprawdzić przed wdrożeniem: wykaz zarejestrowanych
+    dostawców sieciowych na maszynie mówi, czy punkt jest tu darmowy, czy nie.
+  en: |
+    On a machine using system components only the change is invisible. The trouble
+    arises where another vendor s network provider is part of an arrangement -
+    clients of older file systems, tools mapping drives at sign-in, products
+    joining resources of a different supplier.
+
+    After the change such components stop receiving credentials from the sign-in
+    and either ask the user for a password separately or stop working. That is
+    exactly the thing to check before the rollout - the list of registered network
+    providers on the machine says whether the item is free here or not.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - legacy-authentication
+    - file-sharing
+  what_breaks:
+    pl:
+      - Składniki innych producentów logujące użytkownika do własnych zasobów przy logowaniu przestaną dostawać poświadczenia i zapytają o hasło osobno
+      - Automatyczne mapowanie dysków przez narzędzie innego dostawcy może przestać działać albo wymagać ręcznego podania hasła
+      - Klienci starszych systemów plików korzystający z tej drogi stracą pojedyncze logowanie do swoich zasobów
+      - Udziały systemowe, logowanie domenowe, drukowanie i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Another vendor s components signing the user into their own resources at sign-in stop receiving credentials and ask for a password separately
+      - Automatic drive mapping by a third-party tool may stop working or call for a password by hand
+      - Clients of older file systems relying on this road lose single sign-in to their resources
+      - System shares, domain sign-in, printing and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny z zarejestrowanym dostawcą sieciowym innego producenta, dopóki nie zostanie sprawdzone, czy poradzi sobie bez poświadczeń z logowania
+      - Środowiska ze starszym systemem plików podłączanym przy logowaniu użytkownika
+    en:
+      - Machines with another vendor s network provider registered, until it has been checked that it copes without credentials from the sign-in
+      - Environments with an older file system attached at user sign-in
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The registry value carries a shorter name than the policy does.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableMPR'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'EnableMPR'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableMPR' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/secauthn/network-provider-api
+
+notes:
+  pl: |
+    Wpis w rejestrze nosi nazwę krótszą niż sama zasada, więc szukanie po nazwie
+    zasady nic nie znajdzie. Przed wdrożeniem warto obejrzeć wykaz zarejestrowanych
+    dostawców sieciowych — na maszynie bez dostawców spoza systemu punkt nie
+    kosztuje nic.
+  en: |
+    The registry entry carries a shorter name than the policy itself, so searching
+    by the policy name finds nothing. Before the rollout the list of registered
+    network providers is worth a look - on a machine with no provider from outside
+    the system the item costs nothing at all.

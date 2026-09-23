@@ -1,0 +1,167 @@
+id: win10-automatic-restart-sign-on-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Logon Options
+  title:
+    pl: Automatyczne logowanie po restarcie wywołanym aktualizacją wyłączone
+    en: Automatic sign-in after an update-driven restart turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System potrafi zapamiętać, kto był zalogowany przed restartem wywołanym
+    aktualizacją, i po ponownym uruchomieniu wejść w tę sesję samodzielnie, żeby
+    zastać wszystko tak, jak było. Wygląda to jak uprzejmość wobec użytkownika
+    i tak zostało pomyślane.
+
+    Skutek jest jednak taki, że maszyna po restarcie stoi na odblokowanym
+    pulpicie, bez podania hasła przez nikogo. Laptop zostawiony na noc w biurze
+    albo w pokoju hotelowym rano jest otwarty, a szyfrowanie dysku niczego już
+    nie broni, bo system sam się uruchomił i sam zalogował.
+
+    Wyłączenie mechanizmu sprawia, że po restarcie maszyna czeka na hasło, jak
+    po każdym innym uruchomieniu.
+  en: |
+    The system can remember who was signed in before an update-driven restart and
+    walk into that session by itself afterwards, so as to find everything as it
+    was. It looks like a courtesy to the user, and it was meant as one.
+
+    The consequence, though, is that after a restart the machine stands at an
+    unlocked desktop with nobody having entered a password. A laptop left
+    overnight in an office or a hotel room is open in the morning, and disk
+    encryption defends nothing any more, since the system started and signed
+    itself in.
+
+    Switching the mechanism off makes the machine wait for a password after a
+    restart, as it does after every other start.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie restartu wywołanego aktualizacją i jest widoczna
+    dopiero po nim. Nie zmienia zachowania przy zwykłym uruchomieniu ani przy
+    restarcie ręcznym.
+
+    Koszt jest realny i warto go nazwać: aplikacje otwarte przed restartem nie
+    wrócą same, a użytkownik zastanie pulpit czysty zamiast takiego, jaki
+    zostawił. W środowiskach, gdzie aktualizacje instalują się nocą, znaczy to
+    poranek zaczynający się od odtwarzania stanu pracy.
+  en: |
+    The change touches only an update-driven restart and is visible only after
+    one. It alters nothing about an ordinary start or a manual restart.
+
+    The cost is real and worth naming - applications open before the restart do
+    not come back by themselves, and the user finds a clean desktop rather than
+    the one they left. Where updates install overnight that means a morning spent
+    restoring the state of the work.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Aplikacje otwarte przed restartem wywołanym aktualizacją nie zostaną przywrócone i trzeba je uruchomić ponownie
+      - Maszyny aktualizowane nocą staną rano na ekranie logowania zamiast na przygotowanym pulpicie
+      - Zadania uruchamiane w sesji użytkownika po restarcie nie wystartują, dopóki ktoś się nie zaloguje
+      - Maszyny obsługiwane zdalnie wymagają zalogowania po aktualizacji, więc narzędzie działające w sesji użytkownika straci łączność do tego czasu
+      - Sama instalacja aktualizacji, konta usług, zadania harmonogramu i dostęp do zasobów pozostają bez zmian
+    en:
+      - Applications open before an update-driven restart are not restored and have to be started again
+      - Machines updated overnight stand at the sign-in screen in the morning instead of a prepared desktop
+      - Tasks started in a user session after a restart do not run until somebody signs in
+      - Machines served remotely need a sign-in after an update, so a tool working in a user session loses contact until then
+      - The installation of updates itself, service accounts, scheduled tasks and access to resources are unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny w miejscach bez obsługi, aktualizowane zdalnie i wymagające gotowej sesji po restarcie
+      - Stanowiska, na których narzędzie nadzoru działa w sesji użytkownika, a nie jako usługa
+      - Ekrany informacyjne i panele sterujące wracające do pracy samodzielnie po każdym restarcie
+    en:
+      - Machines in unattended places, updated remotely and needing a ready session after a restart
+      - Stations where a monitoring tool runs in a user session rather than as a service
+      - Information screens and control panels that return to work by themselves after every restart
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableAutomaticRestartSignOn'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'DisableAutomaticRestartSignOn'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableAutomaticRestartSignOn' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/identity/winlogon-automatic-restart-sign-on-arso
+
+notes:
+  pl: |
+    Wartość leży w gałęzi zasad systemowych, a nie w gałęzi zasad grupy —
+    łatwo pomylić ją z ustawieniem o podobnej nazwie w innym miejscu. Punkt
+    ocenia się razem z wyłączeniem automatycznego logowania administratora: oba
+    zamykają drogę do sesji otwartej bez podania hasła, tylko z innej strony.
+  en: |
+    The value lies in the system policy branch rather than the group policy one -
+    it is easily confused with a setting of a similar name elsewhere. The item is
+    judged together with disabling automatic administrator logon - both close the
+    road to a session opened without a password, only from different sides.

@@ -1,0 +1,168 @@
+id: win10-auto-admin-logon-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Automatyczne logowanie administratora wyłączone
+    en: Automatic administrator logon disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Automatyczne logowanie pomija ekran logowania: maszyna startuje prosto do
+    sesji wskazanego konta. Żeby to zadziałało, hasło tego konta musi gdzieś być
+    zapisane — i jest, w rejestrze, obok nazwy konta.
+
+    Stąd kategoria krytyczna. Hasło konta z uprawnieniami administratora leży
+    w miejscu czytelnym dla każdego, kto ma dostęp do maszyny, a maszyna po
+    włączeniu sama wchodzi w tę sesję. Kradzież sprzętu, chwila przy cudzym
+    biurku albo odczytanie dysku z zewnątrz wystarczają, żeby wyjść stamtąd z
+    poświadczeniami administratora.
+
+    Mechanizm jest wygodny i właśnie dlatego trwa tam, gdzie raz go włączono —
+    najczęściej na stanowiskach pokazowych i produkcyjnych, o których potem nikt
+    nie pamięta.
+  en: |
+    Automatic logon skips the sign-in screen - the machine starts straight into
+    the session of a named account. For that to work the password of that account
+    has to be stored somewhere, and it is, in the registry, next to the account
+    name.
+
+    Hence the critical rating. The password of an account with administrative
+    rights lies in a place readable by anybody who reaches the machine, and the
+    machine walks into that session by itself when switched on. Stolen hardware, a
+    moment at somebody else s desk or reading the disk from outside are enough to
+    leave with administrator credentials.
+
+    The mechanism is convenient, and that is exactly why it survives wherever it
+    was once switched on - most often on demonstration and production stations
+    nobody later remembers.
+
+disruption_description:
+  pl: |
+    Wyłączenie jest niewidoczne wszędzie tam, gdzie mechanizmu nie używano, a
+    takich maszyn jest większość. Tam, gdzie go używano, zmiana jest odczuwalna
+    natychmiast: maszyna przestaje sama wchodzić na pulpit i staje na ekranie
+    logowania.
+
+    To właśnie trzeba sprawdzić przed wdrożeniem. Stanowiska pokazowe, panele
+    sterujące i maszyny w hali bywają zbudowane wokół tego założenia i po zmianie
+    nie wstaną same po zaniku zasilania. Odpowiedzią nie jest pozostawienie
+    hasła administratora w rejestrze, tylko przebudowa takiego stanowiska na
+    konto bez uprawnień albo na usługę startującą bez sesji.
+  en: |
+    Switching it off is invisible wherever the mechanism was never used, and that
+    is most machines. Where it was used the change is felt at once - the machine
+    stops walking onto the desktop by itself and stands at the sign-in screen.
+
+    That is what has to be checked before the rollout. Demonstration stations,
+    control panels and machines on a shop floor are sometimes built around this
+    assumption and after the change will not come back by themselves after a power
+    cut. The answer is not leaving an administrator password in the registry, but
+    rebuilding such a station on an unprivileged account or on a service that
+    starts with no session.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Maszyny wchodzące dotąd same na pulpit staną na ekranie logowania i nie wystartują bez człowieka
+      - Stanowiska pokazowe, panele sterujące i ekrany informacyjne nie wrócą same do pracy po zaniku zasilania
+      - Skrypty i aplikacje uruchamiane w sesji użytkownika przy starcie nie wystartują, dopóki nikt się nie zaloguje
+      - Zdalny restart maszyny przestanie kończyć się gotowym pulpitem, co bywa mylone z awarią systemu
+      - Logowanie ręczne, konta usług, zadania harmonogramu i dostęp do zasobów działają bez zmian
+    en:
+      - Machines that used to walk onto the desktop by themselves stand at the sign-in screen and do not start without a person
+      - Demonstration stations, control panels and information screens do not return to work by themselves after a power cut
+      - Scripts and applications started in a user session at boot do not run until somebody signs in
+      - A remote restart stops ending in a ready desktop, which gets mistaken for a system fault
+      - Manual sign-in, service accounts, scheduled tasks and access to resources all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska pokazowe i panele sterujące zbudowane wokół automatycznego startu, dopóki nie zostaną przebudowane
+      - Maszyny w miejscach bez obsługi, do których nikt nie podchodzi po zaniku zasilania
+      - Ekrany informacyjne i kioski, gdzie automatyczne logowanie jest założeniem projektowym
+    en:
+      - Demonstration stations and control panels built around an automatic start, until they are rebuilt
+      - Machines in unattended places, which nobody walks up to after a power cut
+      - Information screens and kiosks, where automatic logon is a design assumption
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      $current = (Get-ItemProperty -Path $path -Name 'AutoAdminLogon' -ErrorAction SilentlyContinue).AutoAdminLogon
+      # Absence is equivalent to the mechanism being off, and that is what the
+      # report says - the machine is described, not the registry.
+      if ($null -eq $current) { '0' }
+      else { ([string]$current).Trim() }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'AutoAdminLogon'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-ItemProperty -Path $path -Name 'AutoAdminLogon' -Value '0' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/identity/ad-ds/manage/component-updates/configure-automatic-logon
+
+notes:
+  pl: |
+    Brak wpisu jest równoważny z wyłączeniem mechanizmu i tak właśnie zgłasza go
+    sprawdzenie — raport opisuje maszynę, a nie rejestr. Wartość jest tekstowa,
+    nie liczbowa. Osobno warto sprawdzić, czy w tej samej gałęzi nie leży hasło
+    zapisane wcześniej: wyłączenie mechanizmu nie usuwa wpisu z hasłem, więc
+    sam zapis może tam zostać po zmianie.
+  en: |
+    A missing entry is equivalent to the mechanism being off, and that is exactly
+    how the check reports it - the report describes the machine rather than the
+    registry. The value is text, not a number. It is worth checking separately
+    whether a password written earlier does not sit in the same key - switching
+    the mechanism off does not remove the password entry, so the record itself may
+    stay there after the change.

@@ -1,0 +1,165 @@
+id: win10-first-logon-animation-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Animacja przy pierwszym logowaniu wyłączona
+    en: The animation at the first sign-in switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przy pierwszym logowaniu na nowym koncie system pokazuje sekwencję ekranów
+    powitalnych: wyjaśnienia, propozycje ustawień, zachęty do włączenia usług
+    powiązanych z kontem. Trwa to długo i kończy się tym, że użytkownik klika
+    zgodę, żeby przejść dalej.
+
+    I to jest właściwy problem tej sekwencji. Decyzje zapadają w pośpiechu i
+    dotyczą rzeczy, które w środowisku firmowym rozstrzyga dział informatyczny:
+    przesyłania danych, synchronizacji ustawień, rozpoznawania mowy. Wyłączenie
+    animacji zdejmuje ten wybór z użytkownika i zostawia domyślne ustawienia
+    organizacji.
+
+    Zysk jest porządkowy, nie obronny — i stąd niska kategoria ryzyka.
+  en: |
+    At the first sign-in on a new account the system shows a sequence of welcome
+    screens - explanations, proposed settings, invitations to switch on services
+    tied to the account. It takes a while and ends with the user clicking their
+    consent so as to get past it.
+
+    That is the real trouble with the sequence. Decisions are taken in a hurry and
+    concern matters an IT department settles in a company setting - data being
+    sent out, settings synchronised, speech recognised. Switching the animation
+    off takes that choice away from the user and leaves the organisation s default
+    settings in place.
+
+    The gain is one of good order rather than defence, and hence the low risk
+    rating.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie pierwszego logowania na koncie, więc na maszynie z
+    ustalonymi użytkownikami jest zupełnie niewidoczna. Nie rusza żadnego
+    ustawienia poza samą sekwencją powitalną.
+
+    Odczuwalna staje się przy wdrażaniu nowych maszyn: pierwsze logowanie kończy
+    się od razu pulpitem, bez wyjaśnień i bez ekranów wprowadzających. Tam, gdzie
+    ta sekwencja służy za szkolenie dla nowej osoby, trzeba zastąpić ją czymś
+    innym.
+  en: |
+    The change touches only the first sign-in on an account, so on a machine with
+    settled users it is wholly invisible. It moves no setting beyond the welcome
+    sequence itself.
+
+    It becomes noticeable when rolling out new machines - the first sign-in ends
+    straight at the desktop, with no explanations and no introductory screens.
+    Where that sequence serves as training for a new person, something else has to
+    take its place.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Nowy użytkownik trafi od razu na pulpit, bez ekranów wyjaśniających i bez propozycji ustawień
+      - Wdrożenia liczące na sekwencję powitalną jako element wprowadzenia stracą tę część
+      - Ustawienia proponowane w sekwencji zostaną przy wartościach domyślnych organizacji, co dla części osób będzie zmianą przyzwyczajeń
+      - Logowanie kolejnych użytkowników, tworzenie profili, dostęp do zasobów i praca po zalogowaniu działają bez zmian
+    en:
+      - A new user lands straight on the desktop, with no explanatory screens and no proposed settings
+      - Rollouts counting on the welcome sequence as part of the introduction lose that piece
+      - The settings offered in the sequence stay at the organisation s defaults, which for some people is a change of habit
+      - Signing in of further users, profile creation, access to resources and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska szkoleniowe, w których sekwencja powitalna jest częścią wprowadzenia nowej osoby
+      - Maszyny demonstracyjne pokazujące pierwsze uruchomienie systemu
+    en:
+      - Training environments, where the welcome sequence is part of introducing a new person
+      - Demonstration machines showing the first start of the system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # This key sits outside the Policies\Microsoft branch.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableFirstLogonAnimation'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'EnableFirstLogonAnimation'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableFirstLogonAnimation' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/
+
+notes:
+  pl: |
+    Wartość leży poza gałęzią zasad grupy, w gałęzi zasad systemowych, i nazywa
+    się odwrotnie do zamiaru — spełnieniem punktu jest zero, czyli wyłączenie.
+    Ustawienie nie zmienia samo w sobie żadnej z rzeczy proponowanych w
+    sekwencji; te rozstrzygają osobne reguły.
+  en: |
+    The value lies outside the group policy branch, in the system policy one, and
+    is named the opposite way round to the intent - the item is met by zero,
+    meaning off. The setting by itself alters none of the things offered in the
+    sequence; those are settled by separate rules.

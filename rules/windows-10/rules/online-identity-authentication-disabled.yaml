@@ -1,0 +1,165 @@
+id: win10-online-identity-authentication-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Uwierzytelnianie tożsamościami z usług sieciowych zabronione
+    en: Authentication with identities from online services forbidden
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obok zwykłego uwierzytelniania domenowego maszyna potrafi przyjąć tożsamość
+    wystawioną przez usługę sieciową i na tej podstawie wpuścić do swoich zasobów.
+    Mechanizm powstał dla grup roboczych, gdzie nie ma kontrolera domeny.
+
+    W sieci zarządzanej jest to droga obok drzwi. Dostęp przyznawany jest wtedy na
+    podstawie tożsamości, której organizacja nie wystawiła, nie odwoła i nie
+    prześledzi. W dzienniku widać udane uwierzytelnienie, ale konto za nim stojące
+    nie należy do żadnego katalogu, który ktokolwiek tu prowadzi.
+
+    Zamknięcie tej drogi sprawia, że dostęp do zasobów maszyny wynika wyłącznie z
+    tożsamości nadanych przez organizację.
+  en: |
+    Beside ordinary domain authentication the machine can accept an identity issued
+    by an online service and let it into its resources on that basis. The mechanism
+    was made for workgroups, where there is no domain controller.
+
+    On a managed network it is a road beside the door. Access is then granted on
+    the strength of an identity the organisation did not issue, cannot revoke and
+    cannot trace. The log shows a successful authentication, but the account behind
+    it belongs to no directory anybody here keeps.
+
+    Shutting that road means access to the machine s resources follows solely from
+    identities the organisation granted.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo w grupie roboczej ten mechanizm bywa jedyną
+    drogą udostępniania plików między maszynami bez wspólnego katalogu.
+
+    W sieci z domeną zmiana jest niewidoczna — uwierzytelnianie domenowe nie
+    korzysta z tej drogi. Poza domeną skutkiem bywa udział sieciowy, do którego
+    nagle nie da się dostać, a objaw wygląda jak błąd hasła.
+
+    Warto przed wdrożeniem sprawdzić, czy ktoś nie łączy się z zasobami tej maszyny
+    z urządzenia spoza organizacji. Jeżeli tak, potrzebne jest konto lokalne albo
+    domenowe, zanim ta droga zostanie zamknięta.
+  en: |
+    The change calls for a review, since in a workgroup this mechanism is sometimes
+    the only road to sharing files between machines with no common directory.
+
+    On a network with a domain the change is invisible - domain authentication does
+    not use this road. Outside a domain the consequence is sometimes a network
+    share that suddenly cannot be reached, and the symptom looks like a wrong
+    password.
+
+    Before the rollout it is worth checking whether anybody reaches this machine s
+    resources from a device outside the organisation. If so, a local or domain
+    account is needed before this road is shut.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - file-sharing
+    - remote-management
+  what_breaks:
+    pl:
+      - Dostęp do zasobów tej maszyny z urządzenia uwierzytelnionego tożsamością z usługi sieciowej przestanie być możliwy
+      - Udostępnianie plików w grupie roboczej bez wspólnego katalogu może przestać działać
+      - Objaw wygląda jak błąd hasła, choć przyczyną jest zamknięta droga uwierzytelniania
+      - Logowanie domenowe, konta lokalne, dostęp do udziałów sieciowych organizacji i praca użytkownika pozostają bez zmian
+    en:
+      - Access to this machine s resources from a device authenticated by an online service identity stops being possible
+      - File sharing in a workgroup with no common directory may stop working
+      - The symptom looks like a wrong password, though the cause is a shut road to authentication
+      - Domain sign-in, local accounts, access to the organisation s network shares and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny w grupie roboczej, w której udostępnianie plików opiera się właśnie na tej drodze uwierzytelniania
+      - Stanowiska, do których zasobów sięgają urządzenia spoza katalogu organizacji
+    en:
+      - Machines in a workgroup where file sharing rests on this very road to authentication
+      - Stations whose resources are reached by devices outside the organisation s directory
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\pku2u'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowOnlineID'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\pku2u'
+    $name = 'AllowOnlineID'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\pku2u'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowOnlineID' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-allow-pku2u-authentication-requests-to-this-computer-to-use-online-identities
+
+notes:
+  pl: |
+    Wartość leży w gałęzi uwierzytelniania, w podkluczu osobnego mechanizmu, a nie
+    wśród zasad. Zasada dotyczy przyjmowania tożsamości przez tę maszynę, a nie
+    posługiwania się nimi przez jej użytkownika na innych maszynach.
+  en: |
+    The value lies in the authentication branch, in the sub-key of a separate
+    mechanism rather than among the policies. The rule concerns this machine
+    accepting identities rather than its user presenting them on other machines.

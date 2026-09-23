@@ -1,0 +1,152 @@
+id: win10-web-publishing-wizards-download-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Internet Communication Management > Internet Communication settings
+  title:
+    pl: Blokada pobierania listy usług zewnętrznych przez kreatory publikowania
+    en: Wizards blocked from downloading the list of outside services
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kreatory publikowania w sieci i zamawiania odbitek pobierają z zewnątrz listę
+    dostawców, którym można powierzyć pliki. Lista przychodzi z sieci i zmienia się
+    bez udziału organizacji.
+
+    Wartość tej zasady jest porządkowa. Chodzi o to, żeby w oknie obsługiwanym
+    przez pracownika nie pojawiała się zmienna lista usług zewnętrznych, do których
+    prowadzi droga wysłania pliku dwoma kliknięciami — i żeby okno systemowe nie
+    było miejscem poznawania nowych dostawców.
+
+    Przy okazji znika jedno połączenie wychodzące nawiązywane przez powłokę bez
+    wyraźnej prośby użytkownika.
+  en: |
+    The wizards for publishing on the web and ordering prints fetch from outside a
+    list of providers files may be entrusted to. The list arrives over the network
+    and changes without the organisation s part in it.
+
+    The value of this rule is one of good order. The point is that a window worked
+    by an employee should not show a changing list of outside services with a road
+    to sending a file in two clicks - and that a system window should not be the
+    place where new providers are discovered.
+
+    One outgoing connection made by the shell without an express request from the
+    user disappears along the way.
+
+disruption_description:
+  pl: |
+    Zmiana jest niewidoczna wszędzie tam, gdzie tych kreatorów nikt nie otwiera, a
+    tam, gdzie się je otwiera, zostaje pusta lista zamiast pobranej. Nie ma
+    przerwy, nie ma restartu, cofnięcie jest natychmiastowe.
+
+    Kreatory nadal działają dla dostawców już skonfigurowanych na maszynie.
+    Zasada blokuje pobieranie listy z sieci, a nie samą możliwość publikowania.
+  en: |
+    The change is invisible wherever nobody opens those wizards, and where they are
+    opened an empty list stands in place of a fetched one. There is no
+    interruption, no restart, and reversing it is immediate.
+
+    The wizards still work for providers already configured on the machine. The
+    rule blocks the fetching of the list over the network rather than the ability
+    to publish as such.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - printing
+  what_breaks:
+    pl:
+      - Lista dostawców publikowania w sieci i zamawiania odbitek pozostanie pusta zamiast pobranej z zewnątrz
+      - Zamówienie odbitek wprost z okna folderu ze zdjęciami przestanie prowadzić do dostawców zewnętrznych
+      - Publikowanie u dostawcy skonfigurowanego wcześniej na maszynie, drukowanie, dostęp do plików i praca użytkownika pozostają bez zmian
+    en:
+      - The list of providers for web publishing and print ordering stays empty instead of being fetched from outside
+      - Ordering prints straight from a picture folder window stops leading to outside providers
+      - Publishing with a provider configured on the machine earlier, printing, access to files and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska korzystające z zamawiania odbitek u dostawcy zewnętrznego jako drogi pracy
+    en:
+      - Stations using print ordering with an outside provider as a road of work
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoWebServices'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $name = 'NoWebServices'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoWebServices' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/jj592685(v=ws.11)
+
+notes:
+  pl: |
+    Zasada dotyczy pobierania listy dostawców, a nie samych kreatorów — te
+    uruchamiają się dalej. Wartość leży w gałęzi zasad powłoki, wspólnej z innymi
+    punktami o oknach systemowych.
+  en: |
+    The rule concerns the fetching of the provider list rather than the wizards
+    themselves - those still start. The value lies in the shell policy branch,
+    shared with other items about system windows.

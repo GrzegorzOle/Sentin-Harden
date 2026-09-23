@@ -1,0 +1,157 @@
+id: win10-store-apps-account-optional
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > App runtime
+  title:
+    pl: Aplikacje ze sklepu nie mogą wymagać konta konsumenckiego
+    en: Store applications may not require a consumer account
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Aplikacja ze sklepu potrafi zażądać zalogowania się kontem konsumenckim, zanim
+    w ogóle się uruchomi. Użytkownik staje wtedy przed wyborem: podłączyć konto
+    prywatne do stanowiska służbowego albo nie użyć narzędzia.
+
+    Wybór ten zwykle kończy się podłączeniem konta, bo praca jest pilniejsza niż
+    zasada. Skutkiem jest profil służbowy związany z kontem prywatnym: ustawienia,
+    dane i uwierzytelnianie zaczynają przechodzić przez tożsamość spoza
+    organizacji, a odłączenie tego później bywa trudniejsze niż podłączenie.
+
+    Zasada odbiera aplikacjom prawo do stawiania takiego warunku. Aplikacja może
+    nadal zaproponować zalogowanie, ale nie może go wymusić.
+  en: |
+    An application from the store can demand a sign-in with a consumer account
+    before it will even start. The user then faces a choice - attach a private
+    account to a work station, or do without the tool.
+
+    That choice usually ends with the account being attached, since the work is
+    more pressing than the rule. The consequence is a work profile tied to a
+    private account - settings, data and authentication begin passing through an
+    identity from outside the organisation, and detaching it later tends to be
+    harder than attaching it was.
+
+    The rule takes from applications the right to set such a condition. An
+    application may still propose a sign-in, but it may not force one.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic i idzie hurtem. Nie ma przerwy, nie ma restartu,
+    cofnięcie jest natychmiastowe, a sklep i zainstalowane aplikacje działają dalej.
+
+    Sprawdzenia wymaga wyłącznie to, czy któraś z używanych aplikacji nie została
+    oparta właśnie na koncie konsumenckim jako jedynej drodze logowania. Taka
+    aplikacja po zmianie uruchomi się, ale w zakresie ograniczonym — nie przestanie
+    działać, tylko nie zaloguje użytkownika.
+  en: |
+    The change costs nothing and goes in bulk. There is no interruption, no
+    restart, reversing it is immediate, and the store and the installed
+    applications carry on.
+
+    The only thing calling for a check is whether any application in use rests on a
+    consumer account as its sole road to signing in. After the change such an
+    application does start, but within a limited scope - it does not stop working,
+    it merely does not sign the user in.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Aplikacje ze sklepu oparte na koncie konsumenckim uruchomią się w zakresie ograniczonym, bez zalogowanego użytkownika
+      - Funkcje wymagające tego konta, takie jak zakupy w aplikacji, przestaną być dostępne
+      - Sklep, instalowanie aplikacji, aktualizacje i praca użytkownika pozostają bez zmian
+    en:
+      - Store applications resting on a consumer account start within a limited scope, with no user signed in
+      - Functions needing that account, such as purchases inside an application, stop being available
+      - The store, installing applications, updates and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których narzędzie pracy pochodzi ze sklepu i wymaga konta konsumenckiego do działania
+    en:
+      - Stations where a working tool comes from the store and needs a consumer account to run
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'MSAOptional'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'MSAOptional'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MSAOptional' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-appxruntime
+
+notes:
+  pl: |
+    Zasada odbiera aplikacji prawo do wymuszenia konta, a nie zamyka drogi
+    zalogowania się dobrowolnie. Punkt ocenia się razem z uwierzytelnianiem
+    tożsamościami z usług sieciowych, bo obie pozycje dotyczą tożsamości spoza
+    organizacji na stanowisku służbowym.
+  en: |
+    The rule takes from an application the right to force an account rather than
+    shutting the road to signing in willingly. The item is judged together with
+    authentication by identities from online services, since both concern an
+    identity from outside the organisation on a work station.

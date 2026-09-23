@@ -1,0 +1,168 @@
+id: win10-mdm-enrollment-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > MDM
+  title:
+    pl: Rejestracja w zarządzaniu urządzeniami wyłączona
+    en: Enrolment in device management disabled
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Rejestracja w usłudze zarządzania urządzeniami oddaje maszynę pod kontrolę
+    zewnętrznego systemu zasad. System ten może zmieniać konfigurację, instalować
+    oprogramowanie i wymuszać ustawienia — z pominięciem zasad lokalnych.
+
+    Problemem nie jest samo zarządzanie, tylko to, kto je włącza. Rejestrację
+    potrafi uruchomić użytkownik z poziomu ustawień, podając konto w usłudze.
+    Maszyna trafia wtedy pod zarządzanie organizacji innej niż ta, która ją
+    wydała — i od tej chwili wykonuje jej zasady.
+
+    Zamknięcie rejestracji sprawia, że maszyna zostaje pod zarządzaniem
+    ustanowionym przez jej właściciela.
+  en: |
+    Enrolment in a device management service hands the machine over to the control
+    of an outside policy system. That system may alter the configuration, install
+    software and impose settings - passing local policy by.
+
+    The trouble is not the management itself but who switches it on. A user can
+    start the enrolment from the settings, giving an account in the service. The
+    machine then comes under the management of an organisation other than the one
+    that issued it - and from that moment carries out its policies.
+
+    Shutting the enrolment keeps the machine under the management its owner
+    established.
+
+disruption_description:
+  pl: |
+    To jest zmiana wymagająca świadomego wdrożenia, bo w części organizacji
+    zarządzanie urządzeniami jest właśnie tą drogą, którą stanowiska dostają zasady
+    i oprogramowanie.
+
+    Zasada wyklucza wtedy dokładnie ten mechanizm, na którym stoi zarządzanie
+    flotą. Przed wdrożeniem trzeba rozstrzygnąć, czy maszyny mają być zarządzane
+    tą drogą, czy zasadami domenowymi — bo zasada ta przesądza wybór.
+
+    Maszyna już zarejestrowana pozostaje zarejestrowana. Zasada zamyka
+    rejestrowanie nowych, a nie wyrejestrowuje istniejących; to osobna operacja.
+  en: |
+    This is a change calling for a planned rollout, since in some organisations
+    device management is the very road by which stations receive their policies and
+    software.
+
+    The rule then rules out exactly the mechanism fleet management rests on. Before
+    the rollout it has to be settled whether machines are to be managed by that
+    road or by domain policy - since this rule decides the choice.
+
+    A machine already enrolled stays enrolled. The rule shuts the enrolling of new
+    ones rather than withdrawing existing ones; that is a separate operation.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Zarejestrowanie maszyny w usłudze zarządzania urządzeniami przestanie być możliwe
+      - Zarządzanie flotą oparte na tej drodze przestanie obejmować nowe stanowiska
+      - Wdrażanie oprogramowania i zasad przez usługę zarządzania przestanie docierać do maszyn niezarejestrowanych
+      - Maszyna już zarejestrowana zostanie zarejestrowana, dopóki nie wyrejestruje się jej osobno
+      - Zasady domenowe, aktualizacje systemu, dostęp do zasobów i praca użytkownika pozostają bez zmian
+    en:
+      - Enrolling the machine in a device management service stops being possible
+      - Fleet management resting on that road stops covering new stations
+      - Rolling out software and policies through the management service stops reaching unenrolled machines
+      - A machine already enrolled stays enrolled until it is withdrawn separately
+      - Domain policy, system updates, access to resources and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Organizacje zarządzające flotą właśnie przez usługę zarządzania urządzeniami
+      - Stanowiska w terenie, które zasady i oprogramowanie dostają wyłącznie tą drogą
+      - Środowiska przechodzące z zasad domenowych na zarządzanie usługą, dopóki przejście nie dobiegnie końca
+    en:
+      - Organisations managing their fleet through the device management service itself
+      - Stations in the field receiving their policies and software solely by that road
+      - Environments moving from domain policy to service management, until that move has run its course
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableRegistration'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM'
+    $name = 'DisableRegistration'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableRegistration' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/
+
+notes:
+  pl: |
+    Punkt jest poziomu drugiego i przesądza wybór drogi zarządzania, więc ocenia
+    się go na poziomie organizacji, a nie pojedynczego stanowiska. Zasada zamyka
+    rejestrowanie nowych maszyn i nie wyrejestrowuje już zarejestrowanych.
+  en: |
+    The item is of the second level and decides the choice of management road, so
+    it is judged at the level of the organisation rather than of a single station.
+    The rule shuts the enrolling of new machines and does not withdraw those
+    already enrolled.

@@ -95,17 +95,20 @@ audit:
       }'
     }
     odd_of() { awk -F: -v u="$1" '$1 == u { print $2; exit }' <<< "$2"; }
-    # dot_bad: "reason tuid tgid mode uid gid path" of the dot files that break the item
+    # dot_bad: "reason tuid tgid mode uid gid path" of the dot files that break the item.
+    # find ends each path with a NUL, so a newline in a name cannot forge a line;
+    # such names are reported as "name" with ? for the newline and left alone.
     dot_bad() {
       local u id g h odd
       odd=$(odd_homes)
       homes | while IFS=: read -r u id g h; do
         [ -z "$(odd_of "$u" "$odd")" ] && [ -d "$h" ] || continue
-        find -H "$h" -xdev -path '*/containers/storage' -prune -o -type f -name '.*' -printf '%m %U %G %p\n' 2>/dev/null |
-          awk -v id="$id" -v g="$g" '{
+        find -H "$h" -xdev -path '*/containers/storage' -prune -o -type f -name '.*' -printf '%m %U %G %p\0' 2>/dev/null |
+          awk -v id="$id" -v g="$g" 'BEGIN { RS = "\0" } {
             p = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", p); b = p; sub(/.*\//, "", b)
             s = sprintf("%04d", $1); o = substr(s, 2, 1) + 0; gr = substr(s, 3, 1) + 0; ot = substr(s, 4, 1) + 0
-            if (b == ".forward" || b == ".rhosts") r = "exists"
+            if (index(p, "\n")) { r = "name"; gsub(/\n/, "?", p) }
+            else if (b == ".forward" || b == ".rhosts") r = "exists"
             else {
               if (b == ".netrc" || b == ".bash_history") bad = (o % 2) || gr || ot
               else bad = (o % 2) || (gr % 4) || (ot % 4)
@@ -124,7 +127,7 @@ audit:
       l=$(dot_bad)
       n=$(grep -c . <<< "$l" || true)
       if [ -n "$o" ]; then echo "NOT_OK:unchecked-homes=$o,files=$n"
-      elif [ -n "$l" ]; then echo "NOT_OK:files=$n,$({ grep -m 1 '^exists ' <<< "$l" || head -n 1 <<< "$l"; } | awk '{ r = $1; sub(/^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ /, ""); print r ":" $0 }')"
+      elif [ -n "$l" ]; then echo "NOT_OK:files=$n,$({ grep -m 1 -E '^(exists|name) ' <<< "$l" || head -n 1 <<< "$l"; } | awk '{ r = $1; sub(/^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ /, ""); print r ":" $0 }')"
       else echo "OK:dot-files"; fi
     }
     evaluate
@@ -158,17 +161,20 @@ remediation:
       }'
     }
     odd_of() { awk -F: -v u="$1" '$1 == u { print $2; exit }' <<< "$2"; }
-    # dot_bad: "reason tuid tgid mode uid gid path" of the dot files that break the item
+    # dot_bad: "reason tuid tgid mode uid gid path" of the dot files that break the item.
+    # find ends each path with a NUL, so a newline in a name cannot forge a line;
+    # such names are reported as "name" with ? for the newline and left alone.
     dot_bad() {
       local u id g h odd
       odd=$(odd_homes)
       homes | while IFS=: read -r u id g h; do
         [ -z "$(odd_of "$u" "$odd")" ] && [ -d "$h" ] || continue
-        find -H "$h" -xdev -path '*/containers/storage' -prune -o -type f -name '.*' -printf '%m %U %G %p\n' 2>/dev/null |
-          awk -v id="$id" -v g="$g" '{
+        find -H "$h" -xdev -path '*/containers/storage' -prune -o -type f -name '.*' -printf '%m %U %G %p\0' 2>/dev/null |
+          awk -v id="$id" -v g="$g" 'BEGIN { RS = "\0" } {
             p = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", p); b = p; sub(/.*\//, "", b)
             s = sprintf("%04d", $1); o = substr(s, 2, 1) + 0; gr = substr(s, 3, 1) + 0; ot = substr(s, 4, 1) + 0
-            if (b == ".forward" || b == ".rhosts") r = "exists"
+            if (index(p, "\n")) { r = "name"; gsub(/\n/, "?", p) }
+            else if (b == ".forward" || b == ".rhosts") r = "exists"
             else {
               if (b == ".netrc" || b == ".bash_history") bad = (o % 2) || gr || ot
               else bad = (o % 2) || (gr % 4) || (ot % 4)
@@ -187,11 +193,11 @@ remediation:
       l=$(dot_bad)
       n=$(grep -c . <<< "$l" || true)
       if [ -n "$o" ]; then echo "NOT_OK:unchecked-homes=$o,files=$n"
-      elif [ -n "$l" ]; then echo "NOT_OK:files=$n,$({ grep -m 1 '^exists ' <<< "$l" || head -n 1 <<< "$l"; } | awk '{ r = $1; sub(/^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ /, ""); print r ":" $0 }')"
+      elif [ -n "$l" ]; then echo "NOT_OK:files=$n,$({ grep -m 1 -E '^(exists|name) ' <<< "$l" || head -n 1 <<< "$l"; } | awk '{ r = $1; sub(/^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ /, ""); print r ":" $0 }')"
       else echo "OK:dot-files"; fi
     }
       [ "$(id -u)" = 0 ] || { echo "Root privileges are required" >&2; exit 1; }
-      { echo format=dots-1; dot_bad | awk '$1 != "exists"' | cut -d' ' -f2-; } > "$b.tmp"
+      { echo format=dots-1; dot_bad | awk '$1 != "exists" && $1 != "name"' | cut -d' ' -f2-; } > "$b.tmp"
       mv "$b.tmp" "$b"
       echo "Saved the owner and mode of $(( $(wc -l < "$b") - 1 )) dot files"
     )
@@ -222,17 +228,20 @@ remediation:
       }'
     }
     odd_of() { awk -F: -v u="$1" '$1 == u { print $2; exit }' <<< "$2"; }
-    # dot_bad: "reason tuid tgid mode uid gid path" of the dot files that break the item
+    # dot_bad: "reason tuid tgid mode uid gid path" of the dot files that break the item.
+    # find ends each path with a NUL, so a newline in a name cannot forge a line;
+    # such names are reported as "name" with ? for the newline and left alone.
     dot_bad() {
       local u id g h odd
       odd=$(odd_homes)
       homes | while IFS=: read -r u id g h; do
         [ -z "$(odd_of "$u" "$odd")" ] && [ -d "$h" ] || continue
-        find -H "$h" -xdev -path '*/containers/storage' -prune -o -type f -name '.*' -printf '%m %U %G %p\n' 2>/dev/null |
-          awk -v id="$id" -v g="$g" '{
+        find -H "$h" -xdev -path '*/containers/storage' -prune -o -type f -name '.*' -printf '%m %U %G %p\0' 2>/dev/null |
+          awk -v id="$id" -v g="$g" 'BEGIN { RS = "\0" } {
             p = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", p); b = p; sub(/.*\//, "", b)
             s = sprintf("%04d", $1); o = substr(s, 2, 1) + 0; gr = substr(s, 3, 1) + 0; ot = substr(s, 4, 1) + 0
-            if (b == ".forward" || b == ".rhosts") r = "exists"
+            if (index(p, "\n")) { r = "name"; gsub(/\n/, "?", p) }
+            else if (b == ".forward" || b == ".rhosts") r = "exists"
             else {
               if (b == ".netrc" || b == ".bash_history") bad = (o % 2) || gr || ot
               else bad = (o % 2) || (gr % 4) || (ot % 4)
@@ -251,7 +260,7 @@ remediation:
       l=$(dot_bad)
       n=$(grep -c . <<< "$l" || true)
       if [ -n "$o" ]; then echo "NOT_OK:unchecked-homes=$o,files=$n"
-      elif [ -n "$l" ]; then echo "NOT_OK:files=$n,$({ grep -m 1 '^exists ' <<< "$l" || head -n 1 <<< "$l"; } | awk '{ r = $1; sub(/^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ /, ""); print r ":" $0 }')"
+      elif [ -n "$l" ]; then echo "NOT_OK:files=$n,$({ grep -m 1 -E '^(exists|name) ' <<< "$l" || head -n 1 <<< "$l"; } | awk '{ r = $1; sub(/^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ /, ""); print r ":" $0 }')"
       else echo "OK:dot-files"; fi
     }
       r=$(evaluate)
@@ -260,8 +269,8 @@ remediation:
         *needs-root*) echo "Root privileges are required" >&2; exit 1 ;;
         *unchecked-homes*) echo "Some accounts have a shared or / home; fix them by hand first ($r)" >&2; exit 1 ;;
       esac
-      x=$(dot_bad | awk '$1 == "exists"' | cut -d' ' -f7- | paste -sd, -)
-      [ -z "$x" ] || { echo "Remove or move these files by hand first: $x" >&2; exit 1; }
+      x=$(dot_bad | awk '$1 == "exists" || $1 == "name"' | cut -d' ' -f7- | paste -sd, -)
+      [ -z "$x" ] || { echo "Remove, move or rename these files by hand first: $x" >&2; exit 1; }
       n=0
       while IFS= read -r x; do
         read -r tu tg m u g _ <<< "$x"; p=${x#* * * * * }
@@ -320,9 +329,12 @@ notes:
     w podkatalogach, na przykład .gitignore w repozytoriach. Pomija warstwy
     obrazów kontenerów (containers/storage), jak w regule 7.1.11. Wynik
     NOT_OK podaje liczbę plików oraz powód i ścieżkę pierwszego, a jeśli
-    jest .forward lub .rhosts, to jego: exists, mode, owner lub group. Naprawa nie usuwa plików: gdy istnieje .forward
+    jest .forward lub .rhosts, to jego: exists, mode, owner lub group.
+    Plik ze znakiem nowej linii w nazwie ma powód name, a w wyniku znak ?
+    w miejscu nowej linii. Naprawa nie usuwa plików: gdy istnieje .forward
     albo .rhosts, kończy się błędem bez zmian i trzeba je usunąć lub
-    przenieść ręcznie. Pozostałym plikom ustawia konto i jego grupę główną
+    przenieść ręcznie. Tak samo jest z plikiem ze znakiem nowej linii
+    w nazwie, któremu trzeba ręcznie zmienić nazwę. Pozostałym plikom ustawia konto i jego grupę główną
     (chown -h) i tryb ograniczony do 644, a dla .netrc i .bash_history do
     600. Zmienia tylko pliki z kopii, które nadal są zwykłymi plikami
     z jednym dowiązaniem i tym samym właścicielem, bo użytkownik mógł je
@@ -342,9 +354,11 @@ notes:
     container image layers (containers/storage), as the 7.1.11 rule does.
     The NOT_OK result gives the number of files and the reason and path of
     the first, or of a .forward or .rhosts file if there is one: exists,
-    mode, owner or group. The remediation does not delete
+    mode, owner or group. A file with a newline in its name has the reason
+    name and a ? in place of the newline. The remediation does not delete
     files: while .forward or .rhosts exists, it fails without changes and
-    they need removing or moving by hand. For the other files it sets the
+    they need removing or moving by hand. The same applies to a dot file
+    with a newline in its name, which needs renaming by hand. For the other files it sets the
     account and its primary group (chown -h) and limits the mode to 644, or
     600 for .netrc and .bash_history. It changes only the files from the
     backup that are still regular files with one link and the same owner,

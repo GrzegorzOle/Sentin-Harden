@@ -82,16 +82,20 @@ audit:
         find "$m" -xdev \( -path '*/containers/storage' -o -path '*/containerd' -o -path '*/kubelet/pods' -o -path '*/kubelet/plugins' -o -path /var/lib/docker \) -prune -o "$@" 2>/dev/null || true
       done
     }
+    # wwlist: "f path" and "d path"; find ends each path with a NUL, so a newline
+    # in a name cannot forge a line: such paths are "n path" with ? for the newline
     wwlist() {
-      lscan \( -type f -perm -0002 -printf 'f %p\n' \) -o \( -type d -perm -0002 ! -perm -1000 -printf 'd %p\n' \) | sort -u
+      lscan \( -type f -perm -0002 -printf 'f %p\0' \) -o \( -type d -perm -0002 ! -perm -1000 -printf 'd %p\0' \) |
+        awk 'BEGIN { RS = "\0" } { x = $0; if (index(x, "\n")) { gsub(/\n/, "?", x); x = "n" substr(x, 2) } print x }' | sort -u
     }
     evaluate() {
-      local l nf nd
+      local l nf nd nn
       [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
       l=$(wwlist)
       [ -n "$l" ] || { echo "OK:files=0,dirs=0"; return; }
-      nf=$(grep -c '^f ' <<< "$l" || true); nd=$(grep -c '^d ' <<< "$l" || true)
-      echo "NOT_OK:files=$nf,dirs=$nd,$(head -n 1 <<< "$l" | cut -c 3-)"
+      nf=$(grep -c '^f ' <<< "$l" || true); nd=$(grep -c '^d ' <<< "$l" || true); nn=$(grep -c '^n ' <<< "$l" || true)
+      if [ "$nn" = 0 ]; then nn=""; else nn=",names=$nn"; fi
+      echo "NOT_OK:files=$nf,dirs=$nd$nn,$(head -n 1 <<< "$l" | cut -c 3-)"
     }
     evaluate
   expected: '^OK:'
@@ -116,16 +120,20 @@ remediation:
         find "$m" -xdev \( -path '*/containers/storage' -o -path '*/containerd' -o -path '*/kubelet/pods' -o -path '*/kubelet/plugins' -o -path /var/lib/docker \) -prune -o "$@" 2>/dev/null || true
       done
     }
+    # wwlist: "f path" and "d path"; find ends each path with a NUL, so a newline
+    # in a name cannot forge a line: such paths are "n path" with ? for the newline
     wwlist() {
-      lscan \( -type f -perm -0002 -printf 'f %p\n' \) -o \( -type d -perm -0002 ! -perm -1000 -printf 'd %p\n' \) | sort -u
+      lscan \( -type f -perm -0002 -printf 'f %p\0' \) -o \( -type d -perm -0002 ! -perm -1000 -printf 'd %p\0' \) |
+        awk 'BEGIN { RS = "\0" } { x = $0; if (index(x, "\n")) { gsub(/\n/, "?", x); x = "n" substr(x, 2) } print x }' | sort -u
     }
     evaluate() {
-      local l nf nd
+      local l nf nd nn
       [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
       l=$(wwlist)
       [ -n "$l" ] || { echo "OK:files=0,dirs=0"; return; }
-      nf=$(grep -c '^f ' <<< "$l" || true); nd=$(grep -c '^d ' <<< "$l" || true)
-      echo "NOT_OK:files=$nf,dirs=$nd,$(head -n 1 <<< "$l" | cut -c 3-)"
+      nf=$(grep -c '^f ' <<< "$l" || true); nd=$(grep -c '^d ' <<< "$l" || true); nn=$(grep -c '^n ' <<< "$l" || true)
+      if [ "$nn" = 0 ]; then nn=""; else nn=",names=$nn"; fi
+      echo "NOT_OK:files=$nf,dirs=$nd$nn,$(head -n 1 <<< "$l" | cut -c 3-)"
     }
       [ "$(id -u)" = 0 ] || { echo "Root privileges are required" >&2; exit 1; }
       l=$(wwlist)
@@ -133,7 +141,8 @@ remediation:
         echo format=perms-1
         printf '%s\n' "$l" | while IFS= read -r x; do
           f=${x#? }
-          [ -n "$x" ] && [ -e "$f" ] && [ ! -L "$f" ] || continue
+          case $x in [fd]" "*) ;; *) continue ;; esac
+          [ -e "$f" ] && [ ! -L "$f" ] || continue
           printf '%s %s\n' "$(stat -c '%a %u %g' -- "$f")" "$f"
         done
       } > "$b.tmp"
@@ -159,16 +168,20 @@ remediation:
         find "$m" -xdev \( -path '*/containers/storage' -o -path '*/containerd' -o -path '*/kubelet/pods' -o -path '*/kubelet/plugins' -o -path /var/lib/docker \) -prune -o "$@" 2>/dev/null || true
       done
     }
+    # wwlist: "f path" and "d path"; find ends each path with a NUL, so a newline
+    # in a name cannot forge a line: such paths are "n path" with ? for the newline
     wwlist() {
-      lscan \( -type f -perm -0002 -printf 'f %p\n' \) -o \( -type d -perm -0002 ! -perm -1000 -printf 'd %p\n' \) | sort -u
+      lscan \( -type f -perm -0002 -printf 'f %p\0' \) -o \( -type d -perm -0002 ! -perm -1000 -printf 'd %p\0' \) |
+        awk 'BEGIN { RS = "\0" } { x = $0; if (index(x, "\n")) { gsub(/\n/, "?", x); x = "n" substr(x, 2) } print x }' | sort -u
     }
     evaluate() {
-      local l nf nd
+      local l nf nd nn
       [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
       l=$(wwlist)
       [ -n "$l" ] || { echo "OK:files=0,dirs=0"; return; }
-      nf=$(grep -c '^f ' <<< "$l" || true); nd=$(grep -c '^d ' <<< "$l" || true)
-      echo "NOT_OK:files=$nf,dirs=$nd,$(head -n 1 <<< "$l" | cut -c 3-)"
+      nf=$(grep -c '^f ' <<< "$l" || true); nd=$(grep -c '^d ' <<< "$l" || true); nn=$(grep -c '^n ' <<< "$l" || true)
+      if [ "$nn" = 0 ]; then nn=""; else nn=",names=$nn"; fi
+      echo "NOT_OK:files=$nf,dirs=$nd$nn,$(head -n 1 <<< "$l" | cut -c 3-)"
     }
       n=0
       while IFS= read -r x; do
@@ -229,14 +242,18 @@ notes:
     (containers/storage, containerd, kubelet, /var/lib/docker): należą do
     obrazów i zmieniają się przy każdym pobraniu. Podwoluminy btrfs
     niezamontowane osobno leżą na innym urządzeniu, więc -xdev je pomija,
-    tak jak w CIS. Bez roota find nie wejdzie do wszystkich katalogów, więc
+    tak jak w CIS. Find kończy każdą ścieżkę znakiem NUL, więc znak nowej
+    linii w nazwie pliku nie tworzy fałszywego wpisu; w wyniku zastępuje go
+    znak ?. Bez roota find nie wejdzie do wszystkich katalogów, więc
     wynik to NOT_OK:needs-root.
     Wynik NOT_OK podaje liczbę plików i katalogów oraz pierwszą ścieżkę.
     Naprawa odbiera plikom prawo zapisu dla innych (chmod o-w), a katalogom
     dodaje bit sticky (chmod +t). Zmienia tylko ścieżki zapisane w kopii
     i tylko te, które nadal mają tego samego właściciela i grupę i nie są
     dowiązaniami, bo leżą w miejscach, w których ktoś mógł je podmienić.
-    Wycofanie przywraca tylko tryb, na tych samych warunkach. Typowe
+    Wycofanie przywraca tylko tryb, na tych samych warunkach. Ścieżek ze
+    znakiem nowej linii w nazwie (names=N w wyniku) naprawa nie zmienia;
+    trzeba im ręcznie zmienić nazwę albo tryb. Typowe
     znaleziska w katalogach domowych to pliki konfiguracji i blokad
     zapisane przez programy spoza repozytoriów Fedory z trybem 666.
   en: |
@@ -247,7 +264,8 @@ notes:
     (containers/storage, containerd, kubelet, /var/lib/docker): they belong
     to the images and change with every pull. Btrfs subvolumes that are not
     mounted on their own lie on another device, so -xdev skips them, as in
-    CIS. Without root, find cannot enter every directory, so the result is
+    CIS. Find ends each path with a NUL, so a newline in a file name cannot
+    forge an entry; the result shows a ? in its place. Without root, find cannot enter every directory, so the result is
     NOT_OK:needs-root.
     The NOT_OK result gives the number of files and directories and the
     first path. The remediation removes write access for others from the
@@ -255,6 +273,8 @@ notes:
     It changes only the paths saved in the backup, and only those that still
     have the same owner and group and are not links, because they lie in
     places where someone could have swapped them. Rollback restores only the
-    mode, under the same conditions. Typical findings in home directories
+    mode, under the same conditions. The remediation does not change paths
+    with a newline in their name (names=N in the result); they need a new
+    name or mode set by hand. Typical findings in home directories
     are configuration and lock files that programs from outside the Fedora
     repositories save with mode 666.

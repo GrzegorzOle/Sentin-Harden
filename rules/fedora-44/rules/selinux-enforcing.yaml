@@ -1,0 +1,165 @@
+id: fedora44-selinux-enforcing
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.3.1.5
+  section: Initial Setup > Mandatory Access Control > Configure SELinux
+  title:
+    pl: SELinux działa w trybie enforcing
+    en: Ensure the SELinux mode is enforcing
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dopiero w trybie enforcing SELinux blokuje działania, na które polityka nie
+    pozwala; w trybie permissive tylko je zapisuje. Stacja w trybie permissive
+    ma więc etykiety i dziennik, ale nie ma ochrony.
+
+    Punkt sprawdza, że /etc/selinux/config ustawia tryb enforcing i że system
+    w nim działa. Na Fedorze to ustawienie domyślne. Punkt należy do poziomu 2,
+    bo na maszynie, która działała w trybie permissive, zmiana może zatrzymać
+    aplikacje, których naruszeń nikt wcześniej nie przejrzał.
+  en: |
+    Only in enforcing mode does SELinux block actions the policy does not allow;
+    in permissive mode it only records them. A workstation in permissive mode
+    therefore has labels and a log, but no protection.
+
+    The item checks that /etc/selinux/config sets enforcing mode and that the
+    system runs in it. On Fedora this is the default. The item belongs to level 2
+    because on a machine that ran in permissive mode, the change can stop
+    applications whose violations nobody has reviewed.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu. Jeśli stacja działała w trybie permissive, przed
+    zmianą trzeba przejrzeć dziennik odmów (ausearch -m avc): każdy wpis to
+    działanie, które po zmianie zostanie zablokowane. Zmiana działa od razu,
+    bez restartu.
+  en: |
+    The class needs review. If the workstation ran in permissive mode, the denial
+    log (ausearch -m avc) has to be reviewed before the change: every entry is
+    an action that will be blocked afterwards. The change takes effect at once,
+    without a restart.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Aplikacja, która w trybie permissive generowała odmowy, np. serwer z danymi w niestandardowym katalogu, przestaje działać w tej części, której dotyczyły odmowy
+    en:
+      - An application that produced denials in permissive mode, such as a server with data in a non-standard directory, stops working in the part the denials were about
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dziennik odmów z trybu permissive nie został przejrzany, a na stacji działają usługi spoza repozytoriów Fedory
+    en:
+      - The denial log from permissive mode has not been reviewed and the workstation runs services from outside the Fedora repositories
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    c=/etc/selinux/config
+    if [ ! -r "$c" ] || ! command -v getenforce >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    m=$(sed -n 's/^[[:space:]]*SELINUX=[[:space:]]*//p' "$c" | tail -n 1 | tr -d '"'"'"'"' | tr 'A-Z' 'a-z')
+    r=$(getenforce 2>/dev/null)
+    if [ "$m" != enforcing ]; then echo "CONFIG_${m:-none}" | tr 'a-z' 'A-Z'; exit 0; fi
+    case "$r" in Enforcing) echo ENFORCING ;; Permissive) echo RUNTIME_PERMISSIVE ;; Disabled) echo RUNTIME_DISABLED ;; *) echo CHECK_ERROR ;; esac
+  expected: '^ENFORCING$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      c=/etc/selinux/config
+      b='{{backup_file}}'
+      [ -r "$c" ] || { echo "$c not found" >&2; exit 1; }
+      mkdir -p "$(dirname "$b")"
+      n=$(grep -cE '^[[:space:]]*SELINUX=' "$c" || true)
+      line=$(grep -E '^[[:space:]]*SELINUX=' "$c" | tail -n 1 || true)
+      rl=0; [ -e /.autorelabel ] && rl=1
+      {
+        echo "count=$n"
+        echo "relabel=$rl"
+        echo "mode=$(getenforce 2>/dev/null || echo Unknown)"
+        echo "line=$line"
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if [ "$(getenforce)" = Disabled ]; then
+        echo "SELinux is disabled; enable it in permissive mode, restart and review denials first" >&2; exit 1
+      fi
+      c=/etc/selinux/config
+      n=$(grep -cE '^[[:space:]]*SELINUX=' "$c" || true)
+      if [ "$n" -gt 1 ]; then echo "$c sets SELINUX more than once; fix it by hand" >&2; exit 1; fi
+      if [ "$n" -eq 1 ]; then
+        sed -i -E 's/^[[:space:]]*SELINUX=.*/SELINUX=enforcing/' "$c"
+      else
+        printf 'SELINUX=enforcing\n' >> "$c"
+      fi
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$c" 2>/dev/null || true; fi
+      if [ "$(getenforce)" != Enforcing ]; then setenforce 1; fi
+      echo "Set SELINUX=enforcing in $c and switched to enforcing mode"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      c=/etc/selinux/config
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      n=$(sed -n 's/^count=//p' "$b")
+      rl=$(sed -n 's/^relabel=//p' "$b")
+      case "$n:$rl" in [01]:[01]) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      line=$(sed -n 's/^line=//p' "$b")
+      if [ "$n" = 0 ]; then
+        sed -i -E '/^[[:space:]]*SELINUX=/d' "$c"
+      else
+        esc=$(printf '%s' "$line" | sed 's/[\/&]/\\&/g')
+        sed -i -E "s/^[[:space:]]*SELINUX=.*/$esc/" "$c"
+      fi
+      if [ "$rl" = 0 ]; then rm -f /.autorelabel; fi
+      if [ "$(sed -n 's/^mode=//p' "$b")" = Permissive ] && [ "$(getenforce)" = Enforcing ]; then setenforce 0; fi
+      echo "Restored SELINUX in $c and the previous mode"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.fedoraproject.org/en-US/quick-docs/selinux-changing-states-and-modes/
+  - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/using_selinux/changing-selinux-states-and-modes_using-selinux
+  - https://man7.org/linux/man-pages/man5/selinux_config.5.html
+
+notes:
+  pl: |
+    Naprawa odmawia działania, gdy SELinux jest wyłączony, bo wtedy trzeba
+    najpierw włączyć go w trybie permissive (punkt 1.3.1.4), uruchomić system
+    ponownie i przejrzeć odmowy. Na stacji z SELinux w trybie permissive naprawa
+    ustawia tryb enforcing w pliku i przełącza go od razu poleceniem setenforce;
+    wycofanie przywraca poprzedni wpis i tryb.
+  en: |
+    The remediation refuses to run when SELinux is disabled, because it then has
+    to be turned on in permissive mode first (item 1.3.1.4), the system
+    restarted and the denials reviewed. On a workstation with SELinux in
+    permissive mode the remediation sets enforcing mode in the file and switches
+    at once with setenforce; rollback restores the previous entry and mode.

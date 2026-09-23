@@ -1,0 +1,174 @@
+id: fedora44-selinux-not-disabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.3.1.4
+  section: Initial Setup > Mandatory Access Control > Configure SELinux
+  title:
+    pl: Tryb SELinux nie jest wyłączony
+    en: Ensure the SELinux mode is not disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wyłączony SELinux nie chroni niczego, a pliki tworzone w tym czasie nie
+    dostają etykiet, więc późniejsze włączenie wymaga ponownego etykietowania
+    całego systemu. Tryb permissive tylko zapisuje naruszenia, ale utrzymuje
+    etykiety i pozwala przygotować włączenie trybu enforcing.
+
+    Punkt sprawdza, że /etc/selinux/config ustawia tryb enforcing lub
+    permissive i że SELinux faktycznie działa. Na Fedorze domyślny jest tryb
+    enforcing.
+  en: |
+    Disabled SELinux protects nothing, and files created meanwhile get no
+    labels, so turning it on later needs the whole system to be relabelled.
+    Permissive mode only records violations, but keeps the labels and lets the
+    move to enforcing mode be prepared.
+
+    The item checks that /etc/selinux/config sets enforcing or permissive mode
+    and that SELinux actually runs. On Fedora the default is enforcing mode.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia, bo po wyłączonym SELinux cały system
+    plików trzeba ponownie oznaczyć etykietami. Dzieje się to przy następnym
+    starcie i trwa od kilku do kilkudziesięciu minut. Naprawa włącza tryb
+    permissive, więc nic nie zostaje zablokowane, a naruszenia trafiają do
+    dziennika do przejrzenia przed trybem enforcing.
+
+    Zmiana działa dopiero po restarcie.
+  en: |
+    The change needs a planned rollout, because after disabled SELinux the whole
+    file system has to be labelled again. This happens at the next start and
+    takes from a few to tens of minutes. The remediation turns on permissive
+    mode, so nothing gets blocked, and violations go to the log for review
+    before enforcing mode.
+
+    The change takes effect only after a restart.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Pierwszy start po zmianie trwa znacznie dłużej, bo system ponownie etykietuje wszystkie pliki, i w tym czasie stacja jest niedostępna
+    en:
+      - The first start after the change takes much longer, because the system relabels all files, and the workstation is unavailable meanwhile
+  interruption: system-restart
+  user_visible: true
+  reversibility: after-restart
+
+audit:
+  shell: bash
+  test_command: |
+    c=/etc/selinux/config
+    if [ ! -r "$c" ] || ! command -v getenforce >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    m=$(sed -n 's/^[[:space:]]*SELINUX=[[:space:]]*//p' "$c" | tail -n 1 | tr -d '"'"'"'"' | tr 'A-Z' 'a-z')
+    r=$(getenforce 2>/dev/null)
+    case "$m" in enforcing|permissive) ;; *) echo "CONFIG_DISABLED:${m:-none}"; exit 0 ;; esac
+    case "$r" in Enforcing|Permissive) ;; Disabled) echo RUNTIME_DISABLED; exit 0 ;; *) echo CHECK_ERROR; exit 0 ;; esac
+    echo NOT_DISABLED
+  expected: '^NOT_DISABLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      c=/etc/selinux/config
+      b='{{backup_file}}'
+      [ -r "$c" ] || { echo "$c not found" >&2; exit 1; }
+      mkdir -p "$(dirname "$b")"
+      n=$(grep -cE '^[[:space:]]*SELINUX=' "$c" || true)
+      line=$(grep -E '^[[:space:]]*SELINUX=' "$c" | tail -n 1 || true)
+      rl=0; [ -e /.autorelabel ] && rl=1
+      {
+        echo "count=$n"
+        echo "relabel=$rl"
+        echo "mode=$(getenforce 2>/dev/null || echo Unknown)"
+        echo "line=$line"
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      cur=$(sed -n 's/^line=//p' "$b" | sed 's/.*=//; s/[" ]//g' | tr 'A-Z' 'a-z')
+      case "$cur" in
+        enforcing|permissive) echo "SELINUX is already $cur in /etc/selinux/config"; exit 0 ;;
+      esac
+      c=/etc/selinux/config
+      n=$(grep -cE '^[[:space:]]*SELINUX=' "$c" || true)
+      if [ "$n" -gt 1 ]; then echo "$c sets SELINUX more than once; fix it by hand" >&2; exit 1; fi
+      if [ "$n" -eq 1 ]; then
+        sed -i -E 's/^[[:space:]]*SELINUX=.*/SELINUX=permissive/' "$c"
+      else
+        printf 'SELINUX=permissive\n' >> "$c"
+      fi
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$c" 2>/dev/null || true; fi
+      if [ "$(sed -n 's/^mode=//p' "$b")" = Disabled ] && [ ! -e /.autorelabel ]; then
+        touch /.autorelabel
+        echo "The file system will be relabelled at the next start"
+      fi
+      echo "Set SELINUX=permissive in $c; restart to apply"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      c=/etc/selinux/config
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      n=$(sed -n 's/^count=//p' "$b")
+      rl=$(sed -n 's/^relabel=//p' "$b")
+      case "$n:$rl" in [01]:[01]) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      line=$(sed -n 's/^line=//p' "$b")
+      if [ "$n" = 0 ]; then
+        sed -i -E '/^[[:space:]]*SELINUX=/d' "$c"
+      else
+        esc=$(printf '%s' "$line" | sed 's/[\/&]/\\&/g')
+        sed -i -E "s/^[[:space:]]*SELINUX=.*/$esc/" "$c"
+      fi
+      if [ "$rl" = 0 ]; then rm -f /.autorelabel; fi
+      echo "Restored SELINUX in $c; restart to apply"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.fedoraproject.org/en-US/quick-docs/selinux-changing-states-and-modes/
+  - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/using_selinux/changing-selinux-states-and-modes_using-selinux
+  - https://man7.org/linux/man-pages/man5/selinux_config.5.html
+
+notes:
+  pl: |
+    Wynik RUNTIME_DISABLED oznacza, że plik konfiguracyjny jest poprawny, ale
+    SELinux nie działa: system nie został jeszcze uruchomiony ponownie albo
+    parametr jądra selinux=0 wyłącza go przy starcie, co wskazuje punkt 1.3.1.2.
+
+    Na Fedorze wartość disabled w /etc/selinux/config nie wyłącza SELinux
+    w jądrze, tylko powoduje, że przy starcie nie jest ładowana polityka.
+    Jedyną drogą pełnego wyłączenia jest parametr selinux=0.
+  en: |
+    The RUNTIME_DISABLED result means that the configuration file is correct but
+    SELinux does not run: the system has not been restarted yet, or the
+    selinux=0 kernel parameter turns it off at start, which item 1.3.1.2
+    reports.
+
+    On Fedora the disabled value in /etc/selinux/config does not turn SELinux
+    off in the kernel; it only means no policy is loaded at start. The only way
+    to turn it off fully is the selinux=0 parameter.

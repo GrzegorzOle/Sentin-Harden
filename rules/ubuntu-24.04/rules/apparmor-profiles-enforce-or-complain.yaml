@@ -1,0 +1,123 @@
+id: ubuntu2404-apparmor-profiles-enforce-or-complain
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.3.1.3
+  section: Initial Setup > Mandatory Access Control > Configure AppArmor
+  title:
+    pl: Wszystkie profile AppArmor są w trybie enforce lub complain
+    en: Ensure all AppArmor Profiles are in enforce or complain mode
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Profil AppArmor w trybie enforce blokuje wszystko, na co nie pozwala,
+    a w trybie complain tylko to zapisuje w dzienniku. Program, który
+    wystartował, zanim jego profil został załadowany, działa bez ograniczeń aż
+    do ponownego uruchomienia, choć profil w systemie jest.
+
+    Punkt sprawdza poleceniem aa-status, że AppArmor działa, profile są
+    załadowane, żaden nie jest w trybie innym niż dozwolone i żaden proces nie
+    działa bez ograniczeń mimo istniejącego profilu. Na domyślnej instalacji
+    Ubuntu Server punkt jest spełniony.
+  en: |
+    An AppArmor profile in enforce mode blocks everything it does not allow,
+    and in complain mode only records it in the log. A program that started
+    before its profile was loaded runs unconfined until it is restarted, even
+    though the profile is on the system.
+
+    The item checks with aa-status that AppArmor runs, profiles are loaded,
+    none is in a mode other than the allowed ones and no process runs
+    unconfined despite an existing profile. A default Ubuntu Server
+    installation meets the item.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo spełnienie punktu zwykle oznacza ponowne
+    uruchomienie usług działających bez swoich profili, które po nim zaczną
+    podlegać ograniczeniom. Reguła tylko sprawdza stan.
+  en: |
+    The class needs review because meeting the item usually means restarting
+    services that run without their profiles, which then become confined. The
+    rule only checks the state.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Usługa uruchomiona przed załadowaniem swojego profilu po ponownym uruchomieniu dostaje odmowy dostępu, których wcześniej nie było
+    en:
+      - A service started before its profile was loaded gets access denials it did not get before after a restart
+  interruption: service-restart
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v aa-status >/dev/null 2>&1; then echo NOT_INSTALLED; exit 0; fi
+    out=$(aa-status 2>/dev/null) && rc=0 || rc=$?
+    case "$rc" in
+      0) ;;
+      1) echo NOT_ENABLED; exit 0 ;;
+      2) echo NO_PROFILES; exit 0 ;;
+      *) echo CHECK_ERROR; exit 0 ;;
+    esac
+    n=$(printf '%s\n' "$out" | sed -n 's/^\([0-9]\{1,\}\) profiles are loaded\.$/\1/p')
+    if [ -z "$n" ]; then echo CHECK_ERROR; exit 0; fi
+    if [ "$n" = 0 ]; then echo NO_PROFILES; exit 0; fi
+    ok=""; bad=""
+    while read -r c m; do
+      [ "$c" -gt 0 ] || continue
+      case "$m" in enforce|complain|kill|unconfined) ok="$ok,$m=$c" ;; *) bad="$bad,$m=$c" ;; esac
+    done < <(printf '%s\n' "$out" | sed -n 's/^\([0-9]\{1,\}\) profiles are in \([a-z-]\{1,\}\) mode\.$/\1 \2/p')
+    u=$(printf '%s\n' "$out" | sed -n 's/^\([0-9]\{1,\}\) processes are unconfined but have a profile defined\.$/\1/p')
+    [ "${u:-0}" = 0 ] || bad="$bad,unconfined-processes=$u"
+    if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:loaded=$n$ok"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://documentation.ubuntu.com/server/how-to/security/apparmor/
+  - https://manpages.ubuntu.com/manpages/noble/man8/aa-status.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man5/apparmor.d.5.html
+  - https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
+
+notes:
+  pl: |
+    Ubuntu 24.04 dostarcza kilkadziesiąt profili z flagą unconfined, np. dla
+    przeglądarek, które niczego nie ograniczają, a tylko pozwalają tym
+    programom tworzyć przestrzenie nazw użytkownika. Sprawdzenie traktuje tryb
+    unconfined i kill jako dozwolone. Przełączenie tych profili poleceniem
+    aa-enforce, jak w ogólnej instrukcji dla /etc/apparmor.d/*, zablokowałoby
+    te programy całkowicie.
+
+    Reguła nie ma naprawy. Wynik NOT_ENABLED wskazuje punkt 1.3.1.2, NO_PROFILES
+    wymaga systemctl enable --now apparmor.service, a unconfined-processes
+    ponownego uruchomienia procesów, które aa-status wymienia w sekcji
+    unconfined but have a profile defined. Sprawdzenie wymaga uprawnień roota.
+  en: |
+    Ubuntu 24.04 ships dozens of profiles with the unconfined flag, for
+    browsers for example, which confine nothing and only allow these programs
+    to create user namespaces. The check treats the unconfined and kill modes
+    as allowed. Switching these profiles with aa-enforce, as in the general
+    instruction for /etc/apparmor.d/*, would block those programs completely.
+
+    The rule has no remediation. The NOT_ENABLED result points to item
+    1.3.1.2, NO_PROFILES needs systemctl enable --now apparmor.service, and
+    unconfined-processes needs a restart of the processes aa-status lists
+    under unconfined but have a profile defined. The check needs root
+    privileges.

@@ -1,0 +1,182 @@
+id: ubuntu2404-apparmor-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.3.1.1
+  section: Initial Setup > Mandatory Access Control > Configure AppArmor
+  title:
+    pl: AppArmor jest zainstalowany
+    en: Ensure AppArmor is installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    AppArmor to mechanizm kontroli dostępu w jądrze, który ogranicza programy
+    do plików, uprawnień i operacji opisanych w ich profilach. Usługa objęta
+    profilem po przejęciu nie dostaje dostępu do całego systemu, nawet jeśli
+    działa jako root.
+
+    Punkt wymaga dwóch pakietów: apparmor, który ładuje profile przy starcie
+    i dostarcza aa-status, oraz apparmor-utils z poleceniami do przełączania
+    trybu profili (aa-enforce, aa-complain) i analizy dzienników. Ubuntu Server
+    instaluje pierwszy zawsze, drugiego nie, więc na domyślnej instalacji punkt
+    nie jest spełniony.
+  en: |
+    AppArmor is an access control mechanism in the kernel that limits programs
+    to the files, capabilities and operations described in their profiles. A
+    service covered by a profile does not get access to the whole system when
+    taken over, even if it runs as root.
+
+    The item requires two packages: apparmor, which loads the profiles at start
+    and provides aa-status, and apparmor-utils with the commands for switching
+    profile modes (aa-enforce, aa-complain) and analysing logs. Ubuntu Server
+    always installs the first but not the second, so a default installation
+    does not meet the item.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu tylko na serwerze, z którego usunięto pakiet
+    apparmor. Na domyślnej instalacji naprawa dodaje same narzędzia
+    (apparmor-utils z bibliotekami Pythona) i nic nie zmienia w działających
+    usługach. Instalacja pakietu apparmor ładuje profile od razu: programy
+    uruchomione później działają już z ograniczeniami, więc wcześniej trzeba
+    sprawdzić, dla których usług istnieją profile.
+  en: |
+    The class needs review only on a server from which the apparmor package
+    was removed. On a default installation the remediation adds just the tools
+    (apparmor-utils with Python libraries) and changes nothing in running
+    services. Installing the apparmor package loads the profiles at once:
+    programs started afterwards already run confined, so first check which
+    services have profiles.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - legacy-applications
+  what_breaks:
+    pl:
+      - "Gdy pakiet apparmor był usunięty: usługa z profilem po ponownym uruchomieniu dostaje odmowy dostępu do plików spoza profilu, np. danych w niestandardowym katalogu"
+    en:
+      - "When the apparmor package was removed: a service with a profile gets access denials to files outside its profile after a restart, for example data in a non-standard directory"
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    have=""; miss=""
+    for p in apparmor apparmor-utils; do
+      if [ "$(st "$p")" = installed ]; then have="$have,$p=$(dpkg-query -W -f='${Version}' "$p")"
+      else miss="$miss,$p"; fi
+    done
+    if [ -n "$miss" ]; then echo "NOT_INSTALLED:${miss#,}"; else echo "INSTALLED:${have#,}"; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      {
+        echo format=dpkg-on-1
+        for p in apparmor apparmor-utils; do s=$(st "$p"); echo "$p ${s:-not-installed}"; done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      miss=""
+      for p in apparmor apparmor-utils; do [ "$(st "$p")" = installed ] || miss="$miss $p"; done
+      if [ -z "$miss" ]; then echo "Already installed: apparmor apparmor-utils"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      o="-y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $miss; then apt-get update -qq; apt-get install $o $miss; fi
+      for p in $miss; do [ "$(st "$p")" = installed ] || { echo "$p is still not installed" >&2; exit 1; }; done
+      echo "Installed:$miss"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | cut -d' ' -f1 | tr '\n' ' ')" = "apparmor apparmor-utils " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""; purge=""
+      while read -r p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != installed ] && [ "$(st "$p")" = installed ] || continue
+        rm="$rm $p"
+        # A package that was not there at all loses its configuration files too.
+        [ "$s" != not-installed ] || purge="$purge $p"
+      done < <(tail -n +2 "$b")
+      if [ -z "$rm" ]; then echo "Nothing to restore"; exit 0; fi
+      # Packages installed since then may need them; then they stay.
+      if ! dpkg -r --dry-run $rm >/dev/null 2>&1; then
+        echo "Kept$rm: other installed packages need them now"; exit 0
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get remove -y -qq $rm
+      if [ -n "$purge" ]; then dpkg --purge $purge >/dev/null; fi
+      echo "Removed again:$rm"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://documentation.ubuntu.com/server/how-to/security/apparmor/
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje pakiet za zainstalowany tylko w stanie installed;
+    pakiet usunięty bez usunięcia konfiguracji (stan config-files) się nie
+    liczy. Wynik NOT_INSTALLED wymienia brakujące pakiety.
+
+    Naprawa instaluje brakujące pakiety poleceniem apt-get install, a gdy
+    listy pakietów są nieaktualne, odświeża je i ponawia instalację. Wycofanie
+    usuwa tylko te pakiety, których nie było przed naprawą, a gdy potrzebują
+    ich pakiety zainstalowane w międzyczasie (np. snapd wymaga apparmor),
+    zostawia je bez zmian. Zależności dodane przy instalacji, takie jak
+    python3-apparmor, zostają oznaczone jako zainstalowane automatycznie
+    i usuwa je apt autoremove. Profile załadowane po instalacji apparmor
+    pozostają w jądrze do restartu.
+  en: |
+    The check counts a package as installed only in the installed state; a
+    package removed without its configuration (the config-files state) does
+    not count. The NOT_INSTALLED result lists the missing packages.
+
+    The remediation installs the missing packages with apt-get install, and
+    when the package lists are stale, refreshes them and retries. Rollback
+    removes only the packages that were not there before the remediation, and
+    when packages installed meanwhile need them (snapd requires apparmor, for
+    example), leaves them in place. Dependencies added by the installation,
+    such as python3-apparmor, stay marked as automatically installed and apt
+    autoremove removes them. Profiles loaded after installing apparmor stay in
+    the kernel until a restart.

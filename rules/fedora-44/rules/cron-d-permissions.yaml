@@ -1,13 +1,13 @@
-id: fedora44-crontab-permissions
+id: fedora44-cron-d-permissions
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 2.4.1.2
+  item: 2.4.1.7
   section: Services > Job Schedulers > Configure cron
   title:
-    pl: Uprawnienia do /etc/crontab są skonfigurowane
-    en: Ensure permissions on /etc/crontab are configured
+    pl: Uprawnienia do /etc/cron.d są skonfigurowane
+    en: Ensure permissions on /etc/cron.d are configured
   level: 1
   profile: workstation
 
@@ -20,31 +20,32 @@ assessment_state: assessed-no-impact
 
 description:
   pl: |
-    Plik /etc/crontab opisuje zadania systemowe uruchamiane przez cron,
-    często jako root. Kto może go zmienić, może uruchomić dowolne polecenie
-    z uprawnieniami roota, a kto może go czytać, poznaje harmonogram
-    i ścieżki skryptów, które warto zaatakować.
+    Pliki w katalogu /etc/cron.d mają format /etc/crontab: każdy wpis podaje
+    harmonogram, użytkownika i polecenie. Kto może dodać tu plik, uruchomi
+    polecenie jako dowolny użytkownik, także root, a kto może przeglądać
+    katalog, poznaje zadania systemowe i ich słabe punkty.
 
-    Punkt wymaga, żeby plik należał do roota i był dostępny tylko dla
-    niego, czyli miał uprawnienia 600 lub bardziej restrykcyjne. Fedora
-    instaluje go z uprawnieniami 644.
+    Punkt wymaga, żeby katalog należał do roota i był dostępny tylko dla
+    niego, czyli miał uprawnienia 700 lub bardziej restrykcyjne. Fedora
+    tworzy go z uprawnieniami 755.
   en: |
-    The /etc/crontab file describes system jobs run by cron, often as root.
-    Whoever can change it can run any command with root rights, and whoever
-    can read it learns the schedule and the paths of the scripts worth
-    attacking.
+    The files in the /etc/cron.d directory use the /etc/crontab format: each
+    entry gives a schedule, a user and a command. Whoever can add a file
+    here runs a command as any user, including root, and whoever can list
+    the directory learns the system jobs and their weak spots.
 
-    The item requires the file to be owned by root and accessible only to
-    root, that is with mode 600 or stricter. Fedora installs it with mode
-    644.
+    The item requires the directory to be owned by root and accessible only
+    to root, that is with mode 700 or stricter. Fedora creates it with mode
+    755.
 
 disruption_description:
   pl: |
-    Nikt tego nie zauważy: plik czyta demon cron działający jako root,
-    a zwykli użytkownicy nie mają powodu go czytać.
+    Nikt tego nie zauważy: pliki z katalogu czyta demon cron działający
+    jako root, a pakiety instalują w nim wpisy jako root.
   en: |
-    Nobody will notice: the file is read by the cron daemon running as
-    root, and regular users have no reason to read it.
+    Nobody will notice: the files in the directory are read by the cron
+    daemon running as root, and packages install their entries there as
+    root.
 
 implementation_consequences:
   impact_areas:
@@ -59,10 +60,10 @@ implementation_consequences:
 audit:
   shell: bash
   test_command: |
-    f=/etc/crontab
+    f=/etc/cron.d
     if [ ! -e "$f" ]; then echo ABSENT; exit 0; fi
     set -- $(stat -Lc '%a %u %g' "$f")
-    if [ $(( 0$1 & 07177 )) -eq 0 ] && [ "$2" = 0 ] && [ "$3" = 0 ]; then echo "RESTRICTED:$1"; else echo "TOO_OPEN:$1:$2:$3"; fi
+    if [ $(( 0$1 & 07077 )) -eq 0 ] && [ "$2" = 0 ] && [ "$3" = 0 ]; then echo "RESTRICTED:$1"; else echo "TOO_OPEN:$1:$2:$3"; fi
   expected: '^(RESTRICTED:|ABSENT$)'
   comparison: regex
 
@@ -71,7 +72,7 @@ remediation:
   backup_command: |
     (
       set -e
-      f=/etc/crontab
+      f=/etc/cron.d
       b='{{backup_file}}'
       mkdir -p "$(dirname "$b")"
       {
@@ -84,7 +85,7 @@ remediation:
   change_command: |
     (
       set -e
-      f=/etc/crontab
+      f=/etc/cron.d
       b='{{backup_file}}'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       if [ ! -e "$f" ]; then echo "$f does not exist, nothing to change"; exit 0; fi
@@ -92,7 +93,7 @@ remediation:
       set -- $(stat -c '%a' "$tg")
       chown 0:0 "$tg"
       # Five digits: with fewer, chmod keeps the setuid and setgid bits of a directory.
-      chmod "$(printf '0%04o' $(( 0$1 & 0600 )))" "$tg"
+      chmod "$(printf '0%04o' $(( 0$1 & 0700 )))" "$tg"
       echo "Set owner root:root and mode $(stat -c '%a' "$tg") on $tg"
     )
 
@@ -116,19 +117,27 @@ privileges: root
 runnable: true
 
 sources:
-  - https://man7.org/linux/man-pages/man5/crontab.5.html
   - https://man7.org/linux/man-pages/man8/cron.8.html
 
 notes:
   pl: |
     Wynik RESTRICTED podaje obecne uprawnienia, TOO_OPEN uprawnienia,
-    właściciela i grupę (UID i GID), a ABSENT oznacza brak pliku, co też
+    właściciela i grupę (UID i GID), a ABSENT oznacza brak katalogu, co też
     spełnia regułę. Naprawa ustawia właściciela root:root i usuwa prawa
-    spoza 600, a wycofanie przywraca poprzedniego właściciela i uprawnienia
-    zapisane w kopii.
+    spoza 700, a wycofanie przywraca poprzedniego właściciela i uprawnienia
+    zapisane w kopii. Uprawnienia plików w katalogu się nie zmieniają.
+
+    Katalog należy do pakietu cronie, więc rpm -V cronie zgłasza po naprawie
+    zmianę uprawnień, a ponowna instalacja lub aktualizacja pakietu
+    przywraca 755 i reguła znów zgłasza wynik TOO_OPEN.
   en: |
     The RESTRICTED result gives the current mode, TOO_OPEN the mode, owner
-    and group (UID and GID), and ABSENT means the file does not exist,
+    and group (UID and GID), and ABSENT means the directory does not exist,
     which also meets the rule. The remediation sets the owner to root:root
-    and removes the permissions beyond 600, and rollback restores the
-    previous owner and mode recorded in the backup.
+    and removes the permissions beyond 700, and rollback restores the
+    previous owner and mode recorded in the backup. The permissions of the
+    files in the directory do not change.
+
+    The directory belongs to the cronie package, so rpm -V cronie reports the
+    changed mode after the remediation, and reinstalling or updating the
+    package sets 755 again, so the rule reports TOO_OPEN again.

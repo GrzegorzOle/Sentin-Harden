@@ -1,0 +1,171 @@
+id: fedora44-gdm-xdmcp-disabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.8.10
+  section: Initial Setup > Configure GNOME Display Manager
+  title:
+    pl: Logowanie zdalne XDMCP w GDM jest wyłączone
+    en: Ensure XDMCP is not enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    XDMCP pozwala zdalnemu terminalowi X poprosić menedżera logowania
+    o ekran logowania i całą sesję przez sieć. Protokół nie szyfruje ani
+    obrazu, ani naciśnięć klawiszy, więc hasło wpisane przy logowaniu da się
+    podsłuchać, a sama usługa przyjmuje zapytania z sieci.
+
+    Punkt wymaga, żeby w sekcji [xdmcp] pliku /etc/gdm/custom.conf nie było
+    Enable=true. Domyślnie tej sekcji nie ma, a GDM 50 na Fedorze 44 jest
+    zbudowany bez obsługi XDMCP.
+  en: |
+    XDMCP lets a remote X terminal ask the login manager for a login screen
+    and a whole session over the network. The protocol encrypts neither the
+    picture nor the keystrokes, so a password typed at sign-in can be
+    sniffed, and the service itself accepts requests from the network.
+
+    The item requires that the [xdmcp] section of /etc/gdm/custom.conf does
+    not contain Enable=true. By default the section is absent, and GDM 50 on
+    Fedora 44 is built without XDMCP support.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: GDM na Fedorze 44 i tak nie obsługuje XDMCP.
+    Zmiana tylko pilnuje, żeby ustawienie nie zadziałało po instalacji
+    wersji GDM z tą obsługą.
+  en: |
+    Nobody will notice: GDM on Fedora 44 does not support XDMCP anyway. The
+    change only makes sure the setting does not take effect after a GDM
+    version with that support is installed.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    f=/etc/gdm/custom.conf
+    if [ ! -e /usr/bin/gdm ] && [ ! -e /usr/sbin/gdm ]; then echo GDM_ABSENT; exit 0; fi
+    state() {
+      if [ ! -e "$f" ]; then echo XDMCP_OFF; return; fi
+      if [ ! -r "$f" ]; then echo CHECK_ERROR; return; fi
+      v=$(awk '
+        /^[ \t]*\[/ { s = ($0 ~ /^[ \t]*\[xdmcp\][ \t]*$/); next }
+        s && /^[ \t]*Enable[ \t]*=/ { v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t\r]+$/, "", v) }
+        END { print v }' "$f")
+      case "$v" in true|1) echo XDMCP_ON ;; *) echo XDMCP_OFF ;; esac
+    }
+    state
+  expected: '^(XDMCP_OFF|GDM_ABSENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/gdm/custom.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=file-1
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/gdm/custom.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      state() {
+        if [ ! -e "$f" ]; then echo XDMCP_OFF; return; fi
+        if [ ! -r "$f" ]; then echo CHECK_ERROR; return; fi
+        v=$(awk '
+          /^[ \t]*\[/ { s = ($0 ~ /^[ \t]*\[xdmcp\][ \t]*$/); next }
+          s && /^[ \t]*Enable[ \t]*=/ { v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t\r]+$/, "", v) }
+          END { print v }' "$f")
+        case "$v" in true|1) echo XDMCP_ON ;; *) echo XDMCP_OFF ;; esac
+      }
+      s=$(state)
+      if [ "$s" != XDMCP_ON ]; then echo "XDMCP is not enabled ($s), nothing to change"; exit 0; fi
+      tmp=$(mktemp)
+      trap 'rm -f "$tmp"' EXIT
+      awk '
+        /^[ \t]*\[/ { s = ($0 ~ /^[ \t]*\[xdmcp\][ \t]*$/); print; next }
+        s && /^[ \t]*Enable[ \t]*=/ { print "Enable=false"; next }
+        { print }' "$f" > "$tmp"
+      cat "$tmp" > "$f"
+      s=$(state)
+      [ "$s" = XDMCP_OFF ] || { echo "XDMCP is still enabled in $f" >&2; exit 1; }
+      echo "Set Enable=false in the [xdmcp] section of $f; GDM reads it when it starts"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/gdm/custom.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=file-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in
+        1) sed '1,/^---$/d' "$b" > "$f" ;;
+        0) rm -f "$f" ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      echo "Restored the previous content of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://help.gnome.org/admin/gdm/stable/configuration.html.en
+
+notes:
+  pl: |
+    Sprawdzenie czyta ostatni wpis Enable w sekcjach [xdmcp] pliku
+    /etc/gdm/custom.conf, tak jak GDM, i traktuje wartości true oraz 1 jako
+    włączone. Wpisy w innych sekcjach, np. Enable w [debug], nie mają
+    znaczenia. Brak pliku lub sekcji oznacza XDMCP_OFF, a brak GDM wynik
+    GDM_ABSENT.
+
+    Naprawa zmienia tylko wiersze Enable w sekcji [xdmcp] na Enable=false
+    i zapisuje plik w miejscu, więc zostają jego właściciel, tryb i etykieta
+    SELinux. Wycofanie przywraca poprzednią treść pliku. GDM czyta ten plik
+    przy starcie, więc na wersji z obsługą XDMCP zmiana działa po ponownym
+    uruchomieniu GDM albo systemu.
+  en: |
+    The check reads the last Enable entry in the [xdmcp] sections of
+    /etc/gdm/custom.conf, as GDM does, and treats the values true and 1 as
+    on. Entries in other sections, such as Enable in [debug], do not matter.
+    A missing file or section means XDMCP_OFF, and a missing GDM gives the
+    GDM_ABSENT result.
+
+    The remediation changes only the Enable lines in the [xdmcp] section to
+    Enable=false and writes the file in place, so its owner, mode and SELinux
+    label stay. Rollback restores the previous content of the file. GDM reads
+    this file when it starts, so on a version with XDMCP support the change
+    takes effect after GDM or the system restarts.

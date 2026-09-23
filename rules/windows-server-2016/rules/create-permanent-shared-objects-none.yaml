@@ -1,0 +1,229 @@
+id: win2016-create-permanent-shared-objects-none
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Tworzenie trwałych obiektów współdzielonych nieprzyznane nikomu
+    en: Creating permanent shared objects granted to nobody
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt sprawdza, czy uprawnienie do tworzenia trwałych obiektów
+    współdzielonych nie zostało przyznane żadnemu kontu ani żadnej grupie.
+
+    Obiekt trwały to taki, który istnieje dalej, kiedy proces, który go utworzył,
+    już nie działa. Zwykle obiekty znikają razem ze swoim twórcą i to właśnie
+    sprzątanie po zakończonych procesach jest tu normą — uprawnienie opisane tym
+    punktem pozwala tę normę ominąć.
+
+    Skutek jest dwojaki. Obiekt zostawiony na stałe zajmuje zasoby jądra, których
+    nikt nie zwolni aż do ponownego uruchomienia maszyny, więc powtarzane
+    tworzenie takich obiektów prowadzi do wyczerpania puli. Drugi skutek jest
+    subtelniejszy: obiekt o znanej nazwie, utworzony wcześniej niż oczekujący go
+    program, przechwytuje odwołania tego programu.
+
+    Kategoria średnia. Uprawnienie nie daje dostępu do danych ani poświadczeń,
+    a wykorzystanie go wymaga programu, który akurat szuka obiektu o danej
+    nazwie.
+
+    Na serwerze 2016 lista jest domyślnie pusta i żadne zwykłe oprogramowanie
+    tego uprawnienia nie potrzebuje. Składniki systemu tworzące obiekty trwałe
+    działają w jądrze i nie przechodzą przez tę listę.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: obiekt, który
+    przeżyje jego proces, i przez to miejsce w przestrzeni nazw zajęte przed
+    programem, który się o nie zgłosi.
+  en: |
+    The item checks that the right to create permanent shared objects has been
+    granted to no account and no group.
+
+    A permanent object is one that goes on existing after the process that created
+    it has stopped. Objects normally vanish with their creator, and that clearing
+    up after finished processes is the norm here - the right this item describes
+    allows that norm to be sidestepped.
+
+    The effect is twofold. An object left behind for good occupies kernel resources
+    that nobody will release until the machine restarts, so creating such objects
+    repeatedly leads to the pool being exhausted. The second effect is subtler: an
+    object of a known name, created before the program that expects it,
+    intercepts that program's references.
+
+    The category is medium. The right gives no access to data or credentials, and
+    turning it to account needs a program that happens to be looking for an object
+    of a given name.
+
+    On Server 2016 the list is empty by default and no ordinary software needs this
+    right. System components creating permanent objects run in the kernel and do
+    not pass through this list.
+
+    What an attacker gains while the item goes unmet: an object that outlives their
+    process, and through it a place in the namespace taken before the program that
+    comes for it.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Domyślnie lista jest pusta, a oprogramowanie
+    korzystające z tego uprawnienia praktycznie nie istnieje.
+
+    Jeżeli na liście coś jest, warto potraktować to jako ustalenie audytu,
+    a nie jako drobiazg do poprawienia po drodze. Uprawnienie to nie bywa
+    nadawane przez instalatory i nie pojawia się w instrukcjach strojenia.
+
+    Czego to nie psuje: pracy usług systemowych, sterowników, aplikacji
+    branżowych ani niczego, co korzysta z obiektów znikających razem ze swoim
+    procesem.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". The list is empty by default, and software using
+    this right practically does not exist.
+
+    If something is on the list, it is worth treating as a finding of the audit
+    rather than a detail to correct in passing. This right is not granted by
+    installers and does not appear in tuning instructions.
+
+    What this does not break: the system's services, drivers, line-of-business
+    applications, or anything using objects that vanish with their process.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Konto wpisane na tę listę traci możliwość tworzenia obiektów przeżywających własny proces
+      - Obecność jakiegokolwiek wpisu na tej liście jest sama w sobie ustaleniem wymagającym wyjaśnienia
+      - Składniki systemu tworzące obiekty trwałe działają w jądrze i nie są objęte zmianą
+      - Usługi, sterowniki i aplikacje branżowe działają bez zmian
+    en:
+      - An account written onto this list loses the ability to create objects outliving their own process
+      - The presence of any entry on this list is itself a finding that calls for an explanation
+      - System components creating permanent objects run in the kernel and are not touched by the change
+      - Services, drivers and line-of-business applications work unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Uprawnienie ma konto oprogramowania, którego producent potwierdził ten wymóg na piśmie
+    en:
+      - The right is held by an account of software whose vendor confirmed the requirement in writing
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreatePermanentPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreatePermanentPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreatePermanentPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The list is emptied. An object left behind for good holds kernel resources
+    # nobody releases until the machine restarts.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreatePermanentPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreatePermanentPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-permanent-shared-objects
+
+notes:
+  pl: |
+    Punkt jest z natury zapobiegawczy: chroni przed stanem, który dziś nie
+    zachodzi. Tak też należy go czytać w raporcie — niski koszt, odległy zysk.
+
+    Kategoria średnia oddaje zakres uprawnienia. Nie daje ono dostępu do danych,
+    a jego wykorzystanie wymaga zbiegu okoliczności w postaci programu szukającego
+    obiektu o znanej nazwie.
+
+    Obiekty trwałe tworzone przez jądro systemu nie przechodzą przez tę listę
+    i zmiana ich nie dotyczy.
+  en: |
+    The item is preventive by nature: it guards against a state that does not
+    obtain today. That is how it should be read in the report - a low cost and a
+    distant gain.
+
+    The medium category states the right's scope. It gives no access to data, and
+    turning it to account needs the coincidence of a program looking for an object
+    of a known name.
+
+    Permanent objects created by the kernel do not pass through this list and the
+    change does not touch them.

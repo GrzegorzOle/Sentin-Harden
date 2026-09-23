@@ -1,0 +1,234 @@
+id: win2016-create-pagefile-administrators
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Tworzenie pliku stronicowania tylko dla administratorów
+    en: Creating a paging file restricted to administrators
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt ogranicza uprawnienie do tworzenia i zmieniania pliku stronicowania
+    do grupy administratorów lokalnych.
+
+    Plik stronicowania jest miejscem, do którego system odkłada zawartość
+    pamięci, gdy tej zaczyna brakować. Oznacza to, że przechodzi przez niego
+    wszystko, co w pamięci było — również poświadczenia, klucze i dane, których
+    nikt nie zamierzał zapisywać na dysku.
+
+    Uprawnienie pozwala rozstrzygnąć, gdzie ten plik leży i jak jest duży.
+    Przeniesienie go na wolumin bez szyfrowania albo na dysk, do którego dostęp
+    ma ktoś jeszcze, zamienia zawartość pamięci w plik do odczytania. Jest to
+    droga okrężna, ale nie wymaga żadnej luki.
+
+    Drugi skutek jest prostszy: plik stronicowania ustawiony na rozmiar zerowy
+    albo umieszczony na wolumenie bez miejsca potrafi zatrzymać maszynę.
+
+    Kategoria średnia. Punkt nie daje napastnikowi niczego wprost — daje mu
+    przygotowanie gruntu pod odczyt pamięci albo pod zatrzymanie maszyny.
+
+    Na serwerze 2016 warto to ustawić także dlatego, że zrzut awaryjny
+    korzysta z pliku stronicowania. Kto rozstrzyga o tym pliku, ten wpływa
+    pośrednio na to, czy zrzut z awarii w ogóle powstanie.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    przeniesienia zawartości pamięci maszyny w miejsce, które sam wskaże.
+  en: |
+    The item limits the right to create and alter the paging file to the local
+    administrators group.
+
+    The paging file is where the system sets aside the contents of memory when
+    memory runs short. That means everything that was in memory passes through it -
+    including credentials, keys and data nobody meant to write to disk.
+
+    The right allows it to be settled where that file lies and how large it is.
+    Moving it onto an unencrypted volume, or onto a disk somebody else can reach,
+    turns the contents of memory into a file to be read. It is a roundabout road,
+    but it needs no flaw.
+
+    The second effect is simpler: a paging file set to zero size, or placed on a
+    volume with no room, can bring the machine to a halt.
+
+    The category is medium. The item gives an attacker nothing outright - it gives
+    them the preparation of ground for reading memory or for halting the machine.
+
+    On Server 2016 it is worth setting also because the crash dump uses the paging
+    file. Whoever settles that file's fate bears indirectly on whether a dump comes
+    into being at all.
+
+    What an attacker gains while the item goes unmet: the means of moving the
+    contents of the machine's memory to a place of their own choosing.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Domyślnie uprawnienie ma wyłącznie grupa
+    administratorów lokalnych, a oprogramowanie, które go potrzebuje, praktycznie
+    nie istnieje — plik stronicowania ustawia się raz, przy wdrożeniu maszyny.
+
+    Jedyny przypadek wymagający uwagi to narzędzie strojenia wydajności albo
+    skrypt wdrożeniowy ustawiający ten plik automatycznie przy tworzeniu maszyny
+    z szablonu. Działa on jednak zwykle na koncie administratora i zmiana go nie
+    dotknie.
+
+    Czego to nie psuje: pracy pliku stronicowania, zrzutów awaryjnych,
+    wydajności maszyny ani ustawień zrobionych wcześniej.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". By default the right belongs to the local
+    administrators group alone, and software needing it practically does not exist
+    - the paging file is set once, when the machine is deployed.
+
+    The one case needing attention is a performance tuning tool or a deployment
+    script that sets this file automatically when a machine is made from a
+    template. It usually runs under an administrator's account, though, and the
+    change will not touch it.
+
+    What this does not break: the paging file's work, crash dumps, the machine's
+    performance, or settings made earlier.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Skrypt wdrożeniowy ustawiający plik stronicowania na koncie spoza grupy administratorów kończy się błędem
+      - Narzędzie strojenia wydajności zmieniające rozmiar tego pliku traci tę możliwość
+      - Ustawienia pliku stronicowania zrobione wcześniej pozostają bez zmian
+      - Praca pliku stronicowania, zrzuty awaryjne i wydajność maszyny działają bez zmian
+    en:
+      - A deployment script setting the paging file under an account outside the administrators group ends in an error
+      - A performance tuning tool changing this file's size loses that ability
+      - Paging file settings made earlier stay unchanged
+      - The paging file's work, crash dumps and the machine's performance work unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny tworzone są z szablonu przez skrypt ustawiający plik stronicowania na koncie spoza grupy administratorów
+    en:
+      - Machines are made from a template by a script that sets the paging file under an account outside the administrators group
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreatePagefilePrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreatePagefilePrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreatePagefilePrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Everything that was in memory passes through this file, so whoever settles
+    # where it lies settles where the contents of memory end up.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreatePagefilePrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreatePagefilePrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-a-pagefile
+
+notes:
+  pl: |
+    Uprawnienie nie pozwala odczytać pliku stronicowania. Pozwala rozstrzygnąć,
+    gdzie on leży — a to wystarcza, żeby umieścić go w miejscu, do którego
+    dostęp ma ktoś jeszcze.
+
+    Punkt warto czytać razem z ustawieniem czyszczenia pliku stronicowania przy
+    zamknięciu systemu, które opisuje osobna reguła. Tamta zmniejsza to, co
+    w pliku zostaje; ta rozstrzyga, gdzie plik w ogóle jest.
+
+    Zrzut awaryjny korzysta z pliku stronicowania na woluminie systemowym.
+    Przeniesienie pliku w całości poza ten wolumin sprawia, że zrzut przy awarii
+    nie powstaje — bywa to zamierzone, ale rzadko świadome.
+  en: |
+    The right does not permit the paging file to be read. It permits it to be
+    settled where it lies - and that is enough to place it where somebody else can
+    reach it.
+
+    The item is worth reading together with the setting that clears the paging file
+    at shutdown, which a separate rule describes. That one reduces what remains in
+    the file; this one settles where the file is at all.
+
+    The crash dump uses the paging file on the system volume. Moving the file
+    entirely off that volume means no dump comes into being on a failure - that is
+    sometimes intended, but rarely deliberate.

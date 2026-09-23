@@ -1,0 +1,144 @@
+id: fedora44-ldap-client-not-installed
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.2.2
+  section: Services > Configure Client Services
+  title:
+    pl: Klient LDAP nie jest zainstalowany
+    en: Ensure ldap client is not installed
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Polecenia klienta LDAP pozwalają przeglądać i zmieniać katalog, np. konta
+    i grupy w firmowym LDAP. Na stacji, która ich nie potrzebuje, ułatwiają
+    tylko rozpoznanie katalogu komuś, kto przejął konto użytkownika.
+
+    Punkt z poziomu 2 wymaga, żeby pakiet openldap-clients nie był
+    zainstalowany. Fedora Workstation go nie instaluje.
+  en: |
+    LDAP client commands let you browse and change a directory, such as the
+    accounts and groups in a company LDAP. On a workstation that does not
+    need them, they only make it easier to explore the directory for someone
+    who took over a user account.
+
+    The level 2 item requires that the openldap-clients package is not
+    installed. Fedora Workstation does not install it.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli nikt nie używał poleceń ldapsearch,
+    ldapmodify i podobnych. Logowanie kontami z katalogu działa dalej.
+  en: |
+    Nobody will notice if nobody used ldapsearch, ldapmodify and similar
+    commands. Sign-in with directory accounts keeps working.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Polecenia ldapsearch, ldapmodify i inne z pakietu openldap-clients nie są dostępne
+    en:
+      - The ldapsearch, ldapmodify and other commands from openldap-clients are not available
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na komputerze działa serwer FreeIPA, 389 Directory Server lub Dogtag PKI
+    en:
+      - The computer runs a FreeIPA server, 389 Directory Server or Dogtag PKI
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    found=""
+    for p in openldap-clients; do if rpm -q --quiet "$p"; then found="$found $p"; fi; done
+    if [ -n "$found" ]; then echo "INSTALLED:$(echo $found | tr ' ' ',')"; else echo NOT_INSTALLED; fi
+  expected: '^NOT_INSTALLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      export LC_ALL=C
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      { echo format=rpm-names-1; rpm -qa --qf '%{NAME}.%{ARCH}\n' | grep -v '^gpg-pubkey\.' | sort -u; } > "$b"
+      echo "Saved the list of installed packages to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      rm=""
+      for p in openldap-clients; do if rpm -q --quiet "$p"; then rm="$rm $p"; fi; done
+      if [ -z "$rm" ]; then echo "Nothing to remove"; exit 0; fi
+      dnf -y -q remove $rm
+      echo "Removed:$rm"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      export LC_ALL=C
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rpm-names-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      now=$(mktemp)
+      rpm -qa --qf '%{NAME}.%{ARCH}\n' | sort -u > "$now"
+      miss=$(tail -n +2 "$b" | comm -23 - "$now")
+      rm -f "$now"
+      if [ -z "$miss" ]; then echo "All packages from the backup are installed"; exit 0; fi
+      dnf -y -q install $miss
+      echo "Installed again:" $miss
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://packages.fedoraproject.org/pkgs/openldap/openldap-clients/
+  - https://dnf5.readthedocs.io/en/latest/commands/remove.8.html
+
+notes:
+  pl: |
+    Pakiet openldap-clients zawiera tylko polecenia, np. ldapsearch
+    i ldapmodify. Logowanie kontami z LDAP i FreeIPA przez SSSD korzysta
+    z bibliotek z pakietu openldap, więc działa dalej. Od openldap-clients
+    zależą m.in. freeipa-server, 389-ds-base i narzędzia Dogtag PKI, które
+    dnf usunąłby razem z nim.
+
+    Naprawa usuwa pakiety poleceniem dnf remove, które usuwa też pakiety od
+    nich zależne i zależności zainstalowane tylko dla nich. Kopia zapisuje
+    listę wszystkich zainstalowanych pakietów, a wycofanie instaluje ponownie
+    te, których brakuje, więc wymaga dostępu do repozytoriów.
+  en: |
+    The openldap-clients package only contains commands, such as ldapsearch
+    and ldapmodify. Sign-in with LDAP and FreeIPA accounts through SSSD uses
+    the libraries from the openldap package, so it keeps working.
+    freeipa-server, 389-ds-base and the Dogtag PKI tools, among others,
+    depend on openldap-clients, and dnf would remove them together with it.
+
+    The remediation removes the packages with dnf remove, which also removes
+    packages that depend on them and dependencies installed only for them.
+    The backup records the list of all installed packages, and rollback
+    installs again the ones that are missing, so it needs access to the
+    repositories.

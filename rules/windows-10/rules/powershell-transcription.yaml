@@ -1,0 +1,168 @@
+id: win10-powershell-transcription
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows PowerShell
+  title:
+    pl: Zapis przebiegu sesji programu PowerShell włączony
+    en: PowerShell transcription enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zapis przebiegu sesji utrwala to, co widział człowiek przy konsoli: wpisane
+    polecenia wraz z ich wynikiem, w kolejności, w jakiej padły. Powstaje plik
+    tekstowy z całą rozmową, a nie wybrane zdarzenia.
+
+    Wartość jest w wynikach. Rejestrowanie bloków skryptu mówi, jaki kod został
+    wykonany; zapis przebiegu pokazuje, co ten kod odpowiedział — jakie konta
+    wypisał, jakie pliki znalazł, do czego się dostał. Po włamaniu to właśnie ta
+    druga rzecz odpowiada na pytanie, co napastnik zdążył zobaczyć.
+
+    Zmiana niczego nie zatrzymuje. Zabiera natomiast możliwość pracy w konsoli bez
+    śladu, a to jest dokładnie ten tryb, w którym ktoś rozgląda się po maszynie po
+    uzyskaniu do niej dostępu.
+  en: |
+    Transcription preserves what the person at the console saw - the commands
+    typed together with their output, in the order they were given. What comes out
+    is a text file holding the whole exchange, not a selection of events.
+
+    The value is in the output. Script block logging says what code ran;
+    transcription shows what that code answered - which accounts it listed, which
+    files it found, what it reached. After a break-in it is this second thing that
+    answers the question of what the attacker managed to see.
+
+    The change stops nothing. What it takes away is the ability to work at the
+    console without leaving a trace, and that is precisely the mode in which
+    somebody looks around a machine after gaining access to it.
+
+disruption_description:
+  pl: |
+    Pliki przebiegu lądują domyślnie w katalogu dokumentów użytkownika, czyli
+    tam, gdzie ten, kogo zapis dotyczy, może je skasować. Ustawienie ma sens
+    dopiero z katalogiem wskazanym osobno, najlepiej na udziale, do którego
+    zwykły użytkownik ma prawo zapisu, ale nie odczytu ani usuwania.
+
+    Druga sprawa to treść. Zapis obejmuje wyniki poleceń, a wynik potrafi zawierać
+    dane osobowe, zawartość plików i poświadczenia wypisane na ekran. Włączenie
+    zapisu tworzy nowy, wrażliwy zbiór danych i trzeba się z tym liczyć wprost.
+  en: |
+    Transcript files land by default in the user s documents folder, which is to
+    say in the hands of the very person the record concerns. The setting makes
+    sense only with a directory named separately, ideally on a share where an
+    ordinary user may write but neither read nor delete.
+
+    The second matter is the contents. The record covers command output, and
+    output can hold personal data, the contents of files and credentials printed
+    to the screen. Switching it on creates a new and sensitive body of data, and
+    that has to be reckoned with openly.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Bez wskazania katalogu pliki przebiegu trafiają do dokumentów użytkownika, gdzie ten, kogo dotyczą, może je skasować przed przeczytaniem przez kogokolwiek
+      - Miejsce na dysku ubywa stale, a na maszynie z intensywną automatyzacją przyrost idzie w gigabajty miesięcznie
+      - Wyniki poleceń zawierające dane osobowe albo poświadczenia zostaną utrwalone na dysku i podlegają tym samym wymogom ochrony co źródło
+      - Długie sesje z dużym wyjściem, jak przeglądanie dzienników w konsoli, działają wolniej, bo każdy wiersz jest dodatkowo zapisywany
+      - Praca w konsoli nie zmienia się w niczym innym — polecenia, moduły, skrypty i tryb interaktywny działają jak wcześniej
+    en:
+      - With no directory named, transcript files go to the user s documents, where the person concerned can delete them before anybody reads them
+      - Disk space drains steadily, and on a machine with heavy automation the growth runs to gigabytes a month
+      - Command output holding personal data or credentials is written to disk and falls under the same protection requirements as its source
+      - Long sessions with large output, such as reading logs at the console, run slower, because every line is additionally written down
+      - Nothing else about console work changes - commands, modules, scripts and the interactive mode all behave as before
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny bez wskazanego katalogu zapisu chronionego przed użytkownikiem — wtedy zapis udaje dowód, którym nie jest
+      - Stanowiska pracujące na danych objętych szczególną ochroną, dopóki nie zostanie rozstrzygnięte, gdzie i jak długo przebieg wolno przechowywać
+      - Maszyny o bardzo ograniczonym miejscu na dysku, gdzie stały przyrost plików zagraża działaniu systemu
+    en:
+      - Machines with no write directory set that is protected from the user - the record then poses as evidence it is not
+      - Stations working with specially protected data, until it is settled where transcripts may be kept and for how long
+      - Machines with very little disk space, where steady file growth threatens the running of the system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableTranscripting'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'
+    $name = 'EnableTranscripting'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableTranscripting' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_group_policy_settings
+
+notes:
+  pl: |
+    Sama wartość włącza zapis; katalog docelowy i obejmowanie nim wywołań
+    nieinteraktywnych ustawia się osobnymi wartościami w tej samej gałęzi. Ta
+    zasada sprawdza wyłącznie włączenie, bo bez niego pozostałe ustawienia nie
+    mają na co działać.
+  en: |
+    The value alone switches the record on; the target directory and whether
+    non-interactive invocations are covered are set by separate values in the same
+    branch. This rule checks the switch alone, because without it the remaining
+    settings have nothing to act upon.

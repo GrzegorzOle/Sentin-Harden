@@ -1,0 +1,169 @@
+id: win10-msdt-support-provider-communication-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Troubleshooting and Diagnostics > Microsoft Support Diagnostic Tool
+  title:
+    pl: Łączność narzędzia diagnostycznego z dostawcą wsparcia wyłączona
+    en: The diagnostic tool's communication with the support provider disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Narzędzie diagnostyczne systemu potrafi przyjąć zestaw kroków przygotowany
+    przez dostawcę wsparcia i wykonać go na maszynie. Zestaw taki jest pobierany
+    z zewnątrz, a jego treścią są polecenia, które mają zostać uruchomione
+    lokalnie, zwykle z uprawnieniami wystarczającymi do zmiany konfiguracji.
+
+    To jest mechanizm zdalnego wykonania kodu z założenia, tyle że obudowany
+    oknem kreatora. Napastnik, który podszyje się pod dostawcę wsparcia albo
+    przechwyci tę łączność, nie musi już szukać luki — dostaje drogę wykonania
+    przygotowaną przez producenta systemu.
+
+    Wyłączenie zamyka tę drogę. Samo narzędzie diagnostyczne pozostaje, ale
+    przestaje przyjmować z sieci instrukcje, które ma na maszynie wykonać.
+  en: |
+    The system diagnostic tool can take a set of steps prepared by a support
+    provider and carry it out on the machine. Such a set is fetched from outside,
+    and its contents are commands meant to run locally, usually with privileges
+    sufficient to change the configuration.
+
+    That is remote code execution by design, merely dressed in a wizard window. An
+    attacker who poses as the support provider or intercepts this exchange no
+    longer has to look for a flaw; they are handed a route to execution built by
+    the maker of the system.
+
+    Switching it off closes that road. The diagnostic tool itself stays, but it
+    stops taking in instructions from the network for it to carry out here.
+
+disruption_description:
+  pl: |
+    Tryb z dostawcą wsparcia bywa realnie używany tam, gdzie producent sprzętu
+    albo zewnętrzna obsługa informatyczna prowadzi zgłoszenia przez przygotowane
+    zestawy kroków. Wyłączenie odcina im narzędzie, więc warto najpierw ustalić,
+    czy ktoś z niego korzysta.
+
+    W pozostałych przypadkach mechanizm leży nieużywany, a jego zamknięcie zdejmuje
+    poważne ryzyko bez jakiegokolwiek kosztu. To jest ten rodzaj punktu, w którym
+    odpowiedź zależy od jednego pytania zadanego obsłudze, a nie od oceny maszyny.
+  en: |
+    The support provider mode does see real use where a hardware maker or an
+    outside IT service handles tickets through prepared sets of steps. Switching
+    it off takes that tool away from them, so it is worth establishing first
+    whether anybody uses it.
+
+    Elsewhere the mechanism lies unused, and closing it lifts a serious risk at no
+    cost whatever. This is the kind of item where the answer turns on one question
+    put to the support desk rather than on an assessment of the machine.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - remote-management
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Zgłoszenia obsługiwane przez zestawy kroków przygotowane przez dostawcę wsparcia przestaną się uruchamiać na maszynie
+      - Producent sprzętu dostarczający diagnostykę tą drogą straci możliwość wykonania własnych procedur naprawczych zdalnie
+      - Skrypty wsparcia wywołujące narzędzie diagnostyczne z odwołaniem do zewnętrznego zestawu zakończą się odmową
+      - Wbudowane kreatory rozwiązywania problemów, zbieranie informacji o systemie, zgłaszanie błędów i aktualizacje działają jak wcześniej
+    en:
+      - Tickets handled through sets of steps prepared by a support provider stop running on the machine
+      - A hardware maker delivering diagnostics by this route loses the ability to run its own repair procedures from afar
+      - Support scripts that invoke the diagnostic tool with a reference to an external set end in a refusal
+      - Built-in troubleshooting wizards, gathering system information, error reporting and updates all work as before
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny objęte umową serwisową, w której producent prowadzi naprawy właśnie przez zestawy kroków dostarczane tą drogą
+      - Środowiska z zewnętrzną obsługą informatyczną korzystającą z tego mechanizmu, dopóki nie uzgodniono zamiennika
+      - Stanowiska, na których procedura zgłoszenia usterki wymaga uruchomienia zestawu przysłanego przez wsparcie
+    en:
+      - Machines under a service contract where the maker carries out repairs through step sets delivered by this route
+      - Environments with outside IT support using this mechanism, until a replacement has been agreed
+      - Stations where the fault reporting procedure calls for running a set sent in by support
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value name reads as if it switched the mode off, while the policy
+    # writes 1 when the mode is allowed and 0 when it is forbidden. The
+    # expected entry is therefore zero, not one.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableQueryRemoteServer'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy'
+    $name = 'DisableQueryRemoteServer'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableQueryRemoteServer' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/windows-update-troubleshooting
+
+notes:
+  pl: |
+    Nazwa wartości myli: zaczyna się od słowa oznaczającego wyłączenie, ale zasada
+    zapisuje jedynkę wtedy, gdy tryb jest dozwolony, a zero wtedy, gdy jest
+    zabroniony. Oczekiwanym wpisem jest więc zero i sprawdzenie zawiera tę uwagę
+    przy sobie, żeby nikt nie poprawił go w dobrej wierze na odwrót.
+  en: |
+    The value name misleads. It opens with a word meaning disabled, yet the policy
+    writes one when the mode is allowed and zero when it is forbidden. The expected
+    entry is therefore zero, and the check carries that remark beside it so that
+    nobody reverses it in good faith.

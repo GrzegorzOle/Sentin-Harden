@@ -1,0 +1,163 @@
+id: win10-scripted-diagnostics-remote-query-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Troubleshooting and Diagnostics > Scripted Diagnostics
+  title:
+    pl: Pobieranie treści diagnostycznych z sieci wyłączone
+    en: Fetching diagnostic content from the network switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kreatory rozwiązywania problemów nie ograniczają się do treści wbudowanych w
+    system. Potrafią sięgnąć po nowsze pakiety diagnostyczne z sieci, a pakiet taki
+    jest zestawem skryptów, który po pobraniu zostaje wykonany na maszynie.
+
+    To otwiera drogę, o której użytkownik nie wie, że istnieje: kliknięcie
+    w rozwiązywanie problemów pobiera kod z zewnątrz i uruchamia go w kontekście
+    lokalnym. Wystarczy, że ktoś wejdzie pomiędzy maszynę a źródło albo podmieni
+    odpowiedź, żeby przekształcić to w wykonanie własnego kodu.
+
+    Wyłączenie zostawia kreatory z treścią wbudowaną w system. Diagnostyka nadal
+    działa, tyle że nie przynosi kodu z sieci, a wraz z nim cudzych decyzji o tym,
+    co na tej maszynie ma się wykonać.
+  en: |
+    Troubleshooting wizards do not stop at the content built into the system. They
+    can reach for newer diagnostic packages over the network, and such a package
+    is a set of scripts which, once fetched, is run on the machine.
+
+    That opens a road the user does not know exists - clicking on troubleshooting
+    pulls code from outside and runs it in the local context. Somebody stepping
+    between the machine and the source, or swapping the answer, is enough to turn
+    this into execution of their own code.
+
+    Switching it off leaves the wizards with the content built into the system.
+    Diagnostics still works; it simply stops carrying code in from the network,
+    and with it somebody else s decision about what is to run on this machine.
+
+disruption_description:
+  pl: |
+    Treść wbudowana pokrywa zdecydowaną większość tego, po co ktokolwiek sięga do
+    kreatorów: sieć, dźwięk, drukowanie, zasilanie. Różnica dotyczy pakietów
+    nowszych niż system i w codziennej pracy jest niewidoczna.
+
+    Zmiana nie dotyka ani zgłaszania błędów, ani aktualizacji, ani żadnego innego
+    mechanizmu sięgającego do sieci. Ogranicza się do jednego: skąd kreator bierze
+    skrypt, który zamierza uruchomić.
+  en: |
+    The built-in content covers the great majority of what anybody reaches a
+    wizard for - network, sound, printing, power. The difference concerns packages
+    newer than the system and in daily work it is invisible.
+
+    The change touches neither error reporting, nor updates, nor any other
+    mechanism that reaches out to the network. It is confined to one thing - where
+    the wizard takes the script it intends to run from.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Kreatory rozwiązywania problemów nie pobiorą nowszych pakietów diagnostycznych i zostaną przy zestawie dostarczonym z systemem
+      - Dział wsparcia przygotowujący własne pakiety diagnostyczne do pobrania straci tę drogę dostarczania ich na maszyny
+      - Nowo rozpoznane usterki, dla których rozwiązanie wydano po premierze systemu, nie pojawią się w kreatorze samoczynnie
+      - Samo rozwiązywanie problemów, zgłaszanie błędów, aktualizacje systemu i diagnostyka sterowników pozostają dostępne bez zmian
+    en:
+      - Troubleshooting wizards will not fetch newer diagnostic packages and stay with the set shipped with the system
+      - A support desk that prepares its own diagnostic packages for download loses that route onto the machines
+      - Newly recognised faults whose fix was published after the system shipped will not appear in the wizard by themselves
+      - Troubleshooting itself, error reporting, system updates and driver diagnostics all remain available unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których wsparcie rozsyła własne pakiety diagnostyczne właśnie tą drogą i nie ma dla niej zamiennika
+      - Stanowiska serwisowe, gdzie najnowsze pakiety diagnostyczne są narzędziem pracy, a nie dodatkiem
+      - Maszyny objęte procedurą wymagającą uruchomienia wskazanego pakietu diagnostycznego przed zgłoszeniem usterki
+    en:
+      - Environments where support distributes its own diagnostic packages by this very route and has no replacement for it
+      - Service stations, where the newest diagnostic packages are a working tool rather than an extra
+      - Machines under a procedure that calls for running a named diagnostic package before a fault is reported
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableQueryRemoteServer'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy'
+    $name = 'EnableQueryRemoteServer'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableQueryRemoteServer' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-sdiageng
+
+notes:
+  pl: |
+    Wartość leży w tej samej gałęzi co ustawienie łączności narzędzia
+    diagnostycznego z dostawcą wsparcia i obie opisują ten sam mechanizm od dwóch
+    stron. Nazwy wartości są tu mylące i warto czytać je razem z oczekiwanym
+    wpisem, a nie z samej nazwy.
+  en: |
+    The value sits in the same branch as the setting for the diagnostic tool s
+    link to the support provider, and the two describe one mechanism from two
+    sides. The value names here mislead, and are worth reading together with the
+    expected entry rather than from the name alone.

@@ -1,0 +1,171 @@
+id: win10-powershell-script-block-logging
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows PowerShell
+  title:
+    pl: Rejestrowanie bloków skryptu PowerShell włączone
+    en: PowerShell script block logging enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Napastnik korzystający z PowerShella rzadko zostawia plik skryptu na dysku.
+    Kod przychodzi z sieci wprost do pamięci, bywa zakodowany albo sklejany ze
+    znaków w trakcie działania, a po zakończeniu nie ma czego badać. Bez tego
+    ustawienia jedyne, co zostaje w dziennikach, to informacja, że PowerShell się
+    uruchomił.
+
+    Rejestrowanie bloków skryptu zapisuje kod w postaci, w jakiej silnik go
+    naprawdę wykonał — już rozkodowany i złożony. To jest różnica między wiedzą,
+    że coś się zdarzyło, a wiedzą, co dokładnie zostało zrobione.
+
+    Zmiana nie blokuje niczego i sama z siebie nie powstrzyma ataku. Odbiera za to
+    atakującemu ciszę, na której opiera się cała ta technika — a bez zapisu
+    odtworzenie przebiegu włamania po fakcie bywa zwyczajnie niemożliwe.
+  en: |
+    An attacker working through PowerShell rarely leaves a script file on disk.
+    The code arrives from the network straight into memory, often encoded or
+    assembled from characters as it runs, and when it finishes there is nothing
+    left to examine. Without this setting all the log holds is the fact that
+    PowerShell started.
+
+    Script block logging writes down the code in the shape the engine actually
+    ran - already decoded and assembled. That is the difference between knowing
+    that something happened and knowing what exactly was done.
+
+    The change blocks nothing and will not stop an attack by itself. What it takes
+    away is the silence the whole technique rests on, and without a record,
+    reconstructing a break-in after the fact is often simply impossible.
+
+disruption_description:
+  pl: |
+    Koszt leży w objętości dziennika, nie w działaniu maszyny. Środowisko, w którym
+    skrypty pracują nieustannie — kopie zapasowe, inwentaryzacja, narzędzia
+    zarządzania — potrafi zapełnić dziennik zdarzeń w kilka godzin i wypchnąć z
+    niego starsze wpisy, w tym te naprawdę interesujące.
+
+    Druga rzecz wymaga uwagi przed wdrożeniem: skrypty przekazujące hasła i klucze
+    w wierszu wywołania zapiszą je w dzienniku otwartym tekstem. Dziennik staje się
+    wtedy sam w sobie zbiorem poświadczeń i trzeba go chronić odpowiednio do tego,
+    co w nim leży.
+  en: |
+    The cost lies in log volume, not in how the machine runs. An environment where
+    scripts work constantly - backups, inventory, management tooling - can fill the
+    event log within hours and push older entries out of it, including the ones
+    that actually mattered.
+
+    The second point needs attention before rollout. Scripts that pass passwords
+    and keys on the invocation line will write them into the log in plain text.
+    The log then becomes a store of credentials in its own right and has to be
+    protected accordingly.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Dziennik zdarzeń zapełnia się znacznie szybciej, a na maszynie z automatyzacją starsze wpisy zaczynają wypadać, zanim ktokolwiek je przeczyta
+      - Hasła, klucze i tokeny przekazywane skryptom w wywołaniu trafiają do dziennika otwartym tekstem i wymagają ochrony razem z nim
+      - Systemy zbierające dzienniki centralnie dostaną wyraźnie większy strumień danych, co widać w kosztach przechowywania i w limitach przesyłu
+      - Wydajność bywa odczuwalna przy skryptach generujących kod w pętli, bo każdy powstały blok jest zapisywany osobno
+      - Samo działanie skryptów nie zmienia się — nic nie jest blokowane, wykonanie przebiega tak jak wcześniej i żadne polecenie nie przestaje działać
+    en:
+      - The event log fills far faster, and on a machine with automation older entries start falling out before anybody reads them
+      - Passwords, keys and tokens handed to scripts on the invocation line land in the log in plain text and need protecting along with it
+      - Systems collecting logs centrally receive a markedly larger stream, which shows up in storage costs and in transfer limits
+      - Performance can be felt with scripts that generate code in a loop, because every block produced is written down separately
+      - The behaviour of scripts themselves does not change - nothing is blocked, execution runs as before and no command stops working
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny z dziennikiem zdarzeń o domyślnym, małym rozmiarze, dopóki nie zostanie on powiększony — inaczej zapis zjada własną wartość dowodową
+      - Stanowiska, na których skrypty rutynowo dostają poświadczenia w wierszu wywołania, dopóki ten sposób nie zostanie zmieniony
+      - Środowiska rozliczane z ilości przesyłanych dzienników, gdzie skok objętości ma wymierną cenę i wymaga wcześniejszej zgody
+    en:
+      - Machines with an event log left at its default small size, until that size is raised - otherwise the record eats its own evidential value
+      - Stations where scripts routinely receive credentials on the invocation line, until that practice is changed
+      - Environments billed by the volume of logs shipped, where a jump in volume has a measurable price and needs agreement first
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableScriptBlockLogging'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+    $name = 'EnableScriptBlockLogging'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableScriptBlockLogging' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_logging_windows
+
+notes:
+  pl: |
+    Zapis trafia do dziennika operacyjnego programu PowerShell, a nie do dziennika
+    zabezpieczeń, więc zbieranie go centralnie wymaga osobnego wskazania źródła.
+    Wdrożenie razem z zapisem przebiegu sesji daje pełniejszy obraz: tamto
+    utrwala to, co zobaczył człowiek, to zaś — co wykonał silnik.
+  en: |
+    The record goes to the PowerShell operational log rather than the security
+    log, so collecting it centrally calls for naming that source separately.
+    Deployed together with session transcription it gives a fuller picture - the
+    transcript holds what the person saw, this holds what the engine ran.

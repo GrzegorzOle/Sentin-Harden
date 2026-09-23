@@ -1,0 +1,170 @@
+id: win10-process-creation-command-line
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Audit Process Creation
+  title:
+    pl: Wiersz polecenia zapisywany w zdarzeniach utworzenia procesu
+    en: Command line recorded in process creation events
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zdarzenie utworzenia procesu mówi domyślnie tylko tyle, że uruchomiono dany
+    program. Przy narzędziach systemowych taka informacja jest bezwartościowa:
+    interpreter poleceń, PowerShell czy narzędzie zarządzania uruchamiają się na
+    maszynie dziesiątki razy dziennie i nic z tego nie wynika.
+
+    Cała treść leży w parametrach. To one odróżniają rutynowe wywołanie od kopiowania
+    danych na zewnątrz, kasowania kopii zapasowych albo pobierania kolejnego
+    narzędzia z sieci. Ta zasada każe zapisywać wiersz polecenia razem ze
+    zdarzeniem.
+
+    Po zmianie dziennik przestaje być listą nazw programów, a staje się zapisem
+    tego, co faktycznie polecono im zrobić — i dopiero wtedy nadaje się do
+    wykrywania czegokolwiek.
+  en: |
+    A process creation event says by default only that a given program was
+    started. For system tools that fact is worthless - the command interpreter,
+    PowerShell or a management utility start dozens of times a day on a machine
+    and nothing follows from it.
+
+    All the substance sits in the parameters. They are what separates a routine
+    invocation from copying data outward, deleting backups or pulling the next
+    tool down from the network. This rule has the command line written into the
+    event.
+
+    After the change the log stops being a list of program names and becomes a
+    record of what those programs were actually told to do - and only then is it
+    fit for detecting anything at all.
+
+disruption_description:
+  pl: |
+    Zapis wiersza polecenia niesie jedno realne ryzyko i trzeba je nazwać wprost:
+    wszystko, co ktoś przekaże programowi w parametrze, trafi do dziennika
+    zabezpieczeń. Hasła podawane skryptom przy uruchomieniu, klucze usług, ciągi
+    połączenia do baz — wszystko to zostanie zapisane otwartym tekstem.
+
+    Dziennik zabezpieczeń jest czytelny dla części kont bez uprawnień pełnego
+    administratora, więc włączenie tej zasady bez przejrzenia sposobu przekazywania
+    poświadczeń potrafi utworzyć nowe źródło wycieku zamiast zamknąć stare.
+  en: |
+    Recording the command line carries one real risk and it deserves naming
+    plainly - whatever anybody passes a program as a parameter goes into the
+    security log. Passwords handed to scripts at start-up, service keys, database
+    connection strings; all of it is written down in plain text.
+
+    The security log is readable to some accounts short of full administrator, so
+    switching this on without first reviewing how credentials are passed can
+    create a fresh source of leakage instead of closing an old one.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - scripting-and-automation
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Poświadczenia przekazywane programom w parametrach trafią do dziennika zabezpieczeń otwartym tekstem i będą czytelne dla każdego, kto ten dziennik czyta
+      - Dziennik zabezpieczeń rośnie zauważalnie, a przy domyślnym rozmiarze starsze zdarzenia zaczną wypadać wcześniej niż dotąd
+      - Systemy zbierające dzienniki centralnie dostaną dłuższe zdarzenia, co przy rozliczeniu za ilość danych ma wymierną cenę
+      - Narzędzia analizujące zdarzenia utworzenia procesu mogą wymagać przestawienia, bo pole z wierszem polecenia pojawia się tam, gdzie wcześniej go nie było
+      - Uruchamianie programów, działanie skryptów, zadania harmonogramu i same uprawnienia pozostają bez zmian — zapisywany jest jedynie opis zdarzenia
+    en:
+      - Credentials passed to programs as parameters land in the security log in plain text and are readable to anybody who reads that log
+      - The security log grows noticeably, and at its default size older events start falling out sooner than they used to
+      - Systems collecting logs centrally receive longer events, which carries a measurable price where data volume is billed
+      - Tools that parse process creation events may need adjusting, because a command line field appears where there was none before
+      - Starting programs, running scripts, scheduled tasks and permissions themselves are unchanged - only the description of the event grows
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny, na których skrypty i usługi dostają hasła w parametrach uruchomienia, dopóki ten sposób nie zostanie zmieniony
+      - Środowiska, w których dziennik zabezpieczeń czytają role szersze niż administracja, bo zapis rozszerza krąg osób widzących te dane
+      - Stanowiska z dziennikiem pozostawionym w domyślnym rozmiarze, gdzie dłuższe zdarzenia skracają okres, z którego cokolwiek da się odtworzyć
+    en:
+      - Machines where scripts and services receive passwords as start-up parameters, until that practice is changed
+      - Environments where the security log is read by roles wider than administration, since the record widens the circle of people seeing this data
+      - Stations with the log left at its default size, where longer events shorten the span from which anything can be reconstructed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ProcessCreationIncludeCmdLine_Enabled'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+    $name = 'ProcessCreationIncludeCmdLine_Enabled'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ProcessCreationIncludeCmdLine_Enabled' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/event-4688
+
+notes:
+  pl: |
+    Wartość rozszerza treść zdarzenia, ale nie włącza samego inspekcjonowania
+    utworzenia procesu — to osobne ustawienie zasad inspekcji. Bez niego zdarzenia
+    nie powstają w ogóle i wiersz polecenia nie ma się gdzie pojawić, więc obie
+    rzeczy wdraża się razem.
+  en: |
+    The value widens the contents of the event but does not switch on process
+    creation auditing itself; that is a separate audit policy setting. Without it
+    no events arise at all and the command line has nowhere to appear, so the two
+    are deployed together.

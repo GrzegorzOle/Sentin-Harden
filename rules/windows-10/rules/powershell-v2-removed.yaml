@@ -1,0 +1,151 @@
+id: win10-powershell-v2-removed
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Windows Features
+  title:
+    pl: Silnik PowerShell w wersji 2 usunięty
+    en: PowerShell version 2 engine removed
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    W systemie obok bieżącego PowerShella siedzi stary silnik w wersji drugiej.
+    Zachowano go dla zgodności z dawnymi skryptami, ale nie zna on żadnego z
+    późniejszych zabezpieczeń: nie rejestruje bloków skryptu, nie zna trybów
+    ograniczonego języka, nie zgłasza kodu narzędziom ochronnym.
+
+    Skutek jest taki, że wystarczy jeden przełącznik w wywołaniu, żeby kod
+    przeszedł obok całego nadzoru zbudowanego wokół nowszej wersji. To znana i
+    powszechnie używana technika, właśnie dlatego, że nie wymaga ani luki, ani
+    uprawnień — wystarczy poprosić system o starszy silnik.
+
+    Usunięcie tego składnika zamyka obejście. Reguły rejestrowania i ograniczania
+    przestają mieć dziurę, przez którą można je ominąć jednym parametrem.
+  en: |
+    Alongside the current PowerShell the system keeps an old second-version
+    engine. It was left in place for the sake of old scripts, but it knows none of
+    the later protections - it does not log script blocks, it knows no constrained
+    language mode and it hands no code to protective software.
+
+    The upshot is that a single switch on the invocation carries code past the
+    whole watch built around the newer version. It is a well-known and widely used
+    technique precisely because it needs neither a flaw nor privileges - it is
+    enough to ask the system for the older engine.
+
+    Removing the component closes that bypass. Logging and restriction rules stop
+    having a hole through which one parameter walks around them.
+
+disruption_description:
+  pl: |
+    Rzecz rozstrzyga się na starych skryptach. Kod pisany pod wersję drugą działa
+    w nowszej w ogromnej większości przypadków, ale wyjątki istnieją i bywają
+    dotkliwe: narzędzia instalacyjne producentów, skrypty logowania z lat dawnych,
+    starsze moduły administracyjne wołane z jawnym wskazaniem wersji.
+
+    Usunięcie składnika wymaga ponownego uruchomienia maszyny, a przywrócenie go
+    również. To nie jest zmiana, którą cofa się w minutę, i dlatego warto najpierw
+    sprawdzić, czy cokolwiek na maszynie prosi o starszy silnik z nazwy.
+  en: |
+    Everything here turns on old scripts. Code written for the second version runs
+    under the newer one in the vast majority of cases, but the exceptions exist
+    and they bite - vendor installation tooling, logon scripts from years back,
+    older administrative modules invoked with the version named outright.
+
+    Removing the component calls for a restart, and so does putting it back. This
+    is not a change undone in a minute, which is why it is worth checking first
+    whether anything on the machine asks for the older engine by name.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - updates-and-servicing
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Skrypty i instalatory wywołujące PowerShella z jawnym wskazaniem wersji drugiej zakończą się błędem, że żądany silnik jest niedostępny
+      - Starsze moduły administracyjne, które nie działają pod nowszym silnikiem, przestaną być użyteczne i trzeba je wymienić albo przepisać
+      - Zmiana wchodzi w życie dopiero po ponownym uruchomieniu maszyny, więc pomiędzy wykonaniem a skutkiem jest okno, w którym stan wygląda inaczej niż jest
+      - Cofnięcie zmiany również wymaga restartu, więc pomyłka kosztuje drugie okno serwisowe
+      - Bieżący PowerShell, jego moduły, skrypty logowania pisane pod nowszą wersję i zadania harmonogramu działają bez zmian
+    en:
+      - Scripts and installers that invoke PowerShell with the second version named outright fail with a message that the requested engine is unavailable
+      - Older administrative modules that do not run under the newer engine stop being usable and have to be replaced or rewritten
+      - The change takes effect only after a restart, so between the command and its effect there is a window in which the state looks other than it is
+      - Undoing the change calls for a restart as well, so a mistake costs a second maintenance window
+      - Current PowerShell, its modules, logon scripts written for the newer version and scheduled tasks all work unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny z oprogramowaniem producenta, które instaluje się albo aktualizuje przez skrypty żądające starszego silnika z nazwy
+      - Stanowiska produkcyjne bez okna serwisowego, bo zarówno usunięcie, jak i przywrócenie składnika wymaga ponownego uruchomienia
+      - Środowiska, w których nie przejrzano jeszcze skryptów logowania i zadań harmonogramu pod kątem jawnego wskazania wersji
+    en:
+      - Machines with vendor software that installs or updates through scripts asking for the older engine by name
+      - Production stations with no maintenance window, since both removing and restoring the component call for a restart
+      - Environments where logon scripts and scheduled tasks have not yet been reviewed for an explicit version request
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $feature = Get-WindowsOptionalFeature -Online `
+        -FeatureName 'MicrosoftWindowsPowerShellV2Root' -ErrorAction Stop
+      if ($null -eq $feature) { 'CHECK_ERROR' } else { [string]$feature.State }
+    } catch {
+      # Reading optional features needs elevation. Without it the call fails,
+      # and a failed read must never be reported as the feature being absent.
+      'CHECK_ERROR'
+    }
+  expected: 'Disabled'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Get-WindowsOptionalFeature -Online |
+      Where-Object { $_.FeatureName -like 'MicrosoftWindowsPowerShellV2*' } |
+      Select-Object -Property FeatureName, State |
+      ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Disable-WindowsOptionalFeature -Online `
+      -FeatureName 'MicrosoftWindowsPowerShellV2Root' -NoRestart
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($feature in @($b)) {
+      if ($feature.State -eq 'Enabled') {
+        Enable-WindowsOptionalFeature -Online -FeatureName $feature.FeatureName -NoRestart | Out-Null
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/powershell/scripting/windows-powershell/install/windows-powershell-system-requirements
+
+notes:
+  pl: |
+    Odczyt składników opcjonalnych wymaga podniesionych uprawnień. Bez nich
+    wywołanie kończy się błędem, a sprawdzenie zgłasza CHECK_ERROR zamiast
+    udawać, że składnika nie ma — brak możliwości sprawdzenia to osobny stan,
+    nigdy niespełnienie.
+  en: |
+    Reading optional features calls for elevation. Without it the call fails and
+    the check reports CHECK_ERROR rather than pretending the component is absent -
+    being unable to check is a state of its own, never an unmet rule.

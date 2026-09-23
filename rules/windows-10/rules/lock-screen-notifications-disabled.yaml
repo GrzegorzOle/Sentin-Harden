@@ -1,0 +1,163 @@
+id: win10-lock-screen-notifications-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Powiadomienia aplikacji na ekranie blokady wyłączone
+    en: Application notifications on the lock screen disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ekran blokady ma chronić zawartość sesji, ale powiadomienia aplikacji
+    wystawiają jej fragmenty na zewnątrz. Temat wiadomości, nazwisko nadawcy,
+    początek treści, kod jednorazowy z komunikatora — wszystko to bywa czytelne
+    bez podania hasła.
+
+    Kod jednorazowy jest przypadkiem najpoważniejszym, bo drugi składnik
+    uwierzytelnienia przestaje być drugim składnikiem, gdy da się go odczytać z
+    zablokowanego ekranu. Reszta to wyciek powolny: kto przechodzi obok
+    regularnie, składa z okruchów obraz tego, czym zajmuje się właściciel
+    maszyny.
+
+    Wyłączenie powiadomień zostawia ekran blokady pustym. Wiadomości czekają
+    w aplikacjach do chwili zalogowania.
+  en: |
+    The lock screen is meant to protect the contents of a session, yet application
+    notifications put pieces of it outside. A message subject, a sender s name,
+    the opening of the text, a one-time code from a messenger - all of it tends to
+    be readable without a password.
+
+    The one-time code is the gravest case, because a second authentication factor
+    stops being a second factor once it can be read off a locked screen. The rest
+    is a slow leak - whoever walks past regularly assembles from the crumbs a
+    picture of what the owner of the machine works on.
+
+    Switching notifications off leaves the lock screen empty. Messages wait inside
+    the applications until somebody signs in.
+
+disruption_description:
+  pl: |
+    Zmiana jest odczuwalna, ale nie odbiera żadnej funkcji: powiadomienia nadal
+    powstają i czekają, po prostu nie wyświetlają się przed zalogowaniem.
+
+    Kłopot pojawia się tam, gdzie ekran blokady pełni rolę tablicy informacyjnej:
+    dyżurny patrzący na maszynę z odległości, monitoring przypomnień, sprzęt
+    stojący w pokoju zespołu. Takie użycie jest realne i wymaga sprawdzenia,
+    zanim ekran zgaśnie na dobre.
+  en: |
+    The change is noticeable but takes no function away - notifications are still
+    raised and still wait; they simply do not appear before sign-in.
+
+    The trouble arises where the lock screen serves as a notice board - somebody
+    on duty watching the machine from a distance, reminders kept in view, hardware
+    standing in a team room. Such use is real and has to be checked before the
+    screen goes dark for good.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl:
+      - Powiadomienia o poczcie, spotkaniach i wiadomościach przestaną być widoczne przed zalogowaniem
+      - Stanowiska używane jako tablica informacyjna dla zespołu stracą swoją funkcję
+      - Przypomnienia o spotkaniach dotrą do użytkownika dopiero po zalogowaniu, co przy krótkim czasie do blokady ekranu bywa za późno
+      - Kody jednorazowe z komunikatorów trzeba będzie odczytywać po zalogowaniu albo z telefonu
+      - Same powiadomienia, aplikacje, dźwięki po zalogowaniu i dostęp do zasobów działają bez zmian
+    en:
+      - Notifications about mail, meetings and messages stop being visible before sign-in
+      - Stations used as a notice board for a team lose that function
+      - Meeting reminders reach the user only after signing in, which with a short screen lock timeout is sometimes too late
+      - One-time codes from messengers have to be read after signing in or off a phone
+      - The notifications themselves, the applications, sounds after sign-in and access to resources all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny pełniące rolę tablicy informacyjnej albo pulpitu dyżurnego, gdzie widok powiadomień jest treścią pracy
+      - Stanowiska, na których przypomnienia o spotkaniach są jedynym mechanizmem pilnowania kalendarza
+    en:
+      - Machines serving as a notice board or a duty console, where seeing notifications is the substance of the work
+      - Stations where meeting reminders are the only mechanism keeping the calendar in view
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableLockScreenAppNotifications'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'DisableLockScreenAppNotifications'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableLockScreenAppNotifications' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-abovelock
+
+notes:
+  pl: |
+    Ustawienie dotyczy powiadomień aplikacji, a nie komunikatów samego systemu.
+    Ocenia się je razem z pozostałymi regułami ekranu blokady — pokazem slajdów
+    i dostępem do aparatu — bo wszystkie trzy odpowiadają na to samo pytanie: co
+    maszyna wystawia na zewnątrz, zanim ktokolwiek poda hasło.
+  en: |
+    The setting covers application notifications rather than messages from the
+    system itself. It is judged together with the other lock screen rules - the
+    slideshow and camera access - because all three answer the same question: what
+    does the machine put outside before anybody enters a password.

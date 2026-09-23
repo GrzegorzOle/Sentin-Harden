@@ -1,0 +1,163 @@
+id: win10-account-details-hidden-on-sign-in
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Dane konta ukryte na ekranie logowania
+    en: Account details hidden on the sign-in screen
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ekran logowania potrafi pokazać adres pocztowy konta pod nazwą użytkownika.
+    Jest to wygodne dla właściciela maszyny i dokładnie tak samo wygodne dla
+    każdego, kto przy niej przechodzi.
+
+    Adres pocztowy jest zwykle nazwą konta w całej organizacji — tą samą, której
+    używa poczta, logowanie do usług w chmurze i dostęp zdalny. Odczytany z ekranu
+    zablokowanego laptopa zdejmuje z napastnika pierwszą połowę pracy: nie musi
+    już zgadywać, kim jest ofiara ani jak nazywa się jej konto.
+
+    Ukrycie danych nie utrudnia logowania właścicielowi, bo ten swój adres zna.
+    Odbiera natomiast informację temu, kto patrzy na ekran z boku.
+  en: |
+    The sign-in screen can show the mail address of the account under the user
+    name. It is convenient for the owner of the machine and exactly as convenient
+    for anybody walking past it.
+
+    The mail address is usually the account name across the whole organisation -
+    the same one used by mail, by cloud service sign-in and by remote access. Read
+    off the screen of a locked laptop it takes the first half of the work off an
+    attacker - they no longer have to guess who the victim is or what their
+    account is called.
+
+    Hiding the details makes signing in no harder for the owner, who knows their
+    own address. It does take the information away from whoever is looking at the
+    screen from the side.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna od razu i dotyczy wyłącznie wyglądu ekranu logowania.
+    Żaden mechanizm uwierzytelniania nie zmienia zachowania, hasła i karty
+    inteligentne działają jak wcześniej.
+
+    Uciążliwość pojawia się tam, gdzie z jednej maszyny korzysta wiele osób i
+    widok konta służył do rozpoznania, przy czyim komputerze się siedzi. Tam
+    warto uprzedzić, a nie odpuszczać — sama informacja nie jest warta tego, żeby
+    zostawić ją na ekranie.
+  en: |
+    The change is visible at once and touches nothing but the look of the sign-in
+    screen. No authentication mechanism changes behaviour; passwords and smart
+    cards work as before.
+
+    It becomes a nuisance where one machine serves many people and the account
+    display was how somebody told whose computer they were sitting at. There it is
+    worth warning people rather than letting the item go - the information itself
+    is not worth leaving on the screen.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Adres pocztowy konta zniknie z ekranu logowania, więc przy maszynie wspólnej trudniej rozpoznać, kto jest zalogowany
+      - Pomoc techniczna prowadzona przez telefon straci możliwość poproszenia o odczytanie adresu z ekranu
+      - Część użytkowników uzna zniknięcie danych za objaw usterki profilu i zgłosi to
+      - Logowanie hasłem, kartą inteligentną i mechanizmami biometrycznymi, dostęp do zasobów oraz praca po zalogowaniu pozostają bez zmian
+    en:
+      - The account mail address disappears from the sign-in screen, so on a shared machine it is harder to tell who is signed in
+      - Telephone support loses the option of asking somebody to read the address off the screen
+      - Some users take the vanished details for a sign of a broken profile and report it
+      - Signing in by password, smart card and biometric means, access to resources and work after sign-in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska wspólne, na których widok konta jest jedynym sposobem rozpoznania zalogowanej osoby
+      - Maszyny obsługiwane przez pomoc techniczną, która prowadzi rozmowę na podstawie tego, co widać na ekranie
+    en:
+      - Shared stations, where the account display is the only way of telling who is signed in
+      - Machines served by a support desk that runs the conversation from what is on the screen
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'BlockUserFromShowingAccountDetailsOnSignin'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'BlockUserFromShowingAccountDetailsOnSignin'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'BlockUserFromShowingAccountDetailsOnSignin' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-windowslogon
+
+notes:
+  pl: |
+    Ustawienie dotyczy samego ekranu logowania, a nie tego, co widać po
+    zalogowaniu. Razem z ukryciem nazwy ostatnio zalogowanego użytkownika i
+    wykazu kont zalogowanych tworzy komplet: ekran przestaje mówić cokolwiek o
+    tym, kto z maszyny korzysta.
+  en: |
+    The setting covers the sign-in screen itself rather than what is visible after
+    signing in. Together with hiding the last signed-in user name and the list of
+    signed-in accounts it forms a set - the screen stops saying anything about who
+    uses the machine.

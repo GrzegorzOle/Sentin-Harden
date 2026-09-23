@@ -1,0 +1,159 @@
+id: win10-connected-users-not-enumerated
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Lista zalogowanych użytkowników ukryta na ekranie logowania
+    en: The list of signed-in users hidden on the sign-in screen
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna, na której kilka osób ma otwarte sesje, wypisuje je wszystkie na
+    ekranie logowania. Powstaje z tego gotowy spis kont istniejących na tym
+    sprzęcie, czytelny bez żadnego uwierzytelnienia.
+
+    Dla napastnika stojącego przy maszynie jest to punkt wyjścia: wie, które
+    nazwy kont są prawdziwe, więc nie traci prób na zgadywanie i może od razu
+    wybrać konto o najsłabszym haśle albo najwyższych uprawnieniach. Dla kogoś,
+    kto zbiera informacje o organizacji, jest to darmowa próbka schematu nazw.
+
+    Ukrycie wykazu nie utrudnia zalogowania się nikomu, kto wie, jak nazywa się
+    jego własne konto.
+  en: |
+    A machine where several people have sessions open lists them all on the
+    sign-in screen. What comes out of it is a ready inventory of the accounts
+    present on that hardware, readable without any authentication at all.
+
+    To an attacker standing at the machine it is a starting point - they know
+    which account names are real, so they waste no attempts on guessing and can go
+    straight for the account with the weakest password or the highest privileges.
+    To somebody gathering information about the organisation it is a free sample
+    of the naming scheme.
+
+    Hiding the list makes signing in no harder for anybody who knows what their
+    own account is called.
+
+disruption_description:
+  pl: |
+    Skutek ogranicza się do wyglądu ekranu logowania. Sesje otwarte przez inne
+    osoby żyją dalej, przełączanie użytkownika działa, nikt nie zostaje
+    wylogowany.
+
+    Widoczna zmiana dotyczy maszyn wspólnych: dotąd wystarczyło kliknąć własne
+    konto na liście, teraz trzeba wpisać jego nazwę. Przy kontach domenowych
+    oznacza to wpisanie pełnej nazwy z domeną, co bywa źródłem pierwszych
+    nieudanych prób.
+  en: |
+    The effect is limited to the look of the sign-in screen. Sessions opened by
+    other people carry on, switching users works, nobody gets signed out.
+
+    The visible change concerns shared machines - until now it was enough to click
+    your own account in the list, now its name has to be typed. With domain
+    accounts that means typing the full name with the domain, which tends to
+    produce the first few failed attempts.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Wybranie własnej sesji jednym kliknięciem przestanie być możliwe, bo wykaz kont zniknie z ekranu
+      - Na maszynach wspólnych trzeba będzie wpisywać pełną nazwę konta, w domenie razem z nazwą domeny
+      - Pierwsze dni po zmianie przynoszą więcej nieudanych prób logowania, co przy ostrym progu blokady konta kończy się jego zablokowaniem
+      - Otwarte sesje innych osób, przełączanie użytkownika, praca po zalogowaniu i dostęp do zasobów działają bez zmian
+    en:
+      - Picking your own session with one click stops being possible, since the account list disappears from the screen
+      - On shared machines the full account name has to be typed, in a domain together with the domain name
+      - The first days after the change bring more failed sign-in attempts, which with a tight lockout threshold ends in locked accounts
+      - Other people s open sessions, switching users, work after signing in and access to resources are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska wspólne o dużej rotacji, gdzie wybór sesji z listy jest sposobem pracy, dopóki ludzie nie zostaną uprzedzeni
+      - Maszyny z bardzo niskim progiem blokady konta, gdzie fala pomyłek po zmianie zablokuje konta
+    en:
+      - Shared stations with heavy turnover, where picking a session from the list is how the work is done, until people have been warned
+      - Machines with a very low account lockout threshold, where the wave of mistakes after the change locks accounts out
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DontEnumerateConnectedUsers'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'DontEnumerateConnectedUsers'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DontEnumerateConnectedUsers' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-windowslogon
+
+notes:
+  pl: |
+    Ustawienie dotyczy kont z otwartą sesją, a nie wszystkich kont istniejących na
+    maszynie. Stanowi parę z ukryciem nazwy ostatnio zalogowanego użytkownika —
+    tamto zamyka ślad po jednej osobie, to po wszystkich naraz.
+  en: |
+    The setting covers accounts with an open session rather than every account
+    present on the machine. It pairs with hiding the last signed-in user name -
+    that closes the trace of one person, this one of all of them at once.

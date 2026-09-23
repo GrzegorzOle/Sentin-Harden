@@ -1,0 +1,157 @@
+id: win10-lock-screen-camera-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Control Panel > Personalization
+  title:
+    pl: Aparat niedostępny z ekranu blokady
+    en: Camera unavailable from the lock screen
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Na maszynie z aparatem system pozwala go uruchomić bez podawania hasła —
+    gestem z ekranu blokady. Jest to funkcja pomyślana dla urządzeń przenośnych,
+    gdzie liczy się szybkość zrobienia zdjęcia.
+
+    Cena jest taka, że osoba postronna może uruchomić sprzęt przy zablokowanej
+    maszynie, a powstałe zdjęcia trafiają na dysk właściciela. Nie jest to droga
+    do przejęcia systemu i kategoria ryzyka to odzwierciedla — ale jest to
+    funkcja działająca przed uwierzytelnieniem, a każda taka funkcja powiększa
+    powierzchnię dostępną dla kogoś, kto stoi przy maszynie.
+
+    Zmiana zamyka tę drogę, zostawiając aparat dostępnym po zalogowaniu.
+  en: |
+    On a machine with a camera the system allows it to be started without a
+    password, by a gesture from the lock screen. The function was meant for
+    portable devices, where the speed of taking a picture matters.
+
+    The price is that an outsider can start the hardware while the machine is
+    locked, and the resulting pictures land on the owner s disk. It is no road to
+    taking over the system, and the risk rating reflects that - but it is a
+    function working before authentication, and every such function widens the
+    surface available to whoever stands at the machine.
+
+    The change closes that road, leaving the camera available after signing in.
+
+disruption_description:
+  pl: |
+    Funkcja jest w pracy biurowej nieużywana, a jej wyłączenie nie zmienia niczego
+    poza zniknięciem gestu z ekranu blokady. Aparat po zalogowaniu działa
+    normalnie: rozmowy, skanowanie kodów, logowanie rozpoznaniem twarzy.
+
+    Sprawdzić trzeba wyłącznie stanowiska terenowe, gdzie aparat służy do
+    dokumentowania pracy i szybkość dostępu bywa istotna — tam zmiana dokłada
+    jeden krok do każdego zdjęcia.
+  en: |
+    The function is unused in office work, and switching it off changes nothing
+    beyond the gesture vanishing from the lock screen. After signing in the camera
+    works normally - calls, scanning codes, face recognition sign-in.
+
+    Only field stations need checking, where the camera documents the work and
+    speed of access matters - there the change adds one step to every picture.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Uruchomienie aparatu gestem z ekranu blokady przestanie być możliwe i trzeba będzie najpierw się zalogować
+      - Stanowiska terenowe dokumentujące pracę zdjęciami dostaną jeden krok więcej przy każdym ujęciu
+      - Aplikacje liczące na dostęp do aparatu sprzed zalogowania przestaną go dostawać
+      - Aparat po zalogowaniu, rozmowy wideo, skanowanie kodów i logowanie rozpoznaniem twarzy działają bez zmian
+    en:
+      - Starting the camera by a gesture from the lock screen stops being possible and calls for signing in first
+      - Field stations documenting work with pictures get one extra step at every shot
+      - Applications counting on camera access from before sign-in stop receiving it
+      - The camera after signing in, video calls, code scanning and face recognition sign-in all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Urządzenia przenośne używane w terenie, gdzie szybkie zrobienie zdjęcia jest częścią procedury
+      - Stanowiska magazynowe i serwisowe skanujące kody przed zalogowaniem
+    en:
+      - Portable devices used in the field, where taking a quick picture is part of the procedure
+      - Warehouse and service stations scanning codes before signing in
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoLockScreenCamera'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+    $name = 'NoLockScreenCamera'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoLockScreenCamera' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-abovelock
+
+notes:
+  pl: |
+    Zasada nie ma zastosowania tam, gdzie maszyna nie ma aparatu — sprawdzenie
+    i tak wypadnie wtedy poprawnie, bo dotyczy samego ustawienia, nie sprzętu.
+    Logowanie rozpoznaniem twarzy korzysta z osobnej drogi i nie jest tą zmianą
+    dotknięte.
+  en: |
+    The rule does not apply where the machine has no camera - the check comes out
+    correct anyway, since it covers the setting rather than the hardware. Face
+    recognition sign-in uses a separate road and is untouched by this change.

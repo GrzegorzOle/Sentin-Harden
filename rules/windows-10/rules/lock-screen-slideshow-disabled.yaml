@@ -1,0 +1,157 @@
+id: win10-lock-screen-slideshow-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Control Panel > Personalization
+  title:
+    pl: Pokaz slajdów na ekranie blokady wyłączony
+    en: Lock screen slideshow disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pokaz slajdów wyświetla na ekranie blokady zdjęcia z katalogów wskazanych
+    przez użytkownika — zwykle z jego własnych dokumentów albo z katalogu
+    synchronizowanego z chmurą. Zablokowana maszyna zaczyna więc pokazywać
+    zawartość, do której dostęp miał mieć wyłącznie zalogowany.
+
+    Sensu tej zmiany nie widać, dopóki nie pomyśli się, co ludzie trzymają w
+    katalogu obrazów: zrzuty ekranu z pracy, zdjęcia dokumentów, tablice ze
+    spotkań, fotografie identyfikatorów. Pokaz slajdów wyprowadza to wszystko na
+    korytarz.
+
+    Wyłączenie zostawia ekran blokady z jednym, stałym tłem.
+  en: |
+    The slideshow shows on the lock screen pictures from folders the user pointed
+    at - usually their own documents or a folder synchronised with the cloud. A
+    locked machine therefore begins displaying content only a signed-in person was
+    supposed to reach.
+
+    The point of the change is invisible until one thinks about what people keep
+    in a pictures folder - screenshots from work, photographs of documents,
+    whiteboards from meetings, pictures of badges. The slideshow carries all of it
+    out into the corridor.
+
+    Switching it off leaves the lock screen with one fixed background.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie wyglądu i nie odbiera niczego z pracy. Nie wymaga
+    przerwy, nie zmienia zachowania logowania, nie rusza żadnych plików.
+
+    Odczuje ją użytkownik przywiązany do własnego tła i to jest cały koszt tej
+    zasady. W środowiskach, gdzie wygląd stanowiska bywa elementem prezentacji —
+    stoiska targowe, ekrany w recepcji — warto sprawdzić, czy pokaz slajdów nie
+    pełni tam funkcji zamierzonej.
+  en: |
+    The change touches nothing but appearance and takes nothing from the work. It
+    calls for no interruption, does not alter sign-in behaviour and moves no
+    files.
+
+    A user attached to their own background will notice, and that is the whole
+    cost of this rule. In settings where the look of a station is part of a
+    presentation - trade stands, reception screens - it is worth checking whether
+    the slideshow serves an intended purpose there.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl:
+      - Własny pokaz slajdów na ekranie blokady przestanie się wyświetlać i zostanie zastąpiony stałym tłem
+      - Stanowiska prezentacyjne i ekrany w recepcji wykorzystujące pokaz slajdów stracą tę funkcję
+      - Ustawienie pokazu w oknie personalizacji przestanie być dostępne i pokaże informację o zasadach
+      - Logowanie, wygaszacz ekranu, zdjęcia w katalogach użytkownika oraz praca po zalogowaniu pozostają bez zmian
+    en:
+      - The user s own lock screen slideshow stops being displayed and is replaced by a fixed background
+      - Presentation stations and reception screens relying on the slideshow lose that function
+      - The slideshow setting in the personalisation window stops being available and shows a note about policy
+      - Signing in, the screen saver, the pictures in the user s folders and work after sign-in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska prezentacyjne i ekrany informacyjne, na których pokaz slajdów jest funkcją zamierzoną
+      - Maszyny demonstracyjne, gdzie wygląd ekranu blokady jest częścią pokazu
+    en:
+      - Presentation stations and information screens, where the slideshow is an intended function
+      - Demonstration machines, where the look of the lock screen is part of the show
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoLockScreenSlideshow'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+    $name = 'NoLockScreenSlideshow'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoLockScreenSlideshow' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-abovelock
+
+notes:
+  pl: |
+    Ustawienie wyłącza sam pokaz, a nie możliwość zmiany tła ekranu blokady.
+    Idzie w parze z wyłączeniem powiadomień i dostępu do aparatu — cała trójka
+    pilnuje tego samego brzegu.
+  en: |
+    The setting switches off the slideshow itself rather than the ability to
+    change the lock screen background. It pairs with switching off notifications
+    and camera access - all three watch the same edge.

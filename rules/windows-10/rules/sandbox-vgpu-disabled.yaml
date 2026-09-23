@@ -1,0 +1,160 @@
+id: win10-sandbox-vgpu-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Sandbox
+  title:
+    pl: Współdzielenie karty graficznej z piaskownicą wyłączone
+    en: Sharing of the graphics card with the sandbox disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Współdzielenie karty graficznej daje piaskownicy dostęp do sprzętu
+    gospodarza, a nie do jego programowej imitacji. Oprogramowanie z wnętrza
+    piaskownicy rozmawia wtedy ze sterownikiem karty — tym samym, który obsługuje
+    resztę maszyny.
+
+    Sterowniki graficzne są rozległe, działają blisko jądra systemu i regularnie
+    okazują się podatne. Dla kogoś, kto szuka drogi z odizolowanego środowiska na
+    zewnątrz, jest to jedno z lepszych miejsc: granica izolacji przebiega przez
+    kod, który nie był pomyślany jako granica bezpieczeństwa.
+
+    Wyłączenie zostawia piaskownicy obraz składany programowo. Jest wolniejszy
+    i zupełnie wystarczający do tego, do czego piaskownica służy.
+  en: |
+    Sharing the graphics card gives the sandbox access to the host s hardware
+    rather than to a software imitation of it. Software from inside the sandbox
+    then talks to the card driver - the very one serving the rest of the machine.
+
+    Graphics drivers are vast, run close to the kernel and turn out vulnerable
+    with regularity. To somebody looking for a road out of an isolated environment
+    it is one of the better places - the isolation boundary runs through code that
+    was never meant as a security boundary.
+
+    Switching it off leaves the sandbox with a picture composed in software. It is
+    slower and entirely sufficient for what a sandbox is for.
+
+disruption_description:
+  pl: |
+    Skutkiem jest wolniejsza grafika wewnątrz piaskownicy i nic poza tym.
+    Przeglądanie dokumentów, uruchamianie instalatorów i praca z oknami działają
+    dalej, tylko płynność spada.
+
+    Sprawdzić trzeba wyłącznie te zastosowania, w których piaskownica służy do
+    oglądania materiału wymagającego wydajnej grafiki — odtwarzanie nagrań,
+    programy rysunkowe, testowanie gier. Poza nimi zmiana jest niezauważalna.
+  en: |
+    The effect is slower graphics inside the sandbox and nothing beyond that.
+    Looking through documents, running installers and working with windows all
+    carry on; only smoothness drops.
+
+    Only those uses need checking where the sandbox serves to view material
+    calling for capable graphics - playing recordings, drawing programs, testing
+    games. Outside them the change goes unnoticed.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - drivers-and-devices
+    - user-interface
+  what_breaks:
+    pl:
+      - Grafika wewnątrz piaskownicy będzie składana programowo, więc obraz stanie się wolniejszy i mniej płynny
+      - Odtwarzanie nagrań i programy rysunkowe uruchamiane w piaskownicy mogą działać z przerwami albo odmówić startu
+      - Testowanie oprogramowania wymagającego karty graficznej przestanie dawać miarodajny wynik
+      - Sama piaskownica, jej okno, praca z dokumentami w środku oraz grafika maszyny gospodarza działają bez zmian
+    en:
+      - Graphics inside the sandbox are composed in software, so the picture becomes slower and less smooth
+      - Playing recordings and drawing programs run in the sandbox may stutter or refuse to start
+      - Testing software that needs a graphics card stops giving a meaningful result
+      - The sandbox itself, its window, work with documents inside it and the host machine s graphics all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których piaskownica służy do testowania oprogramowania wymagającego karty graficznej
+      - Maszyny używające piaskownicy do oglądania materiału wideo, gdzie obraz składany programowo nie wystarcza
+    en:
+      - Stations where the sandbox serves for testing software that needs a graphics card
+      - Machines using the sandbox to view video material, where software-composed graphics are not enough
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowVGPU'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    $name = 'AllowVGPU'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowVGPU' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/
+
+notes:
+  pl: |
+    Ustawienie dotyczy dostępu do sprzętu, a nie samej możliwości wyświetlania
+    okna piaskownicy. Wraz z wyłączeniem sieci jest to najważniejszy punkt bloku:
+    oba odcinają drogi prowadzące poza granicę izolacji, a nie tylko wygodę.
+  en: |
+    The setting covers access to the hardware rather than the ability to show the
+    sandbox window at all. Together with switching networking off it is the most
+    important item of the block - both cut roads leading past the isolation
+    boundary rather than mere convenience.

@@ -1,0 +1,163 @@
+id: win10-sandbox-networking-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Sandbox
+  title:
+    pl: Dostęp piaskownicy do sieci wyłączony
+    en: The sandbox s access to the network switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Piaskownica jest osobnym, jednorazowym systemem uruchamianym po to, żeby
+    otworzyć w nim coś podejrzanego. Po zamknięciu znika bez śladu i na tym polega
+    jej wartość.
+
+    Sieć podważa całe to rozumowanie. Piaskownica z dostępem do sieci stoi w tej
+    samej sieci co maszyna gospodarza, więc uruchomione w niej oprogramowanie
+    widzi udziały plikowe, serwery i pozostałe stanowiska. To, co miało zostać
+    odizolowane, dostaje drogę do reszty organizacji — i dostaje ją z maszyny,
+    która nie jest ujęta w żadnym spisie, bo powstała na chwilę.
+
+    Wyłączenie sieci przywraca piaskownicy sens: można w niej obejrzeć plik, nie
+    dając mu przy tym wyjścia na zewnątrz.
+  en: |
+    The sandbox is a separate, disposable system started so that something
+    suspicious may be opened inside it. On closing it vanishes without trace, and
+    that is where its value lies.
+
+    Networking undermines the whole reasoning. A sandbox with network access
+    stands on the same network as its host machine, so software run inside it sees
+    file shares, servers and other stations. What was meant to be isolated gets a
+    road to the rest of the organisation - and gets it from a machine listed in no
+    inventory, because it came into being for a moment.
+
+    Switching networking off restores the point of the sandbox - a file may be
+    looked at inside it without being given a way out.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie maszyn, na których piaskownica jest używana, a tych
+    jest niewiele. Tam jednak bywa odczuwalna: część pracy z piaskownicą polega
+    właśnie na sprawdzeniu, dokąd badany program próbuje się łączyć.
+
+    Przed wdrożeniem warto zapytać zespół bezpieczeństwa, czy piaskownica nie
+    służy im do analizy ruchu sieciowego podejrzanego oprogramowania. Jeśli tak,
+    odpowiedzią jest osobna, odcięta sieć badawcza, a nie pozostawienie
+    piaskownicy w sieci produkcyjnej.
+  en: |
+    The change touches only machines where the sandbox is used, and those are few.
+    There, though, it is felt - part of the work with a sandbox is precisely
+    checking where the program under examination tries to connect.
+
+    Before the rollout the security team is worth asking whether they use the
+    sandbox for watching the network traffic of suspect software. If so, the
+    answer is a separate, cut-off research network rather than leaving the sandbox
+    on the production one.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Programy uruchamiane w piaskownicy stracą dostęp do sieci, więc instalatory pobierające składniki z sieci nie dokończą pracy
+      - Analiza ruchu sieciowego podejrzanego oprogramowania w piaskownicy przestanie być możliwa
+      - Przeglądanie stron i pobieranie plików z wnętrza piaskownicy przestanie działać
+      - Sama piaskownica, pliki przenoszone do niej ręcznie, sieć maszyny gospodarza i praca poza piaskownicą działają bez zmian
+    en:
+      - Programs run in the sandbox lose network access, so installers fetching components from the network do not finish
+      - Watching the network traffic of suspect software inside the sandbox stops being possible
+      - Browsing pages and downloading files from inside the sandbox stops working
+      - The sandbox itself, files carried into it by hand, the host machine s network and work outside the sandbox all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska zespołu bezpieczeństwa analizujące ruch sieciowy badanego oprogramowania, dopóki nie mają odciętej sieci badawczej
+      - Maszyny, na których piaskownica służy do testowania instalatorów pobierających składniki z sieci
+    en:
+      - Security team stations watching the network traffic of software under examination, until they have a cut-off research network
+      - Machines where the sandbox serves for testing installers that fetch components from the network
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowNetworking'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    $name = 'AllowNetworking'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowNetworking' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/
+
+notes:
+  pl: |
+    Zasada nie ma zastosowania tam, gdzie piaskownica nie jest zainstalowana —
+    sprawdzenie dotyczy samego ustawienia, nie obecności składnika. Cały blok
+    sześciu punktów opisuje jedno zagadnienie: które drogi łączą wnętrze
+    piaskownicy z systemem gospodarza. Ocenia się je razem.
+  en: |
+    The rule does not apply where the sandbox is not installed - the check covers
+    the setting rather than the presence of the component. The whole block of six
+    items describes one matter: which roads join the inside of the sandbox to the
+    host system. They are judged together.

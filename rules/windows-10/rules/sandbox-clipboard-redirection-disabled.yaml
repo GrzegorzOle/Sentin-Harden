@@ -1,0 +1,155 @@
+id: win10-sandbox-clipboard-redirection-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Sandbox
+  title:
+    pl: Wspólny schowek piaskownicy z systemem wyłączony
+    en: The sandbox s shared clipboard with the system switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wspólny schowek pozwala kopiować teksty i pliki między piaskownicą a
+    systemem gospodarza. Jest to najwygodniejsza droga przenoszenia danych w obie
+    strony i właśnie dlatego jest drogą w obie strony.
+
+    Kierunek na zewnątrz jest tym groźnym. Oprogramowanie uruchomione w
+    piaskownicy potrafi obserwować schowek i zapisywać, co w nim ląduje — a ląduje
+    tam hasło skopiowane z menedżera haseł, fragment dokumentu, adres wewnętrzny.
+    Izolacja pozostaje nienaruszona, a dane i tak wychodzą.
+
+    Wyłączenie schowka zostawia przenoszenie plików przez katalog wskazany
+    świadomie przy uruchomieniu — drogę wolniejszą, ale kontrolowaną.
+  en: |
+    The shared clipboard lets text and files be copied between the sandbox and the
+    host system. It is the most convenient road for carrying data both ways, and
+    that is precisely why it is a road both ways.
+
+    The outward direction is the dangerous one. Software running in the sandbox
+    can watch the clipboard and record what lands in it - and what lands there is
+    a password copied out of a password manager, a fragment of a document, an
+    internal address. The isolation stays intact and the data leave anyway.
+
+    Switching the clipboard off leaves file transfer through a folder named
+    deliberately at start-up - a slower road, but a controlled one.
+
+disruption_description:
+  pl: |
+    Zmiana jest odczuwalna dla każdego, kto z piaskownicy korzysta, bo dotyka
+    najczęstszej czynności: przeklejenia adresu albo nazwy pliku. Nie odbiera
+    jednak możliwości przenoszenia danych, tylko ją spowalnia.
+
+    Warto uprzedzić o zamienniku, zanim ludzie uznają piaskownicę za zepsutą.
+    Katalog wskazany przy uruchomieniu i przeciąganie plików pozostają dostępne.
+  en: |
+    The change is felt by anybody using the sandbox, since it touches the
+    commonest action - pasting across an address or a file name. It does not
+    remove the ability to move data, though; it only slows it.
+
+    The replacement is worth mentioning before people take the sandbox for broken.
+    A folder named at start-up and dragging files across both remain available.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - user-interface
+  what_breaks:
+    pl:
+      - Kopiowanie tekstu i plików między piaskownicą a systemem gospodarza przestanie działać w obie strony
+      - Przenoszenie adresów i nazw plików do piaskownicy będzie wymagało wpisania ich ręcznie
+      - Procedury pracy zbudowane wokół szybkiego przeklejenia danych do piaskownicy wymagają przepisania
+      - Sama piaskownica, katalog udostępniony przy uruchomieniu, schowek w systemie gospodarza i praca poza piaskownicą działają bez zmian
+    en:
+      - Copying text and files between the sandbox and the host system stops working both ways
+      - Carrying addresses and file names into the sandbox calls for typing them by hand
+      - Working procedures built around a quick paste into the sandbox have to be rewritten
+      - The sandbox itself, a folder shared at start-up, the clipboard on the host system and work outside the sandbox all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których praca w piaskownicy opiera się na częstym przenoszeniu danych w obie strony
+      - Maszyny badawcze, gdzie wynik analizy wraca do systemu gospodarza właśnie schowkiem, dopóki nie ma innej drogi
+    en:
+      - Stations where work in the sandbox rests on frequent transfer of data both ways
+      - Research machines, where the result of an analysis returns to the host system by the clipboard, until another road exists
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowClipboardRedirection'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    $name = 'AllowClipboardRedirection'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowClipboardRedirection' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/
+
+notes:
+  pl: |
+    Wyłączenie obejmuje oba kierunki naraz — nie da się zostawić samego
+    kopiowania do piaskownicy. Przenoszenie plików katalogiem wskazanym przy
+    uruchomieniu działa niezależnie od tego ustawienia.
+  en: |
+    Switching it off covers both directions at once - copying into the sandbox
+    alone cannot be kept. Moving files through a folder named at start-up works
+    independently of this setting.

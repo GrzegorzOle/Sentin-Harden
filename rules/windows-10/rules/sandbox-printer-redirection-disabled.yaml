@@ -1,0 +1,163 @@
+id: win10-sandbox-printer-redirection-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Sandbox
+  title:
+    pl: Udostępnianie drukarek piaskownicy wyłączone
+    en: Sharing of printers with the sandbox disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Udostępnienie drukarek daje piaskownicy dostęp do podsystemu druku
+    gospodarza. Nie chodzi tu o samą możliwość wydrukowania kartki, tylko o
+    rozmowę z usługą buforu wydruku — składnikiem działającym z wysokimi
+    uprawnieniami i mającym długą listę podatności.
+
+    To jest jedna z najkrótszych dróg z odizolowanego środowiska do systemu
+    gospodarza, a kończy się wprost na uprawnieniach systemowych. Próbowanie jej
+    nie wymaga niczego poza uruchomieniem programu wewnątrz piaskownicy.
+
+    Wyłączenie zamyka tę drogę, zostawiając druk poza piaskownicą bez zmian.
+  en: |
+    Sharing printers gives the sandbox access to the host s printing subsystem.
+    The matter is not the ability to print a page, but the conversation with the
+    spooler service - a component running with high privileges and carrying a long
+    list of vulnerabilities.
+
+    That is one of the shortest roads from an isolated environment to the host
+    system, and it ends straight at system privileges. Trying it calls for nothing
+    beyond running a program inside the sandbox.
+
+    Switching it off closes that road, leaving printing outside the sandbox
+    untouched.
+
+disruption_description:
+  pl: |
+    Drukowanie z wnętrza piaskownicy jest czynnością rzadką — piaskownica służy do
+    obejrzenia czegoś podejrzanego, a nie do pracy z dokumentami. Na większości
+    stanowisk zmiana jest niewidoczna.
+
+    Sprawdzić trzeba procedury, w których z piaskownicy drukuje się celowo:
+    otwieranie załączników z zewnątrz i drukowanie ich w izolacji bywa świadomym
+    sposobem pracy. Tam drogą zastępczą jest zapisanie pliku w katalogu
+    udostępnionym i wydrukowanie go poza piaskownicą, co zresztą i tak omija
+    izolację.
+  en: |
+    Printing from inside the sandbox is a rare act - a sandbox serves for looking
+    at something suspicious rather than for working with documents. On most
+    stations the change is invisible.
+
+    What needs checking are procedures that print from the sandbox on purpose -
+    opening attachments from outside and printing them in isolation is sometimes a
+    deliberate way of working. There the replacement road is saving the file to a
+    shared folder and printing it outside the sandbox, which in any case skirts
+    the isolation anyway.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Drukowanie z wnętrza piaskownicy przestanie być możliwe, bo drukarki gospodarza nie będą w niej widoczne
+      - Procedury otwierania i drukowania załączników w izolacji wymagają przepisania na inną drogę
+      - Testowanie sterowników drukarek w piaskownicy przestanie dawać wynik
+      - Drukowanie poza piaskownicą, bufor wydruku gospodarza, drukarki sieciowe i praca z dokumentami działają bez zmian
+    en:
+      - Printing from inside the sandbox stops being possible, since the host s printers are not visible there
+      - Procedures for opening and printing attachments in isolation have to be rewritten onto another road
+      - Testing printer drivers in the sandbox stops giving a result
+      - Printing outside the sandbox, the host s spooler, network printers and work with documents all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których drukowanie załączników w izolacji jest ustaloną procedurą, dopóki nie zostanie ona przepisana
+      - Maszyny testujące sterowniki drukarek w środowisku odciętym od reszty systemu
+    en:
+      - Stations where printing attachments in isolation is a settled procedure, until it is rewritten
+      - Machines testing printer drivers in an environment cut off from the rest of the system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowPrinterRedirection'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    $name = 'AllowPrinterRedirection'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowPrinterRedirection' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/
+
+notes:
+  pl: |
+    Ustawienie dotyczy udostępniania drukarek gospodarza, a nie możliwości
+    zainstalowania drukarki wewnątrz piaskownicy. Punkt ocenia się razem z
+    regułami o buforze wydruku na samym gospodarzu — chodzi o ten sam składnik,
+    tylko oglądany z drugiej strony granicy.
+  en: |
+    The setting covers sharing the host s printers rather than the ability to
+    install a printer inside the sandbox. The item is judged together with the
+    rules about the spooler on the host itself - it is the same component, only
+    seen from the other side of the boundary.

@@ -1,0 +1,157 @@
+id: win10-sandbox-video-input-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Sandbox
+  title:
+    pl: Dostęp do kamery z piaskownicy wyłączony
+    en: Access to the camera from the sandbox disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kamera udostępniona piaskownicy patrzy w to samo miejsce co zawsze: na osobę
+    siedzącą przy maszynie i na to, co za nią stoi. Oprogramowanie uruchomione w
+    izolacji dostaje do tego obrazu dostęp.
+
+    Jest to ten sam rodzaj wycieku co przy mikrofonie, z jedną różnicą: obraz z
+    kamery bywa dowodem obecności i miejsca, a nie tylko treścią. Wystarczy
+    nagrywać wewnątrz piaskownicy i czekać, aż plik trafi na zewnątrz jedną z
+    pozostałych dróg.
+
+    Wyłączenie odcina kamerę od piaskownicy i zostawia ją dostępną poza nią.
+  en: |
+    A camera shared with the sandbox looks at the same place as always - at the
+    person sitting at the machine and at what stands behind them. Software running
+    in isolation gains access to that picture.
+
+    It is the same kind of leak as with the microphone, with one difference - a
+    camera picture is sometimes evidence of presence and place rather than merely
+    content. It is enough to record inside the sandbox and wait for the file to
+    leave by one of the remaining roads.
+
+    Switching it off cuts the camera from the sandbox and leaves it available
+    outside.
+
+disruption_description:
+  pl: |
+    Korzystanie z kamery wewnątrz piaskownicy jest rzadkie i na większości
+    stanowisk zmiana jest niewidoczna. Kamera w aplikacjach gospodarza działa
+    dalej.
+
+    Sprawdzić trzeba maszyny testujące oprogramowanie korzystające z obrazu:
+    programy do rozmów wideo, narzędzia skanujące kody, aplikacje rozpoznające
+    twarz. Tam piaskownica bywa świadomie wybranym środowiskiem próbnym.
+  en: |
+    Using the camera inside the sandbox is rare, and on most stations the change
+    is invisible. The camera in the host s applications carries on working.
+
+    Machines testing software that uses a picture need checking - video calling
+    programs, code scanning tools, face recognition applications. There the
+    sandbox is sometimes a deliberately chosen trial environment.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Oprogramowanie uruchomione w piaskownicy nie zobaczy kamery i zgłosi brak urządzenia
+      - Testowanie programów do rozmów wideo i narzędzi skanujących kody w izolacji przestanie być możliwe
+      - Nagrywanie obrazu z wnętrza piaskownicy przestanie działać
+      - Kamera w aplikacjach gospodarza, rozmowy wideo, logowanie rozpoznaniem twarzy i praca poza piaskownicą działają bez zmian
+    en:
+      - Software run in the sandbox does not see the camera and reports a missing device
+      - Testing video calling programs and code scanning tools in isolation stops being possible
+      - Recording a picture from inside the sandbox stops working
+      - The camera in the host s applications, video calls, face recognition sign-in and work outside the sandbox all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska testujące oprogramowanie korzystające z obrazu w środowisku odciętym od reszty systemu
+      - Maszyny, na których piaskownica jest środowiskiem próbnym dla aplikacji do rozmów wideo
+    en:
+      - Stations testing software that uses a picture in an environment cut off from the rest of the system
+      - Machines where the sandbox is a trial environment for video calling applications
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowVideoInput'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    $name = 'AllowVideoInput'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowVideoInput' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/
+
+notes:
+  pl: |
+    Zasada dotyczy udostępnienia kamery piaskownicy, a nie obecności kamery w
+    maszynie — sprawdzenie wypada poprawnie także na sprzęcie bez kamery. Punkt
+    zamyka blok sześciu ustawień opisujących granicę między piaskownicą a
+    systemem gospodarza.
+  en: |
+    The rule covers sharing the camera with the sandbox rather than the presence
+    of a camera in the machine - the check comes out correct on hardware with no
+    camera as well. The item closes a block of six settings describing the
+    boundary between the sandbox and the host system.

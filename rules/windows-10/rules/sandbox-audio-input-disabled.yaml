@@ -1,0 +1,155 @@
+id: win10-sandbox-audio-input-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Sandbox
+  title:
+    pl: Dostęp do mikrofonu z piaskownicy wyłączony
+    en: Access to the microphone from the sandbox disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mikrofon udostępniony piaskownicy jest tym samym mikrofonem, który słyszy
+    rozmowy prowadzone przy maszynie. Oprogramowanie uruchomione w izolacji
+    dostaje do niego dostęp, choć cały sens piaskownicy polega na tym, żeby nie
+    dostawało niczego.
+
+    Nagranie nie wymaga przy tym wyjścia poza piaskownicę: wystarczy nagrywać i
+    czekać, aż ktoś przeniesie plik schowkiem albo udostępnionym katalogiem.
+    Rozmowa przy biurku bywa warta więcej niż zawartość dysku.
+
+    Wyłączenie odcina mikrofon od piaskownicy, zostawiając go dostępnym dla
+    aplikacji gospodarza.
+  en: |
+    A microphone shared with the sandbox is the same microphone that hears the
+    conversations held at the machine. Software running in isolation gains access
+    to it, though the whole point of a sandbox is that it should gain nothing.
+
+    Making a recording does not even call for getting out of the sandbox - it is
+    enough to record and wait for somebody to carry the file across by clipboard
+    or a shared folder. A conversation at a desk is sometimes worth more than the
+    contents of a disk.
+
+    Switching it off cuts the microphone from the sandbox while leaving it
+    available to the host s applications.
+
+disruption_description:
+  pl: |
+    Nagrywanie dźwięku z wnętrza piaskownicy jest zastosowaniem rzadkim. Na
+    stanowiskach biurowych zmiana przechodzi niezauważona.
+
+    Sprawdzić trzeba maszyny testujące oprogramowanie do rozmów i do
+    rozpoznawania mowy — tam piaskownica bywa środowiskiem próbnym i mikrofon jest
+    jej do pracy potrzebny. Poza tym zastosowaniem punkt nie kosztuje nic.
+  en: |
+    Recording sound from inside the sandbox is a rare use. On office stations the
+    change passes unnoticed.
+
+    Machines testing conferencing and speech recognition software need checking -
+    there the sandbox is sometimes a trial environment and the microphone is
+    needed for the work. Outside that use the item costs nothing at all.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Oprogramowanie uruchomione w piaskownicy nie zobaczy mikrofonu, więc testowanie programów do rozmów przestanie być możliwe
+      - Narzędzia rozpoznające mowę sprawdzane w izolacji nie dostaną sygnału i zgłoszą brak urządzenia
+      - Nagrywanie dźwięku z wnętrza piaskownicy przestanie działać
+      - Mikrofon w aplikacjach gospodarza, rozmowy, nagrywanie poza piaskownicą i odtwarzanie dźwięku działają bez zmian
+    en:
+      - Software run in the sandbox does not see the microphone, so testing conferencing programs stops being possible
+      - Speech recognition tools examined in isolation receive no signal and report a missing device
+      - Recording sound from inside the sandbox stops working
+      - The microphone in the host s applications, calls, recording outside the sandbox and sound playback all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska testujące oprogramowanie do rozmów i rozpoznawania mowy w środowisku odciętym
+      - Maszyny, na których piaskownica służy jako środowisko próbne dla aplikacji korzystających z mikrofonu
+    en:
+      - Stations testing conferencing and speech recognition software in a cut-off environment
+      - Machines where the sandbox serves as a trial environment for applications using a microphone
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowAudioInput'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    $name = 'AllowAudioInput'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Sandbox'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowAudioInput' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/
+
+notes:
+  pl: |
+    Ustawienie dotyczy wejścia dźwięku, a nie jego odtwarzania — dźwięk z wnętrza
+    piaskownicy nadal będzie słychać. Punkt ocenia się razem z dostępem do kamery:
+    oba opisują tę samą granicę, tylko dla innego urządzenia.
+  en: |
+    The setting covers sound input rather than playback - sound from inside the
+    sandbox is still heard. The item is judged together with camera access - both
+    describe the same boundary, only for a different device.

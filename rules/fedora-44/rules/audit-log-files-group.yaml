@@ -1,13 +1,13 @@
-id: fedora44-audit-log-dir-mode
+id: fedora44-audit-log-files-group
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 6.3.4.1
+  item: 6.3.4.4
   section: Logging and Auditing > System Accounting (auditd) > Configure auditd File Access
   title:
-    pl: Katalog dzienników audytu ma ograniczone uprawnienia
-    en: Ensure the audit log file directory mode is configured
+    pl: Grupą plików dziennika audytu jest root lub adm
+    en: Ensure audit log files group owner is configured
   level: 2
   profile: workstation
 
@@ -20,21 +20,22 @@ assessment_state: assessed-no-impact
 
 description:
   pl: |
-    Dziennik audytu zawiera wiersze poleceń, nazwy plików i dane logowania
-    użytkowników. Do katalogu z dziennikami powinien mieć dostęp tylko root
-    i ewentualnie grupa katalogu.
+    Grupa pliku dziennika audytu decyduje, kto poza rootem może go czytać.
+    Dostęp powinien mieć tylko root i ewentualnie grupa adm, przeznaczona
+    do przeglądania dzienników systemu.
 
-    Punkt wymaga, żeby katalog pliku log_file z /etc/audit/auditd.conf miał
-    tryb 750 lub bardziej restrykcyjny. Fedora tworzy /var/log/audit
-    z trybem 700.
+    Punkt wymaga, żeby każdy plik w katalogu pliku log_file należał do grupy
+    root lub adm, a log_group w /etc/audit/auditd.conf, czyli grupa, którą
+    auditd nadaje nowym plikom, był równy root lub adm. Fedora ustawia
+    log_group = root.
   en: |
-    The audit log contains command lines, file names and login data of the
-    users. Only root, and possibly the group of the directory, should have
-    access to the log directory.
+    The group of an audit log file decides who besides root can read it.
+    Only root and possibly the adm group, meant for reviewing system logs,
+    should have access.
 
-    The item requires the directory of log_file from /etc/audit/auditd.conf
-    to have mode 750 or stricter. Fedora creates /var/log/audit with mode
-    700.
+    The item requires every file in the directory of log_file to belong to
+    the root or adm group, and log_group in /etc/audit/auditd.conf, the group
+    auditd gives new files, to be root or adm. Fedora sets log_group = root.
 
 disruption_description:
   pl: |
@@ -69,13 +70,23 @@ audit:
       f=$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
       dirname -- "${f:-/var/log/audit/audit.log}"
     }
-    plist() {
-      local l
-      l=$(logdir) || { echo "$l"; return 1; }
-      [ -d "$l" ] || return 0
-      readlink -f -- "$l"
+    # lgroup: log_group from auditd.conf, root when unset
+    lgroup() {
+      local v
+      v=$(awk -F= '$1 ~ /^[[:space:]]*log_group[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      echo "${v:-root}"
     }
-    pok() { [ $(( 0$1 & 07027 )) -eq 0 ]; }
+    plist() {
+      local l g
+      l=$(logdir) || { echo "$l"; return 1; }
+      g=$(lgroup)
+      case "$g" in root|adm) ;; *) echo "log-group=$g"; return 1 ;; esac
+      [ -d "$l" ] || return 0
+      { [ -r "$l" ] && [ -x "$l" ]; } || { echo needs-root; return 1; }
+      find "$l/" -type f | sort
+    }
+    pok() { { [ "$3" = root ] || [ "$3" = adm ]; }; }
+    gok() { set -- '' '' "$1"; { [ "$3" = root ] || [ "$3" = adm ]; }; }
     evaluate() {
       local l f n=0 bad=0 first="" m o g
       if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
@@ -111,13 +122,23 @@ remediation:
       f=$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
       dirname -- "${f:-/var/log/audit/audit.log}"
     }
-    plist() {
-      local l
-      l=$(logdir) || { echo "$l"; return 1; }
-      [ -d "$l" ] || return 0
-      readlink -f -- "$l"
+    # lgroup: log_group from auditd.conf, root when unset
+    lgroup() {
+      local v
+      v=$(awk -F= '$1 ~ /^[[:space:]]*log_group[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      echo "${v:-root}"
     }
-    pok() { [ $(( 0$1 & 07027 )) -eq 0 ]; }
+    plist() {
+      local l g
+      l=$(logdir) || { echo "$l"; return 1; }
+      g=$(lgroup)
+      case "$g" in root|adm) ;; *) echo "log-group=$g"; return 1 ;; esac
+      [ -d "$l" ] || return 0
+      { [ -r "$l" ] && [ -x "$l" ]; } || { echo needs-root; return 1; }
+      find "$l/" -type f | sort
+    }
+    pok() { { [ "$3" = root ] || [ "$3" = adm ]; }; }
+    gok() { set -- '' '' "$1"; { [ "$3" = root ] || [ "$3" = adm ]; }; }
     evaluate() {
       local l f n=0 bad=0 first="" m o g
       if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
@@ -160,13 +181,23 @@ remediation:
       f=$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
       dirname -- "${f:-/var/log/audit/audit.log}"
     }
-    plist() {
-      local l
-      l=$(logdir) || { echo "$l"; return 1; }
-      [ -d "$l" ] || return 0
-      readlink -f -- "$l"
+    # lgroup: log_group from auditd.conf, root when unset
+    lgroup() {
+      local v
+      v=$(awk -F= '$1 ~ /^[[:space:]]*log_group[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      echo "${v:-root}"
     }
-    pok() { [ $(( 0$1 & 07027 )) -eq 0 ]; }
+    plist() {
+      local l g
+      l=$(logdir) || { echo "$l"; return 1; }
+      g=$(lgroup)
+      case "$g" in root|adm) ;; *) echo "log-group=$g"; return 1 ;; esac
+      [ -d "$l" ] || return 0
+      { [ -r "$l" ] && [ -x "$l" ]; } || { echo needs-root; return 1; }
+      find "$l/" -type f | sort
+    }
+    pok() { { [ "$3" = root ] || [ "$3" = adm ]; }; }
+    gok() { set -- '' '' "$1"; { [ "$3" = root ] || [ "$3" = adm ]; }; }
     evaluate() {
       local l f n=0 bad=0 first="" m o g
       if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
@@ -185,7 +216,8 @@ remediation:
         [ -n "$f" ] && [ -e "$f" ] || continue
         read -r m o g <<< "$(stat -c '%a %U %G' -- "$f")"
         ! pok "$m" "$o" "$g" || continue
-        chmod "$(printf '0%04o' $(( 0$m & 0750 )))" -- "$f"
+        gok "$g" || chgrp "$(lgroup)" -- "$f"
+        chmod "$(printf '0%04o' $(( 0$m )))" -- "$f"
         n=$((n + 1))
       done <<< "$l"
       echo "Corrected $n paths"
@@ -205,9 +237,9 @@ remediation:
         [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
         read -r cm cu cg <<< "$(stat -c '%a %u %g' -- "$f")"
         k=0
-        [ "$cm" = "$m" ] || k=1
+        [ "$cg" = "$g" ] || { chgrp "$g" -- "$f"; k=1; }
         [ "$k" = 1 ] || continue
-        chmod "$(printf '0%04o' $(( 0$m )))" -- "$f"
+        chmod "$(printf '0%04o' $(( 0$cm )))" -- "$f"
         echo "Restored $f"; n=$((n + 1))
       done < <(tail -n +2 "$b")
       [ "$n" -gt 0 ] || echo "Nothing to restore"
@@ -223,18 +255,26 @@ sources:
 
 notes:
   pl: |
-    Naprawa odbiera tylko nadmiarowe bity (tryb i 750) i nie zmienia
-    właściciela. Gdy katalogu nie ma (auditd jeszcze nie działał), test
-    zwraca OK:paths=0.
+    Naprawa nadaje plikom z inną grupą grupę z log_group (root albo adm), tę
+    samą, którą auditd nada plikom po rotacji; tryb i właściciel pozostają
+    bez zmian. log_group spoza root i adm daje wynik NOT_OK:log-group=...,
+    a naprawa kończy się błędem bez zmian: reguła nie edytuje auditd.conf,
+    bo zmiana log_group wymaga ponownego wczytania konfiguracji auditd,
+    a domyślne root spełnia punkt. Ustaw log_group ręcznie i zrestartuj
+    auditd.
     Wycofanie przywraca tylko to, czym reguła zarządza (tryb, właściciela
     albo grupę), i tylko dla ścieżek, które nadal istnieją, więc reguły
     trybu, właściciela i grupy tych samych plików można wycofywać osobno.
     Katalog /etc/audit i auditd.conf są dostępne tylko dla roota, więc bez
     tych uprawnień wynik to NOT_OK:needs-root.
   en: |
-    The remediation only removes the excess bits (mode and 750) and does not
-    change the owner. When the directory does not exist (auditd has not run
-    yet), the test returns OK:paths=0.
+    The remediation gives files with another group the group from log_group
+    (root or adm), the same one auditd gives files after rotation; the mode
+    and owner stay unchanged. A log_group other than root or adm gives the
+    result NOT_OK:log-group=..., and the remediation fails without changes:
+    the rule does not edit auditd.conf, because changing log_group needs
+    auditd to reload its configuration, and the default root meets the
+    item. Set log_group by hand and restart auditd.
     Rollback restores only what the rule manages (mode, owner or group),
     and only for the paths that still exist, so the mode, owner and group
     rules for the same files can be rolled back separately. The /etc/audit

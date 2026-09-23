@@ -1,13 +1,13 @@
-id: fedora44-audit-log-dir-mode
+id: fedora44-audit-conf-mode
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 6.3.4.1
+  item: 6.3.4.5
   section: Logging and Auditing > System Accounting (auditd) > Configure auditd File Access
   title:
-    pl: Katalog dzienników audytu ma ograniczone uprawnienia
-    en: Ensure the audit log file directory mode is configured
+    pl: Pliki konfiguracji audytu mają ograniczone uprawnienia
+    en: Ensure audit configuration files mode is configured
   level: 2
   profile: workstation
 
@@ -20,29 +20,29 @@ assessment_state: assessed-no-impact
 
 description:
   pl: |
-    Dziennik audytu zawiera wiersze poleceń, nazwy plików i dane logowania
-    użytkowników. Do katalogu z dziennikami powinien mieć dostęp tylko root
-    i ewentualnie grupa katalogu.
+    Konfiguracja audytu określa, które zdarzenia są zapisywane, gdzie trafia
+    dziennik i co się dzieje po zapełnieniu dysku. Jej odczyt pokazuje, czego
+    audyt nie widzi, a zapis pozwala go wyłączyć.
 
-    Punkt wymaga, żeby katalog pliku log_file z /etc/audit/auditd.conf miał
-    tryb 750 lub bardziej restrykcyjny. Fedora tworzy /var/log/audit
-    z trybem 700.
+    Punkt wymaga, żeby pliki konfiguracji audytu miały tryb 640 lub bardziej
+    restrykcyjny. Fedora instaluje je z trybem 640, a reguły audytu tej bazy
+    tworzą swoje pliki w rules.d z tym samym trybem.
   en: |
-    The audit log contains command lines, file names and login data of the
-    users. Only root, and possibly the group of the directory, should have
-    access to the log directory.
+    The audit configuration decides which events are recorded, where the log
+    goes and what happens when the disk fills up. Reading it shows what the
+    audit does not see, and writing it allows turning the audit off.
 
-    The item requires the directory of log_file from /etc/audit/auditd.conf
-    to have mode 750 or stricter. Fedora creates /var/log/audit with mode
-    700.
+    The item requires the audit configuration files to have mode 640 or
+    stricter. Fedora installs them with mode 640, and the audit rules of
+    this rule base create their files in rules.d with the same mode.
 
 disruption_description:
   pl: |
-    Nikt tego nie zauważy: dzienniki zapisuje auditd działający jako root,
-    a ausearch i aureport uruchamia administrator.
+    Nikt tego nie zauważy: konfigurację audytu czytają auditd, augenrules
+    i auditctl uruchamiane jako root.
   en: |
-    Nobody will notice: the logs are written by auditd running as root, and
-    ausearch and aureport are run by the administrator.
+    Nobody will notice: the audit configuration is read by auditd,
+    augenrules and auditctl running as root.
 
 implementation_consequences:
   impact_areas:
@@ -58,24 +58,12 @@ audit:
   shell: bash
   test_command: |
     export LC_ALL=C
-    conf=/etc/audit/auditd.conf
-    # logdir: the directory of log_file from auditd.conf, or a reason and 1
-    logdir() {
-      local f
-      if [ ! -r "$conf" ]; then
-        if [ -e "$conf" ] || { [ -d /etc/audit ] && [ ! -x /etc/audit ]; }; then echo needs-root; else echo audit-not-installed; fi
-        return 1
-      fi
-      f=$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-      dirname -- "${f:-/var/log/audit/audit.log}"
-    }
     plist() {
-      local l
-      l=$(logdir) || { echo "$l"; return 1; }
-      [ -d "$l" ] || return 0
-      readlink -f -- "$l"
+      [ -d /etc/audit ] || { echo audit-not-installed; return 1; }
+      { [ -r /etc/audit ] && [ -x /etc/audit ]; } || { echo needs-root; return 1; }
+      find /etc/audit/ -type f \( -name '*.conf' -o -name '*.rules' \) | sort
     }
-    pok() { [ $(( 0$1 & 07027 )) -eq 0 ]; }
+    pok() { [ $(( 0$1 & 07137 )) -eq 0 ]; }
     evaluate() {
       local l f n=0 bad=0 first="" m o g
       if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
@@ -100,24 +88,12 @@ remediation:
       b='{{backup_file}}'
       mkdir -p "$(dirname "$b")"
     export LC_ALL=C
-    conf=/etc/audit/auditd.conf
-    # logdir: the directory of log_file from auditd.conf, or a reason and 1
-    logdir() {
-      local f
-      if [ ! -r "$conf" ]; then
-        if [ -e "$conf" ] || { [ -d /etc/audit ] && [ ! -x /etc/audit ]; }; then echo needs-root; else echo audit-not-installed; fi
-        return 1
-      fi
-      f=$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-      dirname -- "${f:-/var/log/audit/audit.log}"
-    }
     plist() {
-      local l
-      l=$(logdir) || { echo "$l"; return 1; }
-      [ -d "$l" ] || return 0
-      readlink -f -- "$l"
+      [ -d /etc/audit ] || { echo audit-not-installed; return 1; }
+      { [ -r /etc/audit ] && [ -x /etc/audit ]; } || { echo needs-root; return 1; }
+      find /etc/audit/ -type f \( -name '*.conf' -o -name '*.rules' \) | sort
     }
-    pok() { [ $(( 0$1 & 07027 )) -eq 0 ]; }
+    pok() { [ $(( 0$1 & 07137 )) -eq 0 ]; }
     evaluate() {
       local l f n=0 bad=0 first="" m o g
       if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
@@ -149,24 +125,12 @@ remediation:
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=perms-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
     export LC_ALL=C
-    conf=/etc/audit/auditd.conf
-    # logdir: the directory of log_file from auditd.conf, or a reason and 1
-    logdir() {
-      local f
-      if [ ! -r "$conf" ]; then
-        if [ -e "$conf" ] || { [ -d /etc/audit ] && [ ! -x /etc/audit ]; }; then echo needs-root; else echo audit-not-installed; fi
-        return 1
-      fi
-      f=$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-      dirname -- "${f:-/var/log/audit/audit.log}"
-    }
     plist() {
-      local l
-      l=$(logdir) || { echo "$l"; return 1; }
-      [ -d "$l" ] || return 0
-      readlink -f -- "$l"
+      [ -d /etc/audit ] || { echo audit-not-installed; return 1; }
+      { [ -r /etc/audit ] && [ -x /etc/audit ]; } || { echo needs-root; return 1; }
+      find /etc/audit/ -type f \( -name '*.conf' -o -name '*.rules' \) | sort
     }
-    pok() { [ $(( 0$1 & 07027 )) -eq 0 ]; }
+    pok() { [ $(( 0$1 & 07137 )) -eq 0 ]; }
     evaluate() {
       local l f n=0 bad=0 first="" m o g
       if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
@@ -185,7 +149,7 @@ remediation:
         [ -n "$f" ] && [ -e "$f" ] || continue
         read -r m o g <<< "$(stat -c '%a %U %G' -- "$f")"
         ! pok "$m" "$o" "$g" || continue
-        chmod "$(printf '0%04o' $(( 0$m & 0750 )))" -- "$f"
+        chmod "$(printf '0%04o' $(( 0$m & 0640 )))" -- "$f"
         n=$((n + 1))
       done <<< "$l"
       echo "Corrected $n paths"
@@ -223,18 +187,21 @@ sources:
 
 notes:
   pl: |
-    Naprawa odbiera tylko nadmiarowe bity (tryb i 750) i nie zmienia
-    właściciela. Gdy katalogu nie ma (auditd jeszcze nie działał), test
-    zwraca OK:paths=0.
+    Punkt obejmuje pliki *.conf i *.rules w /etc/audit i jego podkatalogach
+    (rules.d, plugins.d). Inne pliki oraz dowiązania symboliczne test pomija.
+    Naprawa odbiera tylko nadmiarowe bity (tryb i 640) i nie zmienia
+    właściciela ani grupy.
     Wycofanie przywraca tylko to, czym reguła zarządza (tryb, właściciela
     albo grupę), i tylko dla ścieżek, które nadal istnieją, więc reguły
     trybu, właściciela i grupy tych samych plików można wycofywać osobno.
     Katalog /etc/audit i auditd.conf są dostępne tylko dla roota, więc bez
     tych uprawnień wynik to NOT_OK:needs-root.
   en: |
-    The remediation only removes the excess bits (mode and 750) and does not
-    change the owner. When the directory does not exist (auditd has not run
-    yet), the test returns OK:paths=0.
+    The item covers the *.conf and *.rules files in /etc/audit and its
+    subdirectories (rules.d, plugins.d). The test skips other files and
+    symbolic links.
+    The remediation only removes the excess bits (mode and 640) and does not
+    change the owner or group.
     Rollback restores only what the rule manages (mode, owner or group),
     and only for the paths that still exist, so the mode, owner and group
     rules for the same files can be rolled back separately. The /etc/audit

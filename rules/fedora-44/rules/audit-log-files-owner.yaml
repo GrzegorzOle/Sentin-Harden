@@ -1,13 +1,13 @@
-id: fedora44-audit-log-dir-mode
+id: fedora44-audit-log-files-owner
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 6.3.4.1
+  item: 6.3.4.3
   section: Logging and Auditing > System Accounting (auditd) > Configure auditd File Access
   title:
-    pl: Katalog dzienników audytu ma ograniczone uprawnienia
-    en: Ensure the audit log file directory mode is configured
+    pl: Właścicielem plików dziennika audytu jest root
+    en: Ensure audit log files owner is configured
   level: 2
   profile: workstation
 
@@ -20,21 +20,22 @@ assessment_state: assessed-no-impact
 
 description:
   pl: |
-    Dziennik audytu zawiera wiersze poleceń, nazwy plików i dane logowania
-    użytkowników. Do katalogu z dziennikami powinien mieć dostęp tylko root
-    i ewentualnie grupa katalogu.
+    Właściciel pliku może zmienić jego uprawnienia, więc plik dziennika
+    audytu należący do zwykłego konta może zostać przez to konto odczytany,
+    skrócony albo podmieniony, a ślady jego działań zatarte.
 
-    Punkt wymaga, żeby katalog pliku log_file z /etc/audit/auditd.conf miał
-    tryb 750 lub bardziej restrykcyjny. Fedora tworzy /var/log/audit
-    z trybem 700.
+    Punkt wymaga, żeby każdy plik w katalogu pliku log_file
+    z /etc/audit/auditd.conf należał do roota. auditd tworzy dzienniki jako
+    root, więc inny właściciel oznacza pliki skopiowane lub odtworzone
+    ręcznie.
   en: |
-    The audit log contains command lines, file names and login data of the
-    users. Only root, and possibly the group of the directory, should have
-    access to the log directory.
+    The owner of a file can change its permissions, so an audit log file
+    owned by a regular account can be read, truncated or replaced by that
+    account, and the traces of its actions erased.
 
-    The item requires the directory of log_file from /etc/audit/auditd.conf
-    to have mode 750 or stricter. Fedora creates /var/log/audit with mode
-    700.
+    The item requires every file in the directory of log_file from
+    /etc/audit/auditd.conf to be owned by root. auditd creates the logs as
+    root, so another owner means files copied or restored by hand.
 
 disruption_description:
   pl: |
@@ -73,9 +74,10 @@ audit:
       local l
       l=$(logdir) || { echo "$l"; return 1; }
       [ -d "$l" ] || return 0
-      readlink -f -- "$l"
+      { [ -r "$l" ] && [ -x "$l" ]; } || { echo needs-root; return 1; }
+      find "$l/" -type f | sort
     }
-    pok() { [ $(( 0$1 & 07027 )) -eq 0 ]; }
+    pok() { [ "$2" = root ]; }
     evaluate() {
       local l f n=0 bad=0 first="" m o g
       if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
@@ -115,9 +117,10 @@ remediation:
       local l
       l=$(logdir) || { echo "$l"; return 1; }
       [ -d "$l" ] || return 0
-      readlink -f -- "$l"
+      { [ -r "$l" ] && [ -x "$l" ]; } || { echo needs-root; return 1; }
+      find "$l/" -type f | sort
     }
-    pok() { [ $(( 0$1 & 07027 )) -eq 0 ]; }
+    pok() { [ "$2" = root ]; }
     evaluate() {
       local l f n=0 bad=0 first="" m o g
       if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
@@ -164,9 +167,10 @@ remediation:
       local l
       l=$(logdir) || { echo "$l"; return 1; }
       [ -d "$l" ] || return 0
-      readlink -f -- "$l"
+      { [ -r "$l" ] && [ -x "$l" ]; } || { echo needs-root; return 1; }
+      find "$l/" -type f | sort
     }
-    pok() { [ $(( 0$1 & 07027 )) -eq 0 ]; }
+    pok() { [ "$2" = root ]; }
     evaluate() {
       local l f n=0 bad=0 first="" m o g
       if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
@@ -185,7 +189,8 @@ remediation:
         [ -n "$f" ] && [ -e "$f" ] || continue
         read -r m o g <<< "$(stat -c '%a %U %G' -- "$f")"
         ! pok "$m" "$o" "$g" || continue
-        chmod "$(printf '0%04o' $(( 0$m & 0750 )))" -- "$f"
+        [ "$o" = root ] || chown root -- "$f"
+        chmod "$(printf '0%04o' $(( 0$m )))" -- "$f"
         n=$((n + 1))
       done <<< "$l"
       echo "Corrected $n paths"
@@ -205,9 +210,9 @@ remediation:
         [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
         read -r cm cu cg <<< "$(stat -c '%a %u %g' -- "$f")"
         k=0
-        [ "$cm" = "$m" ] || k=1
+        [ "$cu" = "$u" ] || { chown "$u" -- "$f"; k=1; }
         [ "$k" = 1 ] || continue
-        chmod "$(printf '0%04o' $(( 0$m )))" -- "$f"
+        chmod "$(printf '0%04o' $(( 0$cm )))" -- "$f"
         echo "Restored $f"; n=$((n + 1))
       done < <(tail -n +2 "$b")
       [ "$n" -gt 0 ] || echo "Nothing to restore"
@@ -223,18 +228,16 @@ sources:
 
 notes:
   pl: |
-    Naprawa odbiera tylko nadmiarowe bity (tryb i 750) i nie zmienia
-    właściciela. Gdy katalogu nie ma (auditd jeszcze nie działał), test
-    zwraca OK:paths=0.
+    Naprawa zmienia tylko właściciela na root; tryb i grupa pozostają bez
+    zmian.
     Wycofanie przywraca tylko to, czym reguła zarządza (tryb, właściciela
     albo grupę), i tylko dla ścieżek, które nadal istnieją, więc reguły
     trybu, właściciela i grupy tych samych plików można wycofywać osobno.
     Katalog /etc/audit i auditd.conf są dostępne tylko dla roota, więc bez
     tych uprawnień wynik to NOT_OK:needs-root.
   en: |
-    The remediation only removes the excess bits (mode and 750) and does not
-    change the owner. When the directory does not exist (auditd has not run
-    yet), the test returns OK:paths=0.
+    The remediation only changes the owner to root; the mode and group stay
+    unchanged.
     Rollback restores only what the rule manages (mode, owner or group),
     and only for the paths that still exist, so the mode, owner and group
     rules for the same files can be rolled back separately. The /etc/audit

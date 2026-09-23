@@ -1,18 +1,18 @@
-id: fedora44-sshd-max-startups
+id: ubuntu2404-sshd-max-startups
 
 benchmark:
-  name: CIS Red Hat Enterprise Linux 9 Benchmark
-  version: 2.0.0
-  item: 5.1.17
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.1.18
   section: Access Control > Configure SSH Server
   title:
     pl: MaxStartups sshd jest skonfigurowane
     en: Ensure sshd MaxStartups is configured
   level: 1
-  profile: workstation
+  profile: server
 
 platform:
-  system: fedora-44
+  system: ubuntu-24.04
 
 risk_category: low
 disruption: none
@@ -36,13 +36,13 @@ description:
 
 disruption_description:
   pl: |
-    Nikt tego nie zauważy na stacji roboczej. Serwer z wieloma
+    Przy zwykłym ruchu nikt tego nie zauważy. Serwer z wieloma
     jednoczesnymi logowaniami, np. z automatyzacji, może odrzucać część
     połączeń w szczycie.
   en: |
-    Nobody will notice on a workstation. A server with many simultaneous
-    logins, for example from automation, may drop some connections at peak
-    times.
+    Nobody will notice under normal traffic. A server with many
+    simultaneous logins, for example from automation, may drop some
+    connections at peak times.
 
 implementation_consequences:
   impact_areas:
@@ -60,11 +60,17 @@ audit:
   shell: bash
   test_command: |
     if [ ! -x /usr/sbin/sshd ]; then echo NOT_APPLICABLE; exit 0; fi
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
     sshd_t() {
       # sshd -T stops when no host key exists yet, for example before sshd first starts.
-      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
       k=$(mktemp -d) || return 1
-      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
         rm -rf "$k"; printf '%s\n' "$o"; return 0
       fi
       rm -rf "$k"; return 1
@@ -126,11 +132,17 @@ remediation:
       f=/etc/ssh/sshd_config.d/01-sentin-harden-max-startups.conf
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=sshopt-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
     sshd_t() {
       # sshd -T stops when no host key exists yet, for example before sshd first starts.
-      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
       k=$(mktemp -d) || return 1
-      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
         rm -rf "$k"; printf '%s\n' "$o"; return 0
       fi
       rm -rf "$k"; return 1
@@ -179,7 +191,6 @@ remediation:
       printf '%s\n' '# Sentin-Harden' 'MaxStartups 10:30:60' > "$t"
       chmod 0600 "$t"
       mv -f "$t" "$f"
-      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
       r=$(evaluate)
       case "$r" in
         OK:*) ;;
@@ -187,7 +198,7 @@ remediation:
       esac
       echo "Set MaxStartups 10:30:60 in $f"
       # A reload keeps open sessions; new connections use the new settings.
-      if [ "$(systemctl is-active sshd.service 2>/dev/null)" = active ]; then systemctl reload sshd.service; echo "Reloaded sshd"; fi
+      if [ "$(systemctl is-active ssh.service 2>/dev/null)" = active ]; then systemctl reload ssh.service; echo "Reloaded sshd"; fi
     )
 
   rollback_command: |
@@ -199,11 +210,17 @@ remediation:
       [ "$(head -n 1 "$b")" = format=sshopt-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
       ex=$(sed -n '2s/^existed=//p' "$b")
       case "$ex" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
     sshd_t() {
       # sshd -T stops when no host key exists yet, for example before sshd first starts.
-      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
       k=$(mktemp -d) || return 1
-      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
         rm -rf "$k"; printf '%s\n' "$o"; return 0
       fi
       rm -rf "$k"; return 1
@@ -216,15 +233,14 @@ remediation:
         tail -n +3 "$b" > "$f.sentin-new"
         chmod 0600 "$f.sentin-new"
         mv -f "$f.sentin-new" "$f"
-        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
         echo "Restored $f"
       else
         rm -f "$f"
         echo "Removed $f"
       fi
-      if [ "$(systemctl is-active sshd.service 2>/dev/null)" = active ]; then
+      if [ "$(systemctl is-active ssh.service 2>/dev/null)" = active ]; then
         # A reload with a broken configuration would stop sshd.
-        if sshd_t >/dev/null; then systemctl reload sshd.service; echo "Reloaded sshd"
+        if sshd_t >/dev/null; then systemctl reload ssh.service; echo "Reloaded sshd"
         else echo "sshd rejects its configuration, so it was not reloaded; check it with sshd -t" >&2; exit 1; fi
       fi
     )
@@ -239,23 +255,29 @@ sources:
 notes:
   pl: |
     Sprawdzenie odczytuje skuteczną konfigurację serwera poleceniem sshd -T,
-    które wymaga uprawnień roota; bez kluczy hosta dostaje ono klucz
-    tymczasowy. Sprawdza też wartości ustawione w blokach Match
-    w /etc/ssh/sshd_config i w plikach .conf z katalogu /etc/ssh/sshd_config.d,
-    bo sshd -T bez parametrów połączenia ich nie stosuje. Brak serwera SSH
-    daje wynik NOT_APPLICABLE.
+    które wymaga uprawnień roota. Ubuntu uruchamia ssh.service dopiero przy
+    pierwszym połączeniu (ssh.socket), a bez niego nie ma katalogu /run/sshd,
+    bez którego sshd -T się zatrzymuje. W takim przypadku sprawdzenie
+    uruchamia sshd -T we własnej przestrzeni montowania z pustym /run, więc
+    w systemie nic się nie zmienia; bez kluczy hosta sshd -T dostaje klucz
+    tymczasowy.
+    Sprawdza też wartości ustawione
+    w blokach Match w /etc/ssh/sshd_config i w plikach .conf z katalogu
+    /etc/ssh/sshd_config.d, bo sshd -T bez parametrów połączenia ich nie
+    stosuje. Brak serwera SSH daje wynik NOT_APPLICABLE.
 
     Naprawa zapisuje ustawienie w pliku /etc/ssh/sshd_config.d/01-sentin-harden-max-startups.conf z uprawnieniami 0600. sshd
-    bierze pierwszą znalezioną wartość, a ten plik jest czytany przed
-    pozostałymi plikami z katalogu, np. 50-redhat.conf. Gdy blok Match
-    ustawia niezgodną wartość, naprawa nic nie zmienia i prosi o ręczną
-    poprawkę. Po zapisie sprawdza konfigurację jeszcze raz; gdy sshd ją
-    odrzuca albo wcześniejsza dyrektywa w /etc/ssh/sshd_config wygrywa,
-    przywraca poprzedni stan i kończy się błędem. Działający sshd dostaje
-    polecenie reload, które nie przerywa otwartych sesji. Wycofanie usuwa
-    plik albo przywraca jego poprzednią treść.
+    bierze pierwszą znalezioną wartość, a stockowy /etc/ssh/sshd_config
+    dołącza pliki z katalogu na samym początku, więc ten plik wygrywa
+    z późniejszymi wierszami. Gdy blok Match ustawia niezgodną wartość,
+    naprawa nic nie zmienia i prosi o ręczną poprawkę. Po zapisie sprawdza
+    konfigurację jeszcze raz; gdy sshd ją odrzuca albo wcześniejsza
+    dyrektywa wygrywa, przywraca poprzedni stan i kończy się błędem.
+    Działający ssh.service dostaje polecenie reload, które nie przerywa
+    otwartych sesji; zatrzymany wczyta nowe ustawienie przy najbliższym
+    połączeniu. Wycofanie usuwa plik albo przywraca jego poprzednią treść.
 
-    Fedora ma domyślnie MaxStartups 10:30:100. Naprawa ustawia 10:30:60.
+    Ubuntu ma domyślnie MaxStartups 10:30:100. Naprawa ustawia 10:30:60.
     Sprawdzenie uznaje za zgodne ustawienie start:rate:full, w którym start
     wynosi od 1 do 10, full najwyżej 60, a rate co najmniej 30, bo wyższy
     procent odrzucanych połączeń jest bardziej restrykcyjny. Pojedyncza
@@ -263,23 +285,29 @@ notes:
     pokazuje ją jako 5:30:5.
   en: |
     The check reads the effective server configuration with sshd -T, which
-    needs root privileges; without host keys it gets a temporary key. It
-    also checks values set in Match blocks in /etc/ssh/sshd_config and in the
-    .conf files in the /etc/ssh/sshd_config.d directory, because sshd -T
-    without connection parameters does not apply them. No SSH server gives
-    the NOT_APPLICABLE result.
+    needs root privileges. Ubuntu starts ssh.service only on the first
+    connection (ssh.socket), and without it there is no /run/sshd directory,
+    without which sshd -T stops. In that case the check runs sshd -T in its
+    own mount namespace with an empty /run, so nothing changes in the
+    system; without host keys sshd -T gets a temporary key.
+    It also checks values set in
+    Match blocks in /etc/ssh/sshd_config and in the .conf files in the
+    /etc/ssh/sshd_config.d directory, because sshd -T without connection
+    parameters does not apply them. No SSH server gives the NOT_APPLICABLE
+    result.
 
     The remediation writes the setting to /etc/ssh/sshd_config.d/01-sentin-harden-max-startups.conf with the mode 0600. sshd takes
-    the first value it finds, and this file is read before the other files
-    in the directory, such as 50-redhat.conf. When a Match block sets a
-    non-compliant value, the remediation changes nothing and asks for a
-    manual fix. After writing, it checks the configuration again; when sshd
-    rejects it or an earlier directive in /etc/ssh/sshd_config wins, it
-    restores the previous state and ends with an error. A running sshd gets
-    a reload, which keeps open sessions. Rollback removes the file or
-    restores its previous content.
+    the first value it finds, and the stock /etc/ssh/sshd_config includes
+    the files of the directory at its very top, so this file wins over later
+    lines. When a Match block sets a non-compliant value, the remediation
+    changes nothing and asks for a manual fix. After writing, it checks the
+    configuration again; when sshd rejects it or an earlier directive wins,
+    it restores the previous state and ends with an error. A running
+    ssh.service gets a reload, which keeps open sessions; a stopped one
+    reads the new setting on the next connection. Rollback removes the file
+    or restores its previous content.
 
-    Fedora has MaxStartups 10:30:100 by default. The remediation sets
+    Ubuntu has MaxStartups 10:30:100 by default. The remediation sets
     10:30:60. The check accepts a start:rate:full setting where start is 1
     to 10, full is at most 60 and rate is at least 30, because a higher
     percentage of dropped connections is stricter. A single number, such as

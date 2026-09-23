@@ -1,0 +1,306 @@
+id: ubuntu2404-var-log-nosuid
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.2.6.3
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /var/log
+  title:
+    pl: Opcja nosuid ustawiona dla /var/log
+    en: Ensure nosuid option set on /var/log partition
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Bit setuid lub setgid każe uruchomić program z uprawnieniami jego
+    właściciela, zwykle roota, a nie osoby, która go uruchamia; podobnie działają
+    uprawnienia plików (file capabilities). Opcja nosuid sprawia, że jądro
+    ignoruje jedno i drugie dla plików w /var/log: program działa, ale z uprawnieniami
+    uruchamiającego. Kopia powłoki z ustawionym bitem, zostawiona tam przez
+    kogoś, kto na chwilę miał uprawnienia roota, nie staje się trwałym wejściem.
+
+    W /var/log są wyłącznie dzienniki, więc program z bitem setuid w tym
+    katalogu nie ma uzasadnienia. Kategoria jest niska, bo do /var/log piszą
+    tylko usługi systemowe i grupa syslog.
+
+    Na domyślnej instalacji Ubuntu /var/log nie jest osobnym punktem montowania,
+    więc wynik brzmi nie dotyczy, a brak osobnej partycji zgłasza punkt
+    1.1.2.6.1. Gdy /var/log jest zamontowany, ale /etc/fstab nie ma dla niego wpisu,
+    naprawa kończy się błędem bez zmian, bo nie wie, skąd pochodzi montowanie.
+  en: |
+    The setuid or setgid bit makes a program run with the privileges of its
+    owner, usually root, rather than those of the person starting it; file
+    capabilities work in a similar way. The nosuid option makes the kernel
+    ignore both for files in /var/log: the program runs, but with the privileges of
+    whoever started it. A copy of a shell with the bit set, left there by
+    somebody who briefly had root privileges, does not become a lasting way in.
+
+    /var/log holds nothing but logs, so a program with the setuid bit in this
+    directory has no justification. The category is low because only system
+    services and the syslog group write to /var/log.
+
+    On a default Ubuntu installation /var/log is not a separate mount point, so the
+    result is not applicable, and the missing partition is reported by item
+    1.1.2.6.1. When /var/log is mounted but /etc/fstab has no entry for it, the
+    remediation fails without changes, because it cannot tell where the mount
+    comes from.
+
+disruption_description:
+  pl: |
+    Nic nie przestaje działać, gdy /var/log jest osobnym punktem montowania.
+    W dziennikach nie ma programów.
+
+    Zmiana nie wymaga restartu ani wylogowania.
+  en: |
+    Nothing stops working when /var/log is a separate mount point. There are
+    no programs among the logs.
+
+    The change needs no restart and no sign-out.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    t=/var/log
+    o=nosuid
+    if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    live=$(findmnt -kn --mountpoint "$t" -o OPTIONS 2>/dev/null | tail -n 1)
+    if [ -z "$live" ]; then echo NOT_APPLICABLE; exit 0; fi
+    case ",$live," in *",$o,"*) ;; *) echo MISSING; exit 0 ;; esac
+    if [ -e /etc/fstab ] && [ ! -r /etc/fstab ]; then echo CHECK_ERROR; exit 0; fi
+    src=""
+    if [ -d /run/systemd/system ] && command -v systemd-escape >/dev/null 2>&1; then
+      unit=$(systemd-escape -p --suffix=mount "$t")
+      src=$(systemctl show -P FragmentPath "$unit" 2>/dev/null || true)
+    fi
+    case "$src" in
+      ""|/run/systemd/generator/*) conf=$(findmnt -sn --mountpoint "$t" -o OPTIONS 2>/dev/null | tail -n 1) ;;
+      *) conf=$(systemctl cat "$unit" 2>/dev/null | sed -n 's/^Options=//p' | tail -n 1) ;;
+    esac
+    if [ -n "$conf" ]; then
+      case ",$conf," in *",$o,"*) ;; *) echo NOT_PERSISTENT; exit 0 ;; esac
+    fi
+    echo SET
+  expected: '^SET$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      t=/var/log
+      o=nosuid
+      f=/etc/fstab
+      mkdir -p "$(dirname '{{backup_file}}')"
+      n=$(awk -v t="$t" '$1 !~ /^#/ && $2 == t' "$f" | wc -l)
+      opts=$(awk -v t="$t" '$1 !~ /^#/ && $2 == t { print $4 }' "$f" | head -n 1)
+      live=$(findmnt -kn --mountpoint "$t" -o OPTIONS | tail -n 1)
+      {
+        echo "entry=$n"
+        case ",$opts," in *",$o,"*) echo option=1 ;; *) echo option=0 ;; esac
+        case ",$live," in *",$o,"*) echo live=1 ;; *) echo live=0 ;; esac
+        echo ---
+        cat "$f"
+      } > '{{backup_file}}'
+      echo "Saved previous state to {{backup_file}}"
+    )
+
+  change_command: |
+    (
+      set -e
+      t=/var/log
+      o=nosuid
+      f=/etc/fstab
+      if [ -d /run/systemd/system ] && command -v systemd-escape >/dev/null 2>&1; then
+        unit=$(systemd-escape -p --suffix=mount "$t")
+        src=$(systemctl show -P FragmentPath "$unit" 2>/dev/null || true)
+        case "$src" in
+          ""|/run/systemd/generator/*|/usr/lib/systemd/*|/lib/systemd/*|/usr/local/lib/systemd/*) ;;
+          *) echo "$t is defined in $src, which takes precedence over $f; add $o there" >&2; exit 1 ;;
+        esac
+      fi
+      n=$(awk -v t="$t" '$1 !~ /^#/ && $2 == t' "$f" | wc -l)
+      new=$(mktemp "$f.sentin.XXXXXX")
+      trap 'rm -f "$new"' EXIT
+      if [ "$n" -gt 1 ]; then
+        echo "$f has more than one entry for $t; add $o there by hand" >&2; exit 1
+      elif [ "$n" -eq 1 ]; then
+        awk -v t="$t" -v o="$o" '
+          function fields(s,    k) {
+            k = 0
+            while (s != "") {
+              k++
+              if (match(s, /[ \t]+/)) {
+                p[k] = substr(s, 1, RSTART - 1); sep[k] = substr(s, RSTART, RLENGTH)
+                s = substr(s, RSTART + RLENGTH)
+              } else {
+                p[k] = s; sep[k] = ""; s = ""
+              }
+            }
+            return k
+          }
+          $1 !~ /^#/ && $2 == t {
+            lead = substr($0, 1, match($0, /[^ \t]/) - 1)
+            k = fields(substr($0, length(lead) + 1))
+            if (k < 4) { for (i = k + 1; i <= 4; i++) { sep[i - 1] = " "; p[i] = "defaults" } k = 4 }
+            if (index("," p[4] ",", "," o ",") == 0) p[4] = p[4] "," o
+            line = lead
+            for (i = 1; i <= k; i++) line = line p[i] sep[i]
+            print line; next
+          }
+          { print }' "$f" > "$new"
+      else
+        echo "$t is mounted from a definition outside $f; add $o where it is defined" >&2
+        exit 1
+        { awk '{ print }' "$f"; echo "# Sentin-Harden: $t"; printf '%s\n' "$line"; } > "$new"
+      fi
+      got=$(findmnt -sn --tab-file "$new" --mountpoint "$t" -o OPTIONS)
+      case ",$got," in *",$o,"*) ;; *) echo "The new $f does not parse as expected; nothing was changed" >&2; exit 1 ;; esac
+      chmod --reference="$f" "$new"
+      chown --reference="$f" "$new"
+      mv -f "$new" "$f"
+      trap - EXIT
+      if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
+      vfs=$(findmnt -kn --mountpoint "$t" -o VFS-OPTIONS | tail -n 1)
+      mount --options-mode ignore --options-source disable -o "remount,$vfs,$o" "$t"
+      echo "Added $o to $t in $f and remounted $t"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      t=/var/log
+      o=nosuid
+      f=/etc/fstab
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      entry=$(sed -n 's/^entry=//p' "$b" | head -n 1)
+      option=$(sed -n 's/^option=//p' "$b" | head -n 1)
+      live=$(sed -n 's/^live=//p' "$b" | head -n 1)
+      case "$entry:$option:$live" in
+        [01]:[01]:[01]) ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      new=$(mktemp "$f.sentin.XXXXXX")
+      trap 'rm -f "$new"' EXIT
+      if [ "$entry" = 0 ]; then
+        grep -qx "# Sentin-Harden: $t" "$f" || { echo "The entry for $t added earlier is no longer in $f" >&2; exit 1; }
+        awk -v m="# Sentin-Harden: $t" -v t="$t" '
+          skip && $2 == t { skip = 0; next }
+          { skip = 0 }
+          $0 == m { skip = 1; next }
+          { print }' "$f" > "$new"
+      elif [ "$option" = 0 ]; then
+        awk -v t="$t" -v o="$o" '
+          function fields(s,    k) {
+            k = 0
+            while (s != "") {
+              k++
+              if (match(s, /[ \t]+/)) {
+                p[k] = substr(s, 1, RSTART - 1); sep[k] = substr(s, RSTART, RLENGTH)
+                s = substr(s, RSTART + RLENGTH)
+              } else {
+                p[k] = s; sep[k] = ""; s = ""
+              }
+            }
+            return k
+          }
+          $1 !~ /^#/ && $2 == t {
+            lead = substr($0, 1, match($0, /[^ \t]/) - 1)
+            k = fields(substr($0, length(lead) + 1))
+            n = split(p[4], a, ","); s = ""
+            for (i = 1; i <= n; i++) if (a[i] != o) s = s (s == "" ? "" : ",") a[i]
+            p[4] = (s == "" ? "defaults" : s)
+            line = lead
+            for (i = 1; i <= k; i++) line = line p[i] sep[i]
+            print line; next
+          }
+          { print }' "$f" > "$new"
+      else
+        rm -f "$new"; trap - EXIT
+        echo "$o was already in $f before the change; nothing to restore"; exit 0
+      fi
+      chmod --reference="$f" "$new"
+      chown --reference="$f" "$new"
+      mv -f "$new" "$f"
+      trap - EXIT
+      if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
+      if [ "$live" = 0 ]; then
+        vfs=$(findmnt -kn --mountpoint "$t" -o VFS-OPTIONS | tail -n 1)
+        mount --options-mode ignore --options-source disable -o "remount,$vfs,suid" "$t"
+      fi
+      echo "Removed $o from $t in $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/fstab.5.html
+  - https://man7.org/linux/man-pages/man8/mount.8.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html
+
+notes:
+  pl: |
+    Sprawdzenie patrzy w dwa miejsca. Najpierw na bieżące montowanie, bo tylko
+    ono działa teraz, a potem na zapis, z którego montowanie powstanie przy
+    następnym starcie. Tym zapisem jest wpis w /etc/fstab, chyba że katalog
+    montuje plik jednostki systemd w /etc/systemd/system albo w /run, który ma
+    pierwszeństwo przed fstab; jednostkę z /usr/lib/systemd test bierze pod
+    uwagę tylko wtedy, gdy fstab nie ma wpisu. Opcja obecna tylko w bieżącym
+    montowaniu daje wynik niespełniony, bo zniknie po restarcie.
+
+    Gdy /var/log nie jest osobnym punktem montowania, wynik to nie dotyczy: opcji nie
+    ma gdzie ustawić, a brak osobnej partycji zgłasza punkt o partycji.
+
+    Naprawa dopisuje opcję do wpisu w /etc/fstab i od razu montuje katalog
+    ponownie z nową opcją. Gdy katalog montuje jednostka z /etc/systemd/system
+    lub /run, naprawa kończy się błędem bez zmian i wskazuje ten plik, bo wpis
+    w fstab i tak nie zostałby użyty. Zmieniony plik jest najpierw zapisywany
+    obok i czytany przez findmnt; jeśli nie daje oczekiwanego wyniku, oryginał
+    zostaje nietknięty. Wycofanie usuwa tylko tę jedną opcję, a nie przywraca
+    całego pliku, więc nie cofa zmian w innych wpisach wprowadzonych
+    w międzyczasie.
+  en: |
+    The check looks in two places. First at the current mount, because only that
+    is in effect now, then at the record the mount will come from at the next
+    start. That record is the entry in /etc/fstab, unless a systemd unit file in
+    /etc/systemd/system or in /run mounts the directory, which takes precedence
+    over fstab; the test uses a unit from /usr/lib/systemd only when fstab has no
+    entry. An option present only in the current mount gives a non-compliant
+    result, because it will disappear after a restart.
+
+    When /var/log is not a separate mount point, the result is not applicable: there
+    is nowhere to set the option, and the missing partition is reported by the
+    partition item.
+
+    The remediation adds the option to the entry in /etc/fstab and at once
+    remounts the directory with the new option. When a unit in
+    /etc/systemd/system or /run mounts the directory, the remediation fails
+    without changes and names that file, because an fstab entry would not be used
+    anyway. The changed file is first written next to the original and read back
+    with findmnt; if that does not give the expected result, the original stays
+    untouched. Rollback removes only this one option rather than restoring the
+    whole file, so it does not undo changes to other entries made in the
+    meantime.

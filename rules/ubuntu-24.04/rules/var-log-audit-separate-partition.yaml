@@ -1,0 +1,137 @@
+id: ubuntu2404-var-log-audit-separate-partition
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.2.7.1
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /var/log/audit
+  title:
+    pl: Katalog /var/log/audit jest osobną partycją
+    en: Ensure separate partition exists for /var/log/audit
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    W /var/log/audit usługa auditd zapisuje dziennik audytu. Na Ubuntu
+    domyślnie trzyma pięć plików po 8 MB, a gdy zaczyna brakować miejsca na
+    dysku, wstrzymuje zapis zdarzeń (ustawienia SUSPEND w auditd.conf). Na
+    wspólnym systemie plików o tym, kiedy audyt przestaje działać, decyduje
+    więc to, ile miejsca zajęło wszystko inne. Osobny wolumin sprawia, że
+    decyduje tylko rozmiar samego dziennika audytu.
+
+    Ubuntu Server nie instaluje auditd domyślnie; katalog /var/log/audit
+    powstaje dopiero z pakietem auditd. Domyślny układ instalatora go nie
+    wydziela, więc punkt nie jest spełniony. Należy do poziomu 2, bo zmiana
+    wymaga przeniesienia danych.
+  en: |
+    /var/log/audit is where auditd writes the audit log. On Ubuntu it keeps
+    five 8 MB files by default, and when disk space starts running out, it
+    suspends recording events (the SUSPEND settings in auditd.conf). On a
+    shared file system, when auditing stops is therefore decided by how much
+    space everything else took. A separate volume means that only the size of
+    the audit log itself decides this.
+
+    Ubuntu Server does not install auditd by default; the /var/log/audit
+    directory only appears with the auditd package. The default installer
+    layout does not separate it, so the item is not met. It belongs to level 2
+    because the change needs data to be moved.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia, bo przenosi dane na nowe miejsce
+    i wymaga pracy, gdy nikt z nich nie korzysta. Program nie wykonuje jej
+    sam; opis mówi, co trzeba zaplanować.
+
+    Przeniesienie dziennika audytu trzeba zrobić przy zatrzymanym auditd,
+    z zachowaniem uprawnień katalogu (750, właściciel root, grupa adm). Rozmiar
+    woluminu trzeba dobrać do ustawień max_log_file i num_logs w
+    /etc/audit/auditd.conf, z zapasem na progi space_left i admin_space_left.
+  en: |
+    The change needs a planned rollout because it moves data to a new place
+    and needs work while nobody uses it. The program does not perform it; the
+    description says what has to be planned.
+
+    Moving the audit log has to be done with auditd stopped, keeping the
+    directory's permissions (750, owner root, group adm). The volume size has
+    to match the max_log_file and num_logs settings in /etc/audit/auditd.conf,
+    with room for the space_left and admin_space_left thresholds.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Przeniesienie /var/log/audit wymaga zatrzymania auditd, więc zdarzenia z czasu przenoszenia nie trafiają do dziennika audytu
+      - Wolumin mniejszy niż suma plików rotacji z auditd.conf zapełnia się i auditd wstrzymuje zapis zdarzeń
+    en:
+      - Moving /var/log/audit needs auditd to be stopped, so events from the time of the move do not reach the audit log
+      - A volume smaller than the total of rotated files from auditd.conf fills up and auditd suspends recording events
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dysk i grupa woluminów nie mają wolnego miejsca na osobny wolumin, a zmiana układu partycji nie była zaplanowana
+    en:
+      - The disk and the volume group have no free space for a separate volume and no change to the partition layout has been planned
+  reversibility: difficult
+
+audit:
+  shell: bash
+  test_command: |
+    t=/var/log/audit
+    if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if findmnt -kn --mountpoint "$t" >/dev/null 2>&1; then echo SEPARATE; else echo NOT_SEPARATE; fi
+  expected: '^SEPARATE$'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man5/fstab.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
+  - https://www.freedesktop.org/software/systemd/man/latest/file-hierarchy.html
+  - https://man7.org/linux/man-pages/man8/lvcreate.8.html
+  - https://man7.org/linux/man-pages/man8/auditd.8.html
+  - https://man7.org/linux/man-pages/man5/auditd.conf.5.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje punkt za spełniony, gdy /var/log/audit jest osobnym punktem
+    montowania, bez względu na to, czy jest to partycja, wolumin logiczny czy
+    udział sieciowy.
+
+    Punkt nie ma naprawy uruchamianej z programu. Wydzielenie katalogu wymaga
+    przeniesienia jego zawartości na nowe miejsce, gdy nic z niej nie korzysta,
+    i nie da się go bezpiecznie cofnąć jednym poleceniem.
+
+    Na serwerze zainstalowanym z domyślnym układem LVM instalator zwykle
+    zostawia w grupie woluminów ubuntu-vg wolne miejsce, więc nowy wolumin dla
+    /var/log/audit można utworzyć poleceniem lvcreate bez zmiany partycji. Dane kopiuje
+    się np. poleceniem rsync -aAXH, a nowy wolumin dopisuje do /etc/fstab po
+    identyfikatorze UUID. AppArmor opiera się na ścieżkach, a nie na etykietach
+    plików, więc po przeniesieniu nie trzeba niczego oznaczać na nowo.
+  en: |
+    The check considers the item met when /var/log/audit is a separate mount point,
+    whether it is a partition, a logical volume or a network share.
+
+    The item has no remediation that the program runs. Separating the
+    directory means moving its contents to the new place while nothing uses
+    them, and it cannot be safely undone with one command.
+
+    On a server installed with the default LVM layout the installer usually
+    leaves free space in the ubuntu-vg volume group, so a new volume for /var/log/audit
+    can be created with lvcreate without changing partitions. The data is
+    copied, for example, with rsync -aAXH, and the new volume is added to
+    /etc/fstab by its UUID. AppArmor works on paths rather than file labels, so
+    nothing has to be relabelled after the move.

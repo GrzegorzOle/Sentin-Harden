@@ -1,0 +1,164 @@
+id: win10-tcp-retransmissions-limited
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Liczba powtórzeń wysyłki danych ograniczona do trzech
+    en: The number of data send repeats limited to three
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy druga strona nie potwierdza odebrania danych, maszyna ponawia wysyłkę,
+    czekając za każdym razem dłużej. Domyślna liczba powtórzeń sprawia, że
+    połączenie z maszyną, która zamilkła, trzyma się jeszcze przez minuty.
+
+    Ograniczenie powtórzeń skraca ten czas. Zysk nie polega na obronie przed
+    konkretnym atakiem, lecz na tym, że połączenia porzucone przez drugą stronę
+    zwalniają się szybciej, a maszynie trudniej związać zasoby samym milczeniem.
+
+    To jest utwardzenie porządkujące, nie zamknięcie drogi wejścia — i tak zostało
+    tu ocenione.
+  en: |
+    Where the far side does not confirm that data arrived, the machine sends it
+    again, waiting longer each time. The default number of repeats keeps a
+    connection to a machine gone silent alive for minutes.
+
+    Limiting the repeats shortens that. The gain is not defence against any
+    particular attack but that connections abandoned by the far side are released
+    sooner, and it becomes harder to tie up a machine s resources by silence
+    alone.
+
+    This is tidying hardening rather than the closing of a way in, and it is rated
+    here as such.
+
+disruption_description:
+  pl: |
+    Skutek dotyka łączy słabych i dalekich. Tam, gdzie pakiety giną regularnie,
+    mniejsza liczba powtórzeń oznacza zerwane połączenie w miejsce połączenia
+    powolnego — a to widzi użytkownik.
+
+    Najbardziej narażone są sesje długie i wrażliwe na przerwanie: kopiowanie
+    dużych plików przez łącze mobilne, praca na zdalnym pulpicie przez sieć
+    komórkową, transmisje do oddziałów za pośrednictwem wolnego łącza. Dlatego
+    punkt wymaga świadomego wdrożenia, mimo że sam w sobie jest drobny.
+  en: |
+    The effect lands on weak and distant links. Where packets are lost regularly,
+    fewer repeats mean a broken connection in place of a slow one - and the user
+    sees that.
+
+    Most exposed are long sessions sensitive to interruption - copying large files
+    over a mobile link, working on a remote desktop over a cellular network,
+    transfers to branches across a slow line. Which is why the item calls for
+    deliberate rollout, small though it is in itself.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Połączenia przez łącza o dużych stratach będą zrywane tam, gdzie dotąd trwały dalej mimo zakłóceń
+      - Kopiowanie dużych plików przez łącze mobilne może kończyć się błędem zamiast spowolnieniem
+      - Sesje pulpitu zdalnego przez sieć komórkową będą rozłączane częściej, szczególnie w ruchu
+      - Starsze aplikacje bez własnego ponawiania zgłoszą błąd transmisji zamiast dokończyć operację
+      - Praca w sieci lokalnej, przepustowość i połączenia na łączach stabilnych pozostają bez zmian
+    en:
+      - Connections over lossy links are dropped where they used to carry on despite the interference
+      - Copying large files over a mobile link may end in an error rather than merely slowing down
+      - Remote desktop sessions over a cellular network are disconnected more often, particularly while moving
+      - Older applications with no retry of their own report a transmission error instead of finishing the operation
+      - Work on the local network, throughput and connections over stable links are unchanged
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska pracujące przez łącza mobilne i satelitarne, gdzie straty pakietów są normą
+      - Maszyny przesyłające duże pliki do oddziałów przez wolne łącza
+      - Środowiska ze starszymi aplikacjami, które nie ponawiają operacji po błędzie transmisji
+      - Maszyny bez możliwości ponownego uruchomienia w rozsądnym czasie
+    en:
+      - Stations working over mobile and satellite links, where packet loss is the norm
+      - Machines sending large files to branches across slow lines
+      - Environments with older applications that do not retry after a transmission error
+      - Machines that cannot be restarted within a reasonable time
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'TcpMaxDataRetransmissions'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    $name = 'TcpMaxDataRetransmissions'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'TcpMaxDataRetransmissions' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/tcpip-and-nbt-configuration-parameters
+
+notes:
+  pl: |
+    Porównanie jest na górną granicę, więc mniejsza liczba powtórzeń spełnia
+    punkt. Bliźniacza reguła ustawia to samo dla nowszej wersji protokołu
+    sieciowego i obie warto czytać razem.
+  en: |
+    The comparison is an upper bound, so fewer repeats meet the item. A twin rule
+    sets the same for the newer version of the network protocol and the two are
+    worth reading together.

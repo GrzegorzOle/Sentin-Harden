@@ -1,0 +1,153 @@
+id: win10-ipv6-source-routing-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: MSS (Legacy)
+  title:
+    pl: Trasowanie źródłowe IPv6 wyłączone
+    en: IPv6 source routing disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Nowsza wersja protokołu sieciowego niesie ten sam mechanizm wskazywania trasy
+    przez nadawcę i to samo ryzyko: przeprowadzenie pakietu drogą, której nikt nie
+    przewidział, obok reguł ustawionych na trasę spodziewaną.
+
+    Ustawienie żyje w osobnej gałęzi, bo obie wersje protokołu mają własne
+    parametry. To jest źródło najczęstszej pomyłki przy tym punkcie: wyłączenie
+    trasowania w starszej wersji i przeświadczenie, że sprawa jest zamknięta.
+
+    Maszyna korzysta z obu wersji naraz, często nie informując o tym użytkownika.
+    Reguła domyka drugą połowę.
+  en: |
+    The newer version of the network protocol carries the same mechanism of a
+    sender naming the route and the same risk - leading a packet along a path
+    nobody expected, past rules set for the expected one.
+
+    The setting lives in a separate branch, because each version of the protocol
+    has parameters of its own. That is the source of the commonest mistake at this
+    item - switching source routing off in the older version and believing the
+    matter closed.
+
+    The machine uses both versions at once, often without telling the user. The
+    rule closes the second half.
+
+disruption_description:
+  pl: |
+    Tak jak przy starszej wersji protokołu, zmiana jest niewidoczna w pracy
+    i pozbawiona znanych regresji poza narzędziami diagnostycznymi. Wymaga
+    ponownego uruchomienia maszyny.
+
+    Warto ją wdrożyć nawet tam, gdzie nowsza wersja protokołu wydaje się
+    nieużywana. Maszyna zwykle ma ją włączoną, a sieci lokalne potrafią jej
+    używać bez wiedzy kogokolwiek.
+  en: |
+    As with the older version of the protocol, the change is invisible in daily
+    work and free of known regressions beyond diagnostic tooling. It calls for a
+    restart of the machine.
+
+    It is worth deploying even where the newer version of the protocol seems
+    unused. The machine usually has it on, and local networks can use it without
+    anybody knowing.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Narzędzia diagnostyczne wymuszające trasę pakietu w nowszej wersji protokołu przestaną działać wobec tej maszyny
+      - Zmiana obowiązuje po ponownym uruchomieniu maszyny, a jej wycofanie również
+      - Łączność w obu wersjach protokołu, przepustowość, rozwiązywanie nazw i pozostała praca sieciowa nie zmieniają się
+    en:
+      - Diagnostic tools forcing a packet route in the newer version of the protocol stop working against this machine
+      - The change takes effect after a restart, and so does undoing it
+      - Connectivity in both versions of the protocol, throughput, name resolution and the rest of network work are unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska diagnostyczne, na których wymuszanie trasy pakietu jest narzędziem pracy
+      - Maszyny bez możliwości ponownego uruchomienia w rozsądnym czasie
+    en:
+      - Diagnostic stations, where forcing a packet route is a working tool
+      - Machines that cannot be restarted within a reasonable time
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableIPSourceRouting'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+    $name = 'DisableIPSourceRouting'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableIPSourceRouting' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/networking/technologies/network-subsystem/net-sub-performance-tuning-nics
+
+notes:
+  pl: |
+    Parametr nosi tę samą nazwę co w starszej wersji protokołu, ale leży w innej
+    gałęzi rejestru — przy ręcznym sprawdzaniu łatwo odczytać jedno zamiast
+    drugiego. Punkt spełnia się wyłącznie razem z bliźniaczym.
+  en: |
+    The parameter carries the same name as in the older version of the protocol
+    but lives in a different registry branch - on a manual check it is easy to
+    read one instead of the other. The item is met only together with its twin.

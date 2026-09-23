@@ -1,0 +1,165 @@
+id: win10-tcp-keep-alive-interval
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Odstęp między pakietami podtrzymującymi połączenie skrócony
+    en: The interval between connection keep-alive packets shortened
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Połączenie, w którym przez dłuższy czas nic nie płynie, jest sprawdzane
+    pakietem podtrzymującym: jeśli druga strona odpowie, połączenie żyje dalej.
+    Domyślny odstęp między takimi sprawdzeniami liczy się w godzinach.
+
+    Skrócenie go do pięciu minut sprawia, że połączenia porzucone przez drugą
+    stronę są rozpoznawane i zamykane szybciej. Maszyna przestaje trzymać wpisy
+    po sesjach, których dawno nie ma, a raport połączeń zaczyna pokazywać stan
+    bliższy rzeczywistości.
+
+    Korzyść jest porządkowa i taka jest też ocena ryzyka. Punkt nie zamyka drogi
+    wejścia; ogranicza pole manewru temu, kto liczy na połączenia zapomniane.
+  en: |
+    A connection with nothing flowing through it for a while is checked with a
+    keep-alive packet - if the far side answers, the connection lives on. The
+    default interval between such checks runs to hours.
+
+    Shortening it to five minutes means connections abandoned by the far side are
+    recognised and closed sooner. The machine stops holding entries for sessions
+    long gone, and a connection report starts showing a state closer to reality.
+
+    The benefit is one of order, and so is the risk rating. The item closes no way
+    in; it narrows the room of whoever counts on forgotten connections.
+
+disruption_description:
+  pl: |
+    Skrócenie odstępu zwiększa ruch podtrzymujący na wszystkich otwartych
+    połączeniach. Na maszynie z kilkoma sesjami jest to nieodczuwalne, na
+    stanowisku trzymającym setki połączeń — już widoczne w statystykach łącza.
+
+    Ważniejszy jest inny skutek: połączenia przez łącza rozliczane za ilość
+    przesłanych danych zaczną generować ruch nawet wtedy, gdy nic się nie dzieje.
+    Na łączu mobilnym to jest koszt realny, choć niewielki.
+  en: |
+    Shortening the interval raises keep-alive traffic across all open connections.
+    On a machine with a few sessions that is imperceptible; on a station holding
+    hundreds of connections it shows in the link statistics.
+
+    A second effect matters more - connections over links billed by the volume of
+    data start generating traffic even when nothing is happening. On a mobile link
+    that is a real cost, small though it is.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Ruch podtrzymujący pojawia się częściej na wszystkich otwartych połączeniach, także tych bezczynnych
+      - Na łączach rozliczanych za ilość danych bezczynne sesje zaczną generować mierzalny koszt
+      - Urządzenia oszczędzające energię mogą rzadziej wchodzić w stan uśpienia, bo połączenia są odpytywane częściej
+      - Połączenia porzucone przez drugą stronę będą zamykane szybciej, co niektóre aplikacje zgłoszą jako zerwanie sesji
+      - Przepustowość, opóźnienia w ruchu właściwym i praca aplikacji sieciowych pozostają bez zmian
+    en:
+      - Keep-alive traffic appears more often on all open connections, idle ones included
+      - On links billed by data volume, idle sessions start generating a measurable cost
+      - Power-saving devices may enter sleep less often, because connections are polled more frequently
+      - Connections abandoned by the far side are closed sooner, which some applications report as a dropped session
+      - Throughput, latency on actual traffic and the working of network applications are unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska pracujące przez łącza rozliczane za ilość przesłanych danych
+      - Maszyny utrzymujące setki jednoczesnych połączeń, gdzie dodatkowy ruch sumuje się zauważalnie
+      - Urządzenia zasilane bateryjnie, gdzie częstsze odpytywanie skraca czas pracy
+      - Maszyny bez możliwości ponownego uruchomienia w rozsądnym czasie
+    en:
+      - Stations working over links billed by the volume of data sent
+      - Machines holding hundreds of simultaneous connections, where the added traffic adds up noticeably
+      - Battery-powered devices, where more frequent polling shortens running time
+      - Machines that cannot be restarted within a reasonable time
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is given in milliseconds; five minutes is three hundred
+    # thousand and anything lower is compliant as well.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'KeepAliveTime'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '300000'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    $name = 'KeepAliveTime'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'KeepAliveTime' -Value 300000 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/tcpip-and-nbt-configuration-parameters
+
+notes:
+  pl: |
+    Wartość podawana jest w milisekundach; pięć minut to trzysta tysięcy, a każda
+    mniejsza liczba również spełnia punkt. Zero nie oznacza tu najczęstszego
+    sprawdzania, tylko wartość nieprawidłową, i nie należy go wpisywać w miejsce
+    odstępu.
+  en: |
+    The value is given in milliseconds; five minutes is three hundred thousand and
+    any smaller number meets the item as well. Zero here does not stand for the
+    most frequent checking but for an invalid value, and should not be written in
+    place of the interval.

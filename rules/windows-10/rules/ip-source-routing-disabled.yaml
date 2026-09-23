@@ -1,0 +1,156 @@
+id: win10-ip-source-routing-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: MSS (Legacy)
+  title:
+    pl: Trasowanie źródłowe IPv4 wyłączone
+    en: IPv4 source routing disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Nadawca pakietu może wpisać w nim trasę, którą pakiet ma przebyć, zamiast
+    zostawić wybór urządzeniom sieciowym. Mechanizm pochodzi z czasów, gdy
+    diagnozowanie sieci wymagało takich możliwości, i dziś nie ma zastosowania
+    w zwykłej pracy.
+
+    Ma za to zastosowanie w omijaniu zabezpieczeń. Wskazana trasa pozwala
+    przeprowadzić pakiet drogą, której nikt nie przewidział, w tym obok reguł
+    zapory ustawionych na trasę spodziewaną. Odpowiedź wraca tą samą drogą, więc
+    napastnik widzi ją nawet wtedy, gdy formalnie nie powinien.
+
+    Wyłączenie każe maszynie odrzucać takie pakiety, zamiast grzecznie przekazywać
+    je dalej wskazaną trasą.
+  en: |
+    The sender of a packet may write into it the route the packet is to travel,
+    instead of leaving the choice to the network devices. The mechanism comes from
+    a time when diagnosing networks called for such things, and today it has no
+    use in ordinary work.
+
+    It does have a use in getting around protections. A named route lets a packet
+    be led along a path nobody expected, past firewall rules set for the expected
+    one. The answer returns the same way, so the attacker sees it even where they
+    formally should not.
+
+    Switching it off has the machine refuse such packets rather than politely pass
+    them along the named route.
+
+disruption_description:
+  pl: |
+    Trasowanie źródłowe jest odrzucane przez większość urządzeń sieciowych na
+    trasie, więc na maszynie końcowej wyłączenie go jest bez skutku praktycznego.
+    Nie ma znanych regresji poza narzędziami diagnostycznymi.
+
+    Koszt to ponowne uruchomienie maszyny. Poza tym zmiana jest niewidoczna
+    i odwracalna, choć wycofanie również wymaga restartu.
+  en: |
+    Source routing is refused by most network devices along the way, so on an end
+    machine switching it off has no practical effect. There are no known
+    regressions beyond diagnostic tooling.
+
+    The cost is a restart of the machine. Beyond that the change is invisible and
+    reversible, though undoing it calls for a restart as well.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Narzędzia diagnostyczne wymuszające trasę pakietu przestaną działać wobec tej maszyny i zgłoszą brak odpowiedzi
+      - Zmiana obowiązuje po ponownym uruchomieniu maszyny, a jej wycofanie również
+      - Łączność, przepustowość, rozwiązywanie nazw i pozostała praca sieciowa nie zmieniają się w żaden sposób
+    en:
+      - Diagnostic tools forcing a packet route stop working against this machine and report no answer
+      - The change takes effect after a restart, and so does undoing it
+      - Connectivity, throughput, name resolution and the rest of network work do not change in any way
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska diagnostyczne, na których wymuszanie trasy pakietu jest narzędziem pracy
+      - Maszyny bez możliwości ponownego uruchomienia w rozsądnym czasie
+    en:
+      - Diagnostic stations, where forcing a packet route is a working tool
+      - Machines that cannot be restarted within a reasonable time
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableIPSourceRouting'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    $name = 'DisableIPSourceRouting'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableIPSourceRouting' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/kerberos/security-considerations-for-trusts
+
+notes:
+  pl: |
+    Wartością zgodną jest dwójka, czyli odrzucanie wszystkich takich pakietów;
+    jedynka odrzuca tylko część, a zero przepuszcza wszystkie. Bliźniacza reguła
+    robi to samo dla nowszej wersji protokołu i obie wdraża się razem — maszyna
+    korzysta z obu naraz.
+  en: |
+    The compliant value is two, meaning every such packet is refused; one refuses
+    part of them and zero lets them all through. A twin rule does the same for the
+    newer version of the protocol, and the two are deployed together - the machine
+    uses both at once.

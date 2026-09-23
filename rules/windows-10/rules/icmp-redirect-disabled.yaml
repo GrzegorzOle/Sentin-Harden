@@ -1,0 +1,159 @@
+id: win10-icmp-redirect-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: MSS (Legacy)
+  title:
+    pl: Przyjmowanie przekierowań ICMP wyłączone
+    en: Acceptance of ICMP redirects disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Urządzenie sieciowe może poinformować maszynę, że do wskazanego celu prowadzi
+    lepsza droga niż dotychczasowa. Maszyna przyjmuje taką wiadomość i poprawia
+    sobie trasę — nie pytając, kto właściwie ją przysłał.
+
+    Wiadomość nie jest w żaden sposób potwierdzana, więc wysłać ją może każdy, kto
+    jest w tej samej sieci. Podstawiona trasa prowadzi ruch przez maszynę
+    napastnika, który od tej chwili widzi, co maszyna wysyła, i może to zmieniać
+    w locie. Połączenie wygląda normalnie, bo formalnie dociera tam, gdzie miało.
+
+    Wyłączenie zostawia trasowanie tabeli tras i bramie, którą ktoś świadomie
+    skonfigurował.
+  en: |
+    A network device can inform a machine that a better road to a given
+    destination exists than the one it is using. The machine takes such a message
+    and corrects its own route - without asking who actually sent it.
+
+    The message is in no way vouched for, so anybody on the same network may send
+    it. The planted route carries traffic through the attacker s machine, which
+    from then on sees what is being sent and can change it in flight. The
+    connection looks normal, because formally it does reach where it was meant to.
+
+    Switching it off leaves routing to the routing table and to the gateway
+    somebody configured deliberately.
+
+disruption_description:
+  pl: |
+    Przekierowania są dziś rzadkością w sieciach utrzymywanych normalnie: trasę
+    wyznacza brama, a nie pojedyncze wiadomości od sąsiadów. Wyłączenie ich nie
+    zmienia niczego w codziennej pracy.
+
+    Wyjątek dotyczy sieci z kilkoma bramami w jednym segmencie, gdzie wiadomość
+    o lepszej drodze bywa faktycznym elementem konfiguracji. Tam ruch pójdzie
+    trasą domyślną zamiast krótszej — wolniej, ale nadal poprawnie.
+  en: |
+    Redirects are a rarity today in networks kept in order - the route is set by
+    the gateway, not by single messages from neighbours. Switching them off
+    changes nothing in daily work.
+
+    The exception is a network with several gateways in one segment, where a
+    message about a better road is a genuine part of the configuration. There the
+    traffic takes the default route instead of the shorter one - slower, but still
+    correct.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - W sieci z kilkoma bramami w jednym segmencie ruch pójdzie trasą domyślną zamiast krótszą, co bywa widoczne jako wzrost opóźnień
+      - Rozwiązania równoważące ruch przez wiadomości o lepszej drodze stracą wpływ na tę maszynę
+      - Zmiana obowiązuje po ponownym uruchomieniu maszyny, więc skutek pojawia się później niż polecenie
+      - Łączność, przepustowość, rozwiązywanie nazw i cała pozostała praca sieciowa pozostają bez zmian
+    en:
+      - On a network with several gateways in one segment the traffic takes the default route instead of the shorter one, sometimes visible as added latency
+      - Arrangements balancing traffic through better-road messages lose their influence over this machine
+      - The change takes effect after a restart, so its consequence arrives later than the command
+      - Connectivity, throughput, name resolution and all other network work are unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Sieci z kilkoma bramami w jednym segmencie, gdzie przekierowania są częścią zamierzonej konfiguracji
+      - Stanowiska bez możliwości ponownego uruchomienia, bo bez restartu ustawienie nie zaczyna obowiązywać
+    en:
+      - Networks with several gateways in one segment, where redirects are part of the intended configuration
+      - Stations that cannot be restarted, since without one the setting does not take effect
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableICMPRedirect'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    $name = 'EnableICMPRedirect'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableICMPRedirect' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/tcpip-and-nbt-configuration-parameters
+
+notes:
+  pl: |
+    Ustawienie dotyczy przyjmowania przekierowań, nie ich wysyłania — maszyna
+    końcowa i tak ich nie wysyła. Reguła należy do grupy opisującej zachowanie
+    stosu sieciowego i ocenia się ją razem z trasowaniem źródłowym oraz
+    wyszukiwaniem bramy.
+  en: |
+    The setting covers accepting redirects, not sending them - an end machine does
+    not send them anyway. The rule belongs to the group describing the behaviour
+    of the network stack and is judged together with source routing and gateway
+    discovery.

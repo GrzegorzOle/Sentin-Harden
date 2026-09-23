@@ -1,0 +1,164 @@
+id: win10-router-discovery-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Samoczynne wyszukiwanie bramy sieciowej wyłączone
+    en: Automatic searching for a network gateway switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna potrafi sama poszukać bramy sieciowej, nasłuchując ogłoszeń
+    rozsyłanych po sieci. Kto takie ogłoszenie wyśle, ten zostaje bramą — a być
+    bramą znaczy widzieć cały ruch wychodzący z maszyny i móc go zmieniać.
+
+    Ogłoszenia nie są potwierdzane w żaden sposób, więc wysłać je może dowolne
+    urządzenie w tej samej sieci. To jest ta sama rodzina co przekierowania trasy,
+    tylko sięgająca dalej: nie poprawia jednej trasy, lecz przejmuje drogę
+    domyślną.
+
+    Wyłączenie zostawia bramę tę, którą maszyna dostała z konfiguracji — ręcznie
+    albo z serwera adresów.
+  en: |
+    A machine can look for a network gateway on its own, listening for
+    announcements sent around the network. Whoever sends such an announcement
+    becomes the gateway - and being the gateway means seeing all traffic leaving
+    the machine and being able to change it.
+
+    The announcements are vouched for in no way, so any device on the same network
+    may send them. This is the same family as route redirects, only reaching
+    further - it does not correct one route but takes over the default road.
+
+    Switching it off leaves the gateway as the one the machine received from its
+    configuration, set by hand or from the address server.
+
+disruption_description:
+  pl: |
+    Odcięcie tej drogi bywa dotkliwe w sieciach, w których brama nie jest podawana
+    z serwerem adresów, a maszyna miała ją odnaleźć sama. Tam po zmianie zabraknie
+    trasy domyślnej i maszyna przestanie wychodzić poza własny segment.
+
+    Objawem jest brak dostępu do wszystkiego poza siecią lokalną, więc zgłoszenie
+    trafia do wsparcia jako awaria łącza. Warunkiem wdrożenia jest sprawdzenie,
+    skąd maszyna bierze bramę, a nie samo ustawienie wartości.
+  en: |
+    Cutting this road bites on networks where the gateway is not handed out with
+    the address and the machine was meant to find it by itself. There, after the
+    change, the default route is missing and the machine stops reaching beyond its
+    own segment.
+
+    The symptom is no access to anything outside the local network, so the ticket
+    reaches support as a link failure. The precondition for rollout is checking
+    where the machine gets its gateway from, not merely writing the value.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - W sieci bez bramy podawanej z serwerem adresów maszyna zostanie bez trasy domyślnej i straci dostęp poza własny segment
+      - Zmiana bramy w sieci przestanie być podchwytywana samoczynnie i wymaga zmiany konfiguracji na maszynie
+      - Objawem braku trasy jest awaria dostępu do wszystkiego poza siecią lokalną, co bywa mylone z usterką łącza
+      - Zmiana obowiązuje po ponownym uruchomieniu maszyny, więc skutek pojawia się później niż polecenie
+      - Praca w sieci lokalnej, rozwiązywanie nazw, udziały plikowe i drukowanie działają bez zmian
+    en:
+      - On a network where the gateway is not handed out with the address the machine is left without a default route and loses access beyond its own segment
+      - A gateway change on the network is no longer picked up automatically and calls for a configuration change on the machine
+      - The symptom of a missing route is loss of access to everything outside the local network, easily mistaken for a link fault
+      - The change takes effect after a restart, so its consequence arrives later than the command
+      - Work on the local network, name resolution, file shares and printing are unchanged
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Sieci, w których brama nie jest podawana z serwerem adresów i maszyna ma ją odnajdywać sama
+      - Stanowiska przenośne pracujące w sieciach obcych o nieznanej konfiguracji
+      - Środowiska z bramą zmieniającą się w ramach przełączania awaryjnego, gdzie ogłoszenia są częścią rozwiązania
+      - Maszyny bez możliwości ponownego uruchomienia w rozsądnym czasie
+    en:
+      - Networks where the gateway is not handed out with the address and the machine is meant to find it itself
+      - Portable stations working on foreign networks of unknown configuration
+      - Environments with a gateway that changes during failover, where the announcements are part of the arrangement
+      - Machines that cannot be restarted within a reasonable time
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'PerformRouterDiscovery'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    $name = 'PerformRouterDiscovery'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'PerformRouterDiscovery' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/tcpip-and-nbt-configuration-parameters
+
+notes:
+  pl: |
+    Punkt idzie w parze z wyłączeniem przekierowań trasy: tamto broni pojedynczej
+    trasy, to całej drogi domyślnej. Przed wdrożeniem warto sprawdzić, czy maszyna
+    ma bramę z konfiguracji — bez niej zmiana odcina łączność poza segment.
+  en: |
+    The item pairs with switching route redirects off - that one guards a single
+    route, this one the whole default road. Before rollout it is worth checking
+    that the machine has a gateway from its configuration; without one the change
+    cuts connectivity beyond the segment.

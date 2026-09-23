@@ -1,0 +1,164 @@
+id: win10-shell-protocol-protected-mode
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > File Explorer
+  title:
+    pl: Tryb chroniony protokołu powłoki włączony
+    en: Protected mode for the shell protocol left on
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Protokół powłoki pozwala odwołać się do miejsca w systemie krótkim
+    identyfikatorem zamiast ścieżką. Wygodne dla skrótów i menu, a przy okazji
+    wygodne dla kogoś, kto chce podsunąć odwołanie prowadzące gdzie indziej, niż
+    wynika to z wyglądu.
+
+    Tryb chroniony ogranicza zbiór miejsc i czynności, do których takie odwołanie
+    sięga. Bez niego obowiązuje zachowanie sprzed wielu lat, w którym odwołanie
+    przez protokół powłoki potrafi uruchomić więcej, niż użytkownik zobaczył w
+    odsyłaczu, na który kliknął.
+
+    Zasada zamyka drogę prowadzącą przez dokument, wiadomość albo stronę — czyli
+    przez treść, którą użytkownik otwiera, nie mając poczucia, że cokolwiek
+    uruchamia.
+  en: |
+    The shell protocol allows a place in the system to be referred to by a short
+    identifier rather than a path. Convenient for shortcuts and menus, and equally
+    convenient for somebody wanting to slip in a reference leading somewhere other
+    than its appearance suggests.
+
+    Protected mode narrows the set of places and acts such a reference reaches.
+    Without it the behaviour of many years ago holds, in which a reference through
+    the shell protocol can start more than the user saw in the link they clicked.
+
+    The rule shuts a road running through a document, a message or a page - that
+    is through content the user opens with no sense of running anything at all.
+
+disruption_description:
+  pl: |
+    Tryb chroniony jest zachowaniem domyślnym współczesnego systemu, więc zasada
+    na ogół nie zmienia nic poza odebraniem możliwości jego wyłączenia. Nie wymaga
+    przerwy i nie jest widoczna w pracy.
+
+    Koszt dotyczy wyłącznie oprogramowania budowanego pod zachowanie sprzed wielu
+    lat, które odwołuje się do miejsc spoza dopuszczonego zbioru. Takie programy są
+    rzadkie, ale rozpoznawalne po tym, że wpis wyłączający został u kogoś założony
+    ręcznie — to nie jest stan, który powstaje przypadkiem.
+  en: |
+    Protected mode is the default behaviour of a modern system, so the rule
+    generally alters nothing beyond removing the option of switching it off. It
+    calls for no interruption and is invisible in daily work.
+
+    The cost touches only software built for the behaviour of many years ago,
+    which refers to places outside the permitted set. Such programs are rare but
+    recognisable by the disabling entry having been put in by hand - this is not a
+    state that arises by accident.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+    - user-interface
+  what_breaks:
+    pl:
+      - Oprogramowanie odwołujące się przez protokół powłoki do miejsc spoza dopuszczonego zbioru przestanie z nich korzystać
+      - Skróty i pozycje menu zbudowane pod zachowanie sprzed wielu lat mogą prowadzić donikąd
+      - Narzędzia wewnętrzne otwierające okna systemowe tą drogą mogą wymagać przepisania na zwykłe ścieżki
+      - Zwykłe skróty, otwieranie plików, drukowanie, praca w aplikacjach i dostęp do sieci pozostają bez zmian
+    en:
+      - Software referring through the shell protocol to places outside the permitted set stops using them
+      - Shortcuts and menu entries built for the behaviour of many years ago may lead nowhere
+      - Internal tools opening system windows this way may need rewriting onto ordinary paths
+      - Ordinary shortcuts, opening files, printing, work in applications and access to the network are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny z oprogramowaniem, dla którego wpis wyłączający tryb chroniony został założony ręcznie i świadomie
+      - Stanowiska obsługujące narzędzia wewnętrzne sprzed wielu lat, których nie da się przepisać przed wdrożeniem
+    en:
+      - Machines with software for which the entry disabling protected mode was put in by hand and deliberately
+      - Stations serving internal tools from many years back, which cannot be rewritten before the rollout
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'PreXPSP2ShellProtocolBehavior'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $name = 'PreXPSP2ShellProtocolBehavior'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'PreXPSP2ShellProtocolBehavior' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/shell/shell-and-managed-code
+
+notes:
+  pl: |
+    Nazwa wpisu odwołuje się do zachowania sprzed wielu lat i opisuje je przez
+    zaprzeczenie, więc wartość zero oznacza tryb chroniony włączony. Wpis leży w
+    gałęzi zasad powłoki, a nie w gałęzi zasad systemu — to inne miejsce niż
+    pozostałe punkty tego bloku.
+  en: |
+    The name of the entry refers to the behaviour of many years ago and describes
+    it by negation, so a value of zero means protected mode is on. The entry lies
+    in the shell policy branch rather than the system policy branch - a different
+    place from the other items in this block.

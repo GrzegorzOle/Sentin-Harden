@@ -1,0 +1,163 @@
+id: win10-safe-dll-search-mode
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Bezpieczna kolejność wyszukiwania bibliotek włączona
+    en: Safe DLL search order enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uruchamiany program prosi system o wczytanie biblioteki po nazwie, a system
+    szuka jej po kolei w kilku miejscach. Kolejność tych miejsc rozstrzyga, kto
+    wygrywa, gdy ta sama nazwa leży w dwóch z nich.
+
+    W kolejności niebezpiecznej katalog bieżący idzie przed katalogami systemowymi.
+    Wystarczy więc podłożyć plik o właściwej nazwie w katalogu, z którego program
+    zostanie uruchomiony — na przykład w katalogu pobierania albo na udziale
+    sieciowym — żeby przejąć wykonanie pod uprawnieniami tego programu.
+
+    Bezpieczna kolejność przesuwa katalog bieżący za katalogi systemowe. Atak
+    polegający na podłożeniu biblioteki przestaje działać, bo podłożony plik nigdy
+    nie zostaje znaleziony pierwszy.
+  en: |
+    A program being run asks the system to load a library by name, and the system
+    looks for it in several places in turn. The order of those places settles who
+    wins when the same name lies in two of them.
+
+    In the unsafe order the current folder comes before the system folders. Putting
+    a file of the right name in the folder a program is started from - the
+    downloads folder, say, or a network share - is therefore enough to seize
+    execution under that program s privileges.
+
+    The safe order moves the current folder behind the system folders. The attack
+    resting on planting a library stops working, because the planted file is never
+    found first.
+
+disruption_description:
+  pl: |
+    Zachowanie bezpieczne jest domyślne od wielu lat i ta zasada na ogół tylko
+    utrwala stan istniejący. Zmiana zaczyna obowiązywać po ponownym uruchomieniu
+    maszyny, bo kolejność ustala się przy starcie systemu.
+
+    Koszt dotyczy programów, które świadomie liczą na wczytanie biblioteki z
+    własnego katalogu roboczego — zwykle starszych narzędzi rozpakowywanych do
+    katalogu i uruchamianych stamtąd. Po zmianie takie narzędzie wczyta bibliotekę
+    systemową zamiast swojej i może działać inaczej albo nie ruszyć wcale.
+  en: |
+    The safe behaviour has been the default for many years and this rule generally
+    only fixes the existing state in place. The change takes effect after a restart
+    of the machine, since the order is settled as the system starts.
+
+    The cost touches programs that deliberately count on loading a library from
+    their own working folder - usually older tools unpacked into a folder and run
+    from there. After the change such a tool loads the system library instead of
+    its own and may behave differently or not start at all.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Programy liczące na wczytanie biblioteki z własnego katalogu roboczego wczytają wersję systemową
+      - Starsze narzędzia rozpakowywane do katalogu i uruchamiane stamtąd mogą działać inaczej albo nie ruszyć
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny
+      - Zainstalowane oprogramowanie, sterowniki, usługi systemowe i praca użytkownika pozostają bez zmian
+    en:
+      - Programs counting on loading a library from their own working folder load the system version instead
+      - Older tools unpacked into a folder and run from there may behave differently or not start
+      - The change takes effect only after a restart of the machine
+      - Installed software, drivers, system services and user work are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny z oprogramowaniem przenośnym, które niesie własne wersje bibliotek systemowych i musi z nich korzystać
+      - Stanowiska, na których nie da się zaplanować ponownego uruchomienia przed najbliższym oknem serwisowym
+    en:
+      - Machines with portable software that carries its own versions of system libraries and has to use them
+      - Stations where a restart cannot be planned before the next service window
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'SafeDllSearchMode'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+    $name = 'SafeDllSearchMode'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SafeDllSearchMode' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/dlls/dynamic-link-library-search-order
+
+notes:
+  pl: |
+    Wpis leży w gałęzi menedżera sesji, czytanej przy starcie systemu, więc zmiana
+    obowiązuje dopiero po ponownym uruchomieniu maszyny. Brak wpisu oznacza
+    zachowanie domyślne i zgłaszany jest jako niespełnienie, bo punkt wymaga
+    jawnego rozstrzygnięcia.
+  en: |
+    The entry lies in the session manager branch, read as the system starts, so
+    the change holds only after a restart of the machine. A missing entry means
+    the default behaviour and is reported as unmet, since the item calls for an
+    explicit settlement.

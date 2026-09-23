@@ -1,0 +1,175 @@
+id: win10-smartscreen-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > File Explorer
+  title:
+    pl: Filtr SmartScreen dla aplikacji i plików włączony
+    en: SmartScreen for applications and files enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Filtr reputacyjny sprawdza uruchamiany plik pod kątem tego, czy system widział
+    go wcześniej i u ilu osób. Program nieznany nikomu dostaje ostrzeżenie, zanim
+    zdąży się uruchomić.
+
+    Wartość tego mechanizmu bierze się stąd, że świeżo spreparowany plik jest z
+    definicji nieznany. Nie trzeba go rozpoznać jako złośliwego — wystarczy
+    zauważyć, że nikt go dotąd nie widział, a to jest dokładnie cecha ładunku
+    przygotowanego pod jedną kampanię albo pod jedną ofiarę.
+
+    Filtr nie zastępuje ochrony antywirusowej i nie udaje, że rozpoznaje
+    zagrożenie. Zatrzymuje moment między pobraniem pliku a jego uruchomieniem,
+    czyli ten, w którym użytkownik jeszcze może się wycofać.
+  en: |
+    The reputation filter checks a file being run against whether the system has
+    seen it before and with how many people. A program nobody knows gets a warning
+    before it manages to start.
+
+    The value of the mechanism comes from a freshly prepared file being unknown by
+    definition. It need not be recognised as malicious - noticing that nobody has
+    seen it before is enough, and that is exactly the mark of a payload made for
+    one campaign or one victim.
+
+    The filter does not replace antivirus protection and does not pretend to
+    recognise a threat. It stops the moment between a file being downloaded and
+    being run - the one in which the user can still back out.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna dla użytkownika i dlatego wymaga sprawdzenia, choć sam
+    filtr nie blokuje niczego na stałe — w tym wariancie ostrzega i pozwala przejść
+    dalej.
+
+    Najczęstszym powodem zgłoszeń są narzędzia własne: skrypty, instalatory i
+    programy pomocnicze budowane u siebie, których nikt poza organizacją nie widział
+    i nie zobaczy. Każde ich uruchomienie wygląda dla filtra tak samo jak
+    uruchomienie czegoś świeżo przyniesionego z sieci. Podpisanie takich plików
+    certyfikatem zdejmuje problem trwale; wyłączenie filtra zdejmuje go razem z
+    ochroną.
+
+    Sprawdzenia wymaga też sieć bez wyjścia na zewnątrz — filtr pyta usługę
+    producenta i bez łączności działa gorzej, choć nie przestaje.
+  en: |
+    The change is visible to the user and therefore calls for a review, although
+    the filter itself blocks nothing permanently - in this variant it warns and
+    lets the person go on.
+
+    The commonest source of tickets is in-house tooling - scripts, installers and
+    helper programs built at home, which nobody outside the organisation has seen
+    or will see. Every run of them looks to the filter exactly like running
+    something freshly fetched off the network. Signing such files with a
+    certificate lifts the problem for good; switching the filter off lifts it along
+    with the protection.
+
+    A network with no way out also needs a look - the filter asks a service run by
+    the vendor, and without connectivity it works worse, though it does not stop.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - updates-and-servicing
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Uruchamianie plików pobranych z sieci będzie poprzedzone ostrzeżeniem, dopóki plik nie zdobędzie reputacji
+      - Narzędzia własne i skrypty budowane wewnątrz organizacji będą ostrzegane przy każdym uruchomieniu
+      - Instalatory świeżo wydanych wersji oprogramowania zaczną wyświetlać ostrzeżenie przez pierwsze dni po premierze
+      - W sieci bez wyjścia na zewnątrz filtr nie uzyska odpowiedzi usługi i będzie ostrzegał częściej
+      - Uruchamianie programów już zainstalowanych, dostęp do plików, drukowanie i praca w przeglądarce pozostają bez zmian
+    en:
+      - Running files fetched from the network is preceded by a warning until the file earns a reputation
+      - In-house tooling and scripts built inside the organisation are warned about on every run
+      - Installers of freshly released software start showing a warning for the first days after release
+      - On a network with no way out the filter gets no answer from the service and warns more often
+      - Running already installed programs, access to files, printing and work in a browser are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska odcięte od sieci zewnętrznej, gdzie filtr nie uzyska odpowiedzi i będzie tylko przeszkadzał
+      - Środowiska deweloperskie, w których buduje się i uruchamia własne pliki wykonywalne wiele razy dziennie
+    en:
+      - Stations cut off from the outside network, where the filter gets no answer and merely gets in the way
+      - Development environments, where own executables are built and run many times a day
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableSmartScreen'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'EnableSmartScreen'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableSmartScreen' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/
+
+notes:
+  pl: |
+    Ten punkt włącza mechanizm, a osobna zasada rozstrzyga, czy ostrzeżenie da się
+    pominąć. Same w sobie nie działają: filtr bez blokady tylko informuje, a blokada
+    bez filtru nie ma czego blokować. Ocenia się je razem.
+  en: |
+    This item switches the mechanism on, while a separate rule settles whether the
+    warning can be stepped past. Alone they do nothing - a filter without a block
+    merely informs, and a block without a filter has nothing to block. The two are
+    judged together.

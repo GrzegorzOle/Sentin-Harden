@@ -1,0 +1,164 @@
+id: win10-explorer-heap-termination-on-corruption
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > File Explorer
+  title:
+    pl: Powłoka kończy pracę przy wykryciu uszkodzenia sterty
+    en: The shell stops on detecting heap corruption
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uszkodzenie sterty to stan, w którym struktura pamięci przestała się zgadzać.
+    Rzadko bywa przypadkiem — zwykle jest śladem próby nadpisania czegoś, co
+    nadpisane być nie miało, czyli pierwszym krokiem przejęcia kontroli nad
+    procesem.
+
+    Powłoka może na to zareagować dwojako: zakończyć pracę albo próbować działać
+    dalej. Działanie dalej brzmi łagodniej, a jest gorsze, bo proces pracuje na
+    pamięci, nad którą stracił kontrolę, i robi to z uprawnieniami zalogowanego
+    użytkownika.
+
+    Zakończenie pracy przerywa atak w miejscu, w którym atakujący jeszcze niczego
+    nie osiągnął. Koszt jest widoczny i jednorazowy; cichy proces po nadpisaniu
+    pamięci kosztuje zwykle znacznie więcej.
+  en: |
+    Heap corruption is a state in which the structure of memory has stopped adding
+    up. It is rarely an accident - usually it is the trace of an attempt to
+    overwrite something that was not meant to be overwritten, that is the first
+    step towards taking over a process.
+
+    The shell can react to that in two ways - stop working, or try to carry on.
+    Carrying on sounds milder and is worse, because the process works on memory it
+    has lost control of, and does so with the privileges of the signed-in user.
+
+    Stopping breaks the attack at a point where the attacker has achieved nothing
+    yet. The cost is visible and one-off; a quiet process after memory has been
+    overwritten usually costs a great deal more.
+
+disruption_description:
+  pl: |
+    Zachowanie domyślne systemu jest już takie, jakiego wymaga ten punkt, więc na
+    większości maszyn zasada niczego nie zmienia. Usuwa możliwość odwrócenia tego
+    zachowania wpisem, który kiedyś zakładano dla zgodności.
+
+    Koszt widoczny dla użytkownika pojawia się wyłącznie wtedy, gdy uszkodzenie
+    faktycznie zachodzi: okno eksploratora znika, po czym powłoka wraca. Warto
+    wiedzieć, że nie jest to awaria bez przyczyny — to zadziałało zabezpieczenie i
+    warto sprawdzić, co je uruchomiło.
+  en: |
+    The default behaviour of the system is already what this item calls for, so on
+    most machines the rule alters nothing. It removes the option of reversing that
+    behaviour with an entry once put in for compatibility.
+
+    A cost visible to the user appears only when corruption actually occurs - the
+    explorer window vanishes and then the shell comes back. It is worth knowing
+    that this is not a fault without a cause - a safeguard fired, and it is worth
+    checking what set it off.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - user-interface
+  what_breaks:
+    pl:
+      - Powłoka zamknie się w chwili wykrycia uszkodzenia sterty, zamiast działać dalej
+      - Otwarte okna eksploratora i ich układ przepadną przy takim zamknięciu, choć powłoka wraca sama
+      - Stare rozszerzenia powłoki uszkadzające pamięć przestaną działać zamiast pracować z błędami
+      - Uruchamianie aplikacji, otwieranie plików, drukowanie i praca w sieci pozostają bez zmian
+    en:
+      - The shell closes the moment heap corruption is detected, instead of carrying on
+      - Open explorer windows and their layout are lost in such a closure, though the shell comes back by itself
+      - Old shell extensions corrupting memory stop working rather than working with faults
+      - Running applications, opening files, printing and work on the network are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny zależne od starego rozszerzenia powłoki, które uszkadza pamięć i mimo to jest potrzebne do pracy
+      - Stanowiska, na których zamknięcie powłoki przerywa proces bez możliwości wznowienia
+    en:
+      - Machines dependent on an old shell extension that corrupts memory and is needed for the work regardless
+      - Stations where closing the shell breaks a process with no way of resuming it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoHeapTerminationOnCorruption'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    $name = 'NoHeapTerminationOnCorruption'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoHeapTerminationOnCorruption' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/memory/heap-functions
+
+notes:
+  pl: |
+    Nazwa wpisu opisuje zachowanie przez zaprzeczenie, więc wartość zero oznacza
+    tu włączone zabezpieczenie, a nie wyłączone. Brak wpisu zgłaszany jest jako
+    niespełnienie, bo punkt wymaga jawnego rozstrzygnięcia. Ocenia się go razem z
+    zasadą o ochronie przed wykonaniem danych w powłoce.
+  en: |
+    The name of the entry describes the behaviour by negation, so a value of zero
+    here means the safeguard is on rather than off. A missing entry is reported as
+    unmet, since the item calls for an explicit settlement. It is judged together
+    with the rule on protection against executing data in the shell.

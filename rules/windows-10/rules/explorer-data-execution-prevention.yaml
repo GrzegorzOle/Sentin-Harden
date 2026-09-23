@@ -1,0 +1,166 @@
+id: win10-explorer-data-execution-prevention
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > File Explorer
+  title:
+    pl: Ochrona przed wykonaniem danych w powłoce systemu włączona
+    en: Protection against executing data left on in the system shell
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ochrona przed wykonaniem danych pilnuje granicy między obszarem pamięci, w
+    którym leżą dane, a tym, z którego wolno wykonywać kod. Przekroczenie tej
+    granicy jest podstawą całej rodziny ataków polegających na przepełnieniu
+    bufora.
+
+    Powłoka systemu jest tu celem szczególnym, bo otwiera wszystko, co
+    użytkownik dostanie: obrazy miniatur, dokumenty, archiwa, pliki z pendrive'a.
+    Robi to zanim ktokolwiek świadomie cokolwiek uruchomi — samo wyświetlenie
+    zawartości katalogu wystarcza.
+
+    Zasada nie włącza mechanizmu, tylko pilnuje, by nie został wyłączony. Wpis
+    wyłączający jest w systemie możliwy i był kiedyś stosowany dla zgodności ze
+    starymi rozszerzeniami powłoki.
+  en: |
+    Protection against executing data guards the boundary between the area of
+    memory holding data and the one code may be run from. Crossing that boundary
+    is the basis of a whole family of attacks resting on a buffer overflow.
+
+    The system shell is a particular target here, because it opens everything the
+    user is handed - thumbnail images, documents, archives, files off a memory
+    stick. It does so before anybody deliberately runs anything - merely showing
+    the contents of a folder is enough.
+
+    The rule does not switch the mechanism on, it keeps it from being switched
+    off. An entry disabling it is possible in the system and was once used for
+    compatibility with old shell extensions.
+
+disruption_description:
+  pl: |
+    Na współczesnej maszynie ochrona jest włączona domyślnie i ta zasada niczego
+    nie zmienia — usuwa jedynie możliwość jej wyłączenia. Nie wymaga przerwy i
+    nie jest widoczna w pracy.
+
+    Teoretycznym kosztem są stare rozszerzenia powłoki, dla których wpis
+    wyłączający kiedyś powstawał: dodatki do menu kontekstowego, podglądy plików,
+    wtyczki archiwizatorów sprzed wielu lat. Jeżeli takie rozszerzenie jest w
+    użyciu, zamknięcie powłoki przy jego działaniu jest sygnałem, a nie awarią.
+  en: |
+    On a modern machine the protection is on by default and this rule alters
+    nothing - it merely removes the option of switching it off. It calls for no
+    interruption and is invisible in daily work.
+
+    The theoretical cost lies with old shell extensions, for which the disabling
+    entry once came into being - context menu add-ons, file previews, archiver
+    plug-ins from many years back. If such an extension is in use, the shell
+    closing while it works is a signal rather than a fault.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - user-interface
+  what_breaks:
+    pl:
+      - Stare rozszerzenia powłoki naruszające granicę pamięci będą zamykały okno eksploratora zamiast działać
+      - Dodatki do menu kontekstowego i podglądy plików sprzed wielu lat mogą przestać się wyświetlać
+      - Powłoka zamknięta z tego powodu wraca sama, ale otwarte okna eksploratora i ich układ przepadają
+      - Otwieranie plików, kopiowanie, drukowanie, praca w aplikacjach i dostęp do sieci pozostają bez zmian
+    en:
+      - Old shell extensions crossing the memory boundary close the explorer window instead of working
+      - Context menu add-ons and file previews from many years back may stop showing
+      - A shell closed for that reason comes back by itself, but open explorer windows and their layout are lost
+      - Opening files, copying, printing, work in applications and access to the network are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny zależne od starego rozszerzenia powłoki, dla którego wpis wyłączający został kiedyś założony świadomie
+      - Stanowiska obsługujące sprzęt przemysłowy przez dodatek do powłoki sprzed wielu lat
+    en:
+      - Machines dependent on an old shell extension, for which the disabling entry was once put in deliberately
+      - Stations serving industrial hardware through a shell add-on from many years back
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoDataExecutionPrevention'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    $name = 'NoDataExecutionPrevention'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoDataExecutionPrevention' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/memory/data-execution-prevention
+
+notes:
+  pl: |
+    Brak wpisu oznacza zachowanie domyślne, czyli ochronę włączoną — sprawdzenie
+    zgłasza to jako MISSING, czyli niespełnienie punktu, bo zasada wymaga
+    jawnego rozstrzygnięcia, a nie zdania się na domyślność. Punkt ocenia się
+    razem z zasadą o kończeniu pracy powłoki przy uszkodzeniu sterty: obie
+    opisują tę samą powłokę widzianą z dwóch stron.
+  en: |
+    A missing entry means the default behaviour, that is the protection on - the
+    check reports it as MISSING, meaning the item is unmet, because the rule calls
+    for an explicit settlement rather than reliance on a default. The item is
+    judged together with the rule on the shell stopping on heap corruption - both
+    describe the same shell seen from two sides.

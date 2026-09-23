@@ -1,0 +1,184 @@
+id: win10-smartscreen-bypass-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > File Explorer
+  title:
+    pl: Ostrzeżenie filtra reputacyjnego bez możliwości pominięcia
+    en: The reputation filter s warning with no way past it
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ostrzeżenie, które da się pominąć jednym kliknięciem, chroni dokładnie tyle,
+    ile wynosi cierpliwość użytkownika. Człowiek namówiony przez telefon na
+    uruchomienie pliku kliknie „uruchom mimo to" bez wahania, bo właśnie po to
+    dzwoniono.
+
+    Tu leży cała różnica między filtrem informującym a filtrem broniącym. W
+    wariancie łagodnym mechanizm przenosi decyzję na osobę, która w tym momencie
+    jest pod presją i ma najmniej danych. W wariancie blokującym decyzja wraca do
+    tego, kto ustawiał zasady na spokojnie.
+
+    Atakujący traci ostatni krok swojego scenariusza — ten, w którym ofiara sama
+    przechodzi obok ostrzeżenia.
+  en: |
+    A warning that can be stepped past with one click protects exactly as far as
+    the user s patience reaches. A person talked over the telephone into running a
+    file will click run anyway without hesitating, because that is what the call
+    was for.
+
+    Here lies the whole difference between a filter that informs and a filter that
+    defends. In the mild variant the mechanism hands the decision to the person
+    who at that moment is under pressure and holds the least information. In the
+    blocking variant the decision returns to whoever set the rules in peace.
+
+    An attacker loses the last step of their scenario - the one in which the
+    victim walks past the warning on their own.
+
+disruption_description:
+  pl: |
+    Ta zmiana odbiera użytkownikowi wyjście awaryjne, więc wymaga sprawdzenia i
+    przygotowania drogi obejścia dla przypadków uzasadnionych. Bez takiej drogi
+    pierwsze zablokowane narzędzie własne kończy się prośbą o wyłączenie całej
+    zasady.
+
+    Przed wdrożeniem warto zebrać, co w organizacji uruchamia się z plików
+    pobieranych: instalatory sterowników, narzędzia serwisowe producenta,
+    jednorazowe skrypty naprawcze. Każda taka pozycja wymaga albo podpisu
+    certyfikatem, albo świadomego wyjątku.
+
+    Dobrze jest wdrażać to po zebraniu ostrzeżeń z wariantu łagodnego — wtedy
+    wiadomo, co się zablokuje, zanim się zablokuje.
+  en: |
+    This change takes the emergency exit away from the user, so it calls for a
+    review and for a prepared way round for the justified cases. Without such a
+    way, the first blocked in-house tool ends in a request to switch the whole
+    rule off.
+
+    Before the rollout it is worth gathering what in the organisation gets run
+    from downloaded files - driver installers, the vendor s service tooling, one-off
+    repair scripts. Every such item needs either a certificate signature or a
+    deliberate exception.
+
+    It is best deployed after collecting the warnings from the mild variant - then
+    it is known what will be blocked before it gets blocked.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+    - user-interface
+  what_breaks:
+    pl:
+      - Pliki o nieznanej reputacji nie uruchomią się w ogóle, a nie tylko z ostrzeżeniem
+      - Narzędzia własne i skrypty budowane wewnątrz organizacji zostaną zablokowane, dopóki nie zostaną podpisane certyfikatem
+      - Jednorazowe narzędzia serwisowe pobrane na czas naprawy przestaną działać w chwili, w której są potrzebne
+      - Użytkownik straci możliwość przejścia obok ostrzeżenia, co część osób zgłosi jako awarię stanowiska
+      - Uruchamianie zainstalowanego oprogramowania, dostęp do plików, drukowanie i praca w sieci pozostają bez zmian
+    en:
+      - Files of unknown reputation do not run at all, rather than running with a warning
+      - In-house tooling and scripts built inside the organisation are blocked until they are signed with a certificate
+      - One-off service tools fetched for the duration of a repair stop working at the very moment they are needed
+      - The user loses the ability to walk past the warning, which some people report as a broken station
+      - Running installed software, access to files, printing and work on the network are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska serwisowe, na których uruchamia się narzędzia pobierane doraźnie na czas naprawy
+      - Środowiska deweloperskie budujące własne pliki wykonywalne wiele razy dziennie
+      - Organizacje bez przygotowanej drogi wyjątku, gdzie zablokowane narzędzie nie ma jak zostać dopuszczone
+    en:
+      - Service stations, where tools fetched for the duration of a repair are run
+      - Development environments building their own executables many times a day
+      - Organisations with no exception route prepared, where a blocked tool has no way of being admitted
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is text, not a number, and is compared without regard to
+      # letter case. The milder variant is reported by name so the report tells
+      # a machine set leniently from one with no setting at all.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      $name = 'ShellSmartScreenLevel'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value -or [string]$value -eq '') { 'MISSING' }
+        else { ([string]$value).Trim().ToUpperInvariant() }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'BLOCK'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'ShellSmartScreenLevel'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The value is text, not a number - written as a number it leaves an entry
+    # the mechanism passes over in silence.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ShellSmartScreenLevel' -Value 'Block' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value ([string]$b.value) -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/
+
+notes:
+  pl: |
+    Wartość jest tekstowa i porównuje się ją bez względu na wielkość liter.
+    Wariant łagodniejszy zgłaszany jest po nazwie, żeby raport odróżnił maszynę
+    ustawioną pobłażliwie od takiej, na której ustawienia nie ma wcale. Punkt
+    ocenia się razem z zasadą włączającą sam filtr.
+  en: |
+    The value is text and is compared without regard to letter case. The milder
+    variant is reported by name, so the report tells a machine set leniently from
+    one with no setting at all. The item is judged together with the rule that
+    switches the filter itself on.

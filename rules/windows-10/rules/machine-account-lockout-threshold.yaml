@@ -1,0 +1,173 @@
+id: win10-machine-account-lockout-threshold
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Próg nieudanych logowań kończący się wejściem w tryb odzyskiwania ustawiony
+    en: A failed sign-in threshold ending in the recovery mode set
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna z zaszyfrowanym dyskiem broni się przed zgadywaniem hasła na ekranie
+    logowania inaczej niż przez blokadę konta. Po ustalonej liczbie nieudanych
+    prób uruchamia się ponownie i żąda klucza odzyskiwania, a więc czegoś, czego
+    zgadujący nie ma.
+
+    Bez tego progu próby można ponawiać w nieskończoność, siedząc przy skradzionym
+    laptopie. Szyfrowanie dysku broni wtedy danych na spoczynku, ale ekran
+    logowania pozostaje otwarty na cierpliwość.
+
+    Zasada ustala górną granicę liczby prób. Napastnik z urządzeniem w ręku
+    przestaje mieć nieograniczoną liczbę podejść i musi zdobyć klucz, a nie samo
+    hasło.
+  en: |
+    A machine with an encrypted disk defends against password guessing at the
+    sign-in screen differently from account lockout. After a set number of failed
+    attempts it restarts and demands the recovery key, which is to say something
+    the guesser does not have.
+
+    Without this threshold the attempts can be repeated without end, sitting at a
+    stolen laptop. Disk encryption then guards the data at rest, but the sign-in
+    screen stays open to patience.
+
+    The rule sets an upper bound on the number of attempts. An attacker with the
+    device in hand no longer has unlimited tries and has to obtain the key rather
+    than just the password.
+
+disruption_description:
+  pl: |
+    To jest zmiana, którą trzeba wdrożyć świadomie, bo jej skutek dotyka
+    najgorszego możliwego momentu. Użytkownik, który kilka razy pomyli hasło —
+    a zdarza się to po zmianie hasła, po urlopie, przy innym układzie klawiatury —
+    zobaczy nie kolejną próbę, lecz żądanie klucza odzyskiwania.
+
+    Jeśli klucz nie jest zdeponowany w miejscu, do którego obsługa ma dostęp,
+    maszyna staje się bezużyteczna, a dane na niej nieosiągalne. Warunkiem
+    wdrożenia jest zatem działający depozyt kluczy, nie sama decyzja o progu.
+  en: |
+    This is a change to deploy deliberately, because its effect lands at the worst
+    possible moment. A user who mistypes the password a few times - and that
+    happens after a password change, after a holiday, on a different keyboard
+    layout - meets not another attempt but a demand for the recovery key.
+
+    Where the key is not deposited somewhere support can reach, the machine
+    becomes useless and the data on it unreachable. The precondition for rollout
+    is therefore a working key escrow, not merely a decision about the threshold.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - encryption-and-tls
+    - boot-and-firmware
+  what_breaks:
+    pl:
+      - Po przekroczeniu progu maszyna uruchomi się ponownie i zażąda klucza odzyskiwania zamiast kolejnej próby wpisania hasła
+      - Użytkownik bez dostępu do klucza nie wejdzie na maszynę, a dane pozostaną nieosiągalne do czasu odnalezienia klucza
+      - Pomyłki po zmianie hasła i przy innym układzie klawiatury sumują się szybciej, niż ludzie się spodziewają
+      - Dział wsparcia musi umieć odszukać klucz odzyskiwania dla konkretnej maszyny, inaczej zgłoszenie kończy się przeinstalowaniem
+      - Praca na maszynie, logowanie przy poprawnym haśle, szyfrowanie dysku i pozostałe ustawienia logowania działają bez zmian
+    en:
+      - Past the threshold the machine restarts and demands the recovery key instead of another attempt at the password
+      - A user without access to the key cannot get in, and the data stays unreachable until the key is found
+      - Mistypes after a password change and on a different keyboard layout add up faster than people expect
+      - The support desk has to be able to find the recovery key for a given machine, or the ticket ends in a reinstall
+      - Work on the machine, signing in with a correct password, disk encryption and the other sign-in settings are unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny bez zaszyfrowanego dysku, gdzie żądanie klucza odzyskiwania nie ma pokrycia i próg tylko utrudnia logowanie
+      - Środowiska bez działającego depozytu kluczy odzyskiwania, dopóki taki depozyt nie powstanie
+      - Stanowiska obsługiwane bez wsparcia na miejscu, gdzie odzyskanie klucza oznacza wielodniowy przestój
+      - Maszyny współdzielone przez wiele osób, gdzie nieudane próby różnych użytkowników sumują się na jednym liczniku
+    en:
+      - Machines without an encrypted disk, where demanding a recovery key has nothing behind it and the threshold only hinders sign-in
+      - Environments with no working recovery key escrow, until such an escrow exists
+      - Stations served without support on site, where recovering a key means days of downtime
+      - Machines shared by many people, where failed attempts by different users add up on one counter
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Zero switches the threshold off altogether. It must not pass an upper
+      # bound comparison as if it were the smallest allowed number of attempts.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'MaxDevicePasswordFailedAttempts'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      $value = $item.$name
+      if ($null -eq $value) { 'MISSING' }
+      elseif ([int]$value -eq 0) { 'NEVER' }
+      else { [string][int]$value }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '10'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'MaxDevicePasswordFailedAttempts'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MaxDevicePasswordFailedAttempts' -Value 10 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-machine-account-lockout-threshold
+
+notes:
+  pl: |
+    Zero wyłącza próg całkowicie i nie może przejść porównania na górną granicę
+    tak, jakby było najmniejszą dopuszczalną liczbą prób — dlatego sprawdzenie
+    zgłasza je osobno jako NEVER. Punkt ma sens wyłącznie na maszynie
+    z zaszyfrowanym dyskiem i zdeponowanym kluczem odzyskiwania.
+  en: |
+    Zero switches the threshold off altogether and must not pass an upper bound
+    comparison as though it were the smallest allowed number of attempts, which is
+    why the check reports it apart as NEVER. The item makes sense only on a
+    machine with an encrypted disk and a deposited recovery key.

@@ -1,0 +1,157 @@
+id: win10-cached-logons-limited
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Liczba zapamiętanych logowań ograniczona
+    en: Number of cached sign-ins limited
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Żeby użytkownik domenowy mógł zalogować się bez łączności z kontrolerem
+    domeny, maszyna zachowuje u siebie ślad po jego poprzednich logowaniach. Ślad
+    nie jest hasłem, ale wystarcza do prób odgadnięcia go w spokoju, poza siecią
+    i bez blokady konta.
+
+    Im więcej takich śladów maszyna trzyma, tym więcej kont daje się zaatakować
+    z jednego przejętego urządzenia. Na laptopie, który bywał w rękach wielu osób,
+    zapas potrafi obejmować konta administracyjne sprzed lat.
+
+    Ograniczenie liczby nie zamyka drogi, ale zawęża łup. Napastnik z dyskiem
+    maszyny dostaje kilka kont zamiast kilkudziesięciu.
+  en: |
+    So that a domain user can sign in without a link to a domain controller, the
+    machine keeps a trace of their previous sign-ins. The trace is not a password,
+    but it is enough for guessing at that password in peace, off the network and
+    with no account lockout.
+
+    The more such traces a machine holds, the more accounts can be attacked from
+    one captured device. On a laptop that has passed through many hands the store
+    can include administrative accounts from years back.
+
+    Limiting the number does not close the road, but it narrows the haul. An
+    attacker with the machine s disk gets a few accounts instead of dozens.
+
+disruption_description:
+  pl: |
+    Skutek pojawia się dopiero przy braku łączności z kontrolerem domeny. Wtedy
+    zalogują się wyłącznie ci, których ślad mieści się w zapasie — pozostali
+    zobaczą odmowę, mimo że hasło mają poprawne.
+
+    To jest kłopot maszyn przenośnych i stanowisk w oddziałach z niepewnym łączem.
+    Na stacji stacjonarnej w sieci różnica bywa niewidoczna przez lata, aż do
+    pierwszej awarii sieci, i wtedy objawia się wszystkim naraz.
+  en: |
+    The effect shows only when the link to a domain controller is gone. Then only
+    those whose trace fits in the store can sign in; the rest meet a refusal,
+    though their password is correct.
+
+    This is the trouble of portable machines and of branch stations on an
+    unreliable link. On a stationary machine in the network the difference can
+    stay invisible for years, until the first network outage, and then it shows to
+    everybody at once.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Przy braku łączności z kontrolerem domeny zalogują się wyłącznie osoby z zapasu, a pozostali zobaczą odmowę mimo poprawnego hasła
+      - Na maszynie używanej wymiennie przez wiele osób zapas wyczerpuje się szybko i starsze wpisy są usuwane bez ostrzeżenia
+      - Konta serwisowe i administracyjne używane rzadko wypadają z zapasu najszybciej, bo to one logują się najrzadziej
+      - Pierwsze logowanie nowej osoby na maszynie wciąż wymaga łączności z kontrolerem domeny, tak jak wcześniej
+      - Logowanie przy działającej sieci, konta lokalne, praca użytkownika i uprawnienia pozostają bez zmian
+    en:
+      - With no link to a domain controller only people held in the store can sign in; the rest meet a refusal despite a correct password
+      - On a machine used by many people in turn the store runs out quickly and older entries are dropped without warning
+      - Service and administrative accounts used rarely fall out of the store soonest, because they sign in least often
+      - A new person signing in on the machine for the first time still needs a link to a domain controller, as before
+      - Signing in with the network up, local accounts, user work and permissions are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny przenośne używane długo poza siecią, gdzie zapas jest jedyną drogą zalogowania się
+      - Stanowiska współdzielone przez wiele osób na zmiany, gdzie cztery wpisy nie obejmą nawet jednej obsady
+      - Oddziały z niepewnym łączem do kontrolera domeny, dopóki łącze nie zostanie poprawione
+      - Maszyny, na których konta administracyjne logują się rzadko, a muszą działać także przy awarii sieci
+    en:
+      - Portable machines used for long stretches off the network, where the store is the only way to sign in
+      - Stations shared by many people across shifts, where four entries do not cover even one crew
+      - Branches with an unreliable link to a domain controller, until that link is improved
+      - Machines where administrative accounts sign in rarely and yet must work during a network outage
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      $name = 'CachedLogonsCount'
+      $item = Get-ItemProperty -Path $path -ErrorAction Stop
+      if ($null -eq $item.$name) { 'MISSING' } else { ([string]$item.$name).Trim() }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '4'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'CachedLogonsCount'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The value is kept as text, not as a number - a number written here is
+    # passed over in silence.
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+      -Name 'CachedLogonsCount' -Value '4' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value ([string]$b.value) -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-number-of-previous-logons-to-cache-in-case-domain-controller-is-not-available
+
+notes:
+  pl: |
+    Wartość jest przechowywana jako tekst, nie jako liczba, i zapis liczbowy
+    bywa pomijany w ciszy. Porównanie jest na górną granicę, więc mniejsza liczba
+    spełnia punkt; zero oznacza brak zapasu w ogóle i jest ustawieniem
+    najostrzejszym, nie błędem.
+  en: |
+    The value is kept as text rather than as a number, and a numeric write is
+    passed over in silence. The comparison is an upper bound, so a smaller number
+    meets the item; zero stands for no store at all and is the harshest setting,
+    not an error.

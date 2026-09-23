@@ -1,0 +1,165 @@
+id: win10-laps-post-authentication-reset-delay
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > LAPS
+  title:
+    pl: Zwłoka przed sprzątaniem po użyciu hasła najwyżej osiem godzin
+    en: Delay before clearing up after the password use at most eight hours
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zwłoka wyznacza, ile czasu maszyna daje osobie naprawiającej, zanim posprząta
+    po odczytanym haśle. Zbyt długa zamienia sprzątanie w formalność — hasło
+    pozostaje ważne przez dni i różnica wobec braku sprzątania zaciera się.
+
+    Osiem godzin odpowiada jednej zmianie roboczej. Tyle wystarcza, żeby dokończyć
+    pracę zaczętą rano, i za mało, żeby dostęp przeciągnął się na kolejny dzień
+    bez ponownego odczytania hasła z katalogu.
+
+    Zasada ustala górną granicę. Krótszy czas spełnia ją tak samo i bywa
+    uzasadniony tam, gdzie naprawy trwają minuty, a nie godziny.
+  en: |
+    The delay sets how much time the machine gives the person doing a repair
+    before it clears up after the password that was read. Too long a delay turns
+    the clearing up into a formality - the password stays valid for days and the
+    difference from not clearing up at all fades away.
+
+    Eight hours matches one working shift. Enough to finish work started in the
+    morning, too little for access to stretch into the next day without reading
+    the password from the directory again.
+
+    The rule sets an upper bound. A shorter time meets it just as well and makes
+    sense where repairs take minutes rather than hours.
+
+disruption_description:
+  pl: |
+    Sama wartość jest niewidoczna, dopóki nie skończy się praca. Odczuwalna staje
+    się dokładnie wtedy, gdy naprawa przeciąga się ponad ustawiony czas, a osoba
+    przy maszynie nie spodziewa się utraty sesji.
+
+    Najtrudniejszy przypadek to prace prowadzone przez kilka osób po kolei, gdzie
+    jedna odczytuje hasło, a kończy ktoś inny nazajutrz. Taki tryb wymaga
+    ponownego odczytu, a nie dłuższej zwłoki — inaczej wartość mechanizmu spada
+    do zera.
+  en: |
+    The value itself is invisible until the work ends. It becomes noticeable
+    exactly when a repair runs past the time set and the person at the machine
+    does not expect to lose the session.
+
+    The hardest case is work carried on by several people in turn, where one reads
+    the password and somebody else finishes the next day. That way of working
+    calls for reading the password again, not for a longer delay - otherwise the
+    value of the mechanism drops to nothing.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - remote-management
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Naprawy trwające dłużej niż ustawiona zwłoka zostaną przerwane utratą sesji, zwykle bez uprzedzenia dla osoby przy maszynie
+      - Prace przekazywane między zmianami będą wymagały ponownego odczytania hasła przez każdą kolejną osobę
+      - Zadania uruchomione kontem lokalnego administratora i zostawione na noc nie dotrwają do rana w tej samej sesji
+      - Praca użytkownika, logowanie kontami domenowymi i usługi systemowe pozostają bez zmian
+    en:
+      - Repairs running longer than the delay are cut off by the loss of the session, usually with no warning to the person at the machine
+      - Work handed between shifts calls for each next person to read the password again
+      - Jobs started under the local administrator account and left overnight do not last until morning in the same session
+      - User work, signing in with domain accounts and system services are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny, na których prace serwisowe rutynowo przekraczają jedną zmianę roboczą
+      - Środowiska bez włączonego sprzątania po użyciu hasła, gdzie sama zwłoka nie ma do czego się odnosić
+      - Stanowiska obsługiwane zdalnie w trybie ciągłym, gdzie utrata sesji oznacza konieczność dojazdu
+    en:
+      - Machines where service work routinely runs past one working shift
+      - Environments with clearing up after use switched off, where the delay has nothing to apply to
+      - Stations served remotely around the clock, where losing a session means travelling to the site
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is counted in hours. Zero means no delay at all, and with it
+      # the clearing up does not happen - so zero is not a compliant state.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'PostAuthenticationResetDelay'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[1-8]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+    $name = 'PostAuthenticationResetDelay'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Eight is the upper bound the item takes and matches one shift.
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'PostAuthenticationResetDelay' -Value 8 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/identity/laps/laps-management-policy-settings
+
+notes:
+  pl: |
+    Wartość liczy się w godzinach, a zero nie jest stanem zgodnym — przy zerze
+    sprzątanie w ogóle się nie odbywa, mimo że liczba wygląda na najostrzejszą
+    z możliwych. Zasada ma sens wyłącznie razem ze sprzątaniem po użyciu hasła.
+  en: |
+    The value counts in hours, and zero is not a compliant state - with zero the
+    clearing up does not happen at all, although the number looks like the
+    harshest available. The rule makes sense only together with clearing up after
+    the password is used.

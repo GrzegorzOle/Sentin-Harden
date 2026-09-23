@@ -1,0 +1,174 @@
+id: win10-laps-post-authentication-actions
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > LAPS
+  title:
+    pl: Sprzątanie po użyciu hasła lokalnego administratora włączone
+    en: Clearing up after the local administrator password use switched on
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Odczytanie hasła z katalogu jest zdarzeniem jednorazowym, ale jego skutki
+    zostają na maszynie znacznie dłużej. Sesja otwarta przy naprawie żyje dalej,
+    procesy uruchomione pod tym kontem pracują, a samo hasło pozostaje ważne, bo
+    nic nie każe go zmienić przed upływem zwykłego okresu.
+
+    Sprzątanie po użyciu zamyka ten ogon. Po wskazanym czasie od odczytu maszyna
+    zmienia hasło i wylogowuje konto, więc dostęp kończy się razem z pracą, do
+    której był potrzebny.
+
+    Zdejmowane ryzyko jest praktyczne: hasło odczytane raz przy naprawie
+    przestaje być hasłem, którym da się wrócić za miesiąc — również dla kogoś,
+    kto podejrzał je przez ramię albo wyjął z historii narzędzia.
+  en: |
+    Reading the password out of the directory is a single event, but its
+    consequences stay on the machine much longer. A session opened during a repair
+    lives on, processes started under that account keep running, and the password
+    itself stays valid, because nothing calls for changing it before the ordinary
+    term runs out.
+
+    Clearing up after use cuts that tail off. A set time after the read, the
+    machine changes the password and signs the account out, so the access ends
+    along with the work it was needed for.
+
+    The risk taken away is practical. A password read once during a repair stops
+    being a password to come back with a month later - including for somebody who
+    saw it over a shoulder or pulled it from a tool s history.
+
+disruption_description:
+  pl: |
+    Zmiana bywa dotkliwa tam, gdzie naprawy trwają dłużej niż zwłoka przed
+    sprzątaniem. Sesja serwisowa zostanie zamknięta w trakcie pracy, a hasło
+    odczytane na początku przestanie działać przy próbie powrotu.
+
+    Warto też wiedzieć, który wariant się wybiera. Najostrzejszy kończy również
+    procesy uruchomione pod tym kontem, co przy pracach w toku potrafi przerwać
+    operację w połowie. Reguła wskazuje wariant najłagodniejszy z dopuszczalnych
+    i to jest wybór świadomy, a nie przeoczenie.
+  en: |
+    The change bites where repairs run longer than the delay before clearing up. A
+    service session is closed mid-work, and the password read at the start stops
+    working on an attempt to come back.
+
+    It is also worth knowing which variant is chosen. The harshest one also ends
+    processes started under that account, which with work in progress can cut an
+    operation off halfway. The rule points at the mildest of the allowed variants,
+    and that is a deliberate choice rather than an oversight.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - remote-management
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Sesja serwisowa otwarta kontem lokalnego administratora zostanie zamknięta po upływie zwłoki, także w trakcie pracy
+      - Hasło odczytane na początku naprawy przestanie działać przy próbie ponownego zalogowania się po zakończeniu zwłoki
+      - Narzędzia obsługi utrzymujące połączenie tym kontem stracą je i będą musiały odczytać hasło ponownie
+      - W wariancie ostrzejszym zostaną też zakończone procesy uruchomione pod tym kontem, co przerywa prace w toku
+      - Logowanie kontami domenowymi, praca użytkownika, usługi systemowe i zadania harmonogramu pozostają bez zmian
+    en:
+      - A service session opened with the local administrator account is closed once the delay passes, mid-work included
+      - The password read at the start of a repair stops working on an attempt to sign in again after the delay
+      - Support tools holding a connection under that account lose it and have to read the password anew
+      - In the harsher variant processes started under that account are ended as well, cutting work in progress short
+      - Signing in with domain accounts, user work, system services and scheduled tasks are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny, na których naprawy rutynowo trwają dłużej niż ustawiona zwłoka, dopóki zwłoka nie zostanie do nich dopasowana
+      - Stanowiska, gdzie konto lokalnego administratora utrzymuje długotrwałe połączenia narzędzi obsługi
+      - Środowiska bez wskazanego miejsca przechowywania hasła, gdzie nie ma czego sprzątać
+    en:
+      - Machines where repairs routinely run longer than the delay set, until the delay is matched to them
+      - Stations where the local administrator account holds long-running connections for support tooling
+      - Environments with no place of keeping named, where there is nothing to clear up
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Three means the password is reset and the account signed out;
+      # zero leaves everything as it was.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'PostAuthenticationActions'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(3|5|11)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+    $name = 'PostAuthenticationActions'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Three is the mildest of the compliant variants: the password is reset
+    # and the account signed out, with running processes left alone.
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'PostAuthenticationActions' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/identity/laps/laps-management-policy-settings
+
+notes:
+  pl: |
+    Dopuszczone warianty to trzy, pięć i jedenaście — różnią się tym, jak daleko
+    sięga sprzątanie. Zero oznacza brak jakiejkolwiek reakcji po odczycie hasła
+    i nie spełnia punktu. Polecenie naprawcze wpisuje trójkę, czyli wariant
+    najłagodniejszy: zmiana hasła i wylogowanie konta bez ruszania procesów.
+  en: |
+    The allowed variants are three, five and eleven, differing in how far the
+    clearing up reaches. Zero stands for no reaction at all after the password is
+    read and does not meet the item. The remediation writes three, the mildest
+    variant - the password reset and the account signed out, with running
+    processes left alone.

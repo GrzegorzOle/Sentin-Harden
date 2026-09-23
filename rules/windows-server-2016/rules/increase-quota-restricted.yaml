@@ -1,0 +1,238 @@
+id: win2016-increase-quota-restricted
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Zmiana przydziałów pamięci procesu ograniczona do administratorów i kont usługowych
+    en: Adjusting a process memory quota restricted to administrators and service accounts
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt ogranicza uprawnienie do zmiany przydziałów pamięci procesu do grupy
+    administratorów oraz usługi lokalnej i sieciowej.
+
+    Przydział pamięci to górna granica tego, ile pamięci roboczej może zająć
+    dany proces. Granica ta istnieje po to, żeby jeden program nie wypchnął
+    wszystkich pozostałych na dysk stronicowania. Uprawnienie opisane tym
+    punktem pozwala tę granicę przesunąć — również cudzemu procesowi.
+
+    Nadużycie idzie w obie strony i obie są niewygodne. Podniesienie przydziału
+    pozwala jednemu procesowi zająć pamięć potrzebną reszcie, a serwer
+    zaczyna intensywnie stronicować i zwalnia tak, jakby brakowało mu zasobów.
+    Obniżenie przydziału cudzemu procesowi działa odwrotnie: program dostaje
+    mniej pamięci, niż potrzebuje, i zachowuje się jak uszkodzony.
+
+    Kategoria średnia. Nie jest to droga do przejęcia maszyny ani do poświadczeń,
+    tylko sposób na zaszkodzenie jej wydajności i na utrudnienie diagnozy.
+    Objaw wygląda jak problem sprzętowy, a nie jak działanie człowieka.
+
+    Na serwerze 2016 uprawnienie domyślnie mają administratorzy oraz oba konta
+    usług, i tak też ma zostać.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    zdegradowania wydajności maszyny w sposób, który wygląda na usterkę.
+  en: |
+    The item limits the right to adjust a process's memory quota to the
+    administrators group and the local and network services.
+
+    A memory quota is the upper bound on how much working memory a given process may
+    hold. The bound exists so that one program does not push all the rest out to the
+    paging disk. The right this item describes allows that bound to be moved - for
+    somebody else's process too.
+
+    Abuse runs both ways and both are awkward. Raising the quota lets one process
+    take the memory the rest need, and the server begins paging heavily and slows as
+    though short of resources. Lowering another process's quota works the other way
+    about: the program gets less memory than it needs and behaves as though faulty.
+
+    The category is medium. This is no road to taking the machine or to credentials,
+    only a way of harming its performance and of making diagnosis harder. The
+    symptom looks like a hardware problem rather than somebody's doing.
+
+    On Server 2016 the right belongs by default to the administrators and both
+    service accounts, and so it should stay.
+
+    What an attacker gains while the item goes unmet: the ability to degrade the
+    machine's performance in a way that looks like a fault.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Zwykłe programy przydziałów pamięci nie zmieniają
+    i nie mają powodu, żeby próbować — system przydziela pamięć sam.
+
+    Wpisy spoza domyślnej trójki biorą się zwykle z ręcznego strojenia
+    wydajności: ktoś kiedyś nadał uprawnienie kontu bazy danych albo serwera
+    aplikacyjnego w trakcie szukania przyczyny spowolnienia. Takie konto zwykle
+    i tak pracuje jako usługa, więc zmiana go nie dotyka.
+
+    Warto natomiast sprawdzić konta usługowe utworzone ręcznie — konto usługi
+    zarządzane przez domenę ani konto lokalne nie należą do usługi lokalnej
+    ani sieciowej i po zmianie stracą to uprawnienie.
+
+    Czego to nie psuje: przydzielania pamięci przez system, pracy usług na
+    kontach wbudowanych, monitorowania wydajności ani ustawień pliku
+    stronicowania.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". Ordinary programs do not change memory quotas and
+    have no reason to try - the system allots memory itself.
+
+    Entries outside the default three usually come of performance tuning by hand:
+    somebody once granted the right to a database or application server account
+    while hunting the cause of a slowdown. Such an account usually runs as a service
+    anyway, so the change does not touch it.
+
+    Accounts made by hand are worth checking, though - a domain-managed service
+    account or a local account belongs neither to the local nor to the network
+    service, and will lose this right after the change.
+
+    What this does not break: the allotting of memory by the system, the work of
+    services under built-in accounts, performance monitoring, or paging file
+    settings.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - virtualization-and-containers
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Usługa działająca na koncie utworzonym ręcznie traci możliwość zmiany przydziału pamięci własnego procesu
+      - Strojenie wydajności serwera bazy danych oparte na ręcznym nadaniu tego uprawnienia przestaje działać
+      - Przydzielanie pamięci przez system i praca usług na kontach wbudowanych działają bez zmian
+      - Ustawienia pliku stronicowania i monitorowanie wydajności pozostają nietknięte
+    en:
+      - A service running under an account made by hand loses the ability to change its own process's memory quota
+      - Performance tuning of a database server resting on this right granted by hand stops working
+      - The allotting of memory by the system and the work of services under built-in accounts work unchanged
+      - Paging file settings and performance monitoring stay untouched
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Usługa bazy danych albo serwera aplikacyjnego działa na koncie utworzonym ręcznie i jej strojenie opiera się na tym uprawnieniu
+    en:
+      - A database or application server service runs under an account made by hand and its tuning rests on this right
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeIncreaseQuotaPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-19,S-1-5-20,S-1-5-32-544|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeIncreaseQuotaPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeIncreaseQuotaPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Quotas moved either way degrade the machine in a way that looks like a
+    # hardware fault rather than somebody's doing.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeIncreaseQuotaPrivilege = *S-1-5-32-544,*S-1-5-19,*S-1-5-20',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeIncreaseQuotaPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/adjust-memory-quotas-for-a-process
+
+notes:
+  pl: |
+    Punkt bywa lekceważony, bo skutek nie brzmi groźnie. Warto jednak zauważyć,
+    że jest to jedyna reguła z tej grupy, której nadużycie objawia się jako
+    usterka sprzętu, a nie jako odmowa dostępu. Diagnoza idzie wtedy w złą
+    stronę i potrafi trwać tygodniami.
+
+    Uprawnienie dotyczy przydziałów pamięci roboczej, nie rozmiaru pliku
+    stronicowania. To ostatnie jest osobnym punktem i osobną regułą.
+
+    Oczekiwana lista celowo zawiera oba konta usług. Nie jest to ustępstwo:
+    usługi systemowe zmieniają własne przydziały w normalnej pracy.
+  en: |
+    The item gets taken lightly, because the effect does not sound dangerous. It is
+    worth noticing, though, that this is the only rule in the group whose abuse
+    shows up as a hardware fault rather than as a refusal of access. Diagnosis then
+    goes the wrong way and can run for weeks.
+
+    The right bears on working memory quotas, not on the size of the paging file.
+    That last is a separate item and a separate rule.
+
+    The expected list deliberately holds both service accounts. That is no
+    concession: the system's services change their own quotas in the ordinary course
+    of work.

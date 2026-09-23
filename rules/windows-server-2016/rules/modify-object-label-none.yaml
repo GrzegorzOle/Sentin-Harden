@@ -1,0 +1,237 @@
+id: win2016-modify-object-label-none
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Zmiana etykiety obiektu nieprzyznana nikomu
+    en: Modifying an object label granted to nobody
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt sprawdza, czy uprawnienie do zmiany etykiety obiektu nie zostało
+    przyznane żadnemu kontu ani żadnej grupie.
+
+    Etykieta poziomu integralności to drugi, niezależny mechanizm kontroli obok
+    zwykłych uprawnień. Każdy proces i każdy obiekt ma przypisany poziom,
+    a proces o poziomie niższym nie może zapisywać do obiektu o poziomie
+    wyższym — nawet jeżeli uprawnienia plikowe by mu na to pozwalały. Na tym
+    opiera się izolacja przeglądarek, dodatków i procesów roboczych serwera
+    aplikacyjnego.
+
+    Uprawnienie opisane tym punktem pozwala poziom obiektu podnieść albo
+    obniżyć. Obniżenie etykiety pliku systemowego sprawia, że staje się on
+    zapisywalny dla procesu, który normalnie by go nie tknął — cała izolacja
+    piaskownicy przestaje wtedy obowiązywać dla tego jednego obiektu.
+
+    Kategoria wysoka: to jest wyłączenie jednej z dwóch niezależnych warstw
+    kontroli dostępu, wykonane zgodnie z regułami systemu i niewidoczne
+    w uprawnieniach pliku.
+
+    Na serwerze 2016 lista jest domyślnie pusta i żadna rola ani usługa tego
+    uprawnienia nie potrzebuje.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    zdjęcia z wybranego obiektu ochrony wynikającej z poziomu integralności,
+    bez dotykania jego uprawnień.
+  en: |
+    The item checks that the right to modify an object's label has been granted to
+    no account and no group.
+
+    An integrity level label is a second, independent mechanism of control beside
+    ordinary permissions. Every process and every object carries a level, and a
+    process of a lower level cannot write to an object of a higher one - even where
+    file permissions would allow it. On this rests the isolation of browsers, of
+    add-ins and of an application server's worker processes.
+
+    The right this item describes allows an object's level to be raised or lowered.
+    Lowering a system file's label makes it writable by a process that would
+    normally not touch it - the whole isolation of the sandbox then ceases to hold
+    for that one object.
+
+    The category is high: this is the switching off of one of two independent layers
+    of access control, carried out in accordance with the system's rules and
+    invisible in the file's permissions.
+
+    On Server 2016 the list is empty by default and no role or service needs this
+    right.
+
+    What an attacker gains while the item goes unmet: the ability to strip a chosen
+    object of the protection following from its integrity level, without touching
+    its permissions.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Lista jest domyślnie pusta, a oprogramowanie
+    korzystające z tego uprawnienia praktycznie nie istnieje — poziomy
+    integralności ustawia system przy tworzeniu obiektu i nic ich potem nie
+    zmienia.
+
+    Jeżeli na liście coś jest, warto potraktować to jako ustalenie audytu.
+    Uprawnienie to nie bywa nadawane przez instalatory ani wymagane przez
+    producentów oprogramowania; jego obecność wskazuje na ręczną zmianę, której
+    powód warto ustalić.
+
+    Czego to nie psuje: pracy przeglądarek i ich piaskownic, procesów roboczych
+    serwera aplikacyjnego, uprawnień plikowych ani niczego, co opiera się na
+    poziomach nadawanych przez system.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". The list is empty by default, and software using
+    this right practically does not exist - the system sets integrity levels when an
+    object is created and nothing changes them afterwards.
+
+    If something is on the list, it is worth treating as a finding of the audit. This
+    right is not granted by installers nor required by software vendors; its
+    presence points to a change made by hand whose reason is worth establishing.
+
+    What this does not break: the work of browsers and their sandboxes, an
+    application server's worker processes, file permissions, or anything resting on
+    levels the system assigns.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - web-server-services
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Konto wpisane na tę listę traci możliwość podniesienia albo obniżenia poziomu integralności obiektu
+      - Obecność jakiegokolwiek wpisu na tej liście jest sama w sobie ustaleniem wymagającym wyjaśnienia
+      - Piaskownice przeglądarek i procesy robocze serwera aplikacyjnego działają bez zmian
+      - Uprawnienia plikowe i poziomy nadawane przez system pozostają nietknięte
+    en:
+      - An account written onto this list loses the ability to raise or lower an object's integrity level
+      - The presence of any entry on this list is itself a finding that calls for an explanation
+      - Browser sandboxes and an application server's worker processes work unchanged
+      - File permissions and the levels the system assigns stay untouched
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Uprawnienie ma konto oprogramowania, którego producent potwierdził ten wymóg na piśmie
+    en:
+      - The right is held by an account of software whose vendor confirmed the requirement in writing
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeRelabelPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeRelabelPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeRelabelPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Lowering a label removes a whole layer of control without any change visible
+    # in the object's permissions.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeRelabelPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeRelabelPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/modify-an-object-label
+
+notes:
+  pl: |
+    Rzecz jest trudna do zauważenia w trakcie przeglądu, bo poziom integralności
+    nie pokazuje się w zwykłym oknie uprawnień pliku. Obiekt z obniżoną etykietą
+    wygląda dokładnie tak samo jak wcześniej.
+
+    Punkt warto zestawić z regułą o przejmowaniu własności. Oba uprawnienia
+    otwierają dostęp do obiektu z pominięciem jego uprawnień, ale tamto zostawia
+    widoczną zmianę właściciela, a to nie zostawia w uprawnieniach niczego.
+
+    Poziomy integralności działają w tle i większość administratorów nigdy ich
+    nie ustawia ręcznie. To jest powód, dla którego wpis na tej liście jest
+    wart wyjaśnienia, a nie poprawienia po drodze.
+  en: |
+    The matter is hard to notice during a review, because an integrity level does
+    not show in the ordinary permissions window of a file. An object with a lowered
+    label looks exactly as it did before.
+
+    The item is worth setting beside the rule about taking ownership. Both rights
+    open access to an object past its permissions, but that one leaves a visible
+    change of owner, while this one leaves nothing in the permissions at all.
+
+    Integrity levels work in the background and most administrators never set them
+    by hand. That is why an entry on this list is worth an explanation rather than a
+    correction in passing.

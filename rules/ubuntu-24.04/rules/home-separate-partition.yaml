@@ -1,0 +1,142 @@
+id: ubuntu2404-home-separate-partition
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.2.3.1
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /home
+  title:
+    pl: Katalog /home jest osobną partycją
+    en: Ensure separate partition exists for /home
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    W /home leżą katalogi domowe użytkowników, a na serwerze także kont
+    technicznych: klucze SSH, zadania cron, skrypty i pliki wgrywane przez
+    użytkowników. Jeśli /home dzieli system plików z resztą systemu, jedno
+    konto, które go zapełni, zatrzymuje usługi, dzienniki i aktualizacje.
+    Osobne montowanie pozwala też nadać katalogom domowym opcje nodev i nosuid
+    bez wpływu na resztę systemu.
+
+    Domyślny układ instalatora Ubuntu Server kładzie cały system na jednym
+    woluminie logicznym ext4, a obrazy chmurowe na jednej partycji, więc /home
+    nie jest osobnym punktem montowania i punkt nie jest spełniony.
+
+    Punkt należy do poziomu 2, bo na działającym serwerze zmiana wymaga
+    przeniesienia danych.
+  en: |
+    /home holds the home directories of users, and on a server also those of
+    technical accounts: SSH keys, cron jobs, scripts and files uploaded by
+    users. If /home shares a file system with the rest of the system, one
+    account that fills it stops services, logs and updates. A separate mount
+    also lets the home directories get the nodev and nosuid options without
+    affecting the rest of the system.
+
+    The default layout of the Ubuntu Server installer puts the whole system on
+    a single ext4 logical volume, and cloud images on a single partition, so
+    /home is not a separate mount point and the item is not met.
+
+    The item belongs to level 2 because on a running server the change needs
+    data to be moved.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia, bo przenosi dane na nowe miejsce
+    i wymaga pracy, gdy nikt z nich nie korzysta. Program nie wykonuje jej
+    sam; opis mówi, co trzeba zaplanować.
+
+    Trzeba przygotować wolumin, zrobić pełną kopię /home, a potem przenieść
+    dane z zachowaniem właścicieli, uprawnień, list ACL i atrybutów
+    rozszerzonych, gdy nikt nie jest zalogowany, a zadania cron i usługi
+    działające z katalogów domowych są zatrzymane.
+  en: |
+    The change needs a planned rollout because it moves data to a new place
+    and needs work while nobody uses it. The program does not perform it; the
+    description says what has to be planned.
+
+    A volume has to be prepared, a full copy of /home taken, and then the data
+    moved keeping owners, permissions, ACLs and extended attributes, while
+    nobody is signed in and cron jobs and services running from home
+    directories are stopped.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - remote-management
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Przeniesienie /home wymaga przerwy w logowaniu wszystkich kont oraz zatrzymania zadań cron i usług, które działają z katalogów domowych
+      - Kopia bez zachowania właścicieli i uprawnień sprawia, że sshd odrzuca logowanie kluczem, bo katalog domowy lub ~/.ssh mają złego właściciela albo zbyt szerokie prawa
+    en:
+      - Moving /home needs a break in sign-ins for all accounts and stopping cron jobs and services that run from home directories
+      - A copy that does not keep owners and permissions makes sshd reject key sign-in, because the home directory or ~/.ssh has the wrong owner or too broad permissions
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dysk i grupa woluminów nie mają wolnego miejsca na osobny wolumin, a zmiana układu partycji nie była zaplanowana
+    en:
+      - The disk and the volume group have no free space for a separate volume and no change to the partition layout has been planned
+  reversibility: difficult
+
+audit:
+  shell: bash
+  test_command: |
+    t=/home
+    if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if findmnt -kn --mountpoint "$t" >/dev/null 2>&1; then echo SEPARATE; else echo NOT_SEPARATE; fi
+  expected: '^SEPARATE$'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man5/fstab.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
+  - https://www.freedesktop.org/software/systemd/man/latest/file-hierarchy.html
+  - https://man7.org/linux/man-pages/man8/lvcreate.8.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje punkt za spełniony, gdy /home jest osobnym punktem
+    montowania, bez względu na to, czy jest to partycja, wolumin logiczny czy
+    udział sieciowy.
+
+    Punkt nie ma naprawy uruchamianej z programu. Wydzielenie katalogu wymaga
+    przeniesienia jego zawartości na nowe miejsce, gdy nic z niej nie korzysta,
+    i nie da się go bezpiecznie cofnąć jednym poleceniem.
+
+    Na serwerze zainstalowanym z domyślnym układem LVM instalator zwykle
+    zostawia w grupie woluminów ubuntu-vg wolne miejsce, więc nowy wolumin dla
+    /home można utworzyć poleceniem lvcreate bez zmiany partycji. Dane
+    kopiuje się np. poleceniem rsync -aAXH, a nowy wolumin dopisuje do
+    /etc/fstab po identyfikatorze UUID. AppArmor opiera się na ścieżkach, a nie
+    na etykietach plików, więc po przeniesieniu nie trzeba niczego oznaczać na
+    nowo.
+  en: |
+    The check considers the item met when /home is a separate mount point,
+    whether it is a partition, a logical volume or a network share.
+
+    The item has no remediation that the program runs. Separating the
+    directory means moving its contents to the new place while nothing uses
+    them, and it cannot be safely undone with one command.
+
+    On a server installed with the default LVM layout the installer usually
+    leaves free space in the ubuntu-vg volume group, so a new volume for /home
+    can be created with lvcreate without changing partitions. The data is
+    copied, for example, with rsync -aAXH, and the new volume is added to
+    /etc/fstab by its UUID. AppArmor works on paths rather than file labels, so
+    nothing has to be relabelled after the move.

@@ -1,0 +1,314 @@
+id: ubuntu2404-core-dumps-restricted
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.5.3
+  section: Initial Setup > Configure Additional Process Hardening
+  title:
+    pl: Zrzuty pamięci procesów są ograniczone
+    en: Ensure core dumps are restricted
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zrzut pamięci (core dump) to plik z całą pamięcią procesu z chwili awarii.
+    Są w nim dane, które program miał otwarte: hasła, klucze, tokeny sesji,
+    fragmenty dokumentów. Szczególnie groźne są zrzuty programów z setuid,
+    które działają z uprawnieniami roota, a mogą być wywołane przez zwykłego
+    użytkownika.
+
+    Punkt ma trzy części. Limit twardy core równy 0 dla wszystkich (* hard
+    core 0 w limits.conf lub limits.d) blokuje zrzuty w sesjach logowania.
+    Parametr fs.suid_dumpable równy 0 blokuje zrzuty procesów, które zmieniły
+    uprawnienia. Jeśli zainstalowany jest systemd-coredump, zrzuty nie mogą być
+    przechowywane (Storage=none) ani analizowane (ProcessSizeMax=0).
+  en: |
+    A core dump is a file with the whole memory of a process at the moment of a
+    crash. It holds the data the program had open: passwords, keys, session
+    tokens, pieces of documents. Dumps of setuid programs are especially
+    dangerous, as they run with root privileges but can be started by a regular
+    user.
+
+    The item has three parts. A hard core limit of 0 for everyone (* hard core
+    0 in limits.conf or limits.d) blocks dumps in login sessions. The
+    fs.suid_dumpable parameter set to 0 blocks dumps of processes that changed
+    privileges. If systemd-coredump is installed, dumps must be neither stored
+    (Storage=none) nor analysed (ProcessSizeMax=0).
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo po zmianie awaria programu nie zostawia
+    materiału do diagnozy, a programista nie może włączyć zrzutów poleceniem
+    ulimit -c we własnej sesji. Na Ubuntu Server usługa apport ustawia
+    fs.suid_dumpable na 2 przy każdym starcie, więc najpierw trzeba wyłączyć
+    ją punktem 1.5.5; inaczej naprawa kończy się błędem i niczego nie zmienia.
+    Limit działa od następnego logowania, parametr jądra od razu.
+  en: |
+    The class needs review because after the change a program crash leaves no
+    material for diagnosis, and a developer cannot turn dumps on with ulimit -c
+    in their own session. On Ubuntu Server the apport service sets
+    fs.suid_dumpable to 2 at every start, so it has to be turned off first with
+    item 1.5.5; otherwise the remediation ends with an error and changes
+    nothing. The limit takes effect from the next sign-in, the kernel parameter
+    at once.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Polecenie ulimit -c unlimited w sesji użytkownika kończy się błędem, więc nie da się włączyć zrzutów do diagnozy własnego programu
+      - Awarie programów z setuid i usług, które zmieniają uprawnienia, nie zostawiają zrzutu pamięci
+      - Przy zainstalowanym systemd-coredump polecenia coredumpctl info i coredumpctl debug nie mają śladu stosu ani zrzutu nowej awarii
+    en:
+      - The ulimit -c unlimited command in a user session fails, so dumps cannot be turned on to diagnose one's own program
+      - Crashes of setuid programs and of services that change privileges leave no memory dump
+      - With systemd-coredump installed, the coredumpctl info and coredumpctl debug commands have no stack trace or dump of a new crash
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwer programistyczny lub testowy, na którym awarie diagnozuje się na podstawie zrzutów pamięci
+    en:
+      - A development or test server where crashes are diagnosed from memory dumps
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    p=/proc/sys/fs/suid_dumpable
+    if [ ! -r "$p" ] || [ ! -x /usr/lib/systemd/systemd-sysctl ] || ! command -v dpkg-query >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    ue() {
+      if [ "$(systemctl show -p LoadState --value apport.service 2>/dev/null)" = loaded ]; then
+        systemctl is-enabled apport.service 2>/dev/null || true
+      else echo not-found; fi
+    }
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    # pam_limits reads limits.conf and then limits.d/*.conf in order; a later line
+    # for the same domain wins, and a user or group line wins over *. Prints the
+    # * value (or unset) and then domain=value for other domains that are not 0.
+    lim() {
+      for f in /etc/security/limits.conf /etc/security/limits.d/*.conf; do [ -r "$f" ] && cat "$f"; done | awk '
+        { sub(/#.*/, "") }
+        NF >= 4 && $3 == "core" && ($2 == "hard" || $2 == "-") { v[$1] = $4 }
+        END {
+          print ("*" in v ? v["*"] : "unset")
+          for (d in v) if (d != "*" && v[d] != "0") print d "=" v[d] }'
+    }
+    k=fs.suid_dumpable
+    eff() { /usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }'; }
+    # The value systemd-coredump sees for a [Coredump] key; the last one counts.
+    cdv() {
+      systemd-analyze cat-config systemd/coredump.conf 2>/dev/null | awk -v k="$1" '
+        /^[ \t]*[#;]/ { next }
+        { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
+        t ~ /^\[/ { in_s = (t == "[Coredump]"); next }
+        in_s && index(t, "=") {
+          i = index(t, "="); n = substr(t, 1, i - 1); v = substr(t, i + 1)
+          gsub(/[ \t]+$/, "", n); gsub(/^[ \t]+/, "", v)
+          if (n == k) c = v }
+        END { print c }'
+    }
+    bad=""
+    { read -r w; o=$(cat); } < <(lim)
+    [ "$w" = 0 ] || bad="$bad,hard-core=$w"
+    for x in $o; do bad="$bad,hard-core-for-$x"; done
+    r=$(cat "$p"); c=$(eff)
+    [ "$r" = 0 ] || bad="$bad,suid_dumpable=$r"
+    case "$c" in ""|0) ;; *) bad="$bad,suid_dumpable-config=$c" ;; esac
+    # apport.service sets fs.suid_dumpable=2 at every start.
+    case "$(ue)" in enabled|enabled-runtime) bad="$bad,apport.service=enabled" ;; esac
+    cd=not-installed
+    if [ "$(st systemd-coredump)" = installed ]; then
+      if ! systemd-analyze cat-config systemd/coredump.conf >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+      cd=none; s=$(cdv Storage); m=$(cdv ProcessSizeMax)
+      [ "$s" = none ] || bad="$bad,Storage=${s:-default}"
+      [ "$m" = 0 ] || bad="$bad,ProcessSizeMax=${m:-default}"
+    fi
+    if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:hard-core=0,suid_dumpable=0,systemd-coredump=$cd"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=core-dumps-1
+        echo "runtime=$(cat /proc/sys/fs/suid_dumpable)"
+        for f in /etc/security/limits.d/sentin-harden-core-dumps.conf /etc/sysctl.d/sentin-harden-core-dumps.conf /etc/systemd/coredump.conf.d/sentin-harden-core-dumps.conf; do
+          if [ -e "$f" ]; then d=$(base64 -w 0 < "$f"); echo "file $f 1 ${d:-empty}"; else echo "file $f 0 -"; fi
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+    ue() {
+      if [ "$(systemctl show -p LoadState --value apport.service 2>/dev/null)" = loaded ]; then
+        systemctl is-enabled apport.service 2>/dev/null || true
+      else echo not-found; fi
+    }
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    # pam_limits reads limits.conf and then limits.d/*.conf in order; a later line
+    # for the same domain wins, and a user or group line wins over *. Prints the
+    # * value (or unset) and then domain=value for other domains that are not 0.
+    lim() {
+      for f in /etc/security/limits.conf /etc/security/limits.d/*.conf; do [ -r "$f" ] && cat "$f"; done | awk '
+        { sub(/#.*/, "") }
+        NF >= 4 && $3 == "core" && ($2 == "hard" || $2 == "-") { v[$1] = $4 }
+        END {
+          print ("*" in v ? v["*"] : "unset")
+          for (d in v) if (d != "*" && v[d] != "0") print d "=" v[d] }'
+    }
+    k=fs.suid_dumpable
+    eff() { /usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }'; }
+    # The value systemd-coredump sees for a [Coredump] key; the last one counts.
+    cdv() {
+      systemd-analyze cat-config systemd/coredump.conf 2>/dev/null | awk -v k="$1" '
+        /^[ \t]*[#;]/ { next }
+        { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
+        t ~ /^\[/ { in_s = (t == "[Coredump]"); next }
+        in_s && index(t, "=") {
+          i = index(t, "="); n = substr(t, 1, i - 1); v = substr(t, i + 1)
+          gsub(/[ \t]+$/, "", n); gsub(/^[ \t]+/, "", v)
+          if (n == k) c = v }
+        END { print c }'
+    }
+      e=$(ue)
+      a=$(systemctl is-active apport.service 2>/dev/null || true)
+      case "$e/$a" in enabled/*|enabled-runtime/*|*/active)
+        echo "apport.service sets fs.suid_dumpable=2 at every start; turn it off first (item 1.5.5). Nothing changed" >&2; exit 1 ;;
+      esac
+      o=$(lim | tail -n +2)
+      if [ -n "$o" ]; then
+        echo "Entries for other users or groups allow core dumps: $(echo $o); change them by hand. Nothing changed" >&2; exit 1
+      fi
+      mkdir -p /etc/security/limits.d
+      printf '%s\n' '# Sentin-Harden: ubuntu2404-core-dumps-restricted' '*    hard    core    0' > /etc/security/limits.d/sentin-harden-core-dumps.conf
+      chmod 0644 /etc/security/limits.d/sentin-harden-core-dumps.conf
+      w=$(lim | head -n 1)
+      if [ "$w" != 0 ]; then echo "A file in /etc/security/limits.d read after /etc/security/limits.d/sentin-harden-core-dumps.conf sets the hard core limit to $w" >&2; exit 1; fi
+      printf '%s\n' '# Sentin-Harden: ubuntu2404-core-dumps-restricted' 'fs.suid_dumpable = 0' > /etc/sysctl.d/sentin-harden-core-dumps.conf
+      chmod 0644 /etc/sysctl.d/sentin-harden-core-dumps.conf
+      sysctl -q -w fs.suid_dumpable=0
+      c=$(eff)
+      if [ "$c" != 0 ]; then echo "Another sysctl.d file sets fs.suid_dumpable after /etc/sysctl.d/sentin-harden-core-dumps.conf; the next start will set $c" >&2; exit 1; fi
+      msg="Set the hard core limit 0 in /etc/security/limits.d/sentin-harden-core-dumps.conf and fs.suid_dumpable = 0 now and in /etc/sysctl.d/sentin-harden-core-dumps.conf"
+      if [ "$(st systemd-coredump)" = installed ]; then
+        mkdir -p /etc/systemd/coredump.conf.d
+        printf '%s\n' '# Sentin-Harden: ubuntu2404-core-dumps-restricted' '[Coredump]' 'Storage=none' 'ProcessSizeMax=0' > /etc/systemd/coredump.conf.d/sentin-harden-core-dumps.conf
+        chmod 0644 /etc/systemd/coredump.conf.d/sentin-harden-core-dumps.conf
+        if [ "$(cdv Storage)/$(cdv ProcessSizeMax)" != none/0 ]; then
+          echo "Another drop-in sets Storage or ProcessSizeMax after /etc/systemd/coredump.conf.d/sentin-harden-core-dumps.conf" >&2; exit 1
+        fi
+        msg="$msg, Storage=none and ProcessSizeMax=0 in /etc/systemd/coredump.conf.d/sentin-harden-core-dumps.conf"
+      fi
+      echo "$msg"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      damaged() { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=core-dumps-1 ] || damaged
+      rt=$(sed -n 's/^runtime=//p' "$b" | head -n 1)
+      case "$rt" in ""|*[!0-9]*) damaged ;; esac
+      [ "$(grep -c '^file ' "$b")" = 3 ] || damaged
+      while read -r tag f ex d x; do
+        case "$f" in /etc/security/limits.d/sentin-harden-core-dumps.conf|/etc/sysctl.d/sentin-harden-core-dumps.conf|/etc/systemd/coredump.conf.d/sentin-harden-core-dumps.conf) ;; *) damaged ;; esac
+        [ -n "$d" ] && [ -z "$x" ] || damaged
+        case "$ex" in
+          0) rm -f "$f" ;;
+          1) mkdir -p "$(dirname "$f")"
+             if [ "$d" = empty ]; then : > "$f"; else printf '%s' "$d" | base64 -d > "$f"; fi ;;
+          *) damaged ;;
+        esac
+      done < <(grep '^file ' "$b")
+      sysctl -q -w "fs.suid_dumpable=$rt"
+      echo "Restored the previous state of /etc/security/limits.d/sentin-harden-core-dumps.conf, /etc/sysctl.d/sentin-harden-core-dumps.conf and /etc/systemd/coredump.conf.d/sentin-harden-core-dumps.conf and fs.suid_dumpable = $rt"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man5/limits.conf.5.html
+  - https://docs.kernel.org/admin-guide/sysctl/fs.html
+  - https://man7.org/linux/man-pages/man5/core.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/coredump.conf.html
+  - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
+
+notes:
+  pl: |
+    Limit sprawdzenie wyznacza tak jak pam_limits: czyta /etc/security/limits.conf
+    i pliki /etc/security/limits.d/*.conf w kolejności nazw, a dla domeny *
+    liczy się ostatni wpis hard lub - dla core. Wpisy dla konkretnych
+    użytkowników i grup mają pierwszeństwo przed *, więc każdy taki wpis
+    z wartością inną niż 0 też nie spełnia punktu. pam_limits nie stosuje
+    wpisów * do roota; tego punkt nie wymaga.
+
+    fs.suid_dumpable musi mieć wartość 0 teraz i według systemd-sysctl
+    --cat-config; brak wpisu oznacza wartość jądra, czyli 0. Wynik NOT_OK
+    podaje, która część nie jest spełniona; apport.service=enabled oznacza, że
+    usługa apport przywróci wartość 2 przy następnym starcie.
+
+    Naprawa zapisuje /etc/security/limits.d/sentin-harden-core-dumps.conf, /etc/sysctl.d/sentin-harden-core-dumps.conf oraz, jeśli pakiet systemd-coredump jest
+    zainstalowany, /etc/systemd/coredump.conf.d/sentin-harden-core-dumps.conf. Kończy się błędem bez zmian, gdy apport.service jest
+    włączona albo gdy wpisy dla użytkowników lub grup pozwalają na zrzuty.
+    Wycofanie przywraca poprzedni stan tych trzech plików i wartość bieżącą
+    fs.suid_dumpable. Limit nie dotyczy usług uruchamianych przez systemd,
+    które mają własne ustawienie LimitCORE.
+  en: |
+    The check works out the limit the way pam_limits does: it reads
+    /etc/security/limits.conf and the /etc/security/limits.d/*.conf files in
+    name order, and for the * domain the last hard or - entry for core counts.
+    Entries for specific users and groups take precedence over *, so any such
+    entry with a value other than 0 also fails the item. pam_limits does not
+    apply * entries to root; the item does not require that.
+
+    fs.suid_dumpable must be 0 now and according to systemd-sysctl
+    --cat-config; no entry means the kernel value, which is 0. The NOT_OK
+    result tells which part is not met; apport.service=enabled means the
+    apport service will set the value back to 2 at the next start.
+
+    The remediation writes /etc/security/limits.d/sentin-harden-core-dumps.conf, /etc/sysctl.d/sentin-harden-core-dumps.conf and, if the systemd-coredump package is
+    installed, /etc/systemd/coredump.conf.d/sentin-harden-core-dumps.conf. It ends with an error without changes when apport.service is
+    enabled or when entries for users or groups allow dumps. Rollback restores
+    the previous state of these three files and the current value of
+    fs.suid_dumpable. The limit does not cover services started by systemd,
+    which have their own LimitCORE setting.

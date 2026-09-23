@@ -1,0 +1,234 @@
+id: ubuntu2404-gdm-user-list-disabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.7.3
+  section: Initial Setup > Configure GNOME Display Manager
+  title:
+    pl: Ekran logowania GDM nie pokazuje listy użytkowników
+    en: Ensure GDM disable-user-list option is enabled
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Domyślnie ekran logowania GNOME pokazuje listę kont z imionami
+    i nazwiskami, a czasem ze zdjęciami. Każdy, kto podejdzie do komputera
+    lub zobaczy ekran, zna więc nazwy kont i do zgadnięcia zostaje mu tylko
+    hasło.
+
+    Punkt wymaga ukrycia listy. Użytkownik wpisuje wtedy nazwę konta sam.
+  en: |
+    By default the GNOME login screen shows a list of accounts with full names
+    and sometimes pictures. Anyone who walks up to the computer or sees the
+    screen therefore knows the account names, and only the password is left
+    to guess.
+
+    The item requires hiding the list. The user then types the account name
+    themselves.
+
+disruption_description:
+  pl: |
+    Użytkownicy zauważą, że zamiast kliknięcia swojego konta muszą wpisać
+    nazwę użytkownika. Zmiana działa od następnego uruchomienia ekranu
+    logowania.
+  en: |
+    Users will notice that instead of clicking their account they have to type
+    the user name. The change takes effect the next time the login screen
+    starts.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Przy logowaniu trzeba wpisać nazwę użytkownika zamiast wybrać konto z listy
+      - Osoby, które nie pamiętają nazwy swojego konta, nie zalogują się bez pomocy
+    en:
+      - Signing in requires typing the user name instead of choosing the account from a list
+      - People who do not remember their account name cannot sign in without help
+  interruption: logoff
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/sbin/gdm3 ]; then echo GDM_ABSENT; exit 0; fi
+    if ! command -v gsettings >/dev/null 2>&1; then echo GDM_ABSENT; exit 0; fi
+    d=$(mktemp -d) || { echo CHECK_ERROR; exit 0; }
+    trap 'rm -rf "$d"' EXIT
+    g() { env -i PATH=/usr/bin:/bin HOME="$d" XDG_CONFIG_HOME="$d" XDG_RUNTIME_DIR="$d" DCONF_PROFILE=gdm GSETTINGS_BACKEND=dconf gsettings "$@" 2>/dev/null; }
+    if ! g list-schemas | grep -qx org.gnome.login-screen; then echo GDM_ABSENT; exit 0; fi
+    state() {
+      v=$(g get org.gnome.login-screen disable-user-list) || { echo CHECK_ERROR; return; }
+      if [ "$v" = true ]; then echo USER_LIST_HIDDEN; else echo USER_LIST_SHOWN; fi
+    }
+    state
+  expected: '^(USER_LIST_HIDDEN|GDM_ABSENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/dconf/db/gdm.d/sentin-harden-user-list
+      D=/etc/dconf/db/gdm.d
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=dconf-1
+        m=""
+        p=$(dirname "$f")
+        while [ "$p" != /etc/dconf/db ]; do
+          if [ ! -d "$p" ]; then m="$m $p"; fi
+          p=$(dirname "$p")
+        done
+        echo "missing=${m# }"
+        if [ -e /etc/dconf/db/gdm ]; then echo db=1; else echo db=0; fi
+        if [ -f "$f" ]; then echo file=1; else echo file=0; fi
+        echo ---
+        if [ -f "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/dconf/db/gdm.d/sentin-harden-user-list
+      D=/etc/dconf/db/gdm.d
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      d=$(mktemp -d) || exit 1
+      trap 'rm -rf "$d"' EXIT
+      g() { env -i PATH=/usr/bin:/bin HOME="$d" XDG_CONFIG_HOME="$d" XDG_RUNTIME_DIR="$d" DCONF_PROFILE=gdm GSETTINGS_BACKEND=dconf gsettings "$@" 2>/dev/null; }
+      if ! command -v gsettings >/dev/null 2>&1 || ! g list-schemas | grep -qx org.gnome.login-screen; then
+        echo "GDM is not installed, nothing to change"; exit 0
+      fi
+      if [ ! -d "$D" ] && [ -e /etc/dconf/db/gdm ]; then
+        echo "/etc/dconf/db/gdm is not built from keyfiles in $D, not changing it" >&2; exit 1
+      fi
+      # Without system-db:gdm in the profile the keyfile has no effect.
+      P=/etc/dconf/profile/gdm
+      if [ -e "$P" ]; then
+        if ! grep -Eq '^[[:space:]]*system-db:gdm[[:space:]]*$' "$P"; then
+          echo "$P does not read the gdm database (system-db:gdm); add it by hand. Nothing changed" >&2; exit 1
+        fi
+      else
+        base=$(cat /usr/share/dconf/profile/gdm) || { echo "Could not read the default gdm profile" >&2; exit 1; }
+        mkdir -p /etc/dconf/profile
+        {
+          echo '# Sentin-Harden: reads /etc/dconf/db/gdm; removed with the last keyfile there'
+          printf '%s\n' "$base" | awk '!d && NF && !/^[[:space:]]*user-db:/ { print "system-db:gdm"; d = 1 } NF { print } END { if (!d) print "system-db:gdm" }'
+        } > "$P.tmp"
+        chmod 0644 "$P.tmp"
+        mv -f "$P.tmp" "$P"
+      fi
+      state() {
+        v=$(g get org.gnome.login-screen disable-user-list) || { echo CHECK_ERROR; return; }
+        if [ "$v" = true ]; then echo USER_LIST_HIDDEN; else echo USER_LIST_SHOWN; fi
+      }
+      body() {
+        printf '%s\n' '[org/gnome/login-screen]' 'disable-user-list=true'
+      }
+      mkdir -p "$(dirname "$f")"
+      tmp=$(mktemp "$f.XXXXXX")
+      { echo '# Sentin-Harden: ubuntu2404-gdm-user-list-disabled'; body; } > "$tmp"
+      chmod 0644 "$tmp"
+      mv -f "$tmp" "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      dconf update
+      s=$(state)
+      if ! printf '%s\n' "$s" | grep -Eq '^(USER_LIST_HIDDEN)$'; then
+        echo "The setting is still not in effect ($s): another dconf database or file overrides it" >&2; exit 1
+      fi
+      echo "Wrote $f and updated the dconf databases ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/dconf/db/gdm.d/sentin-harden-user-list
+      D=/etc/dconf/db/gdm.d
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      m=$(sed -n '2s/^missing=//p' "$b")
+      db=$(sed -n '3s/^db=//p' "$b")
+      fl=$(sed -n '4s/^file=//p' "$b")
+      case "$db$fl" in [01][01]) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$fl" = 1 ]; then
+        tmp=$(mktemp "$f.XXXXXX")
+        sed '1,/^---$/d' "$b" > "$tmp"
+        chmod 0644 "$tmp"
+        mv -f "$tmp" "$f"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      else
+        rm -f "$f"
+      fi
+      for p in $m; do rmdir "$p" 2>/dev/null || true; done
+      if command -v dconf >/dev/null 2>&1; then dconf update; fi
+      if [ "$db" = 0 ] && [ ! -d "$D" ]; then rm -f /etc/dconf/db/gdm; fi
+      # The profile we created goes once no keyfile in gdm.d needs it.
+      P=/etc/dconf/profile/gdm
+      if [ -f "$P" ] && head -n 1 "$P" | grep -q '^# Sentin-Harden:' &&
+         [ -z "$(find /etc/dconf/db/gdm.d -type f 2>/dev/null | head -n 1)" ]; then
+        rm -f "$P"
+        rmdir /etc/dconf/profile 2>/dev/null || true
+      fi
+      echo "Restored the previous state of $f and updated the dconf databases"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://help.gnome.org/admin/system-admin-guide/stable/login-userlist-disable.html.en
+  - https://help.gnome.org/admin/system-admin-guide/stable/dconf-profiles.html.en
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje ustawienia przez gsettings z profilu dconf gdm,
+    z pustym katalogiem domowym, czyli tak, jak zobaczy je ekran logowania.
+    Czyta skompilowane bazy, więc plik zapisany w katalogu .d bez
+    uruchomienia dconf update nie spełnia punktu. Jeśli GDM nie jest
+    zainstalowany, co jest domyślne na Ubuntu Server, wynik GDM_ABSENT
+    oznacza, że punkt nie dotyczy systemu.
+
+    Profil gdm z pakietu gdm3 (/usr/share/dconf/profile/gdm) nie czyta żadnej
+    bazy systemowej. Naprawa tworzy więc /etc/dconf/profile/gdm: kopię tego
+    profilu z dodanym wierszem system-db:gdm, oznaczoną komentarzem
+    Sentin-Harden. Jeśli /etc/dconf/profile/gdm już istnieje bez tego wiersza,
+    naprawa kończy się błędem bez zmian. Potem zapisuje własny plik /etc/dconf/db/gdm.d/sentin-harden-user-list,
+    uruchamia dconf update i sprawdza ustawienie ponownie; kończy się błędem,
+    jeśli inny plik je nadpisuje. Wycofanie przywraca poprzedni stan pliku,
+    uruchamia dconf update i usuwa utworzony profil, gdy w /etc/dconf/db/gdm.d
+    nie zostaje już żaden plik.
+  en: |
+    The check reads the settings with gsettings from the gdm dconf profile
+    with an empty home directory, that is as the login screen sees them. It
+    reads the compiled databases, so a file written to a .d directory without
+    running dconf update does not meet the item. If GDM is not installed,
+    which is the default on Ubuntu Server, the GDM_ABSENT result means the
+    item does not apply to the system.
+
+    The gdm profile from the gdm3 package (/usr/share/dconf/profile/gdm) reads
+    no system database. The remediation therefore creates
+    /etc/dconf/profile/gdm: a copy of that profile with an added system-db:gdm
+    line, marked with a Sentin-Harden comment. If /etc/dconf/profile/gdm
+    already exists without that line, the remediation ends with an error
+    without changes. It then writes its own /etc/dconf/db/gdm.d/sentin-harden-user-list file, runs dconf update and
+    checks the setting again; it fails if another file overrides it. Rollback
+    restores the previous state of the file, runs dconf update and removes the
+    created profile when no file is left in /etc/dconf/db/gdm.d.

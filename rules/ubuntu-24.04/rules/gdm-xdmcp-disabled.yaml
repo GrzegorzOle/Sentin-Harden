@@ -1,0 +1,172 @@
+id: ubuntu2404-gdm-xdmcp-disabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.7.10
+  section: Initial Setup > Configure GNOME Display Manager
+  title:
+    pl: Logowanie zdalne XDMCP w GDM jest wyłączone
+    en: Ensure XDMCP is not enabled
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    XDMCP pozwala zdalnemu terminalowi X poprosić menedżera logowania
+    o ekran logowania i całą sesję przez sieć. Protokół nie szyfruje ani
+    obrazu, ani naciśnięć klawiszy, więc hasło wpisane przy logowaniu da się
+    podsłuchać, a sama usługa przyjmuje zapytania z sieci.
+
+    Punkt wymaga, żeby w sekcji [xdmcp] pliku /etc/gdm3/custom.conf nie było
+    Enable=true. GDM na Ubuntu 24.04 obsługuje XDMCP, ale domyślnie ta
+    sekcja jest pusta, więc protokół jest wyłączony.
+  en: |
+    XDMCP lets a remote X terminal ask the login manager for a login screen
+    and a whole session over the network. The protocol encrypts neither the
+    picture nor the keystrokes, so a password typed at sign-in can be
+    sniffed, and the service itself accepts requests from the network.
+
+    The item requires that the [xdmcp] section of /etc/gdm3/custom.conf does
+    not contain Enable=true. GDM on Ubuntu 24.04 supports XDMCP, but by
+    default that section is empty, so the protocol is off.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy przy ustawieniach domyślnych. Jeśli XDMCP był
+    włączony, terminale X i programy łączące się przez XDMCP nie dostaną
+    ekranu logowania od tego komputera po ponownym uruchomieniu GDM.
+  en: |
+    Nobody will notice with the default settings. If XDMCP was on, X
+    terminals and programs connecting through XDMCP no longer get a login
+    screen from this computer once GDM restarts.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+  what_breaks:
+    pl:
+      - Terminale X i klienci XDMCP nie mogą zalogować się do tego komputera przez sieć
+    en:
+      - X terminals and XDMCP clients cannot sign in to this computer over the network
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    f=/etc/gdm3/custom.conf
+    if [ ! -x /usr/sbin/gdm3 ]; then echo GDM_ABSENT; exit 0; fi
+    state() {
+      if [ ! -e "$f" ]; then echo XDMCP_OFF; return; fi
+      if [ ! -r "$f" ]; then echo CHECK_ERROR; return; fi
+      v=$(awk '
+        /^[ \t]*\[/ { s = ($0 ~ /^[ \t]*\[xdmcp\][ \t]*$/); next }
+        s && /^[ \t]*Enable[ \t]*=/ { v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t\r]+$/, "", v) }
+        END { print v }' "$f")
+      case "$v" in true|1) echo XDMCP_ON ;; *) echo XDMCP_OFF ;; esac
+    }
+    state
+  expected: '^(XDMCP_OFF|GDM_ABSENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/gdm3/custom.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=file-1
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/gdm3/custom.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      state() {
+        if [ ! -e "$f" ]; then echo XDMCP_OFF; return; fi
+        if [ ! -r "$f" ]; then echo CHECK_ERROR; return; fi
+        v=$(awk '
+          /^[ \t]*\[/ { s = ($0 ~ /^[ \t]*\[xdmcp\][ \t]*$/); next }
+          s && /^[ \t]*Enable[ \t]*=/ { v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t\r]+$/, "", v) }
+          END { print v }' "$f")
+        case "$v" in true|1) echo XDMCP_ON ;; *) echo XDMCP_OFF ;; esac
+      }
+      s=$(state)
+      if [ "$s" != XDMCP_ON ]; then echo "XDMCP is not enabled ($s), nothing to change"; exit 0; fi
+      tmp=$(mktemp)
+      trap 'rm -f "$tmp"' EXIT
+      awk '
+        /^[ \t]*\[/ { s = ($0 ~ /^[ \t]*\[xdmcp\][ \t]*$/); print; next }
+        s && /^[ \t]*Enable[ \t]*=/ { print "Enable=false"; next }
+        { print }' "$f" > "$tmp"
+      cat "$tmp" > "$f"
+      s=$(state)
+      [ "$s" = XDMCP_OFF ] || { echo "XDMCP is still enabled in $f" >&2; exit 1; }
+      echo "Set Enable=false in the [xdmcp] section of $f; GDM reads it when it starts"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/gdm3/custom.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=file-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in
+        1) sed '1,/^---$/d' "$b" > "$f" ;;
+        0) rm -f "$f" ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      echo "Restored the previous content of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://help.gnome.org/admin/gdm/stable/configuration.html.en
+
+notes:
+  pl: |
+    Sprawdzenie czyta ostatni wpis Enable w sekcjach [xdmcp] pliku
+    /etc/gdm3/custom.conf, tak jak GDM, i traktuje wartości true oraz 1 jako
+    włączone. Wpisy w innych sekcjach, np. zakomentowane Enable w [debug],
+    nie mają znaczenia. Brak pliku lub sekcji oznacza XDMCP_OFF, a brak
+    programu /usr/sbin/gdm3 wynik GDM_ABSENT.
+
+    Naprawa zmienia tylko wiersze Enable w sekcji [xdmcp] na Enable=false
+    i zapisuje plik w miejscu, więc zostają jego właściciel i tryb. Wycofanie
+    przywraca poprzednią treść pliku. GDM czyta ten plik przy starcie, więc
+    zmiana działa po ponownym uruchomieniu GDM albo systemu.
+  en: |
+    The check reads the last Enable entry in the [xdmcp] sections of
+    /etc/gdm3/custom.conf, as GDM does, and treats the values true and 1 as
+    on. Entries in other sections, such as the commented-out Enable in
+    [debug], do not matter. A missing file or section means XDMCP_OFF, and a
+    missing /usr/sbin/gdm3 program gives the GDM_ABSENT result.
+
+    The remediation changes only the Enable lines in the [xdmcp] section to
+    Enable=false and writes the file in place, so its owner and mode stay.
+    Rollback restores the previous content of the file. GDM reads this file
+    when it starts, so the change takes effect after GDM or the system
+    restarts.

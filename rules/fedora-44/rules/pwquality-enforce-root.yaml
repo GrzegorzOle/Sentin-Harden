@@ -1,55 +1,62 @@
-id: fedora44-pwquality-maxrepeat
+id: fedora44-pwquality-enforce-root
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 5.3.3.2.4
+  item: 5.3.3.2.7
   section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_pwquality module
   title:
-    pl: Limit powtórzeń tego samego znaku w haśle jest skonfigurowany
-    en: Ensure password same consecutive characters is configured
+    pl: Zasady jakości haseł obowiązują także roota
+    en: Ensure password quality is enforced for the root user
   level: 1
   profile: workstation
 
 platform:
   system: fedora-44
 
-risk_category: low
+risk_category: medium
 disruption: needs-review
 assessment_state: assessed-impact-described
 
 description:
   pl: |
-    Hasła z długimi ciągami tego samego znaku, np. aaaa1111, łatwo zgadnąć
-    i sprawdzają je najpierw narzędzia do łamania haseł. Parametr maxrepeat
-    ogranicza, ile razy z rzędu może wystąpić ten sam znak.
+    pam_pwquality domyślnie tylko ostrzega roota, gdy ustawia słabe hasło,
+    i mimo to je zapisuje. Dotyczy to też haseł, które root nadaje innym
+    kontom, więc zasady długości i złożoności łatwo obejść przez sudo passwd.
+    Opcja enforce_for_root sprawia, że słabe hasło jest odrzucane także dla
+    roota.
 
-    Punkt wymaga, żeby maxrepeat wynosił od 1 do 3; 0 wyłącza limit.
+    Punkt wymaga opcji enforce_for_root.
   en: |
-    Passwords with long runs of the same character, for example aaaa1111,
-    are easy to guess and password cracking tools try them first. The
-    maxrepeat parameter limits how many times in a row the same character
-    may appear.
+    By default pam_pwquality only warns root when it sets a weak password,
+    and saves it anyway. This also covers passwords that root gives to other
+    accounts, so the length and complexity rules are easy to bypass with
+    sudo passwd. The enforce_for_root option makes the weak password
+    rejected for root as well.
 
-    The item requires maxrepeat to be between 1 and 3; 0 turns the limit
-    off.
+    The item requires the enforce_for_root option.
 
 disruption_description:
   pl: |
-    Fedora domyślnie nie ma tego limitu. Naprawa ustawia maxrepeat = 3,
-    więc nowe hasło nie może mieć czterech takich samych znaków z rzędu.
+    Naprawa dopisuje enforce_for_root do pwquality.conf. passwd uruchomione
+    przez roota odrzuca wtedy hasła niespełniające zasad, zamiast tylko
+    ostrzegać. Root nie podaje starego hasła, więc difok go nie dotyczy.
   en: |
-    Fedora has no such limit by default. The remediation sets maxrepeat =
-    3, so a new password cannot have four same characters in a row.
+    The remediation adds enforce_for_root to pwquality.conf. passwd run by
+    root then rejects passwords that do not meet the rules instead of only
+    warning. Root does not give the old password, so difok does not apply
+    to it.
 
 implementation_consequences:
   impact_areas:
     - accounts-and-passwords
   what_breaks:
     pl:
-      - Użytkownicy, których nowe hasło ma więcej niż trzy takie same znaki z rzędu
+      - Skrypty i narzędzia, które jako root ustawiają użytkownikom hasła niespełniające zasad
+      - Administrator nadający tymczasowe, proste hasło przy resetowaniu konta
     en:
-      - Users whose new password has more than three same characters in a row
+      - Scripts and tools that set passwords for users as root that do not meet the rules
+      - An administrator who gives a temporary, simple password when resetting an account
   interruption: none
   user_visible: true
   do_not_apply_when:
@@ -89,19 +96,18 @@ audit:
           { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
-    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 3) }'; }
     evaluate() {
-      local v s a bad=""
-      if v=$(conf_get maxrepeat /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf); then s="maxrepeat=$v"; else v='0'; s="maxrepeat=$v(default)"; fi
-      for a in $(pam_args pam_pwquality.so maxrepeat); do
-        case "${a#*:}" in
-          conf=*) bad="$bad,$a" ;;
-          maxrepeat) ;;
-          *) ok "${a#*=}" || bad="$bad,$a" ;;
-        esac
+      local a bad="" arg="" s
+      for a in $(pam_args pam_pwquality.so enforce_for_root); do
+        case "${a#*:}" in conf=*) bad="$bad,$a" ;; enforce_for_root) arg="$arg ${a%%:*}" ;; esac
       done
+      if conf_get enforce_for_root /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf >/dev/null; then s="enforce_for_root"
+      else
+        case "$arg " in *" system-auth "*) case "$arg " in *" password-auth "*) arg=both ;; esac ;; esac
+        if [ "$arg" = both ]; then s="enforce_for_root"; else s="no-enforce_for_root"; fi
+      fi
       if [ -n "$bad" ]; then echo "NOT_OK:$s,by-hand:${bad#,}"
-      elif ok "$v"; then echo "OK:$s"
+      elif [ "$s" = "enforce_for_root" ]; then echo "OK:$s"
       else echo "NOT_OK:$s"; fi
     }
     evaluate
@@ -127,8 +133,8 @@ remediation:
       set -e
       b='{{backup_file}}'
       f=/etc/security/pwquality.conf
-      mark='# Sentin-Harden: fedora44-pwquality-maxrepeat'
-      line='maxrepeat = 3'
+      mark='# Sentin-Harden: fedora44-pwquality-enforce-root'
+      line='enforce_for_root'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
     # conf_get KEY FILE...: value of the key in the files read in this order;
@@ -158,19 +164,18 @@ remediation:
           { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
-    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 3) }'; }
     evaluate() {
-      local v s a bad=""
-      if v=$(conf_get maxrepeat /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf); then s="maxrepeat=$v"; else v='0'; s="maxrepeat=$v(default)"; fi
-      for a in $(pam_args pam_pwquality.so maxrepeat); do
-        case "${a#*:}" in
-          conf=*) bad="$bad,$a" ;;
-          maxrepeat) ;;
-          *) ok "${a#*=}" || bad="$bad,$a" ;;
-        esac
+      local a bad="" arg="" s
+      for a in $(pam_args pam_pwquality.so enforce_for_root); do
+        case "${a#*:}" in conf=*) bad="$bad,$a" ;; enforce_for_root) arg="$arg ${a%%:*}" ;; esac
       done
+      if conf_get enforce_for_root /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf >/dev/null; then s="enforce_for_root"
+      else
+        case "$arg " in *" system-auth "*) case "$arg " in *" password-auth "*) arg=both ;; esac ;; esac
+        if [ "$arg" = both ]; then s="enforce_for_root"; else s="no-enforce_for_root"; fi
+      fi
       if [ -n "$bad" ]; then echo "NOT_OK:$s,by-hand:${bad#,}"
-      elif ok "$v"; then echo "OK:$s"
+      elif [ "$s" = "enforce_for_root" ]; then echo "OK:$s"
       else echo "NOT_OK:$s"; fi
     }
       r=$(evaluate)
@@ -204,8 +209,8 @@ remediation:
       set -e
       b='{{backup_file}}'
       f=/etc/security/pwquality.conf
-      mark='# Sentin-Harden: fedora44-pwquality-maxrepeat'
-      line='maxrepeat = 3'
+      mark='# Sentin-Harden: fedora44-pwquality-enforce-root'
+      line='enforce_for_root'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
       e=$(sed -n '2s/^existed=//p' "$b")
@@ -224,7 +229,7 @@ remediation:
       if [ "$kept" = 1 ]; then
         echo "Removed the comment of this rule from $f; the line under it was changed by hand and stays"
       else
-        echo "Removed the maxrepeat line of this rule from $f"
+        echo "Removed the enforce_for_root line of this rule from $f"
       fi
     )
 
@@ -255,6 +260,11 @@ notes:
     okno zmiany hasła w GNOME; obecne hasła zostają ważne. Hasła ustawiane
     przez roota nie są sprawdzane, dopóki nie włączy się enforce_for_root
     (punkt 5.3.3.2.7).
+
+    Opcja w dowolnym z czytanych plików wystarcza, także w postaci
+    enforce_for_root = 1. Argument enforce_for_root w wierszu pam_pwquality
+    też ją włącza, ale sprawdzenie liczy go tylko wtedy, gdy jest w obu
+    plikach PAM.
   en: |
     pam_pwquality reads the /etc/security/pwquality.conf.d/*.conf files in
     alphabetical order first, then /etc/security/pwquality.conf, and last
@@ -274,3 +284,8 @@ notes:
     passwd or the GNOME password dialog; current passwords stay valid.
     Passwords that root sets are not checked unless enforce_for_root is
     turned on (item 5.3.3.2.7).
+
+    The option in any of the files read is enough, also written as
+    enforce_for_root = 1. The enforce_for_root argument on the pam_pwquality
+    line turns it on too, but the check counts it only when it is in both
+    PAM files.

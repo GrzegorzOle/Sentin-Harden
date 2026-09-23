@@ -62,22 +62,22 @@ implementation_consequences:
 audit:
   shell: bash
   test_command: |
-    # conf_get KEY FILE...: value of the last entry in the files read in this order.
+    # conf_get KEY FILE...: value of the key in the files read in this order;
+    # the last entry wins (the first with first=1), ic=1 ignores the case of names.
     conf_get() {
       local k=$1 f
       shift
       set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
       [ $# -gt 0 ] || return 1
-      awk -v k="$k" '
+      awk -v k="$k" -v ic=1 -v first=0 '
         { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
-        name != k || name == "" { next }
-        { v = substr(n, length(name) + 1); sub(/^[ \t]*/, "", v)
-          if (v ~ /^=/) sub(/^=[ \t]*/, "", v); else v = ""
-          sub(/[ \t]+$/, "", v); val = v; seen = 1 }
+        name == "" || (ic ? tolower(name) != tolower(k) : name != k) { next }
+        { v = substr(n, length(name) + 1); sub(/^[ \t]*=?[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
+          if (!(first && seen)) val = v; seen = 1 }
         END { if (seen) print val; exit !seen }' "$@"
     }
-    # Arguments KEY=value and conf=... on active lines of a module, one
-    # "file:KEY=value" item each.
+    # Arguments KEY=value, KEY alone and conf=... on active lines of a module,
+    # one "file:argument" item each.
     pam_args() {
       local f
       for f in system-auth password-auth; do
@@ -86,7 +86,7 @@ audit:
           /^[ \t]*#/ || NF == 0 { next }
           { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
           p[n] != m { next }
-          { for (i = 4; i <= NF; i++) if (index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
+          { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
     ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 14) }'; }
@@ -96,6 +96,7 @@ audit:
       for a in $(pam_args pam_pwquality.so minlen); do
         case "${a#*:}" in
           conf=*) bad="$bad,$a" ;;
+          minlen) ;;
           *) ok "${a#*=}" || bad="$bad,$a" ;;
         esac
       done
@@ -130,22 +131,22 @@ remediation:
       line='minlen = 14'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
-    # conf_get KEY FILE...: value of the last entry in the files read in this order.
+    # conf_get KEY FILE...: value of the key in the files read in this order;
+    # the last entry wins (the first with first=1), ic=1 ignores the case of names.
     conf_get() {
       local k=$1 f
       shift
       set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
       [ $# -gt 0 ] || return 1
-      awk -v k="$k" '
+      awk -v k="$k" -v ic=1 -v first=0 '
         { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
-        name != k || name == "" { next }
-        { v = substr(n, length(name) + 1); sub(/^[ \t]*/, "", v)
-          if (v ~ /^=/) sub(/^=[ \t]*/, "", v); else v = ""
-          sub(/[ \t]+$/, "", v); val = v; seen = 1 }
+        name == "" || (ic ? tolower(name) != tolower(k) : name != k) { next }
+        { v = substr(n, length(name) + 1); sub(/^[ \t]*=?[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
+          if (!(first && seen)) val = v; seen = 1 }
         END { if (seen) print val; exit !seen }' "$@"
     }
-    # Arguments KEY=value and conf=... on active lines of a module, one
-    # "file:KEY=value" item each.
+    # Arguments KEY=value, KEY alone and conf=... on active lines of a module,
+    # one "file:argument" item each.
     pam_args() {
       local f
       for f in system-auth password-auth; do
@@ -154,7 +155,7 @@ remediation:
           /^[ \t]*#/ || NF == 0 { next }
           { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
           p[n] != m { next }
-          { for (i = 4; i <= NF; i++) if (index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
+          { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
     ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 14) }'; }
@@ -164,6 +165,7 @@ remediation:
       for a in $(pam_args pam_pwquality.so minlen); do
         case "${a#*:}" in
           conf=*) bad="$bad,$a" ;;
+          minlen) ;;
           *) ok "${a#*=}" || bad="$bad,$a" ;;
         esac
       done
@@ -238,7 +240,9 @@ notes:
     w kolejności alfabetycznej, potem /etc/security/pwquality.conf, a na
     końcu argumenty ze swojego wiersza w /etc/pam.d/system-auth
     i password-auth. Wygrywa ostatni wpis, więc argument w pliku PAM wygrywa
-    ze wszystkimi plikami. Sprawdziłem to na Fedorze 44. Sprawdzenie bierze
+    ze wszystkimi plikami. Wielkość liter w nazwach kluczy nie ma znaczenia,
+    a wartość może stać po znaku = albo po spacji. Sprawdziłem to na
+    Fedorze 44. Sprawdzenie bierze
     ostatni wpis z tych plików, a gdy go nie ma, wartość domyślną modułu.
     Argument w wierszu pam_pwquality z niepoprawną wartością daje wynik
     NOT_OK z dopiskiem by-hand; naprawa wtedy niczego nie zmienia, bo ten
@@ -260,7 +264,8 @@ notes:
     alphabetical order first, then /etc/security/pwquality.conf, and last
     the arguments on its line in /etc/pam.d/system-auth and password-auth.
     The last entry wins, so an argument in the PAM file wins over all files.
-    This was checked on Fedora 44. The check takes the last entry in these
+    The case of key names does not matter, and the value may follow = or a
+    space. This was checked on Fedora 44. The check takes the last entry in these
     files and, when there is none, the default of the module. An argument on
     the pam_pwquality line with a wrong value gives the NOT_OK result with a
     by-hand note; the remediation then changes nothing, because this line

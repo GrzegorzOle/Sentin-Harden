@@ -1,64 +1,62 @@
-id: fedora44-faillock-unlock-time
+id: fedora44-pwquality-dictcheck
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 5.3.3.1.2
-  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_faillock module
+  item: 5.3.3.2.6
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_pwquality module
   title:
-    pl: Czas odblokowania konta jest skonfigurowany
-    en: Ensure password unlock time is configured
+    pl: Sprawdzanie hasła ze słownikiem jest włączone
+    en: Ensure password dictionary check is enabled
   level: 1
   profile: workstation
 
 platform:
   system: fedora-44
 
-risk_category: low
+risk_category: medium
 disruption: needs-review
 assessment_state: assessed-impact-described
 
 description:
   pl: |
-    Parametr unlock_time modułu pam_faillock mówi, po ilu sekundach
-    zablokowane konto odblokowuje się samo. Krótki czas pozwala zgadywać
-    hasło seriami, z przerwą na odblokowanie.
+    Hasła oparte na słowach ze słownika zgaduje się najszybciej, bo od nich
+    zaczynają narzędzia do łamania haseł. pam_pwquality porównuje nowe hasło
+    ze słownikiem cracklib, dopóki dictcheck nie jest ustawione na 0.
 
-    Punkt wymaga, żeby unlock_time wynosił co najmniej 900 sekund albo 0,
-    czyli odblokowanie tylko przez administratora.
+    Punkt wymaga, żeby dictcheck nie wynosił 0.
   en: |
-    The unlock_time parameter of pam_faillock sets after how many seconds a
-    locked account is unlocked by itself. A short time allows guessing the
-    password in rounds, with a pause for the unlock.
+    Passwords based on dictionary words are guessed the fastest, because
+    password cracking tools start with them. pam_pwquality compares a new
+    password with the cracklib dictionary unless dictcheck is set to 0.
 
-    The item requires unlock_time to be at least 900 seconds, or 0, which
-    means only an administrator unlocks the account.
+    The item requires dictcheck not to be 0.
 
 disruption_description:
   pl: |
-    Fedora domyślnie ustawia 600 sekund. Naprawa ustawia 900, więc
-    zablokowane konto czeka 15 minut zamiast 10, chyba że root odblokuje je
-    wcześniej.
+    Fedora domyślnie sprawdza słownik, więc zwykle naprawa nic nie zmienia.
+    Jeśli ktoś wyłączył sprawdzanie, naprawa ustawia dictcheck = 1 i nowe
+    hasła oparte na słowach ze słownika są odrzucane.
   en: |
-    Fedora uses 600 seconds by default. The remediation sets 900, so a
-    locked account waits 15 minutes instead of 10, unless root unlocks it
-    sooner.
+    Fedora checks the dictionary by default, so the remediation usually
+    changes nothing. If someone turned the check off, the remediation sets
+    dictcheck = 1 and new passwords based on dictionary words are rejected.
 
 implementation_consequences:
   impact_areas:
     - accounts-and-passwords
   what_breaks:
     pl:
-      - Użytkownik z zablokowanym kontem czeka 15 minut zamiast 10 albo prosi administratora o odblokowanie
+      - Użytkownicy, których nowe hasło jest oparte na słowie ze słownika
     en:
-      - A user with a locked account waits 15 minutes instead of 10 or asks an administrator to unlock it
+      - Users whose new password is based on a dictionary word
   interruption: none
   user_visible: true
   do_not_apply_when:
     pl:
-      - Komputer bez administratora na miejscu, na którym dłuższa blokada zatrzymałaby pracę
+      - Konta, których hasła zmienia automatyzacja wybierająca hasła według własnych, słabszych zasad
     en:
-      - A computer without an administrator nearby, where a longer lock would stop work
+      - Accounts whose passwords are changed by automation that picks passwords by its own, weaker rules
   reversibility: immediate
 
 audit:
@@ -71,7 +69,7 @@ audit:
       shift
       set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
       [ $# -gt 0 ] || return 1
-      awk -v k="$k" -v ic=0 -v first=0 '
+      awk -v k="$k" -v ic=1 -v first=0 '
         { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
         name == "" || (ic ? tolower(name) != tolower(k) : name != k) { next }
         { v = substr(n, length(name) + 1); sub(/^[ \t]*=?[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
@@ -91,14 +89,14 @@ audit:
           { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
-    ok() { awk -v v="$1" 'BEGIN { exit !(v == "never" || (v ~ /^[0-9]+$/ && (v + 0 == 0 || v + 0 >= 900))) }'; }
+    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^-?[0-9]+$/ && v + 0 != 0) }'; }
     evaluate() {
       local v s a bad=""
-      if v=$(conf_get unlock_time /etc/security/faillock.conf); then s="unlock_time=$v"; else v='600'; s="unlock_time=$v(default)"; fi
-      for a in $(pam_args pam_faillock.so unlock_time); do
+      if v=$(conf_get dictcheck /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf); then s="dictcheck=$v"; else v='1'; s="dictcheck=$v(default)"; fi
+      for a in $(pam_args pam_pwquality.so dictcheck); do
         case "${a#*:}" in
           conf=*) bad="$bad,$a" ;;
-          unlock_time) ;;
+          dictcheck) ;;
           *) ok "${a#*=}" || bad="$bad,$a" ;;
         esac
       done
@@ -119,7 +117,7 @@ remediation:
       mkdir -p "$(dirname "$b")"
       {
         echo format=secconf-1
-        if [ -e /etc/security/faillock.conf ]; then echo existed=1; else echo existed=0; fi
+        if [ -e /etc/security/pwquality.conf ]; then echo existed=1; else echo existed=0; fi
       } > "$b"
       echo "Saved previous state to $b"
     )
@@ -128,9 +126,9 @@ remediation:
     (
       set -e
       b='{{backup_file}}'
-      f=/etc/security/faillock.conf
-      mark='# Sentin-Harden: fedora44-faillock-unlock-time'
-      line='unlock_time = 900'
+      f=/etc/security/pwquality.conf
+      mark='# Sentin-Harden: fedora44-pwquality-dictcheck'
+      line='dictcheck = 1'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
     # conf_get KEY FILE...: value of the key in the files read in this order;
@@ -140,7 +138,7 @@ remediation:
       shift
       set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
       [ $# -gt 0 ] || return 1
-      awk -v k="$k" -v ic=0 -v first=0 '
+      awk -v k="$k" -v ic=1 -v first=0 '
         { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
         name == "" || (ic ? tolower(name) != tolower(k) : name != k) { next }
         { v = substr(n, length(name) + 1); sub(/^[ \t]*=?[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
@@ -160,14 +158,14 @@ remediation:
           { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
-    ok() { awk -v v="$1" 'BEGIN { exit !(v == "never" || (v ~ /^[0-9]+$/ && (v + 0 == 0 || v + 0 >= 900))) }'; }
+    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^-?[0-9]+$/ && v + 0 != 0) }'; }
     evaluate() {
       local v s a bad=""
-      if v=$(conf_get unlock_time /etc/security/faillock.conf); then s="unlock_time=$v"; else v='600'; s="unlock_time=$v(default)"; fi
-      for a in $(pam_args pam_faillock.so unlock_time); do
+      if v=$(conf_get dictcheck /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf); then s="dictcheck=$v"; else v='1'; s="dictcheck=$v(default)"; fi
+      for a in $(pam_args pam_pwquality.so dictcheck); do
         case "${a#*:}" in
           conf=*) bad="$bad,$a" ;;
-          unlock_time) ;;
+          dictcheck) ;;
           *) ok "${a#*=}" || bad="$bad,$a" ;;
         esac
       done
@@ -178,7 +176,7 @@ remediation:
       r=$(evaluate)
       case "$r" in
         OK*) echo "$f already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
-        *by-hand:*) echo "The pam_faillock lines in the PAM files have arguments that decide it instead of $f (${r##*by-hand:}); change the authselect profile by hand" >&2; exit 1 ;;
+        *by-hand:*) echo "The pam_pwquality lines in the PAM files have arguments that decide it instead of $f (${r##*by-hand:}); change the authselect profile by hand" >&2; exit 1 ;;
       esac
       d=$(dirname "$f")
       old=$(mktemp "$d/.sentin-harden-old.XXXXXX")
@@ -205,9 +203,9 @@ remediation:
     (
       set -e
       b='{{backup_file}}'
-      f=/etc/security/faillock.conf
-      mark='# Sentin-Harden: fedora44-faillock-unlock-time'
-      line='unlock_time = 900'
+      f=/etc/security/pwquality.conf
+      mark='# Sentin-Harden: fedora44-pwquality-dictcheck'
+      line='dictcheck = 1'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
       e=$(sed -n '2s/^existed=//p' "$b")
@@ -226,7 +224,7 @@ remediation:
       if [ "$kept" = 1 ]; then
         echo "Removed the comment of this rule from $f; the line under it was changed by hand and stays"
       else
-        echo "Removed the unlock_time line of this rule from $f"
+        echo "Removed the dictcheck line of this rule from $f"
       fi
     )
 
@@ -234,47 +232,55 @@ privileges: root
 runnable: true
 
 sources:
-  - https://man7.org/linux/man-pages/man5/faillock.conf.5.html
-  - https://man7.org/linux/man-pages/man8/pam_faillock.8.html
+  - https://github.com/libpwquality/libpwquality
 
 notes:
   pl: |
-    pam_faillock czyta najpierw /etc/security/faillock.conf, a potem
-    argumenty ze swoich wierszy w /etc/pam.d/system-auth i password-auth,
-    więc argument w pliku PAM wygrywa z plikiem faillock.conf. W pliku
-    wygrywa ostatni wpis danego klucza. Sprawdzenie bierze ostatni wpis
-    z faillock.conf, a gdy go nie ma, wartość domyślną modułu. Argument
-    w wierszu pam_faillock z niepoprawną wartością albo argument conf= daje
-    wynik NOT_OK z dopiskiem by-hand; naprawa wtedy niczego nie zmienia, bo
-    te wiersze pochodzą z szablonu profilu authselect i trzeba je poprawić
-    ręcznie.
+    pam_pwquality czyta najpierw pliki /etc/security/pwquality.conf.d/*.conf
+    w kolejności alfabetycznej, potem /etc/security/pwquality.conf, a na
+    końcu argumenty ze swojego wiersza w /etc/pam.d/system-auth
+    i password-auth. Wygrywa ostatni wpis, więc argument w pliku PAM wygrywa
+    ze wszystkimi plikami. Wielkość liter w nazwach kluczy nie ma znaczenia,
+    a wartość może stać po znaku = albo po spacji. Sprawdziłem to na
+    Fedorze 44. Sprawdzenie bierze
+    ostatni wpis z tych plików, a gdy go nie ma, wartość domyślną modułu.
+    Argument w wierszu pam_pwquality z niepoprawną wartością daje wynik
+    NOT_OK z dopiskiem by-hand; naprawa wtedy niczego nie zmienia, bo ten
+    wiersz pochodzi z szablonu profilu authselect.
 
-    Naprawa dopisuje na końcu faillock.conf wiersz tej reguły pod
-    komentarzem Sentin-Harden, a wcześniejsze wpisy zostawia bez zmian.
-    Wycofanie usuwa tylko te dwa wiersze. Ustawienie działa dopiero wtedy,
-    gdy pam_faillock jest włączony (punkt 5.3.2.2).
+    Naprawa dopisuje wiersz tej reguły na końcu pwquality.conf pod
+    komentarzem Sentin-Harden, bo ten plik jest czytany po katalogu
+    pwquality.conf.d. Wycofanie usuwa tylko te dwa wiersze. Zasady
+    obowiązują przy każdej zmianie hasła przez użytkownika, np. passwd albo
+    okno zmiany hasła w GNOME; obecne hasła zostają ważne. Hasła ustawiane
+    przez roota nie są sprawdzane, dopóki nie włączy się enforce_for_root
+    (punkt 5.3.3.2.7).
 
-    Domyślnie unlock_time=600. Wartość 0 i never znaczą to samo: konto
-    pozostaje zablokowane, dopóki root nie wykona faillock --user nazwa
-    --reset. Naprawa ustawia unlock_time = 900, żeby konta odblokowywały się
-    same.
+    Każda liczba różna od 0 włącza sprawdzanie. Wartość, która nie jest
+    liczbą, daje wynik NOT_OK, bo libpwquality zgłasza wtedy błąd odczytu
+    konfiguracji. Słownik pochodzi z pakietu cracklib-dicts, który
+    libpwquality instaluje jako zależność.
   en: |
-    pam_faillock reads /etc/security/faillock.conf first and then the
-    arguments on its lines in /etc/pam.d/system-auth and password-auth, so
-    an argument in the PAM file wins over faillock.conf. In the file the
-    last entry of a key wins. The check takes the last entry in
-    faillock.conf and, when there is none, the default of the module. An
-    argument on a pam_faillock line with a wrong value, or a conf= argument,
-    gives the NOT_OK result with a by-hand note; the remediation then
-    changes nothing, because these lines come from the authselect profile
-    template and have to be fixed by hand.
+    pam_pwquality reads the /etc/security/pwquality.conf.d/*.conf files in
+    alphabetical order first, then /etc/security/pwquality.conf, and last
+    the arguments on its line in /etc/pam.d/system-auth and password-auth.
+    The last entry wins, so an argument in the PAM file wins over all files.
+    The case of key names does not matter, and the value may follow = or a
+    space. This was checked on Fedora 44. The check takes the last entry in these
+    files and, when there is none, the default of the module. An argument on
+    the pam_pwquality line with a wrong value gives the NOT_OK result with a
+    by-hand note; the remediation then changes nothing, because this line
+    comes from the authselect profile template.
 
     The remediation appends the line of this rule at the end of
-    faillock.conf under a Sentin-Harden comment and leaves earlier entries
-    as they are. Rollback removes only these two lines. The setting only
-    works when pam_faillock is enabled (item 5.3.2.2).
+    pwquality.conf under a Sentin-Harden comment, because this file is read
+    after the pwquality.conf.d directory. Rollback removes only these two
+    lines. The rules apply to every password change by a user, for example
+    passwd or the GNOME password dialog; current passwords stay valid.
+    Passwords that root sets are not checked unless enforce_for_root is
+    turned on (item 5.3.3.2.7).
 
-    The default is unlock_time=600. The values 0 and never mean the same:
-    the account stays locked until root runs faillock --user name --reset.
-    The remediation sets unlock_time = 900, so that accounts are still
-    unlocked by themselves.
+    Any number other than 0 turns the check on. A value that is not a number
+    gives the NOT_OK result, because libpwquality then reports an error
+    reading its configuration. The dictionary comes from the cracklib-dicts
+    package, which libpwquality installs as a dependency.

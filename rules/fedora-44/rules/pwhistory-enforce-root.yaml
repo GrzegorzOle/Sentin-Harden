@@ -1,13 +1,13 @@
-id: fedora44-pwquality-maxrepeat
+id: fedora44-pwhistory-enforce-root
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 5.3.3.2.4
-  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_pwquality module
+  item: 5.3.3.3.2
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_pwhistory module
   title:
-    pl: Limit powtórzeń tego samego znaku w haśle jest skonfigurowany
-    en: Ensure password same consecutive characters is configured
+    pl: Historia haseł obowiązuje także roota
+    en: Ensure password history is enforced for the root user
   level: 1
   profile: workstation
 
@@ -20,43 +20,47 @@ assessment_state: assessed-impact-described
 
 description:
   pl: |
-    Hasła z długimi ciągami tego samego znaku, np. aaaa1111, łatwo zgadnąć
-    i sprawdzają je najpierw narzędzia do łamania haseł. Parametr maxrepeat
-    ogranicza, ile razy z rzędu może wystąpić ten sam znak.
+    pam_pwhistory domyślnie tylko ostrzega roota, gdy ustawia hasło
+    z historii, i mimo to je zapisuje, także gdy root zmienia hasło innego
+    konta. Opcja enforce_for_root sprawia, że hasło z historii jest
+    odrzucane także dla roota.
 
-    Punkt wymaga, żeby maxrepeat wynosił od 1 do 3; 0 wyłącza limit.
+    Punkt wymaga opcji enforce_for_root w pwhistory.conf.
   en: |
-    Passwords with long runs of the same character, for example aaaa1111,
-    are easy to guess and password cracking tools try them first. The
-    maxrepeat parameter limits how many times in a row the same character
-    may appear.
+    By default pam_pwhistory only warns root when it sets a password from
+    the history, and saves it anyway, also when root changes the password of
+    another account. The enforce_for_root option makes a password from the
+    history rejected for root as well.
 
-    The item requires maxrepeat to be between 1 and 3; 0 turns the limit
-    off.
+    The item requires the enforce_for_root option in pwhistory.conf.
 
 disruption_description:
   pl: |
-    Fedora domyślnie nie ma tego limitu. Naprawa ustawia maxrepeat = 3,
-    więc nowe hasło nie może mieć czterech takich samych znaków z rzędu.
+    Naprawa dopisuje enforce_for_root do pwhistory.conf. passwd uruchomione
+    przez roota odrzuca wtedy hasła z historii konta, zamiast tylko
+    ostrzegać.
   en: |
-    Fedora has no such limit by default. The remediation sets maxrepeat =
-    3, so a new password cannot have four same characters in a row.
+    The remediation adds enforce_for_root to pwhistory.conf. passwd run by
+    root then rejects passwords from the history of the account instead of
+    only warning.
 
 implementation_consequences:
   impact_areas:
     - accounts-and-passwords
   what_breaks:
     pl:
-      - Użytkownicy, których nowe hasło ma więcej niż trzy takie same znaki z rzędu
+      - Administrator przywracający użytkownikowi poprzednie hasło
+      - Skrypty, które jako root ustawiają kontom stałe, znane hasło
     en:
-      - Users whose new password has more than three same characters in a row
+      - An administrator who gives a user the previous password back
+      - Scripts that set a fixed, known password for accounts as root
   interruption: none
   user_visible: true
   do_not_apply_when:
     pl:
-      - Konta, których hasła zmienia automatyzacja wybierająca hasła według własnych, słabszych zasad
+      - Konta, którym automatyzacja działająca jako root ustawia hasła z niewielkiej stałej puli
     en:
-      - Accounts whose passwords are changed by automation that picks passwords by its own, weaker rules
+      - Accounts whose passwords automation running as root sets from a small fixed pool
   reversibility: immediate
 
 audit:
@@ -69,7 +73,7 @@ audit:
       shift
       set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
       [ $# -gt 0 ] || return 1
-      awk -v k="$k" -v ic=1 -v first=0 '
+      awk -v k="$k" -v ic=1 -v first=1 '
         { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
         name == "" || (ic ? tolower(name) != tolower(k) : name != k) { next }
         { v = substr(n, length(name) + 1); sub(/^[ \t]*=?[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
@@ -89,19 +93,18 @@ audit:
           { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
-    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 3) }'; }
     evaluate() {
-      local v s a bad=""
-      if v=$(conf_get maxrepeat /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf); then s="maxrepeat=$v"; else v='0'; s="maxrepeat=$v(default)"; fi
-      for a in $(pam_args pam_pwquality.so maxrepeat); do
-        case "${a#*:}" in
-          conf=*) bad="$bad,$a" ;;
-          maxrepeat) ;;
-          *) ok "${a#*=}" || bad="$bad,$a" ;;
-        esac
+      local a bad="" arg="" s
+      for a in $(pam_args pam_pwhistory.so enforce_for_root); do
+        case "${a#*:}" in conf=*) bad="$bad,$a" ;; enforce_for_root) arg="$arg ${a%%:*}" ;; esac
       done
+      if conf_get enforce_for_root /etc/security/pwhistory.conf >/dev/null; then s="enforce_for_root"
+      else
+        case "$arg " in *" system-auth "*) case "$arg " in *" password-auth "*) arg=both ;; esac ;; esac
+        if [ "$arg" = both ]; then s="enforce_for_root"; else s="no-enforce_for_root"; fi
+      fi
       if [ -n "$bad" ]; then echo "NOT_OK:$s,by-hand:${bad#,}"
-      elif ok "$v"; then echo "OK:$s"
+      elif [ "$s" = "enforce_for_root" ]; then echo "OK:$s"
       else echo "NOT_OK:$s"; fi
     }
     evaluate
@@ -117,7 +120,7 @@ remediation:
       mkdir -p "$(dirname "$b")"
       {
         echo format=secconf-1
-        if [ -e /etc/security/pwquality.conf ]; then echo existed=1; else echo existed=0; fi
+        if [ -e /etc/security/pwhistory.conf ]; then echo existed=1; else echo existed=0; fi
       } > "$b"
       echo "Saved previous state to $b"
     )
@@ -126,9 +129,9 @@ remediation:
     (
       set -e
       b='{{backup_file}}'
-      f=/etc/security/pwquality.conf
-      mark='# Sentin-Harden: fedora44-pwquality-maxrepeat'
-      line='maxrepeat = 3'
+      f=/etc/security/pwhistory.conf
+      mark='# Sentin-Harden: fedora44-pwhistory-enforce-root'
+      line='enforce_for_root'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
     # conf_get KEY FILE...: value of the key in the files read in this order;
@@ -138,7 +141,7 @@ remediation:
       shift
       set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
       [ $# -gt 0 ] || return 1
-      awk -v k="$k" -v ic=1 -v first=0 '
+      awk -v k="$k" -v ic=1 -v first=1 '
         { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
         name == "" || (ic ? tolower(name) != tolower(k) : name != k) { next }
         { v = substr(n, length(name) + 1); sub(/^[ \t]*=?[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
@@ -158,35 +161,34 @@ remediation:
           { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
-    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 3) }'; }
     evaluate() {
-      local v s a bad=""
-      if v=$(conf_get maxrepeat /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf); then s="maxrepeat=$v"; else v='0'; s="maxrepeat=$v(default)"; fi
-      for a in $(pam_args pam_pwquality.so maxrepeat); do
-        case "${a#*:}" in
-          conf=*) bad="$bad,$a" ;;
-          maxrepeat) ;;
-          *) ok "${a#*=}" || bad="$bad,$a" ;;
-        esac
+      local a bad="" arg="" s
+      for a in $(pam_args pam_pwhistory.so enforce_for_root); do
+        case "${a#*:}" in conf=*) bad="$bad,$a" ;; enforce_for_root) arg="$arg ${a%%:*}" ;; esac
       done
+      if conf_get enforce_for_root /etc/security/pwhistory.conf >/dev/null; then s="enforce_for_root"
+      else
+        case "$arg " in *" system-auth "*) case "$arg " in *" password-auth "*) arg=both ;; esac ;; esac
+        if [ "$arg" = both ]; then s="enforce_for_root"; else s="no-enforce_for_root"; fi
+      fi
       if [ -n "$bad" ]; then echo "NOT_OK:$s,by-hand:${bad#,}"
-      elif ok "$v"; then echo "OK:$s"
+      elif [ "$s" = "enforce_for_root" ]; then echo "OK:$s"
       else echo "NOT_OK:$s"; fi
     }
       r=$(evaluate)
       case "$r" in
         OK*) echo "$f already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
-        *by-hand:*) echo "The pam_pwquality lines in the PAM files have arguments that decide it instead of $f (${r##*by-hand:}); change the authselect profile by hand" >&2; exit 1 ;;
+        *by-hand:*) echo "The pam_pwhistory lines in the PAM files have arguments that decide it instead of $f (${r##*by-hand:}); change the authselect profile by hand" >&2; exit 1 ;;
       esac
       d=$(dirname "$f")
       old=$(mktemp "$d/.sentin-harden-old.XXXXXX")
       t=$(mktemp "$d/.sentin-harden.XXXXXX")
       trap 'rm -f "$old" "$t"' EXIT
       if [ -e "$f" ]; then had=1; cat "$f" > "$old"; else had=0; fi
-      # The last entry wins, so the line of this rule goes at the end; an older
-      # copy of it is removed.
-      { if [ "$had" = 1 ]; then awk -v mark="$mark" -v line="$line" 'skip { skip = 0; if ($0 == line) next } $0 == mark { skip = 1; next } { print }' "$f"; fi
-        echo "$mark"; echo "$line"; } > "$t"
+      # The first entry wins, so the line of this rule goes at the start; an
+      # older copy of it is removed.
+      { echo "$mark"; echo "$line"
+        if [ "$had" = 1 ]; then awk -v mark="$mark" -v line="$line" 'skip { skip = 0; if ($0 == line) next } $0 == mark { skip = 1; next } { print }' "$f"; fi; } > "$t"
       if [ "$had" = 1 ]; then chmod --reference="$f" "$t"; chown --reference="$f" "$t"; else chmod 644 "$t"; chown root:root "$t"; fi
       mv -f "$t" "$f"
       if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
@@ -203,9 +205,9 @@ remediation:
     (
       set -e
       b='{{backup_file}}'
-      f=/etc/security/pwquality.conf
-      mark='# Sentin-Harden: fedora44-pwquality-maxrepeat'
-      line='maxrepeat = 3'
+      f=/etc/security/pwhistory.conf
+      mark='# Sentin-Harden: fedora44-pwhistory-enforce-root'
+      line='enforce_for_root'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
       e=$(sed -n '2s/^existed=//p' "$b")
@@ -224,7 +226,7 @@ remediation:
       if [ "$kept" = 1 ]; then
         echo "Removed the comment of this rule from $f; the line under it was changed by hand and stays"
       else
-        echo "Removed the maxrepeat line of this rule from $f"
+        echo "Removed the enforce_for_root line of this rule from $f"
       fi
     )
 
@@ -232,45 +234,47 @@ privileges: root
 runnable: true
 
 sources:
-  - https://github.com/libpwquality/libpwquality
+  - https://man7.org/linux/man-pages/man5/pwhistory.conf.5.html
+  - https://man7.org/linux/man-pages/man8/pam_pwhistory.8.html
 
 notes:
   pl: |
-    pam_pwquality czyta najpierw pliki /etc/security/pwquality.conf.d/*.conf
-    w kolejności alfabetycznej, potem /etc/security/pwquality.conf, a na
-    końcu argumenty ze swojego wiersza w /etc/pam.d/system-auth
-    i password-auth. Wygrywa ostatni wpis, więc argument w pliku PAM wygrywa
-    ze wszystkimi plikami. Wielkość liter w nazwach kluczy nie ma znaczenia,
-    a wartość może stać po znaku = albo po spacji. Sprawdziłem to na
-    Fedorze 44. Sprawdzenie bierze
-    ostatni wpis z tych plików, a gdy go nie ma, wartość domyślną modułu.
-    Argument w wierszu pam_pwquality z niepoprawną wartością daje wynik
+    pam_pwhistory czyta tylko /etc/security/pwhistory.conf (nie ma katalogu
+    pwhistory.conf.d), a potem argumenty ze swojego wiersza
+    w /etc/pam.d/system-auth i password-auth, które wygrywają z plikiem.
+    W pliku, inaczej niż w faillock.conf i pwquality.conf, wygrywa pierwszy
+    wpis danego klucza, także z niepoprawną wartością. Wielkość liter
+    w nazwach kluczy nie ma znaczenia, a wartość może stać po znaku = albo
+    po spacji. Sprawdziłem to na Fedorze 44. Argument w wierszu
+    pam_pwhistory z niepoprawną wartością albo argument conf= daje wynik
     NOT_OK z dopiskiem by-hand; naprawa wtedy niczego nie zmienia, bo ten
     wiersz pochodzi z szablonu profilu authselect.
 
-    Naprawa dopisuje wiersz tej reguły na końcu pwquality.conf pod
-    komentarzem Sentin-Harden, bo ten plik jest czytany po katalogu
-    pwquality.conf.d. Wycofanie usuwa tylko te dwa wiersze. Zasady
-    obowiązują przy każdej zmianie hasła przez użytkownika, np. passwd albo
-    okno zmiany hasła w GNOME; obecne hasła zostają ważne. Hasła ustawiane
-    przez roota nie są sprawdzane, dopóki nie włączy się enforce_for_root
-    (punkt 5.3.3.2.7).
-  en: |
-    pam_pwquality reads the /etc/security/pwquality.conf.d/*.conf files in
-    alphabetical order first, then /etc/security/pwquality.conf, and last
-    the arguments on its line in /etc/pam.d/system-auth and password-auth.
-    The last entry wins, so an argument in the PAM file wins over all files.
-    The case of key names does not matter, and the value may follow = or a
-    space. This was checked on Fedora 44. The check takes the last entry in these
-    files and, when there is none, the default of the module. An argument on
-    the pam_pwquality line with a wrong value gives the NOT_OK result with a
-    by-hand note; the remediation then changes nothing, because this line
-    comes from the authselect profile template.
+    Naprawa wstawia wiersz tej reguły na początku pwhistory.conf pod
+    komentarzem Sentin-Harden, żeby był pierwszym wpisem. Wycofanie usuwa
+    tylko te dwa wiersze. Ustawienie działa dopiero wtedy, gdy pam_pwhistory
+    jest włączony (punkt 5.3.2.4). Stare hasła moduł zapisuje
+    w /etc/security/opasswd.
 
-    The remediation appends the line of this rule at the end of
-    pwquality.conf under a Sentin-Harden comment, because this file is read
-    after the pwquality.conf.d directory. Rollback removes only these two
-    lines. The rules apply to every password change by a user, for example
-    passwd or the GNOME password dialog; current passwords stay valid.
-    Passwords that root sets are not checked unless enforce_for_root is
-    turned on (item 5.3.3.2.7).
+    Argument enforce_for_root w wierszu pam_pwhistory też włącza opcję, ale
+    sprawdzenie liczy go tylko wtedy, gdy jest w obu plikach PAM.
+  en: |
+    pam_pwhistory reads only /etc/security/pwhistory.conf (there is no
+    pwhistory.conf.d directory) and then the arguments on its line in
+    /etc/pam.d/system-auth and password-auth, which win over the file. In
+    the file, unlike faillock.conf and pwquality.conf, the first entry of a
+    key wins, even one with a wrong value. The case of key names does not
+    matter, and the value may follow = or a space. This was checked on
+    Fedora 44. An argument on the pam_pwhistory line with a wrong value, or
+    a conf= argument, gives the NOT_OK result with a by-hand note; the
+    remediation then changes nothing, because this line comes from the
+    authselect profile template.
+
+    The remediation inserts the line of this rule at the start of
+    pwhistory.conf under a Sentin-Harden comment, so that it is the first
+    entry. Rollback removes only these two lines. The setting only works
+    when pam_pwhistory is enabled (item 5.3.2.4). The module keeps old
+    passwords in /etc/security/opasswd.
+
+    The enforce_for_root argument on the pam_pwhistory line turns the option
+    on too, but the check counts it only when it is in both PAM files.

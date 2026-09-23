@@ -1,0 +1,164 @@
+id: win10-update-pause-feature-removed
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update > Manage end user experience
+  title:
+    pl: Wstrzymywanie aktualizacji przez użytkownika niedostępne
+    en: Pausing of updates by the user made unavailable
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Okno aktualizacji ma przycisk pozwalający wstrzymać poprawki na kilka
+    tygodni. Został pomyślany dla kogoś, kto wyjeżdża z laptopem i nie chce
+    zużywać łącza — i jest używany przez wszystkich, którym aktualizacje
+    kiedykolwiek przeszkodziły.
+
+    Skutek jest taki, że starannie ustawione zasady aktualizacji unieważnia jedno
+    kliknięcie użytkownika, a administrator nie dowiaduje się o tym w żaden
+    sposób. Maszyna znika z procesu łatania na kilka tygodni, potem wstrzymanie
+    bywa przedłużane, a raport pokazuje ją jako maszynę bez zaległych poprawek,
+    bo żadnych jej nie zaproponowano.
+
+    Usunięcie przycisku zamyka tę furtkę.
+  en: |
+    The update window carries a button that holds patches back for several weeks.
+    It was meant for somebody travelling with a laptop who does not want to spend
+    their data allowance - and it is used by everybody whom updates have ever
+    inconvenienced.
+
+    The consequence is that carefully arranged update policy is undone by one
+    click of a user, and the administrator learns of it in no way at all. The
+    machine drops out of the patching process for a few weeks, then the pause
+    tends to be extended, and the report shows it as a machine with no outstanding
+    patches, because none were offered to it.
+
+    Removing the button closes that side door.
+
+disruption_description:
+  pl: |
+    Zmiana odbiera funkcję, z której ludzie korzystają świadomie, więc zgłoszenia
+    się pojawią. Przycisk po prostu znika z okna aktualizacji, bez wyjaśnienia,
+    dlaczego.
+
+    Realny przypadek użycia istnieje i trzeba mieć na niego odpowiedź: praca
+    przez łącze rozliczane za przesłane dane, wyjazd w teren, prezentacja przed
+    klientem. Zamiast przycisku dla użytkownika warto dać drogę zgłoszenia i
+    wstrzymanie ustawione po stronie administratora na czas określony.
+  en: |
+    The change takes away a function people use deliberately, so tickets will
+    appear. The button simply vanishes from the update window, with no explanation
+    of why.
+
+    A genuine use exists and an answer to it is needed - working over a metered
+    link, a trip into the field, a presentation for a client. In place of a button
+    for the user it is worth offering a way to ask, and a pause set on the
+    administrator s side for a fixed period.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - user-interface
+  what_breaks:
+    pl:
+      - Przycisk wstrzymania aktualizacji zniknie z okna ustawień i użytkownik nie odłoży poprawek samodzielnie
+      - Praca przez łącze rozliczane za przesłane dane może kosztować więcej, bo poprawki pobiorą się mimo wyjazdu
+      - Osoby przygotowujące prezentację albo pracujące w terenie stracą sposób na odsunięcie aktualizacji na kilka dni
+      - Wstrzymania ustawione wcześniej mogą pozostać czynne aż do upływu swojego terminu
+      - Sama instalacja poprawek, godziny aktywności, dostęp do zasobów i praca po zalogowaniu pozostają bez zmian
+    en:
+      - The pause button vanishes from the settings window and the user cannot put patches off on their own
+      - Working over a metered link may cost more, since patches download despite the trip
+      - People preparing a presentation or working in the field lose the way of pushing updates back by a few days
+      - Pauses set earlier may stay in force until their own deadline passes
+      - The installation of patches itself, active hours, access to resources and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska pracujące przez łącza rozliczane za przesłane dane, dopóki nie zostanie dla nich przewidziany wyjątek
+      - Maszyny terenowe i prezentacyjne, gdzie wstrzymanie jest realną potrzebą, a nie wygodą
+    en:
+      - Stations working over metered links, until an exception is made for them
+      - Field and presentation machines, where pausing is a genuine need rather than a convenience
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value name carries a "Set" prefix that the policy name does not.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'SetDisablePauseUXAccess'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    $name = 'SetDisablePauseUXAccess'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SetDisablePauseUXAccess' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/waas-configure-wufb
+
+notes:
+  pl: |
+    Nazwa wpisu w rejestrze zaczyna się od przedrostka, którego nazwa zasady nie
+    ma, więc szukanie po nazwie zasady nic nie znajdzie. Ustawienie usuwa dostęp
+    do przycisku, a nie samą możliwość wstrzymania po stronie administratora.
+  en: |
+    The registry entry name starts with a prefix the policy name does not carry,
+    so searching by the policy name finds nothing. The setting removes access to
+    the button rather than the ability to pause on the administrator s side.

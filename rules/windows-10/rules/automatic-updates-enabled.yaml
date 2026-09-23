@@ -1,0 +1,179 @@
+id: win10-automatic-updates-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update
+  title:
+    pl: Automatyczne pobieranie i instalowanie aktualizacji włączone
+    en: Automatic download and installation of updates enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna bez aktualizacji zostaje z lukami, które są publicznie opisane, mają
+    gotowe narzędzia i są wykorzystywane masowo. Większość udanych włamań nie
+    korzysta z niczego nowego — korzysta z tego, czego dawno nie załatano.
+
+    Wyłączenie automatycznych aktualizacji bywa decyzją świadomą: administrator
+    chce najpierw sprawdzić poprawkę, bo raz zdarzyło się, że coś przez nią
+    przestało działać. Kłopot w tym, że „najpierw sprawdzę" zmienia się z czasem
+    w „jeszcze nie zdążyłem", a maszyna stoi otwarta przez miesiące.
+
+    Ta zasada wymaga, żeby aktualizacje instalowały się same. Wstrzymywanie
+    poprawek jest dopuszczalne wyłącznie jako proces sterowany po stronie
+    serwera aktualizacji, a nie jako wyłącznik na pojedynczej maszynie.
+  en: |
+    A machine left without updates keeps flaws that are publicly described, have
+    ready-made tools and are exploited on a large scale. Most successful break-ins
+    use nothing new - they use what has long gone unpatched.
+
+    Switching automatic updates off is sometimes a deliberate decision - the
+    administrator wants to test a fix first, because once something stopped
+    working because of one. The trouble is that "I will test it first" turns over
+    time into "I have not got round to it", and the machine stands open for
+    months.
+
+    This rule requires that updates install themselves. Holding patches back is
+    acceptable only as a process steered on the update server side, never as a
+    switch on a single machine.
+
+disruption_description:
+  pl: |
+    To jest zmiana o realnym koszcie eksploatacyjnym i dlatego wymaga świadomego
+    wdrożenia. Aktualizacje potrafią wymusić restart, a restart w złym momencie
+    kosztuje więcej niż sama poprawka.
+
+    Poważniejszą sprawą są sterowniki. Aktualizacja potrafi podmienić sterownik
+    urządzenia specjalistycznego — drukarki etykiet, sprzętu pomiarowego, karty
+    przemysłowej — i takie stanowisko przestaje pracować, choć system działa
+    poprawnie.
+
+    Odpowiedzią nie jest wyłączenie aktualizacji, tylko pokierowanie nimi: okno
+    instalacji poza godzinami pracy, wcześniejsze wdrożenie na maszynach
+    próbnych, wstrzymywanie sterowników po stronie serwera aktualizacji.
+  en: |
+    This change carries a real operating cost and hence calls for a planned
+    rollout. Updates can force a restart, and a restart at the wrong moment costs
+    more than the patch itself.
+
+    Drivers are the graver matter. An update can swap out the driver of a
+    specialist device - a label printer, measuring equipment, an industrial card -
+    and such a station stops working, though the system runs correctly.
+
+    The answer is not switching updates off but steering them - an installation
+    window outside working hours, an earlier rollout on trial machines, holding
+    drivers back on the update server side.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - drivers-and-devices
+    - user-interface
+  what_breaks:
+    pl:
+      - Aktualizacje będą instalować się same, a część z nich wymusi ponowne uruchomienie maszyny
+      - Stanowiska ze sprzętem specjalistycznym mogą dostać nowszy sterownik i przestać współpracować z urządzeniem
+      - Maszyny pracujące ciągle zobaczą przerwy w pracy w oknie instalacji poprawek
+      - Starsze aplikacje wrażliwe na zmiany w systemie mogą wymagać poprawki po stronie dostawcy
+      - Dostęp do zasobów, praca sieciowa, drukowanie i logowanie pozostają bez zmian
+    en:
+      - Updates install by themselves, and some of them force a restart of the machine
+      - Stations with specialist equipment may receive a newer driver and stop working with the device
+      - Machines running continuously see breaks in work during the patch installation window
+      - Older applications sensitive to changes in the system may need a fix from their supplier
+      - Access to resources, network work, printing and signing in are all unchanged
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska sterujące procesem przemysłowym, gdzie restart w losowym momencie jest niedopuszczalny, dopóki nie zostanie ustalone okno serwisowe
+      - Maszyny ze sprzętem specjalistycznym, którego sterownik nie znosi podmiany
+      - Środowiska z odrębnym procesem zatwierdzania poprawek po stronie serwera aktualizacji — tam wyłącznikiem steruje serwer, a nie maszyna
+    en:
+      - Stations steering an industrial process, where a restart at a random moment is unacceptable, until a maintenance window is agreed
+      - Machines with specialist equipment whose driver does not survive being swapped
+      - Environments with a separate patch approval process on the update server side - there the server steers the switch, not the machine
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+      $name = 'NoAutoUpdate'
+      $value = $null
+      if (Test-Path -Path $path -ErrorAction Stop) {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).$name
+      }
+      # No policy at all means the system default applies, which is automatic
+      # updates. Only an explicit 1 switches them off.
+      if ($null -eq $value -or [int]$value -eq 0) { 'AUTOMATIC' } else { 'DISABLED' }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AUTOMATIC'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path            = $path
+      no_auto_update  = $item.NoAutoUpdate
+      existed         = ($null -ne $item.NoAutoUpdate)
+      key_existed     = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    if (Test-Path -Path $path) {
+      Remove-ItemProperty -Path $path -Name 'NoAutoUpdate' -ErrorAction SilentlyContinue
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      if (-not (Test-Path -Path $b.path)) { New-Item -Path $b.path -Force | Out-Null }
+      Set-ItemProperty -Path $b.path -Name 'NoAutoUpdate' -Value $b.no_auto_update -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'NoAutoUpdate' -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/waas-configure-wufb
+
+notes:
+  pl: |
+    Brak zasady oznacza domyślne zachowanie systemu, czyli aktualizacje
+    automatyczne — sprawdzenie zgłasza to jako spełnienie, bo opisuje maszynę,
+    a nie rejestr. Dopiero jawna jedynka wyłącza mechanizm. Naprawa polega na
+    usunięciu wpisu, a nie na wpisaniu zera.
+  en: |
+    No policy at all means the system default, which is automatic updates - the
+    check reports that as the item being met, because it describes the machine
+    rather than the registry. Only an explicit one switches the mechanism off. The
+    remediation removes the entry rather than writing a zero.

@@ -1,0 +1,168 @@
+id: win10-windows-update-preview-builds-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update > Manage updates offered from Windows Update
+  title:
+    pl: Instalowanie wydań przedpremierowych systemu zablokowane
+    en: Installing of pre-release system builds blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wydania przedpremierowe systemu to wersje testowe, udostępniane przed
+    zakończeniem prac. Zawierają błędy, które dopiero mają zostać znalezione,
+    i zbierają o maszynie więcej danych niż wersja wydana — bo taki jest cel
+    programu testowego.
+
+    Na stanowisku firmowym oznacza to system, którego nikt nie sprawdzał pod
+    kątem zgodności z używanymi aplikacjami i który przesyła na zewnątrz więcej,
+    niż organizacja zamierzała. Dołączenie bywa przy tym decyzją jednego
+    użytkownika, podjętą z ciekawości.
+
+    Zablokowanie zamyka tę drogę na poziomie zasad, niezależnie od tego, co ktoś
+    wybierze w oknie ustawień.
+  en: |
+    Pre-release builds of the system are test versions, handed out before the work
+    is finished. They carry faults still to be found and gather more data about
+    the machine than a released version does - because that is the point of a test
+    programme.
+
+    On a company station that means a system nobody checked against the
+    applications in use, sending more out than the organisation intended. Joining
+    in, meanwhile, tends to be the decision of one user, taken out of curiosity.
+
+    Blocking it closes that road at policy level, whatever somebody picks in the
+    settings window.
+
+disruption_description:
+  pl: |
+    Na maszynie, która w programie testowym nie uczestniczy, zmiana jest
+    niewidoczna. Zamyka jedynie możliwość dołączenia.
+
+    Sprawdzić trzeba stanowiska działu informatycznego i zespołów
+    programistycznych: tam udział w programie testowym bywa świadomy i służy do
+    wczesnego wykrywania niezgodności z własnym oprogramowaniem. Takie maszyny
+    wymagają wyjątku, a nie wycofania zasady dla wszystkich.
+
+    Maszyny już zapisane do programu wymagają osobnej decyzji — zasada blokuje
+    dołączanie, ale sama nie sprowadza systemu do wersji wydanej.
+  en: |
+    On a machine taking no part in the test programme the change is invisible. All
+    it closes is the way of joining.
+
+    What has to be checked are IT department and development team stations - there
+    taking part in the test programme is sometimes deliberate and serves to catch
+    incompatibilities with the organisation s own software early. Such machines
+    need an exception rather than the rule being withdrawn for everybody.
+
+    Machines already enrolled call for a separate decision - the rule blocks
+    joining but does not by itself bring the system back to a released version.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Dołączenie do programu wydań przedpremierowych przestanie być możliwe z poziomu ustawień
+      - Zespoły sprawdzające zgodność własnego oprogramowania z nadchodzącą wersją systemu stracą tę drogę
+      - Maszyny zapisane wcześniej mogą pozostać na wydaniu przedpremierowym, bo zasada nie sprowadza systemu do wersji wydanej
+      - Zwykłe aktualizacje, sterowniki, dostęp do zasobów i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Joining the pre-release build programme stops being possible from the settings
+      - Teams checking their own software against the coming version of the system lose that route
+      - Machines enrolled earlier may stay on a pre-release build, since the rule does not bring the system back to a released version
+      - Ordinary updates, drivers, access to resources and work after signing in are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska zespołów programistycznych sprawdzających zgodność z nadchodzącą wersją systemu
+      - Maszyny laboratoryjne przeznaczone właśnie do testowania wydań przedpremierowych
+    en:
+      - Stations of development teams checking compatibility with the coming version of the system
+      - Laboratory machines meant precisely for testing pre-release builds
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The policy switched off writes 1 here; 2 means pre-release builds are
+    # managed and allowed.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ManagePreviewBuildsPolicyValue'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    $name = 'ManagePreviewBuildsPolicyValue'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ManagePreviewBuildsPolicyValue' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/waas-servicing-channels-windows-10-updates
+
+notes:
+  pl: |
+    Wartości nie są przełącznikiem: jedynka oznacza zasadę wyłączającą wydania
+    przedpremierowe, a dwójka — zarządzanie nimi i dopuszczenie ich. Sprawdzenie
+    zgłasza wartość zastaną, więc raport mówi, który wariant obowiązuje, a nie
+    tylko że punkt jest niespełniony.
+  en: |
+    The values are not a switch - one stands for the policy that turns pre-release
+    builds off, two for managing and allowing them. The check reports the value
+    found, so the report says which variant is in force rather than merely that
+    the item is unmet.

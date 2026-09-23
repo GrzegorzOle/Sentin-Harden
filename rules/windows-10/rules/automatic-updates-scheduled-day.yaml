@@ -1,0 +1,163 @@
+id: win10-automatic-updates-scheduled-day
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update > Manage end user experience
+  title:
+    pl: Dzień instalacji aktualizacji ustawiony na codziennie
+    en: Update installation day set to every day
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Instalacja poprawek umówiona na jeden dzień tygodnia wygląda porządnie i
+    bywa wygodna dla administratora. Oznacza jednak, że maszyna czeka z
+    załataniem luki średnio trzy i pół dnia, a w najgorszym razie prawie tydzień.
+
+    Luki wykorzystywane masowo mają w tym czasie swoje najlepsze dni. Między
+    opublikowaniem poprawki a jej instalacją leży okno, w którym opis błędu jest
+    już publiczny, narzędzia gotowe, a maszyna wciąż podatna — i to okno rozciąga
+    się tu do siedmiu dni bez żadnego powodu.
+
+    Ustawienie na codziennie usuwa czekanie. Poprawka instaluje się w
+    najbliższym oknie, a nie w najbliższą środę.
+  en: |
+    Patch installation arranged for one day of the week looks orderly and is
+    sometimes convenient for the administrator. It does mean, though, that the
+    machine waits an average of three and a half days before a flaw is closed, and
+    almost a week at worst.
+
+    Flaws exploited on a large scale have their best days in exactly that period.
+    Between a patch being published and it being installed lies a window in which
+    the description of the fault is already public, the tools are ready and the
+    machine still vulnerable - and here that window stretches to seven days for no
+    reason at all.
+
+    Setting it to every day removes the wait. The patch installs in the next
+    window rather than next Wednesday.
+
+disruption_description:
+  pl: |
+    Zmiana nie dokłada instalacji, tylko je rozkłada: zamiast jednego dnia z
+    kilkoma poprawkami naraz jest kilka dni z pojedynczymi. Dla użytkownika
+    oznacza to częstsze, ale krótsze przerwy.
+
+    Sprawdzić trzeba środowiska z umówionym rytmem pracy: tam, gdzie jeden dzień
+    w tygodniu był świadomie wybrany jako okno serwisowe i reszta procesów jest
+    wokół niego zbudowana, przejście na codzienne instalacje trzeba uzgodnić, a
+    nie wprowadzić po cichu.
+  en: |
+    The change adds no installations, it spreads them - instead of one day with
+    several patches at once there are several days with single ones. For the user
+    that means more frequent but shorter breaks.
+
+    Environments with an agreed rhythm of work need checking - where one day a
+    week was deliberately chosen as the maintenance window and the rest of the
+    processes are built around it, moving to daily installations has to be agreed
+    rather than slipped in quietly.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - user-interface
+  what_breaks:
+    pl:
+      - Instalacje poprawek będą wypadać częściej, w każdym dniu tygodnia zamiast w jednym umówionym
+      - Zespoły planujące pracę wokół cotygodniowego okna serwisowego stracą przewidywalność tego rytmu
+      - Restarty po aktualizacjach rozłożą się na cały tydzień, co przy maszynach pracujących ciągle wymaga przeglądu harmonogramu
+      - Godzina instalacji, tryb pobierania, dostęp do zasobów i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Patch installations fall more often, on any day of the week rather than one agreed day
+      - Teams planning work around a weekly maintenance window lose the predictability of that rhythm
+      - Restarts after updates spread across the whole week, which on continuously running machines calls for a review of the schedule
+      - The installation hour, the download mode, access to resources and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska z cotygodniowym oknem serwisowym, wokół którego zbudowane są inne procesy, dopóki zmiana nie zostanie uzgodniona
+      - Stanowiska sterujące procesem ciągłym, gdzie każda przerwa musi być zaplanowana z wyprzedzeniem
+    en:
+      - Environments with a weekly maintenance window other processes are built around, until the change is agreed
+      - Stations steering a continuous process, where every break has to be planned in advance
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ScheduledInstallDay'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    $name = 'ScheduledInstallDay'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ScheduledInstallDay' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/waas-wu-settings
+
+notes:
+  pl: |
+    Zero oznacza tu codziennie, a nie brak ustawienia — wartości od jednego do
+    siedmiu wskazują konkretne dni tygodnia. Ustawienie ma znaczenie wyłącznie
+    wtedy, gdy tryb instalacji przewiduje harmonogram; przy innym trybie leży
+    nieużywane, więc oba punkty ocenia się razem.
+  en: |
+    Zero stands here for every day rather than for no setting - values from one to
+    seven name particular days of the week. The setting matters only where the
+    installation mode uses a schedule; under another mode it lies unused, so the
+    two items are judged together.

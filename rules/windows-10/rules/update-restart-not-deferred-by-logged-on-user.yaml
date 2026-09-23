@@ -1,0 +1,169 @@
+id: win10-update-restart-not-deferred-by-logged-on-user
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update > Manage end user experience
+  title:
+    pl: Zalogowany użytkownik nie wstrzymuje restartu po aktualizacji
+    en: A signed-in user does not hold back the post-update restart
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Znaczna część poprawek zaczyna działać dopiero po ponownym uruchomieniu.
+    Maszyna z zainstalowaną poprawką i bez restartu jest podatna tak samo jak
+    przed instalacją — z tą różnicą, że raport pokazuje ją jako załataną.
+
+    Jeżeli obecność zalogowanego użytkownika wstrzymuje restart, to na maszynie,
+    której nikt nie wylogowuje, poprawki czekają tygodniami. Wystarczy zamykać
+    pokrywę laptopa zamiast go wyłączać, żeby stan trwał bez końca.
+
+    Ta zasada usuwa wstrzymanie: restart wypada w zaplanowanym oknie niezależnie
+    od tego, czy ktoś jest zalogowany.
+  en: |
+    A good share of patches only start working after a restart. A machine with a
+    patch installed and no restart is as vulnerable as it was before the
+    installation - with the difference that the report shows it as patched.
+
+    If the presence of a signed-in user holds the restart back, then on a machine
+    nobody ever signs out of, patches wait for weeks. Closing a laptop lid instead
+    of switching it off is enough for that state to last indefinitely.
+
+    This rule removes the hold - the restart falls in the planned window whether
+    somebody is signed in or not.
+
+disruption_description:
+  pl: |
+    To jest punkt, którego skutek ludzie odczują najmocniej z całego bloku, i
+    dlatego wymaga świadomego wdrożenia. Maszyna zrestartuje się w oknie
+    instalacji nawet wtedy, gdy ktoś przy niej siedzi.
+
+    System ostrzega przed restartem, ale ostrzeżenie łatwo przeoczyć, a praca
+    niezapisana przepada. Wdrożenie bez ustalonego okna poza godzinami pracy i
+    bez uprzedzenia ludzi kończy się utratą pracy i zaufania do całego procesu
+    aktualizacji naraz.
+
+    Osobno trzeba przejrzeć maszyny z długotrwałymi obliczeniami, sesjami
+    zdalnymi i procesami, których nie wolno przerwać.
+  en: |
+    This is the item whose effect people feel most strongly in the whole block,
+    and hence it calls for a planned rollout. The machine restarts in the
+    installation window even with somebody sitting at it.
+
+    The system warns before the restart, but a warning is easily missed and
+    unsaved work is lost. Deploying it without a window agreed outside working
+    hours and without warning people ends in lost work and lost trust in the whole
+    update process at once.
+
+    Machines with long-running computations, remote sessions and processes that
+    must not be interrupted need a separate review.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - user-interface
+    - remote-desktop
+  what_breaks:
+    pl:
+      - Maszyna zrestartuje się w oknie instalacji także wtedy, gdy ktoś jest zalogowany, a praca niezapisana przepadnie
+      - Sesje pulpitu zdalnego i połączenia tunelowe zostaną zerwane w chwili restartu
+      - Długotrwałe obliczenia, konwersje i kopie zapasowe uruchomione ręcznie zostaną przerwane w połowie
+      - Prezentacje i spotkania prowadzone z maszyny mogą zostać przerwane, jeśli okno instalacji wypada w godzinach pracy
+      - Sama instalacja poprawek, dostęp do zasobów, drukowanie i logowanie pozostają bez zmian
+    en:
+      - The machine restarts in the installation window even with somebody signed in, and unsaved work is lost
+      - Remote desktop sessions and tunnel connections are broken at the moment of the restart
+      - Long-running computations, conversions and manually started backups are cut off halfway
+      - Presentations and meetings run from the machine may be interrupted if the installation window falls within working hours
+      - The installation of patches itself, access to resources, printing and signing in are all unchanged
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska z długotrwałymi obliczeniami i procesami, których przerwanie oznacza powtórzenie pracy od początku
+      - Maszyny sterujące procesem przemysłowym albo pomiarem, gdzie restart w losowym momencie jest niedopuszczalny
+      - Środowiska bez okna instalacji wyznaczonego poza godzinami pracy, dopóki nie zostanie ono ustalone
+    en:
+      - Stations with long-running computations and processes whose interruption means repeating the work from the start
+      - Machines steering an industrial process or a measurement, where a restart at a random moment is unacceptable
+      - Environments with no installation window set outside working hours, until one is agreed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoAutoRebootWithLoggedOnUsers'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    $name = 'NoAutoRebootWithLoggedOnUsers'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoAutoRebootWithLoggedOnUsers' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/waas-restart
+
+notes:
+  pl: |
+    Nazwa ustawienia jest przecząca, więc spełnieniem punktu jest zero — wstrzymanie
+    restartu wyłączone. Zasada działa wyłącznie razem z ustalonym oknem instalacji
+    i ocenia się ją razem z trybem instalacji oraz dniem, w którym ona wypada.
+  en: |
+    The setting is named in the negative, so the item is met by zero - the hold on
+    the restart switched off. The rule works only together with an agreed
+    installation window and is judged alongside the installation mode and the day
+    it falls on.

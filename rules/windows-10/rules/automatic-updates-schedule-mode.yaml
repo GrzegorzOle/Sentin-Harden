@@ -1,0 +1,167 @@
+id: win10-automatic-updates-schedule-mode
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update > Manage end user experience
+  title:
+    pl: Aktualizacje pobierane i instalowane bez pytania użytkownika
+    en: Updates downloaded and installed without asking the user
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Włączone aktualizacje automatyczne to nie to samo co aktualizacje
+    instalowane. System ma kilka trybów, a część z nich kończy się na pytaniu:
+    pobrać? zainstalować? teraz czy później? Pytanie trafia do użytkownika,
+    który ma inną pracę na głowie.
+
+    Odpowiedź jest przewidywalna i zawsze ta sama: przypomnij mi później.
+    Poprawka leży pobrana na dysku, maszyna pozostaje podatna, a raport
+    aktualizacji pokazuje, że wszystko jest w porządku, bo mechanizm jest przecież
+    włączony.
+
+    Tryb wskazany przez punkt usuwa pytanie. Aktualizacje pobierają się i
+    instalują same, w zaplanowanym oknie, bez udziału człowieka.
+  en: |
+    Automatic updates being on is not the same as updates being installed. The
+    system has several modes, and some of them end in a question - download it?
+    install it? now or later? The question goes to a user with other work on their
+    mind.
+
+    The answer is predictable and always the same - remind me later. The patch
+    sits downloaded on the disk, the machine stays vulnerable, and the update
+    report shows everything in order, since the mechanism is switched on after
+    all.
+
+    The mode this item calls for removes the question. Updates download and
+    install themselves, in a planned window, with no person involved.
+
+disruption_description:
+  pl: |
+    Użytkownik traci możliwość odsunięcia instalacji i to jest cała zmiana.
+    Poprawki instalują się w oknie ustalonym przez administratora, niezależnie od
+    tego, co akurat jest otwarte.
+
+    Sprawdzić trzeba, czy okno instalacji rzeczywiście wypada poza godzinami
+    pracy. Ta zasada sama w sobie żadnego okna nie ustawia — decyduje wyłącznie o
+    tym, że pytania nie będzie. Wdrożona bez ustalonego okna daje instalacje
+    w środku dnia roboczego.
+  en: |
+    The user loses the ability to push the installation back, and that is the
+    whole change. Patches install in the window the administrator set, regardless
+    of what happens to be open.
+
+    What has to be checked is whether the installation window really falls outside
+    working hours. This rule sets no window by itself - it settles only that there
+    will be no question. Deployed without an agreed window it produces
+    installations in the middle of a working day.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - user-interface
+  what_breaks:
+    pl:
+      - Pytanie o pobranie i zainstalowanie poprawek zniknie, a użytkownik straci możliwość odsunięcia instalacji na później
+      - Instalacja może wypaść w godzinach pracy, jeśli okno instalacji nie zostało wcześniej ustalone
+      - Maszyny używane do prezentacji i spotkań mogą zacząć instalować poprawki w nieodpowiednim momencie
+      - Sam restart po instalacji podlega osobnemu ustawieniu i ta zasada go nie zmienia
+      - Dostęp do zasobów, praca sieciowa, drukowanie i logowanie pozostają bez zmian
+    en:
+      - The question about downloading and installing patches disappears, and the user loses the ability to push the installation back
+      - The installation may fall within working hours if no installation window was agreed beforehand
+      - Machines used for presentations and meetings may start installing patches at an awkward moment
+      - The restart after installation is a separate setting and this rule does not change it
+      - Access to resources, network work, printing and signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska bez ustalonego okna instalacji, dopóki nie zostanie ono wyznaczone poza godzinami pracy
+      - Maszyny prezentacyjne i sale konferencyjne, gdzie instalacja w trakcie spotkania jest widoczna dla wszystkich
+      - Środowiska sterowane serwerem aktualizacji, który narzuca własny tryb — tam ustawienie na maszynie bywa zbędne
+    en:
+      - Stations with no agreed installation window, until one is set outside working hours
+      - Presentation machines and meeting rooms, where an installation during a meeting is visible to everybody
+      - Environments steered by an update server imposing a mode of its own - there the machine setting is sometimes redundant
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AUOptions'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '4'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    $name = 'AUOptions'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AUOptions' -Value 4 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/waas-wu-settings
+
+notes:
+  pl: |
+    Ustawienie jest wyborem z kilku trybów, a nie przełącznikiem — wartości
+    mniejsze oznaczają kolejne warianty z pytaniem do użytkownika. Punkt ocenia
+    się razem z włączeniem aktualizacji automatycznych: tamten decyduje, czy
+    mechanizm działa, ten — czy dochodzi do instalacji.
+  en: |
+    The setting is a choice among several modes rather than a switch - lower
+    values stand for successive variants that ask the user. The item is judged
+    together with automatic updates being enabled - that one settles whether the
+    mechanism works, this one whether an installation happens at all.

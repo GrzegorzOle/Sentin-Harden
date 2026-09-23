@@ -1,0 +1,113 @@
+id: fedora44-authselect-profile-modules
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.3.2.1
+  section: Access Control > Pluggable Authentication Modules > Configure authselect
+  title:
+    pl: Aktywny profil authselect zawiera moduły PAM
+    en: Ensure active authselect profile includes pam modules
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Zasady haseł i blokady kont w PAM działają tylko wtedy, gdy odpowiednie
+    moduły są w konfiguracji. Jeśli profil authselect nie ma ich
+    w szablonie, włączenie funkcji authselect ich nie doda, a ręczne zmiany
+    w plikach PAM znikną przy następnym uruchomieniu authselect.
+
+    Punkt wymaga, żeby szablony system-auth i password-auth aktywnego
+    profilu zawierały moduły pam_pwquality, pam_pwhistory, pam_faillock
+    i pam_unix.
+  en: |
+    Password rules and account lockout in PAM work only when the right
+    modules are in the configuration. If the authselect profile does not
+    have them in its template, enabling an authselect feature does not add
+    them, and manual changes to the PAM files disappear the next time
+    authselect runs.
+
+    The item requires the system-auth and password-auth templates of the
+    active profile to contain the pam_pwquality, pam_pwhistory,
+    pam_faillock and pam_unix modules.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: sprawdzenie tylko czyta szablony profilu.
+  en: |
+    Nobody will notice: the check only reads the profile templates.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v authselect >/dev/null 2>&1; then echo NOT_OK:no-authselect; exit 0; fi
+    if ! cur=$(authselect current --raw 2>/dev/null); then echo NOT_OK:no-profile; exit 0; fi
+    p=${cur%% *}
+    case "$p" in
+      custom/*) d=/etc/authselect/$p ;;
+      *) d=/usr/share/authselect/vendor/$p; [ -d "$d" ] || d=/usr/share/authselect/default/$p ;;
+    esac
+    [ -d "$d" ] || { echo CHECK_ERROR; exit 0; }
+    miss=""
+    for f in system-auth password-auth; do
+      for m in pam_pwquality pam_pwhistory pam_faillock pam_unix; do
+        grep -Eq "^[[:space:]]*-?(auth|account|password|session)[[:space:]].*[[:space:]/]$m\.so([[:space:]]|\$)" "$d/$f" 2>/dev/null || miss="$miss,$f:$m"
+      done
+    done
+    if [ -z "$miss" ]; then echo "OK:profile=$p"; else echo "NOT_OK:profile=$p,missing=${miss#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://github.com/authselect/authselect
+
+notes:
+  pl: |
+    Na Fedorze plikami /etc/pam.d/system-auth i password-auth zarządza
+    authselect: są to dowiązania do plików w /etc/authselect, tworzonych
+    z szablonu wybranego profilu i włączonych funkcji. Fedora domyślnie
+    używa profilu local.
+
+    Sprawdzenie czyta profil z authselect current --raw i szuka modułów
+    w szablonach profilu, także w wierszach włączanych dopiero przez
+    funkcje, np. with-faillock. Szablony profili dostarczanych z systemem
+    są w /usr/share/authselect, a własnych w /etc/authselect/custom.
+    Wbudowane profile local i sssd zawierają wszystkie cztery moduły. Brak
+    authselect albo authselect opt-out daje wynik NOT_OK, bo wtedy pliki PAM
+    trzeba utrzymywać ręcznie. Własny profil tworzy się poleceniem
+    authselect create-profile.
+  en: |
+    On Fedora, authselect manages the /etc/pam.d/system-auth and
+    password-auth files: they are links to files in /etc/authselect built
+    from the template of the selected profile and its enabled features.
+    Fedora uses the local profile by default.
+
+    The check reads the profile from authselect current --raw and looks for
+    the modules in the profile templates, including lines that only
+    features such as with-faillock turn on. The templates of the profiles
+    shipped with the system are in /usr/share/authselect, custom ones in
+    /etc/authselect/custom. The built-in local and sssd profiles contain
+    all four modules. No authselect or authselect opt-out gives the NOT_OK
+    result, because the PAM files then have to be kept by hand. A custom
+    profile is created with authselect create-profile.

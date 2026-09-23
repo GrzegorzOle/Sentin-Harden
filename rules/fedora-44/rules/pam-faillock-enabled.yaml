@@ -1,0 +1,264 @@
+id: fedora44-pam-faillock-enabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.3.2.2
+  section: Access Control > Pluggable Authentication Modules > Configure authselect
+  title:
+    pl: Moduł pam_faillock jest włączony
+    en: Ensure pam_faillock module is enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bez limitu nieudanych prób logowania można zgadywać hasło bez końca,
+    np. przez SSH albo na ekranie blokady. pam_faillock zapisuje nieudane
+    próby i po ich przekroczeniu na pewien czas blokuje konto.
+
+    Punkt wymaga, żeby pam_faillock był w konfiguracji PAM dla logowania
+    lokalnego i zdalnego.
+  en: |
+    Without a limit on failed login attempts, a password can be guessed
+    without end, for example over SSH or on the lock screen. pam_faillock
+    records failed attempts and locks the account for a while when there
+    are too many of them.
+
+    The item requires pam_faillock in the PAM configuration for local and
+    remote login.
+
+disruption_description:
+  pl: |
+    Użytkownik, który trzy razy w ciągu 15 minut poda złe hasło, np. przy
+    logowaniu, odblokowaniu ekranu albo w sudo, ma konto zablokowane na
+    10 minut. Konto root nie jest domyślnie blokowane.
+  en: |
+    A user who enters a wrong password three times within 15 minutes, for
+    example at login, when unlocking the screen or in sudo, has the account
+    locked for 10 minutes. The root account is not locked by default.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - "Użytkownicy mylący hasło: po trzech błędach w 15 minut konto jest zablokowane na 10 minut, także dla sudo"
+      - Każdy, kto zna nazwę konta i ma dostęp do logowania, np. przez SSH, może celowo zablokować to konto złymi hasłami
+    en:
+      - "Users who mistype the password: after three errors within 15 minutes the account is locked for 10 minutes, also for sudo"
+      - Anyone who knows the account name and can reach a login, for example over SSH, can lock the account on purpose with wrong passwords
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Konta współdzielone lub logujące się hasłem przez sieć, których celowe zablokowanie zatrzymałoby pracę, a nie ma innej ochrony przed zgadywaniem hasła
+    en:
+      - Shared accounts or accounts that log in with a password over the network, where locking them on purpose would stop work and there is no other protection against password guessing
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    as_same() {
+      local cur o f
+      authselect check >/dev/null 2>&1 || return 1
+      cur=$(authselect current --raw 2>/dev/null) || return 1
+      for o in system-auth:system-auth password-auth:password-auth fingerprint-auth:fingerprint-auth \
+        smartcard-auth:smartcard-auth switchable-auth:switchable-auth postlogin:postlogin \
+        nsswitch:nsswitch.conf dconf-db:dconf-db dconf-lock:dconf-locks; do
+        f=/etc/authselect/${o#*:}
+        [ -e "$f" ] || continue
+        if [ "$(LC_ALL=C authselect test $cur --${o%%:*} 2>/dev/null | sed -e '1{/^File /d}' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')" != \
+             "$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$f")" ]; then
+          echo "${o#*:}"; return 1
+        fi
+      done
+    }
+    evaluate() {
+      local miss="" f s ty mo ar
+      for f in system-auth password-auth; do
+        for s in auth:pam_faillock.so:preauth auth:pam_faillock.so:authfail account:pam_faillock.so:; do
+          ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+          pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+        done
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_faillock"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=authfeat-1
+        if command -v authselect >/dev/null 2>&1 && cur=$(authselect current --raw 2>/dev/null); then
+          case " $cur " in *" with-faillock "*) echo enabled=1 ;; *) echo enabled=0 ;; esac
+        else
+          echo enabled=none
+        fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=authfeat-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    as_same() {
+      local cur o f
+      authselect check >/dev/null 2>&1 || return 1
+      cur=$(authselect current --raw 2>/dev/null) || return 1
+      for o in system-auth:system-auth password-auth:password-auth fingerprint-auth:fingerprint-auth \
+        smartcard-auth:smartcard-auth switchable-auth:switchable-auth postlogin:postlogin \
+        nsswitch:nsswitch.conf dconf-db:dconf-db dconf-lock:dconf-locks; do
+        f=/etc/authselect/${o#*:}
+        [ -e "$f" ] || continue
+        if [ "$(LC_ALL=C authselect test $cur --${o%%:*} 2>/dev/null | sed -e '1{/^File /d}' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')" != \
+             "$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$f")" ]; then
+          echo "${o#*:}"; return 1
+        fi
+      done
+    }
+    evaluate() {
+      local miss="" f s ty mo ar
+      for f in system-auth password-auth; do
+        for s in auth:pam_faillock.so:preauth auth:pam_faillock.so:authfail account:pam_faillock.so:; do
+          ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+          pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+        done
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_faillock"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "PAM already uses pam_faillock, nothing to change"; exit 0 ;; esac
+      command -v authselect >/dev/null 2>&1 || { echo "authselect is not installed; add pam_faillock to the PAM files by hand" >&2; exit 1; }
+      authselect current --raw >/dev/null 2>&1 || { echo "authselect does not manage the PAM configuration (no profile or authselect opt-out); add pam_faillock by hand" >&2; exit 1; }
+      # enable-feature writes the PAM files again, so changes made by hand would be lost.
+      if ! x=$(as_same); then echo "Files managed by authselect were changed by hand (${x:-authselect check fails}); nothing changed" >&2; exit 1; fi
+      authselect enable-feature with-faillock >/dev/null
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) if [ "$(sed -n 2p "$b")" = enabled=0 ]; then authselect disable-feature with-faillock >/dev/null || true; fi
+           echo "PAM does not use pam_faillock after enabling with-faillock ($r), for example because the profile has no lines for it; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Enabled the authselect feature with-faillock"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=authfeat-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      e=$(sed -n '2s/^enabled=//p' "$b")
+      case "$e" in 0|1|none) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$e" != 0 ]; then echo "Nothing to restore"; exit 0; fi
+    as_same() {
+      local cur o f
+      authselect check >/dev/null 2>&1 || return 1
+      cur=$(authselect current --raw 2>/dev/null) || return 1
+      for o in system-auth:system-auth password-auth:password-auth fingerprint-auth:fingerprint-auth \
+        smartcard-auth:smartcard-auth switchable-auth:switchable-auth postlogin:postlogin \
+        nsswitch:nsswitch.conf dconf-db:dconf-db dconf-lock:dconf-locks; do
+        f=/etc/authselect/${o#*:}
+        [ -e "$f" ] || continue
+        if [ "$(LC_ALL=C authselect test $cur --${o%%:*} 2>/dev/null | sed -e '1{/^File /d}' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')" != \
+             "$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$f")" ]; then
+          echo "${o#*:}"; return 1
+        fi
+      done
+    }
+      cur=$(authselect current --raw 2>/dev/null) || { echo "authselect no longer manages the PAM configuration; nothing changed" >&2; exit 1; }
+      case " $cur " in *" with-faillock "*) ;; *) echo "Nothing to restore"; exit 0 ;; esac
+      if ! x=$(as_same); then echo "Files managed by authselect were changed by hand (${x:-authselect check fails}); nothing changed" >&2; exit 1; fi
+      authselect disable-feature with-faillock >/dev/null
+      echo "Disabled the authselect feature with-faillock"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_faillock.8.html
+  - https://man7.org/linux/man-pages/man5/faillock.conf.5.html
+  - https://github.com/authselect/authselect
+
+notes:
+  pl: |
+    Na Fedorze plikami /etc/pam.d/system-auth i password-auth zarządza
+    authselect: są to dowiązania do plików w /etc/authselect, tworzonych
+    z szablonu wybranego profilu i włączonych funkcji. Fedora domyślnie
+    używa profilu local.
+
+    Sprawdzenie szuka w /etc/pam.d/system-auth i password-auth aktywnych
+    wierszy auth z pam_faillock.so preauth i authfail oraz wiersza account
+    z pam_faillock.so. Naprawa włącza funkcję with-faillock poleceniem
+    authselect enable-feature, ale tylko wtedy, gdy authselect zarządza
+    plikami PAM i nikt nie zmieniał ich ręcznie, bo authselect zapisuje te
+    pliki od nowa i ręczne zmiany by przepadły. Samo authselect check tego
+    nie wykrywa, więc naprawa porównuje każdy plik w /etc/authselect
+    z wynikiem authselect test dla bieżącego profilu i funkcji (bez
+    komentarzy i pustych wierszy) i przy różnicy niczego nie zmienia.
+    Wycofanie wyłącza tę funkcję, jeśli wcześniej była wyłączona, i też
+    odmawia, gdy pliki zmieniono ręcznie.
+
+    Liczbę prób i czas blokady ustawia się w /etc/security/faillock.conf;
+    domyślnie deny=3, fail_interval=900 i unlock_time=600. Zablokowane
+    konto odblokowuje root poleceniem faillock --user nazwa --reset, a stan
+    blokad w /var/run/faillock znika po restarcie.
+  en: |
+    On Fedora, authselect manages the /etc/pam.d/system-auth and
+    password-auth files: they are links to files in /etc/authselect built
+    from the template of the selected profile and its enabled features.
+    Fedora uses the local profile by default.
+
+    The check looks in /etc/pam.d/system-auth and password-auth for active
+    auth lines with pam_faillock.so preauth and authfail and an account line
+    with pam_faillock.so. The remediation turns on the with-faillock feature
+    with authselect enable-feature, but only when authselect manages the PAM
+    files and nobody changed them by hand, because authselect writes these
+    files again and manual changes would be lost. authselect check alone does
+    not notice such changes, so the remediation compares each file in
+    /etc/authselect with the output of authselect test for the current
+    profile and features (without comments and blank lines) and changes
+    nothing when they differ. Rollback turns the feature off if it was off
+    before, and also refuses when the files were changed by hand.
+
+    The number of attempts and the lock time are set in
+    /etc/security/faillock.conf; the defaults are deny=3, fail_interval=900
+    and unlock_time=600. Root unlocks a locked account with faillock --user
+    name --reset, and the lock state in /var/run/faillock is gone after a
+    restart.

@@ -1,0 +1,210 @@
+id: win2016-pnp-remote-access-disabled
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Installation
+  title:
+    pl: Zdalny dostęp do interfejsu instalacji urządzeń wyłączony
+    en: Remote access to the device installation interface switched off
+  level: 2
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie zamyka możliwość sięgania przez sieć do interfejsu
+    odpowiedzialnego za instalację urządzeń i sterowników.
+
+    Waga tego punktu bierze się z tego, czym ten interfejs steruje.
+    Instalacja sterownika kończy się uruchomieniem kodu w jądrze systemu,
+    czyli w miejscu, w którym nie ma już żadnej granicy do przekroczenia.
+    Jest to najwyższy poziom, jaki na maszynie można osiągnąć.
+
+    Otwarcie takiego mechanizmu na wywołania z sieci znaczy, że pytanie
+    przychodzące spoza maszyny trafia do składnika, którego zadaniem jest
+    wprowadzanie kodu do jądra. Nawet przy sprawdzaniu podpisów jest to
+    powierzchnia, której na serwerze nie ma powodu wystawiać.
+
+    Rzecz warta podkreślenia dotyczy zakresu. Punkt nie zamyka zdalnego
+    zarządzania. Sesja zdalna działa na maszynie i sięga do tego
+    interfejsu miejscowo, tak jak dotąd — bo jest już w środku. Zmiana
+    dotyczy wyłącznie wywołań przychodzących wprost do tego interfejsu.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: dostęp
+    przez sieć do mechanizmu, którego zadaniem jest uruchamianie kodu
+    w jądrze.
+  en: |
+    The setting shuts the possibility of reaching over the network to the interface answerable for the
+    installation of devices and drivers.
+
+    This item's weight comes from what that interface steers. The installation of a driver ends in the running of
+    code in the system's kernel, which is to say in a place where there is no boundary left to cross. It is the
+    highest level to be reached on a machine.
+
+    The opening of such a mechanism to calls from the network means that a question coming from outside the
+    machine reaches a component whose office is the bringing of code into the kernel. Even with signatures being
+    checked, it is a surface there is on a server no cause to expose.
+
+    A thing worth stressing concerns the reach. The item does not shut remote management. A remote session works
+    on the machine and reaches that interface locally, just as before - being already inside. The change concerns
+    solely calls coming straight in to that interface.
+
+    What an attacker gains while the item goes unmet: access over the network to the mechanism whose office is the
+    running of code in the kernel.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Interfejs przestaje przyjmować wywołania z sieci. Wszystko, co dzieje
+    się na maszynie miejscowo — instalacja urządzeń, dodawanie
+    sterowników, praca sesji zdalnej — zostaje bez zmian.
+
+    Rzecz warta rozdzielenia, bo bywa mylona: to nie jest wyłączenie
+    zdalnego zarządzania. Sesja zdalna jest już w środku i sięga do tego
+    interfejsu tak jak dotąd.
+
+    Nie ma znanych regresji.
+
+    Czego to nie psuje: instalacji urządzeń i sterowników na maszynie,
+    zdalnego zarządzania, pulpitu zdalnego, drukarek, usług, aplikacji.
+
+    Nie wymaga restartu ani zatrzymania usługi.
+  en: |
+    The class is "no disruption".
+
+    The interface ceases to take calls from the network. Everything that happens on the machine locally - the
+    installation of devices, the adding of drivers, the work of a remote session - stays unchanged.
+
+    A thing worth parting out, it being at times confused: this is no switching off of remote management. A remote
+    session is already inside and reaches that interface just as before.
+
+    There are no known regressions.
+
+    What this does not break: the installation of devices and drivers on the machine, remote management, the
+    remote desktop, printers, services, or applications.
+
+    Calls for no restart and no stopping of a service.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - remote-management
+  what_breaks:
+    pl:
+      - Narzędzie sięgające do tego interfejsu wprost przez sieć przestaje otrzymywać odpowiedź
+      - Instalacja urządzeń i sterowników na samej maszynie pozostaje bez zmian
+      - Zdalne zarządzanie i pulpit zdalny pozostają bez zmian, bo sesja zdalna jest już w środku
+      - Drukarki, role serwera, usługi systemowe i aplikacje pozostają bez zmian
+    en:
+      - A tool reaching that interface straight over the network ceases to get an answer
+      - The installation of devices and drivers on the machine itself stays unchanged
+      - Remote management and the remote desktop stay unchanged, a remote session being already inside
+      - Printers, the server roles, system services and applications stay unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Narzędzie zarządzania sprzętem odpytuje tę maszynę przez ten interfejs wprost z sieci
+    en:
+      - A tool for managing hardware queries this machine through that interface straight from the network
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+      $name = 'AllowRemoteRPC'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { ([string]$item.$name).Trim() }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    $name = 'AllowRemoteRPC'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # A remote session does not need this interface: it is already on the
+    # machine. Only callers of this particular interface are touched.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowRemoteRPC' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      # Only the value is removed. The key holds unrelated settings and stays.
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/drivers/install/device-installation-overview
+
+notes:
+  pl: |
+    Punkt jest trzeci w bloku i zamyka jego pierwszą część — o pytaniach
+    przychodzących spoza maszyny.
+
+    Zestawienie ocen jest tu warte wyróżnienia: kategoria wysoka przy
+    zerowym koszcie. Jest to dokładnie to pole macierzy, które aplikacja
+    ma pokazywać jako pierwsze — realny zysk bez ceny. Poziom drugi
+    w benchmarku nie powinien tego przesłaniać, bo poziom mówi o profilu
+    twardości, a nie o kolejności działania.
+
+    Nieporozumienie warte sprostowania wprost: nazwa mówi o zdalnym
+    dostępie i punkt bywa brany za wyłączenie zdalnego zarządzania. Nie
+    jest. Sesja zdalna działa już na maszynie i sięga do tego interfejsu
+    miejscowo.
+
+    Argument wart zachowania dotyczy tego, dokąd ten interfejs prowadzi.
+    Instalacja sterownika kończy się kodem w jądrze, więc mówimy o
+    powierzchni prowadzącej do najwyższego poziomu na maszynie. Sprawdzanie
+    podpisów zawęża, co da się tam wprowadzić, ale nie usuwa powodu, dla
+    którego wystawianie tego z sieci jest złym pomysłem.
+  en: |
+    The item is the third in the block and shuts its first part - about questions coming from outside the machine.
+
+    The pairing of the assessments is here worth setting apart: a high category at nil cost. It is exactly that
+    field of the matrix the application is to show first - a real gain without a price. Level two in the benchmark
+    ought not to overshadow that, the level speaking of a profile of hardness and not of the order of work.
+
+    A misunderstanding worth putting right outright: the name speaks of remote access and the item is at times
+    taken for a switching off of remote management. It is not. A remote session works already on the machine and
+    reaches that interface locally.
+
+    The argument worth keeping concerns where that interface leads. The installation of a driver ends in code in
+    the kernel, so we speak of a surface leading to the highest level on the machine. The checking of signatures
+    narrows what can be brought in there, but does not remove the reason why exposing it from the network is a bad
+    idea.

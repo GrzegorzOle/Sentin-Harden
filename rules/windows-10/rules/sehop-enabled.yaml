@@ -1,0 +1,167 @@
+id: win10-sehop-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MS Security Guide
+  title:
+    pl: Sprawdzanie łańcucha obsługi wyjątków włączone
+    en: Structured exception handling overwrite protection enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obsługa wyjątków w programie opiera się na łańcuchu wskaźników prowadzących do
+    kodu, który ma zadziałać, gdy coś pójdzie nie tak. Przepełnienie bufora
+    pozwala nadpisać ten łańcuch, a wtedy pierwszy błąd w programie przekazuje
+    sterowanie tam, gdzie chciał atakujący.
+
+    Jest to klasyczna droga zamiany zwykłej awarii w wykonanie obcego kodu. Nie
+    wymaga ani uprawnień, ani interakcji użytkownika — wystarczy skłonić program
+    do przetworzenia danych, które sam przyjmuje.
+
+    Sprawdzanie łańcucha przy każdym wyjątku wykrywa nadpisanie i kończy proces,
+    zamiast pozwolić mu skoczyć pod podstawiony adres.
+  en: |
+    Exception handling in a program rests on a chain of pointers leading to the
+    code meant to act when something goes wrong. A buffer overflow allows that
+    chain to be overwritten, and then the first fault in the program hands control
+    wherever the attacker wanted.
+
+    This is the classic road from an ordinary crash to the running of foreign
+    code. It calls for neither privileges nor user interaction - getting the
+    program to process data it accepts anyway is enough.
+
+    Checking the chain at every exception catches the overwriting and ends the
+    process instead of letting it jump to a planted address.
+
+disruption_description:
+  pl: |
+    Zachowanie domyślne systemu jest już takie, jakiego wymaga punkt, więc zwykle
+    zasada tylko utrwala stan istniejący. Wymaga jednak ponownego uruchomienia
+    maszyny, bo wartość czytana jest przy starcie.
+
+    Sprawdzenia wymagają stare programy budowane narzędziami sprzed lat, które
+    używają łańcucha wyjątków w sposób nietypowy. Taki program po zmianie kończy
+    pracę zamiast obsłużyć błąd, a objaw wygląda jak losowe zamykanie się
+    aplikacji. Warto to sprawdzić przed wdrożeniem, bo diagnoza po fakcie jest
+    kłopotliwa.
+  en: |
+    The default behaviour of the system is already what the item calls for, so the
+    rule usually only fixes the existing state in place. It does, however, call
+    for a restart of the machine, since the value is read at start-up.
+
+    Old programs built with tooling from years back, using the exception chain in
+    an unusual way, need checking. After the change such a program ends instead of
+    handling a fault, and the symptom looks like an application closing at random.
+    That is worth checking before the rollout, since diagnosing it afterwards is
+    awkward.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Stare programy używające łańcucha wyjątków w sposób nietypowy będą kończyły pracę zamiast obsłużyć błąd
+      - Objaw wygląda jak losowe zamykanie się aplikacji, co utrudnia rozpoznanie przyczyny po fakcie
+      - Zmiana zaczyna obowiązywać po ponownym uruchomieniu maszyny
+      - Współczesne aplikacje, sterowniki, usługi systemowe i praca użytkownika pozostają bez zmian
+    en:
+      - Old programs using the exception chain in an unusual way end instead of handling a fault
+      - The symptom looks like an application closing at random, which makes finding the cause afterwards harder
+      - The change takes effect after a restart of the machine
+      - Modern applications, drivers, system services and user work are all unchanged
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny z oprogramowaniem budowanym narzędziami sprzed lat, którego nie da się sprawdzić przed wdrożeniem
+      - Stanowiska sterujące procesem, na których zamknięcie aplikacji przerywa pracę bez możliwości wznowienia
+    en:
+      - Machines with software built by tooling from years back that cannot be checked before the rollout
+      - Process control stations, where an application closing breaks the work with no way of resuming it
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry is written the other way round than it reads: zero means the
+    # check is on. An absent value leaves the system default, which is the
+    # check being on, but the item calls for the state to be written down, so
+    # the absence is reported apart.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableExceptionChainValidation'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel'
+    $name = 'DisableExceptionChainValidation'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableExceptionChainValidation' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/windows-services/security-guidelines-for-disabling-system-services-in-windows-server
+
+notes:
+  pl: |
+    Wpis nazwany jest odwrotnie, niż działa: wartość zero oznacza sprawdzanie
+    włączone. Brak wpisu zostawia zachowanie domyślne, czyli również sprawdzanie
+    włączone, ale punkt wymaga zapisania stanu, więc brak zgłaszany jest osobno.
+    Wartość czytana jest przy starcie systemu.
+  en: |
+    The entry is named the other way round than it works - a value of zero means
+    the check is on. A missing entry leaves the default behaviour, which is also
+    the check being on, but the item calls for the state to be written down, so
+    absence is reported apart. The value is read as the system starts.

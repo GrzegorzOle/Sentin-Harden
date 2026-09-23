@@ -1,0 +1,162 @@
+id: win10-system-objects-case-insensitivity
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Nazwy obiektów systemowych rozpatrywane bez rozróżniania wielkości liter
+    en: System object names treated without distinguishing letter case
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podsystemy inne niż podstawowy potrafią rozróżniać wielkość liter w nazwach
+    obiektów. Skutkiem jest to, że dwie nazwy różniące się wyłącznie wielkością
+    liter opisują dwa różne obiekty.
+
+    Tu leży problem. Kontrola dostępu i wszystko, co sprawdza nazwy, pracuje na
+    jednym zapisie, a proces może utworzyć obiekt o nazwie różniącej się tylko
+    wielkością liter i ominąć to sprawdzenie. Nazwa wygląda na tę samą, a jest
+    inna — i odwrotnie, w zależności od tego, komu to jest potrzebne.
+
+    Ujednolicenie sposobu rozpatrywania nazw usuwa tę dwuznaczność dla wszystkich
+    podsystemów naraz.
+  en: |
+    Subsystems other than the main one can distinguish letter case in object
+    names. The consequence is that two names differing only in case describe two
+    different objects.
+
+    That is where the trouble lies. Access control and everything that checks
+    names works on one spelling, while a process can create an object whose name
+    differs only in case and slip past that check. The name looks like the same
+    one and is a different one - and the other way round, depending on whose
+    purpose it serves.
+
+    Making the treatment of names uniform removes that ambiguity for every
+    subsystem at once.
+
+disruption_description:
+  pl: |
+    Na maszynie bez dodatkowych podsystemów zasada nie zmienia niczego i utrwala
+    stan domyślny. Wymaga ponownego uruchomienia maszyny, bo wartość czytana jest
+    przy starcie.
+
+    Koszt dotyczy wyłącznie oprogramowania działającego w podsystemie
+    rozróżniającym wielkość liter i zależnego od tego rozróżnienia. Takie programy
+    są rzadkie, ale bywają w środowiskach przenoszonych z innych systemów — tam
+    zmiana potrafi sprawić, że dwa dotąd różne obiekty stają się jednym.
+  en: |
+    On a machine with no extra subsystems the rule alters nothing and fixes the
+    default state in place. It calls for a restart of the machine, since the value
+    is read at start-up.
+
+    The cost touches only software running in a case-distinguishing subsystem and
+    depending on that distinction. Such programs are rare but do occur in
+    environments carried over from other systems - there the change can make two
+    hitherto different objects into one.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Oprogramowanie zależne od rozróżniania wielkości liter w nazwach obiektów może przestać rozróżniać dwa obiekty
+      - Programy przeniesione z systemów rozróżniających wielkość liter mogą działać inaczej niż w środowisku źródłowym
+      - Zmiana zaczyna obowiązywać po ponownym uruchomieniu maszyny
+      - Nazwy plików, dostęp do zasobów, współczesne aplikacje i praca użytkownika pozostają bez zmian
+    en:
+      - Software depending on letter case being distinguished in object names may stop telling two objects apart
+      - Programs carried over from case-distinguishing systems may behave differently from how they did at their source
+      - The change takes effect after a restart of the machine
+      - File names, access to resources, modern applications and user work are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny z podsystemem rozróżniającym wielkość liter, na którym działa oprogramowanie zależne od tego rozróżnienia
+      - Środowiska przenoszone z innych systemów, w których dwa obiekty różnią się wyłącznie wielkością liter
+    en:
+      - Machines with a case-distinguishing subsystem running software that depends on that distinction
+      - Environments carried over from other systems, where two objects differ only in letter case
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ObCaseInsensitive'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel'
+    $name = 'ObCaseInsensitive'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ObCaseInsensitive' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/system-objects-require-case-insensitivity-for-non-windows-subsystems
+
+notes:
+  pl: |
+    Wpis leży w gałęzi jądra pod menedżerem sesji i czytany jest przy starcie
+    systemu. Punkt ocenia się razem ze wzmocnieniem uprawnień domyślnych obiektów
+    systemowych — obie zasady dotyczą tej samej przestrzeni nazw i obie wymagają
+    ponownego uruchomienia maszyny.
+  en: |
+    The entry lies in the kernel branch under the session manager and is read as
+    the system starts. The item is judged together with the strengthening of
+    default permissions on system objects - both rules concern the same namespace
+    and both call for a restart of the machine.

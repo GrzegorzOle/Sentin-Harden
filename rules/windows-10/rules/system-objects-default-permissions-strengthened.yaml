@@ -1,0 +1,161 @@
+id: win10-system-objects-default-permissions-strengthened
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Wzmocnione uprawnienia domyślne wewnętrznych obiektów systemu
+    en: Strengthened default permissions on the system s internal objects
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System tworzy w czasie pracy obiekty wewnętrzne: nazwane potoki, zdarzenia,
+    odcinki pamięci współdzielonej, katalogi urządzeń. Uprawnienia domyślne
+    rozstrzygają, kto może się do nich podłączyć.
+
+    W wariancie słabszym zwykły użytkownik może tworzyć i przejmować obiekty w
+    przestrzeni nazw, z której korzystają usługi systemowe. Otwiera to drogę
+    podstawienia: proces o wysokich uprawnieniach łączy się z obiektem
+    utworzonym wcześniej przez kogoś niepowołanego i przyjmuje od niego dane.
+
+    Wzmocnienie uprawnień zamyka tę przestrzeń nazw dla kont zwykłych. Jest to
+    zabezpieczenie niewidoczne w pracy i właśnie dlatego łatwe do przeoczenia.
+  en: |
+    While running, the system creates internal objects - named pipes, events,
+    sections of shared memory, device folders. The default permissions settle who
+    may attach to them.
+
+    In the weaker variant an ordinary user may create and seize objects in the
+    namespace system services use. That opens the road to substitution - a process
+    with high privileges attaches to an object created earlier by somebody
+    unauthorised and takes data from it.
+
+    Strengthening the permissions shuts that namespace to ordinary accounts. It is
+    a safeguard invisible in daily work and for that very reason easy to overlook.
+
+disruption_description:
+  pl: |
+    Wariant wzmocniony jest domyślny od dawna, więc zasada zwykle utrwala stan
+    istniejący. Wymaga ponownego uruchomienia maszyny, bo wartość czytana jest
+    przy starcie.
+
+    Koszt dotyczy starych programów tworzących obiekty w przestrzeni nazw
+    systemowej z konta zwykłego użytkownika. Taki program po zmianie dostanie
+    odmowę dostępu przy tworzeniu obiektu — objaw to zwykle komunikat o braku
+    uprawnień przy starcie aplikacji, a nie przy jej działaniu.
+  en: |
+    The strengthened variant has long been the default, so the rule usually fixes
+    the existing state in place. It calls for a restart of the machine, since the
+    value is read at start-up.
+
+    The cost touches old programs creating objects in the system namespace from an
+    ordinary user account. After the change such a program is refused access when
+    creating an object - the symptom is usually a message about missing privileges
+    as the application starts rather than while it runs.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Stare programy tworzące obiekty w przestrzeni nazw systemowej z konta zwykłego użytkownika dostaną odmowę dostępu
+      - Objawem bywa komunikat o braku uprawnień przy starcie aplikacji, a nie w trakcie jej pracy
+      - Zmiana zaczyna obowiązywać po ponownym uruchomieniu maszyny
+      - Współczesne aplikacje, usługi systemowe, dostęp do plików i praca użytkownika pozostają bez zmian
+    en:
+      - Old programs creating objects in the system namespace from an ordinary user account are refused access
+      - The symptom tends to be a message about missing privileges as the application starts rather than while it runs
+      - The change takes effect after a restart of the machine
+      - Modern applications, system services, access to files and user work are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny z oprogramowaniem sprzed lat, które tworzy obiekty systemowe z konta bez uprawnień
+      - Środowiska, w których nie da się zaplanować ponownego uruchomienia przed najbliższym oknem serwisowym
+    en:
+      - Machines with software from years back creating system objects from an account without privileges
+      - Environments where a restart cannot be planned before the next service window
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ProtectionMode'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+    $name = 'ProtectionMode'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ProtectionMode' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/system-objects-strengthen-default-permissions-of-internal-system-objects
+
+notes:
+  pl: |
+    Wpis leży w gałęzi menedżera sesji i czytany jest przy starcie systemu, więc
+    zmiana obowiązuje po ponownym uruchomieniu maszyny. Punkt ocenia się razem z
+    zasadą o nazwach obiektów systemowych, bo obie opisują tę samą przestrzeń nazw
+    widzianą z dwóch stron.
+  en: |
+    The entry lies in the session manager branch and is read as the system starts,
+    so the change holds after a restart of the machine. The item is judged
+    together with the rule on system object names, since both describe the same
+    namespace seen from two sides.

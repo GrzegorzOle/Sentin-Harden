@@ -1,0 +1,184 @@
+id: win10-lsa-protection
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Ochrona procesu LSA włączona
+    en: LSA process protection enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Proces odpowiadający za uwierzytelnianie trzyma w pamięci poświadczenia
+    wszystkich osób zalogowanych na maszynie: skróty haseł i bilety dostępu.
+    Odczytanie tej pamięci jest najkrótszą drogą od jednego przejętego stanowiska
+    do kont pozostałych ludzi, w tym administratorów.
+
+    Właśnie tak wygląda rozejście się atakującego po sieci w praktyce. Nie łamie
+    się kolejnych haseł — zbiera się je z pamięci maszyn po drodze, a każde
+    kolejne stanowisko oddaje poświadczenia następnych osób.
+
+    Ochrona procesu sprawia, że jego pamięci nie odczyta nawet konto z
+    uprawnieniami administratora. Do procesu dopuszczane jest wyłącznie
+    oprogramowanie podpisane w sposób, który system uznaje za wystarczający.
+  en: |
+    The process answering for authentication holds in memory the credentials of
+    everybody signed in to the machine - password hashes and access tickets.
+    Reading that memory is the shortest road from one compromised station to the
+    accounts of everybody else, administrators included.
+
+    That is exactly what an attacker spreading across a network looks like in
+    practice. Successive passwords are not broken - they are gathered from the
+    memory of the machines along the way, and every further station hands over the
+    credentials of the next people.
+
+    Protecting the process means its memory cannot be read even by an account with
+    administrator privileges. Only software signed in a way the system deems
+    sufficient is admitted to the process.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia i ponownego uruchomienia maszyny. Sprawdzenie dotyczy
+    oprogramowania, które do tego procesu sięga — a sięga do niego więcej rzeczy,
+    niż się wydaje.
+
+    Pierwsza grupa to dostawcy uwierzytelniania i filtry haseł od producentów
+    zewnętrznych: logowanie kartą, logowanie biometryczne, mechanizmy
+    jednokrotnego logowania. Niepodpisany dostawca po prostu nie zostanie
+    załadowany, a skutkiem bywa maszyna, na którą nie da się zalogować w
+    dotychczasowy sposób.
+
+    Druga to narzędzia diagnostyczne i część oprogramowania ochronnego. Tu skutkiem
+    jest zwykle utrata funkcji, a nie brak logowania, ale trzeba to sprawdzić
+    przed wdrożeniem, a nie po.
+
+    Warto wdrażać to najpierw na maszynie kontrolnej i sprawdzić dziennik systemu
+    pod kątem zablokowanych składników — system zapisuje, kogo nie wpuścił.
+  en: |
+    The change calls for a review and for a restart of the machine. The review
+    concerns software reaching into that process - and more things reach into it
+    than one would think.
+
+    The first group is authentication providers and password filters from outside
+    vendors - signing in with a card, biometric sign-in, single sign-on
+    mechanisms. An unsigned provider simply is not loaded, and the consequence is
+    sometimes a machine that cannot be signed in to the accustomed way.
+
+    The second is diagnostic tooling and some protective software. There the
+    consequence is usually a lost function rather than no sign-in, but it has to be
+    checked before the rollout rather than after.
+
+    It is best deployed on a control machine first, with the system log checked for
+    blocked components - the system records who it did not let in.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - accounts-and-passwords
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Niepodpisani dostawcy uwierzytelniania przestaną być ładowani, co może odciąć logowanie kartą albo biometryczne
+      - Filtry haseł od producentów zewnętrznych nie zadziałają, jeżeli nie mają wymaganego podpisu
+      - Narzędzia diagnostyczne i część oprogramowania ochronnego stracą dostęp do pamięci tego procesu
+      - Zmiana zaczyna obowiązywać po ponownym uruchomieniu maszyny
+      - Logowanie hasłem, uprawnienia kont, dostęp do zasobów i praca użytkownika pozostają bez zmian
+    en:
+      - Unsigned authentication providers stop being loaded, which may cut off card or biometric sign-in
+      - Password filters from outside vendors do not work unless they carry the required signature
+      - Diagnostic tooling and some protective software lose access to that process s memory
+      - The change takes effect after a restart of the machine
+      - Signing in with a password, account privileges, access to resources and user work are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny z dostawcą uwierzytelniania od producenta zewnętrznego, którego podpisu nie sprawdzono
+      - Stanowiska z filtrem haseł wymaganym przez politykę organizacji, a niepodpisanym w wymagany sposób
+      - Środowiska, w których nie da się zaplanować ponownego uruchomienia z dostępem do konsoli maszyny
+    en:
+      - Machines with an authentication provider from an outside vendor whose signature has not been checked
+      - Stations with a password filter required by the organisation s policy and not signed in the required way
+      - Environments where a restart cannot be planned with access to the machine s console
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'RunAsPPL'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(1|2)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'RunAsPPL'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RunAsPPL' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection
+
+notes:
+  pl: |
+    Sprawdzenie dopuszcza dwa warianty ochrony i odrzuca wyłącznie jej brak.
+    Wartość zapisuje się w gałęzi uwierzytelniania, a obowiązuje dopiero po
+    ponownym uruchomieniu maszyny. System zapisuje w dzienniku składniki, których
+    nie wpuścił — to jest właściwe miejsce do sprawdzenia skutków wdrożenia.
+  en: |
+    The check admits two variants of the protection and rejects only its absence.
+    The value is written in the authentication branch and takes effect only after
+    a restart of the machine. The system records in its log the components it did
+    not let in - that is the right place to check the effects of the rollout.

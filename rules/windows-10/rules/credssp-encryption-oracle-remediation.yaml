@@ -1,0 +1,171 @@
+id: win10-credssp-encryption-oracle-remediation
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Credentials Delegation
+  title:
+    pl: Odmowa połączenia z serwerami bez poprawki mechanizmu delegowania poświadczeń
+    en: Connections refused to servers without the credential delegation fix
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mechanizm delegowania poświadczeń przekazuje hasło użytkownika maszynie, z
+    którą się łączy, żeby ta mogła działać w jego imieniu. Błąd w starszej wersji
+    tego mechanizmu pozwalał stronie w środku połączenia namówić obie strony na
+    słabszy wariant i odczytać przekazywane poświadczenia.
+
+    Poprawka istnieje po obu stronach, ale sama w sobie nie wystarcza: dopóki
+    klient godzi się rozmawiać ze starszym serwerem, atakujący może ten starszy
+    wariant wymusić. Dopiero odmowa połączenia zamyka sprawę.
+
+    Po zmianie maszyna łączy się wyłącznie z serwerami, które poprawkę mają.
+    Poświadczenia przestają być przekazywane drogą, którą da się podsłuchać.
+  en: |
+    The credential delegation mechanism passes a user s password to the machine it
+    connects to, so that it can act on their behalf. A fault in an older version
+    of that mechanism let a party in the middle of the connection talk both sides
+    into a weaker variant and read the credentials being passed.
+
+    The fix exists on both sides, but by itself it is not enough - as long as the
+    client agrees to talk to an older server, an attacker can force that older
+    variant. Only refusing the connection settles the matter.
+
+    After the change the machine connects solely to servers that hold the fix.
+    Credentials stop being passed by a road that can be listened in on.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo skutkiem jest odmowa połączenia, a nie
+    ostrzeżenie. Uderza w maszyny, które od dawna nie dostały aktualizacji — a
+    takie zwykle są tam, gdzie nikt do nich nie zagląda.
+
+    Typowy objaw to pulpit zdalny odmawiający połączenia z komunikatem o
+    poprawce. Warto przed wdrożeniem przejrzeć, z czym łączą się użytkownicy:
+    stare serwery, maszyny wirtualne odkładane na później, sprzęt u dostawcy.
+    Każda taka pozycja wymaga albo aktualizacji, albo świadomej decyzji.
+
+    Właściwą naprawą jest zaktualizowanie serwera, a nie obniżenie ustawienia po
+    stronie klienta. Obniżenie przywraca dokładnie ten stan, który ta zasada
+    zamyka.
+  en: |
+    The change calls for a review, because the consequence is a refused connection
+    rather than a warning. It strikes at machines that have not been updated for a
+    long time - and those are usually where nobody looks.
+
+    The typical symptom is a remote desktop refusing to connect with a message
+    about the fix. Before the rollout it is worth reviewing what users connect to
+    - old servers, virtual machines put off until later, hardware at a supplier.
+    Every such item calls either for an update or for a deliberate decision.
+
+    The right repair is updating the server rather than lowering the setting on
+    the client s side. Lowering it restores exactly the state this rule shuts.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Połączenia pulpitu zdalnego z serwerami bez poprawki zostaną odrzucone z komunikatem o niezgodności
+      - Stare maszyny wirtualne i sprzęt u dostawcy mogą przestać być dostępne, jeżeli nie dostały aktualizacji
+      - Aplikacje korzystające z delegowania poświadczeń do starszych serwerów przestaną działać
+      - Objaw wygląda na awarię sieci albo serwera, choć przyczyną jest ta zasada po stronie klienta
+      - Połączenia z serwerami zaktualizowanymi, logowanie lokalne, dostęp do plików i praca użytkownika pozostają bez zmian
+    en:
+      - Remote desktop connections to servers without the fix are refused with a message about the mismatch
+      - Old virtual machines and hardware at a supplier may stop being reachable unless they have been updated
+      - Applications relying on credential delegation to older servers stop working
+      - The symptom looks like a network or server fault, though the cause is this rule on the client s side
+      - Connections to updated servers, local sign-in, access to files and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska z serwerami, których nie da się zaktualizować przed wdrożeniem zasady
+      - Stanowiska łączące się z maszynami u dostawcy, nad którymi organizacja nie ma kontroli
+      - Maszyny obsługujące sprzęt przemysłowy sterowany przez połączenie zdalne ze starszym systemem
+    en:
+      - Environments with servers that cannot be updated before the rule is rolled out
+      - Stations connecting to machines at a supplier, over which the organisation has no control
+      - Machines serving industrial hardware controlled through a remote connection to an older system
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowEncryptionOracle'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+    $name = 'AllowEncryptionOracle'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowEncryptionOracle' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/credentials-protection-and-management/credential-guard-considerations
+
+notes:
+  pl: |
+    Zasada dotyczy strony klienta. Serwer ma własne ustawienie i własną poprawkę,
+    więc zabezpieczenie połączenia wymaga obu stron. Obniżenie wartości po stronie
+    klienta jest przywróceniem stanu sprzed poprawki, a nie obejściem problemu.
+  en: |
+    The rule covers the client s side. The server has a setting and a fix of its
+    own, so securing the connection calls for both sides. Lowering the value on
+    the client s side restores the state before the fix rather than working round
+    the problem.

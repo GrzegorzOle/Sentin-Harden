@@ -1,0 +1,169 @@
+id: win10-vbs-platform-security-features
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Wymagane zabezpieczenia platformy dla wirtualizacji
+    en: Required platform security features for virtualization
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Warstwa wirtualizacji może być uruchomiona w kilku wariantach różniących się
+    tym, czego wymaga od sprzętu. Wariant najsłabszy zadowala się samym
+    zabezpieczeniem startu, mocniejszy wymaga dodatkowo ochrony pamięci przed
+    urządzeniami sięgającymi do niej bezpośrednio.
+
+    Różnica nie jest teoretyczna. Bez tej drugiej ochrony urządzenie podłączone do
+    gniazda o bezpośrednim dostępie do pamięci potrafi odczytać zawartość obszaru
+    chronionego przez hipernadzorcę, omijając całą konstrukcję. Cała reszta bloku
+    staje się wtedy zabezpieczeniem, które da się obejść śrubokrętem i kablem.
+
+    Ten punkt wymusza wariant obejmujący obie ochrony naraz.
+  en: |
+    The virtualization layer can be started in several variants differing in what
+    they demand of the hardware. The weakest is content with securing the start
+    alone; a stronger one additionally requires memory protection against devices
+    reaching into it directly.
+
+    The difference is not theoretical. Without that second protection a device
+    attached to a port with direct memory access can read the contents of the area
+    the hypervisor protects, going round the whole construction. The rest of the
+    block then becomes a safeguard that can be defeated with a screwdriver and a
+    cable.
+
+    This item forces the variant covering both protections at once.
+
+disruption_description:
+  pl: |
+    Skutki są te same co przy włączeniu samego mechanizmu, tylko wymagania
+    sprzętowe są wyższe. Maszyna, której oprogramowanie układowe nie zgłasza
+    ochrony pamięci przed urządzeniami, nie uruchomi warstwy wirtualizacji w
+    ogóle — i zamiast zabezpieczenia zostaje z niczym.
+
+    Dlatego kolejność wdrożenia ma znaczenie: najpierw sprawdzenie, czy sprzęt
+    zgłasza obie ochrony, potem ustawienie. Odwrotnie skończy się maszynami,
+    które z pozoru są skonfigurowane poprawnie, a mechanizm na nich nie działa i
+    nikt tego nie zauważa.
+  en: |
+    The effects are the same as with switching the mechanism itself on, only the
+    hardware demands are higher. A machine whose firmware does not report memory
+    protection against devices does not start the virtualization layer at all -
+    and instead of a safeguard is left with nothing.
+
+    Hence the order of the rollout matters - first a check that the hardware
+    reports both protections, then the setting. The other way round ends in
+    machines that look correctly configured while the mechanism does not run on
+    them and nobody notices.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - boot-and-firmware
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Maszyny bez ochrony pamięci przed urządzeniami zgłaszanej przez oprogramowanie układowe nie uruchomią warstwy wirtualizacji wcale
+      - Starszy sprzęt bez tej ochrony zostaje bez zabezpieczenia, choć ustawienie wygląda na wprowadzone
+      - Wymaganie obu ochron naraz może wykluczyć część stanowisk z wdrożenia, co trzeba zaplanować
+      - Zmiana obowiązuje po ponownym uruchomieniu, a jej wycofanie również
+      - Praca użytkownika, dostęp do zasobów, sieć i drukowanie na maszynach spełniających wymagania pozostają bez zmian
+    en:
+      - Machines without memory protection against devices reported by the firmware do not start the virtualization layer at all
+      - Older hardware lacking that protection is left with no safeguard, though the setting looks applied
+      - Demanding both protections at once may rule some stations out of the rollout, which has to be planned for
+      - The change takes effect after a restart, and so does undoing it
+      - User work, access to resources, the network and printing on machines meeting the requirements are unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Starszy sprzęt bez ochrony pamięci przed urządzeniami zgłaszanej przez oprogramowanie układowe
+      - Stanowiska, na których wariant słabszy jest świadomym wyborem przejściowym, zanim sprzęt zostanie wymieniony
+      - Maszyny, na których warstwy wirtualizacji jeszcze nie włączono — wtedy to ustawienie nie ma na czym działać
+    en:
+      - Older hardware with no memory protection against devices reported by the firmware
+      - Stations where the weaker variant is a deliberate interim choice, until the hardware is replaced
+      - Machines where the virtualization layer has not yet been switched on - then this setting has nothing to work on
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'RequirePlatformSecurityFeatures'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+    $name = 'RequirePlatformSecurityFeatures'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RequirePlatformSecurityFeatures' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity
+
+notes:
+  pl: |
+    Wartość jest wyborem wariantu, a nie przełącznikiem: jedynka oznacza samo
+    zabezpieczenie startu, dwójka samą ochronę pamięci, a trójka obie naraz.
+    Sprawdzenie zgłasza wartość zastaną, więc raport mówi, który wariant
+    obowiązuje, zamiast stwierdzać samą niezgodność.
+  en: |
+    The value is a choice of variant rather than a switch - one stands for
+    securing the start alone, two for memory protection alone, three for both at
+    once. The check reports the value found, so the report says which variant is
+    in force rather than merely stating non-compliance.

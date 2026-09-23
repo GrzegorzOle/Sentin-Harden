@@ -1,0 +1,164 @@
+id: win10-secure-launch-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Bezpieczne uruchamianie systemu włączone
+    en: Secure launch enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mechanizm bezpiecznego startu ma dwa zapisy w rejestrze: jeden w gałęzi
+    zasad, drugi w gałęzi scenariuszy sterowania. Pierwszy mówi, czego zażądano,
+    drugi — co faktycznie jest włączone na tej maszynie.
+
+    Rozdział jest istotny w praktyce. Zasada ustawiona na maszynie, której sprzęt
+    nie spełnia wymagań, zostaje w rejestrze i wygląda na wprowadzoną, podczas gdy
+    wpis w gałęzi scenariuszy pozostaje pusty — i to on mówi prawdę. Raport
+    oglądający wyłącznie zasadę pokazałby zabezpieczenie, którego nie ma.
+
+    Ten punkt sprawdza właśnie tę drugą stronę.
+  en: |
+    The secure launch mechanism has two records in the registry - one in the
+    policy branch, the other in the control scenarios branch. The first says what
+    was demanded, the second what is actually switched on for this machine.
+
+    The split matters in practice. A policy set on a machine whose hardware fails
+    the requirements stays in the registry and looks applied, while the entry in
+    the scenarios branch stays empty - and it is that one which tells the truth. A
+    report looking only at the policy would show a safeguard that is not there.
+
+    This item checks exactly that second side.
+
+disruption_description:
+  pl: |
+    Skutki pokrywają się z punktem o zasadzie bezpiecznego startu i nie dokładają
+    niczego nowego — to ten sam mechanizm oglądany z drugiej strony. Wdrożenie
+    osobne nie ma sensu, bo jeden wpis bez drugiego daje stan niepełny.
+
+    Wartość tego punktu leży gdzie indziej niż w samym ustawieniu: to on
+    odróżnia maszynę zabezpieczoną od maszyny, na której zasada leży bez skutku.
+    Przy przeglądzie wyników warto porównywać oba punkty i traktować rozjazd
+    między nimi jako sygnał, że sprzęt nie spełnia wymagań.
+  en: |
+    The effects match the item about the secure launch policy and add nothing new -
+    it is the same mechanism seen from the other side. Deploying them apart makes
+    no sense, since one entry without the other leaves an incomplete state.
+
+    The value of this item lies elsewhere than in the setting itself - it is what
+    tells a protected machine from one where the policy sits without effect. When
+    reviewing results the two items are worth comparing, and a divergence between
+    them treated as a sign that the hardware fails the requirements.
+
+implementation_consequences:
+  impact_areas:
+    - boot-and-firmware
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Maszyna może nie wstać, jeżeli sprzęt albo składnik ładowany najwcześniej nie spełnia wymagań
+      - Czas uruchamiania maszyny wydłuża się, co na starszym sprzęcie bywa zauważalne
+      - Oprogramowanie wirtualizacyjne innych producentów może stracić dostęp do funkcji procesora
+      - Wycofanie zmiany wymaga ponownego uruchomienia maszyny
+      - Praca użytkownika, dostęp do zasobów, sieć i drukowanie po prawidłowym starcie pozostają bez zmian
+    en:
+      - The machine may fail to start if the hardware or an earliest-loaded component fails the requirements
+      - The start-up time of the machine grows, which on older hardware is noticeable
+      - Virtualization software from other vendors may lose access to processor features
+      - Undoing the change calls for a restart of the machine
+      - User work, access to resources, the network and printing after a correct start are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny oddalone od działu informatycznego, gdzie nieudany start oznacza wyjazd serwisowy
+      - Starszy sprzęt bez wsparcia dla bezpiecznego startu
+      - Stanowiska, na których warstwa wirtualizacji nie została jeszcze włączona
+    en:
+      - Machines far from the IT department, where a failed start means a service trip
+      - Older hardware with no secure launch support
+      - Stations where the virtualization layer has not yet been switched on
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\SystemGuard'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'Enabled'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\SystemGuard'
+    $name = 'Enabled'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\SystemGuard'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Enabled' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/how-hardware-based-root-of-trust-helps-protect-windows
+
+notes:
+  pl: |
+    Wpis leży w gałęzi scenariuszy sterowania i opisuje stan faktyczny, a nie
+    żądanie zapisane w zasadach. Rozjazd między tym punktem a regułą o zasadzie
+    bezpiecznego startu jest informacją samą w sobie: znaczy, że sprzęt nie
+    spełnia wymagań, a nie że ktoś czegoś nie ustawił.
+  en: |
+    The entry lies in the control scenarios branch and describes the actual state
+    rather than the demand written into policy. A divergence between this item and
+    the rule about the secure launch policy is information in itself - it means
+    the hardware fails the requirements, not that somebody failed to set
+    something.

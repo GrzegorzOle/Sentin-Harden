@@ -1,0 +1,170 @@
+id: win10-vbs-memory-attributes-table-required
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Tablica atrybutów pamięci oprogramowania układowego wymagana
+    en: The firmware memory attributes table required
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Oprogramowanie układowe zostawia po sobie obszary pamięci, z których system
+    korzysta już po uruchomieniu. Dopóki nie wiadomo, które z nich mają być
+    wykonywalne, a które wyłącznie do odczytu, jądro musi traktować je
+    ostrożniej, niż wymaga tego bezpieczeństwo.
+
+    Tablica atrybutów pamięci jest deklaracją oprogramowania układowego: to jest
+    kod, tamto są dane. Wymaganie jej pozwala wymusić integralność kodu również
+    na tych obszarach, zamiast zostawiać w chronionej konstrukcji lukę o
+    rozmiarze pamięci pozostawionej przez oprogramowanie układowe.
+
+    Bez tego punktu wymuszanie integralności kodu działa, ale z wyjątkiem, o
+    którym nikt nie pamięta.
+  en: |
+    The firmware leaves behind areas of memory the system uses after start-up.
+    Until it is known which of them are meant to be executable and which read-only,
+    the kernel has to treat them more cautiously than security demands.
+
+    The memory attributes table is the firmware s declaration - this is code, that
+    is data. Requiring it allows code integrity to be enforced on those areas as
+    well, instead of leaving in a protected construction a gap the size of the
+    memory the firmware left behind.
+
+    Without this item code integrity enforcement works, but with an exception
+    nobody remembers.
+
+disruption_description:
+  pl: |
+    Wymaganie tablicy oznacza, że maszyna z oprogramowaniem układowym, które jej
+    nie dostarcza, nie uruchomi wymuszania integralności kodu. Jest to zachowanie
+    zamierzone, ale dla administratora wygląda tak samo jak awaria: ustawienie
+    jest, mechanizm nie działa.
+
+    Na starszym sprzęcie brak tablicy bywa regułą, a nie wyjątkiem, i wtedy
+    jedynym wyjściem jest aktualizacja oprogramowania układowego. Warto sprawdzić
+    to przed wdrożeniem, żeby nie dowiedzieć się o tym z raportu pokazującego
+    połowę floty jako niezabezpieczoną.
+  en: |
+    Requiring the table means a machine whose firmware does not supply it will not
+    start code integrity enforcement. That is intended behaviour, but to an
+    administrator it looks exactly like a fault - the setting is there, the
+    mechanism is not running.
+
+    On older hardware a missing table is the rule rather than the exception, and
+    then the only way out is a firmware update. That is worth checking before the
+    rollout, so as not to learn of it from a report showing half the fleet as
+    unprotected.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - boot-and-firmware
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Maszyny z oprogramowaniem układowym niedostarczającym tablicy nie uruchomią wymuszania integralności kodu
+      - Starszy sprzęt może wymagać aktualizacji oprogramowania układowego, zanim ustawienie da jakikolwiek skutek
+      - Raport pokaże takie maszyny jako niezabezpieczone, co bywa mylone z błędem wdrożenia
+      - Zmiana obowiązuje po ponownym uruchomieniu, a jej wycofanie również
+      - Praca użytkownika, dostęp do zasobów, sieć i drukowanie na maszynach spełniających wymagania pozostają bez zmian
+    en:
+      - Machines whose firmware does not supply the table do not start code integrity enforcement
+      - Older hardware may need a firmware update before the setting has any effect at all
+      - A report shows such machines as unprotected, which gets mistaken for a rollout error
+      - The change takes effect after a restart, and so does undoing it
+      - User work, access to resources, the network and printing on machines meeting the requirements are unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Starszy sprzęt z oprogramowaniem układowym niedostarczającym tablicy, dopóki nie zostanie ono zaktualizowane
+      - Stanowiska, na których wymuszanie integralności kodu nie zostało jeszcze włączone
+      - Floty mieszane, gdzie wymaganie odcięłoby część maszyn od zabezpieczenia zamiast je wzmocnić
+    en:
+      - Older hardware whose firmware does not supply the table, until it is updated
+      - Stations where code integrity enforcement has not yet been switched on
+      - Mixed fleets, where the requirement would cut some machines off from the safeguard rather than strengthen it
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'HVCIMATRequired'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard'
+    $name = 'HVCIMATRequired'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The setting binds after a restart of the machine.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'HVCIMATRequired' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity
+
+notes:
+  pl: |
+    Nazwa wpisu skraca nazwę mechanizmu i nie przypomina nazwy ustawienia w
+    edytorze zasad. Punkt ma sens wyłącznie razem z włączonym wymuszaniem
+    integralności kodu — sam z siebie niczego nie uruchamia, tylko zaostrza
+    warunek, pod jakim tamten mechanizm wystartuje.
+  en: |
+    The entry name abbreviates the mechanism s name and bears no resemblance to
+    the setting name in the policy editor. The item makes sense only together with
+    code integrity enforcement switched on - by itself it starts nothing, it only
+    tightens the condition under which that mechanism will start.

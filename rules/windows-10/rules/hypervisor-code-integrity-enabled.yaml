@@ -1,0 +1,177 @@
+id: win10-hypervisor-code-integrity-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Wymuszanie integralności kodu przez hipernadzorcę włączone
+    en: Hypervisor-enforced code integrity enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Decyzję o tym, czy dany sterownik wolno wpuścić do jądra, podejmuje zwykle
+    sam system — czyli ten, którego napastnik właśnie próbuje przejąć. Kto ma
+    uprawnienia jądra, może tę decyzję zmienić i załadować własny sterownik.
+
+    Wymuszanie integralności kodu przez hipernadzorcę przenosi tę decyzję poza
+    system. Sprawdzanie podpisów odbywa się w środowisku, do którego jądro nie
+    sięga, więc opanowanie systemu przestaje wystarczać do wprowadzenia własnego
+    kodu na poziom jądra. Napastnik traci najwygodniejszą drogę do utrwalenia się
+    w maszynie.
+
+    Jest to najbardziej wartościowy pojedynczy punkt całego bloku i zarazem ten,
+    który najczęściej coś psuje.
+  en: |
+    The decision whether a given driver may be let into the kernel is normally
+    taken by the system itself - that is, by the very thing an attacker is trying
+    to take over. Whoever holds kernel privileges can change that decision and
+    load a driver of their own.
+
+    Hypervisor-enforced code integrity moves the decision outside the system.
+    Signature checking happens in an environment the kernel cannot reach, so
+    taking over the system stops being enough to bring one s own code to kernel
+    level. The attacker loses the most convenient road to establishing themselves
+    in the machine.
+
+    It is the single most valuable item of the whole block and at the same time
+    the one that most often breaks something.
+
+disruption_description:
+  pl: |
+    Sterowniki niespełniające wymagań przestają się ładować. Brzmi to jak
+    oczywistość, dopóki nie okaże się, że chodzi o sterownik drukarki etykiet,
+    karty pomiarowej albo starego skanera, bez którego stanowisko nie pracuje.
+
+    Lista takich sterowników jest znana z góry i da się ją sprawdzić przed
+    wdrożeniem — system potrafi zgłosić zgodność sterowników zanim mechanizm
+    zostanie włączony. Pominięcie tego kroku daje najgorszy możliwy przebieg:
+    maszyny, które po ponownym uruchomieniu tracą sprzęt i nikt nie wie dlaczego.
+
+    Wycofanie wymaga kolejnego uruchomienia, a na części sprzętu również zmiany
+    w oprogramowaniu układowym. Warto to wiedzieć, zanim zmiana obejmie setkę
+    stanowisk naraz.
+  en: |
+    Drivers that fail the requirements stop loading. That sounds obvious until it
+    turns out to concern the driver of a label printer, a measuring card or an old
+    scanner, without which the station does no work.
+
+    The list of such drivers is known in advance and can be checked before the
+    rollout - the system can report driver compatibility before the mechanism is
+    switched on. Skipping that step gives the worst possible course - machines
+    that lose their hardware after a restart and nobody knows why.
+
+    Undoing it calls for another restart, and on some hardware for a firmware
+    change as well. That is worth knowing before the change reaches a hundred
+    stations at once.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - virtualization-and-containers
+    - printing
+  what_breaks:
+    pl:
+      - Sterowniki niespełniające wymagań przestaną się ładować, a urządzenia przez nie obsługiwane przestaną działać
+      - Starsze drukarki, skanery i karty pomiarowe są najczęstszą ofiarą tej zmiany i przestają być widoczne w systemie
+      - Oprogramowanie wirtualizacyjne innych producentów może odmówić uruchomienia maszyn wirtualnych
+      - Wydajność wejścia i wyjścia spada, co bywa odczuwalne przy pracy na dużych plikach
+      - Wycofanie wymaga ponownego uruchomienia, a na części sprzętu także zmiany w oprogramowaniu układowym
+    en:
+      - Drivers that fail the requirements stop loading, and the devices they serve stop working
+      - Older printers, scanners and measuring cards are the commonest casualty and disappear from the system
+      - Virtualization software from other vendors may refuse to start virtual machines
+      - Input and output performance drops, which is felt when working on large files
+      - Undoing it calls for a restart, and on some hardware for a firmware change as well
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska ze sprzętem specjalistycznym, dopóki zgodność jego sterowników nie zostanie sprawdzona
+      - Maszyny uruchamiające maszyny wirtualne w oprogramowaniu innego producenta
+      - Środowiska bez maszyn próbnych, na których dałoby się przejść tę zmianę przed wdrożeniem szerokim
+    en:
+      - Stations with specialist equipment, until the compatibility of its drivers has been checked
+      - Machines running virtual machines in another vendor s software
+      - Environments with no trial machines on which to walk this change through before a wide rollout
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'Enabled'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity'
+    $name = 'Enabled'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Enabled' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity
+
+notes:
+  pl: |
+    Wpis leży w gałęzi scenariuszy sterowania, osobno od wpisu włączającego samą
+    warstwę wirtualizacji — bez tamtego to ustawienie nie ma na czym działać.
+    Zgodność sterowników warto sprawdzić przed zmianą, a nie po niej: system
+    potrafi ją zgłosić, zanim mechanizm zostanie włączony.
+  en: |
+    The entry lies in the control scenarios branch, apart from the one switching
+    the virtualization layer itself on - without that, this setting has nothing to
+    work on. Driver compatibility is worth checking before the change rather than
+    after - the system can report it before the mechanism is switched on.

@@ -1,0 +1,173 @@
+id: win10-vbs-secure-launch
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Guard
+  title:
+    pl: Bezpieczny start warstwy wirtualizacji włączony
+    en: Secure launch of the virtualisation layer switched on
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Cała konstrukcja opisana w tym bloku opiera się na założeniu, że hipernadzorca
+    wystartował w postaci nienaruszonej. Jeżeli coś zdążyło go podmienić wcześniej
+    — w oprogramowaniu układowym, w programie rozruchowym, w sterowniku ładowanym
+    najwcześniej — to reszta zabezpieczeń chroni już tylko pozory.
+
+    Bezpieczny start rozwiązuje to, odbierając zaufanie wszystkiemu, co działo się
+    przed nim. Procesor uruchamia warstwę wirtualizacji w stanie znanym i mierzy
+    go sprzętowo, bez oglądania się na to, co zrobiło oprogramowanie układowe.
+    Atak umieszczony przed startem systemu przestaje mieć znaczenie, bo pomiar
+    zaczyna się po nim.
+
+    To jest fundament, na którym stoją pozostałe punkty bloku.
+  en: |
+    The whole construction described in this block rests on the assumption that
+    the hypervisor started intact. If something managed to replace it earlier - in
+    the firmware, in the boot loader, in a driver loaded earliest - then the rest
+    of the safeguards protect nothing but appearances.
+
+    Secure launch settles that by withdrawing trust from everything that happened
+    before it. The processor starts the virtualization layer in a known state and
+    measures it in hardware, without regard for what the firmware did. An attack
+    placed before the system starts stops mattering, because the measurement
+    begins after it.
+
+    That is the foundation the remaining items of the block stand on.
+
+disruption_description:
+  pl: |
+    Wymagania sprzętowe są tu najwyższe z całego bloku: potrzebny jest procesor
+    ze wsparciem dla bezpiecznego startu i oprogramowanie układowe, które to
+    zgłasza. Na sprzęcie starszym niż kilka generacji ustawienie po prostu nie
+    zadziała.
+
+    Groźniejszy jest przypadek pośredni — sprzęt wspiera mechanizm, ale któryś
+    ze składników ładowanych najwcześniej nie spełnia wymagań. Wtedy maszyna nie
+    wstaje i naprawa wymaga dostępu do oprogramowania układowego, a nie
+    zdalnego polecenia. Na stanowiskach oddalonych od działu informatycznego to
+    jest koszt liczony w dniach.
+  en: |
+    The hardware demands here are the highest of the whole block - a processor
+    supporting secure launch is needed, and firmware that reports it. On hardware
+    older than a few generations the setting simply does nothing.
+
+    The middle case is the dangerous one - the hardware supports the mechanism but
+    one of the earliest-loaded components fails the requirements. Then the machine
+    does not come up, and repairing it calls for access to the firmware rather
+    than a remote command. On stations far from the IT department that is a cost
+    counted in days.
+
+implementation_consequences:
+  impact_areas:
+    - boot-and-firmware
+    - virtualization-and-containers
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Maszyna może nie wstać, jeżeli sprzęt albo składnik ładowany najwcześniej nie spełnia wymagań, a naprawa wymaga dostępu do oprogramowania układowego
+      - Starszy sprzęt bez wsparcia dla bezpiecznego startu pozostanie bez tej ochrony, choć ustawienie wygląda na wprowadzone
+      - Czas uruchamiania maszyny wydłuża się zauważalnie
+      - Oprogramowanie wirtualizacyjne innych producentów może stracić dostęp do funkcji procesora
+      - Praca użytkownika, dostęp do zasobów, sieć i drukowanie po prawidłowym starcie pozostają bez zmian
+    en:
+      - The machine may fail to start if the hardware or an earliest-loaded component fails the requirements, and repair calls for access to the firmware
+      - Older hardware without secure launch support is left without this protection, though the setting looks applied
+      - The start-up time of the machine grows noticeably
+      - Virtualization software from other vendors may lose access to processor features
+      - User work, access to resources, the network and printing after a correct start are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny oddalone od działu informatycznego, gdzie nieudany start oznacza wyjazd serwisowy
+      - Starszy sprzęt bez wsparcia dla bezpiecznego startu zgłaszanego przez oprogramowanie układowe
+      - Stanowiska, na których warstwy wirtualizacji jeszcze nie włączono — wtedy to ustawienie nie ma czego zabezpieczać
+    en:
+      - Machines far from the IT department, where a failed start means a service trip
+      - Older hardware with no secure launch support reported by the firmware
+      - Stations where the virtualization layer has not yet been switched on - then this setting has nothing to secure
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ConfigureSystemGuardLaunch'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard'
+    $name = 'ConfigureSystemGuardLaunch'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The effect appears only after a restart, and the machine may fail to
+    # start where the hardware or an early driver does not meet the demands.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ConfigureSystemGuardLaunch' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/system-guard-secure-launch-and-smm-protection
+
+notes:
+  pl: |
+    Wpis leży w gałęzi zasad, a nie w gałęzi sterowania — bliźniacza reguła o
+    bezpiecznym uruchamianiu systemu dotyczy tego samego mechanizmu widzianego od
+    strony scenariuszy. Obie ocenia się razem, bo ustawienie jednej bez drugiej
+    daje stan niepełny.
+  en: |
+    The entry lies in the policy branch rather than the control one - the twin
+    rule about secure launch covers the same mechanism seen from the scenarios
+    side. The two are judged together, since setting one without the other leaves
+    an incomplete state.

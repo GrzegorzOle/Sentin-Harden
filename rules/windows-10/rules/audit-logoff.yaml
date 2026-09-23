@@ -1,0 +1,223 @@
+id: win10-audit-logoff
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja wylogowania
+    en: The audit of logging off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie zapisuje zakończenie sesji, dopełniając wpis o jej
+    rozpoczęciu.
+
+    Sama podkategoria wygląda na mało ciekawą, bo nikt nie bada wylogowań.
+    Jej wartość jest pochodna: bez niej wiadomo, kiedy ktoś wszedł, i nie
+    wiadomo, jak długo był. Każde pytanie o to, co działo się w sesji,
+    wymaga jej granicy końcowej — inaczej sesja rozciąga się do chwili
+    obecnej i wszystko, co po niej nastąpiło, można jej przypisać.
+
+    Wartość drugą widać przy sesjach, które się nie kończą. Konto usługowe
+    albo połączenie zdalne trwające tygodniami jest samo w sobie sygnałem,
+    a zauważa się je wyłącznie przez brak wpisu zamykającego.
+
+    Odnotowuję, że zapisywany jest wyłącznie wynik udany. Wylogowanie jako
+    czynność nie zawodzi, więc druga połowa ustawienia dokładałaby wpisy,
+    nie dokładając wiedzy.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: sesje
+    o nieokreślonym czasie trwania, w których nie da się rozdzielić pracy
+    własciciela konta od pracy kogoś innego.
+  en: |
+    The setting writes down the ending of a session, rounding out the entry about its beginning.
+
+    The subcategory of itself looks of little interest, nobody looking into loggings off. Its value is a derived
+    one: without it there is knowing when somebody came in, and no knowing how long they were there. Every
+    question about what went on in a session calls for that session's closing bound - failing which the session
+    stretches to the present hour and everything that followed it may be laid against it.
+
+    A second value shows at sessions that do not end. A service account or a remote connection lasting for weeks
+    is a sign in itself, and it is noticed only by the want of a closing entry.
+
+    I set down that only the successful outcome is written. A logging off as an act does not fail, so the other
+    half of the setting would add entries without adding knowledge.
+
+    What an attacker gains while the item goes unmet: sessions of undetermined length, in which the account
+    holder's work cannot be parted from somebody else's.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Ustawienie niczego nie zabrania i nie dotyka ani logowania, ani
+    wylogowania. Zapisuje czynność, która i tak następuje.
+
+    Liczba wpisów odpowiada z grubsza liczbie wpisów o logowaniu, więc
+    obciążenie dziennika jest porównywalne — i o tyle mniejsze, że
+    zapisywany jest tylko jeden wynik z dwóch.
+
+    Odnotowuję zależność wspólną dla całego bloku: przy wyłączonej inspekcji
+    logowania wpis o wylogowaniu nie ma czego domykać. Sam z siebie mówi
+    tyle, że sesja się skończyła, nie mówiąc, czyja ani kiedy się zaczęła.
+
+    Nie ma znanych regresji dla pracy codziennej.
+
+    Czego to nie psuje: logowania, wylogowania, kont domenowych, udziałów
+    plikowych, drukowania, aplikacji.
+
+    Nie wymaga restartu ani wylogowania.
+  en: |
+    The class is "no disruption".
+
+    The setting forbids nothing and touches neither the logging on nor the logging off. It writes down an act
+    that follows anyway.
+
+    The number of entries answers roughly to the number of entries about logging on, so the load upon the log is
+    of a like size - and smaller by this, that only one outcome of the two is written.
+
+    I set down a tie common to the whole block: with the audit of logging on switched off an entry about logging
+    off has nothing to round out. Of itself it says this much, that a session has ended, saying neither whose nor
+    when it began.
+
+    There are no known regressions for everyday work.
+
+    What this does not break: logging on, logging off, domain accounts, file shares, printing, or applications.
+
+    Calls for no restart and no logging off.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Liczba wpisów odpowiada z grubsza liczbie wpisów o logowaniu, więc obciążenie dziennika jest porównywalne
+      - Przy wyłączonej inspekcji logowania wpis o wylogowaniu nie ma czego domykać
+      - Zapisywany jest wyłącznie wynik udany, bo wylogowanie jako czynność nie zawodzi
+      - Maszyna zapisująca oba wyniki jest zgodna z tym punktem, bo zakres szerszy nie jest brakiem
+      - Logowanie, wylogowanie, konta domenowe, udziały plikowe i drukowanie pozostają bez zmian
+    en:
+      - The number of entries answers roughly to the number about logging on, so the load upon the log is of a like size
+      - With the audit of logging on switched off an entry about logging off has nothing to round out
+      - Only the successful outcome is written, a logging off as an act not failing
+      - A machine writing both outcomes is compliant with this item, a wider reach being no want
+      - Logging on, logging off, domain accounts, file shares and printing stay unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Inspekcja logowania jest wyłączona i wpisy o wylogowaniu nie mają czego domykać
+    en:
+      - The audit of logging on is switched off and the entries about logging off have nothing to round out
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in its last column, which the
+      # localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9216-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even where it refuses the backup, so it is the
+        # missing row - not a missing file - that tells the refusal apart. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9216-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9216-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Only the successful outcome is recorded. A logging off does not fail, so the
+    # other half of the setting would add entries without adding knowledge.
+    auditpol /set /subcategory:"{0CCE9216-69AE-11D9-BED3-505054503030}" /success:enable /failure:disable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9216-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-logoff
+
+notes:
+  pl: |
+    Reguła jest w tym bloku najłatwiejsza do odpuszczenia i najczęściej
+    odpuszczana, bo pytana wprost o swoją wartość nie ma czym odpowiedzieć.
+    Odpowiedź leży obok niej: wpis o wylogowaniu nie jest wart czytania,
+    ale bez niego wpis o zalogowaniu nie ma granicy.
+
+    Odnotowuję decyzję, w której odchodzę od zakresu ścisłego. Sprawdzenie
+    uznaje za zgodne zarówno zapisywanie samych powodzeń, jak i obu wyników,
+    bo maszyna zapisująca więcej nie jest maszyną niezgodną. Rozstrzyganie
+    inaczej dawałoby raport, w którym ustawienie ostrzejsze świeci na
+    czerwono.
+
+    Argument wart zachowania dotyczy sesji, które się nie kończą. Jest to
+    jedyne zastosowanie tej podkategorii, w którym czyta się nie wpisy,
+    tylko ich brak.
+  en: |
+    The rule is in this block the easiest to let go, and the oftenest let go, it having asked outright after its
+    value nothing to answer with. The answer lies beside it: an entry about logging off is not worth reading, but
+    without it an entry about logging on has no bound.
+
+    I set down a decision in which I depart from the strict reach. The check holds as compliant both the writing
+    of successes alone and that of both outcomes, a machine writing more not being a machine at fault. Settling
+    it otherwise would give a report in which the harder setting shines red.
+
+    The argument worth keeping touches sessions that do not end. It is this subcategory's one use in which what
+    is read is not the entries but their want.

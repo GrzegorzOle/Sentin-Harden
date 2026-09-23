@@ -1,0 +1,155 @@
+id: ubuntu2404-sshd-public-host-keys-access
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.1.3
+  section: Access Control > Configure SSH Server
+  title:
+    pl: Uprawnienia do publicznych kluczy hosta SSH są skonfigurowane
+    en: Ensure permissions on SSH public host key files are configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Klucz publiczny hosta jest jawny: sshd wysyła go każdemu klientowi.
+    Nie wolno go jednak podmienić, bo zmieniony plik wprowadza w błąd
+    programy i administratorów, którzy porównują z nim odciski kluczy.
+
+    Punkt wymaga, żeby pliki /etc/ssh/ssh_host_*_key.pub należały do
+    użytkownika i grupy root i miały uprawnienia 0644 lub ostrzejsze.
+  en: |
+    The public host key is not secret: sshd sends it to every client. It
+    must not be replaced, though, because a changed file misleads programs
+    and administrators who compare key fingerprints with it.
+
+    The item requires the /etc/ssh/ssh_host_*_key.pub files to be owned by
+    the root user and group and to have the mode 0644 or stricter.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: pliki pozostają czytelne dla wszystkich.
+  en: |
+    Nobody will notice: the files stay readable for everyone.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    n=0; bad=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      n=$((n + 1))
+      set -- $(stat -Lc '%a %u %g %G' "$f")
+      ok=0
+      if [ "$2" = 0 ]; then
+        if [ "$3" = 0 ] && [ $(( 0$1 & 07133 )) -eq 0 ]; then ok=1
+        fi
+      fi
+      [ "$ok" = 1 ] || bad="$bad,$f=$1:$2:$3"
+    done <<< "$(for f in /etc/ssh/ssh_host_*_key.pub; do if [ -f "$f" ]; then echo "$f"; fi; done)"
+    if [ "$n" = 0 ]; then echo ABSENT
+    elif [ -z "$bad" ]; then echo "RESTRICTED:$n"
+    else echo "TOO_OPEN:${bad#,}"; fi
+  expected: '^(RESTRICTED:|ABSENT$)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=access-2
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          echo "$(stat -Lc '%a %u %g' "$f") $(readlink -f "$f")"
+        done <<< "$(for f in /etc/ssh/ssh_host_*_key.pub; do if [ -f "$f" ]; then echo "$f"; fi; done)"
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      n=0
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        tg=$(readlink -f "$f")
+        set -- $(stat -c '%a %G' "$tg")
+        chown 0:0 "$tg"; m=0644
+        # Five digits: with fewer, chmod keeps the setuid and setgid bits of a directory.
+        chmod "$(printf '0%04o' $(( 0$1 & m )))" "$tg"
+        echo "Set owner root and mode $(stat -c '%a' "$tg") on $tg"
+        n=$((n + 1))
+      done <<< "$(for f in /etc/ssh/ssh_host_*_key.pub; do if [ -f "$f" ]; then echo "$f"; fi; done)"
+      [ "$n" -gt 0 ] || echo "No files, nothing to change"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=access-2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      # Every line is checked before anything is restored.
+      while read -r mode uid gid f; do
+        case "$mode" in ""|*[!0-7]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$uid:$gid" in :*|*:|*[!0-9:]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$f" in /*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      done < <(tail -n +2 "$b")
+      while read -r mode uid gid f; do
+        [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
+        chown "$uid:$gid" "$f"
+        chmod "$(printf '0%04o' $(( 0$mode )))" "$f"
+        echo "Restored owner and mode of $f"
+      done < <(tail -n +2 "$b")
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man.openbsd.org/sshd
+  - https://man.openbsd.org/ssh-keygen
+
+notes:
+  pl: |
+    Sprawdzenie ocenia pliki /etc/ssh/ssh_host_*_key.pub. Wynik RESTRICTED
+    podaje liczbę sprawdzonych kluczy, a TOO_OPEN wymienia pliki
+    z uprawnieniami, właścicielem i grupą. Brak kluczy daje wynik ABSENT,
+    który też jest zgodny.
+
+    Naprawa ustawia właściciela root:root i usuwa nadmiarowe bity uprawnień
+    bez dodawania nowych. Wycofanie przywraca poprzedniego właściciela
+    i uprawnienia każdego pliku.
+  en: |
+    The check assesses the /etc/ssh/ssh_host_*_key.pub files. The
+    RESTRICTED result gives the number of checked keys, and TOO_OPEN lists
+    the files with their mode, owner and group. No keys give the ABSENT
+    result, which also passes.
+
+    The remediation sets the owner root:root and removes excess mode bits
+    without adding new ones. Rollback restores the previous owner and mode
+    of each file.

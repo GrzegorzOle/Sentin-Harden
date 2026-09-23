@@ -1,0 +1,232 @@
+id: win10-create-token-none
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Tworzenie obiektu tokenu nieprzyznane nikomu
+    en: Creating a token object granted to nobody
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: critical
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie odbiera wszystkim prawo do tworzenia obiektu tokenu.
+
+    Token jest przepustką, którą system dołącza do procesu po zalogowaniu.
+    Zawiera tożsamość użytkownika i wykaz jego grup, a wszystkie
+    sprawdzenia uprawnień odbywają się przez odczytanie tego właśnie
+    obiektu — nie przez odpytanie kogokolwiek.
+
+    Prawo do samodzielnego utworzenia tokenu oznacza więc możliwość
+    napisania sobie przepustki. Można w niej umieścić dowolną tożsamość
+    i dowolne grupy, w tym grupę administratorów, i nie trzeba do tego
+    żadnego hasła ani żadnego konta.
+
+    Nie jest to obejście kontroli dostępu ani jej złamanie. Kontrola
+    dostępu działa dokładnie tak, jak zaprojektowano — czyta token
+    i wierzy temu, co w nim stoi. Prawo to pozwala napisać, w co ma
+    uwierzyć.
+
+    W działającym systemie nie potrzebuje go żaden program. Konto
+    systemowe tworzy tokeny mechanizmem wewnętrznym, poza tym wykazem.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    wypisania sobie tożsamości administratora bez żadnego konta.
+  en: |
+    The setting takes from everybody the right to create a token object.
+
+    A token is the pass the system fastens to a process upon a signing in. It holds the user's name and the list
+    of their groups, and every checking of rights is done by the reading of that very object - not by the asking
+    of anybody.
+
+    The right to make a token oneself therefore means the chance of writing oneself a pass. Any name at all may be
+    set in it and any groups, the group of administrators among them, and no password is needed for that and no
+    account.
+
+    It is no going round of the watching of access nor a breaking of it. The watching of access works just as it
+    was designed - it reads the token and believes what stands in it. This right lets one write what it is to
+    believe.
+
+    In a working system no program needs it. The system's own account makes tokens by an inward mechanism, outside
+    this list.
+
+    What an attacker gains while the item goes unmet: the writing out of an administrator's name for themselves
+    with no account at all.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Wykaz jest pusty na praktycznie każdej maszynie, która nie została
+    w tym miejscu ręcznie zmieniona. Zapisanie go pustym utrwala stan
+    zastany i nie zmienia niczego w pracy.
+
+    Odnotowuję, że nie znam oprogramowania używanego dzisiaj, które by
+    tego prawa wymagało. Wpis w tym wykazie jest sygnałem, że coś na
+    maszynie zostało ustawione ręcznie i warto się temu przyjrzeć, zanim
+    się to odbierze.
+
+    Skutek ewentualnej zmiany pojawia się po ponownym zalogowaniu,
+    bo token powstaje właśnie wtedy. Sesja trwająca zachowuje dotychczasowe
+    uprawnienia do wylogowania.
+
+    Czego to nie psuje: logowania, usług, dostępu do plików, udziałów
+    plikowych, drukowania.
+  en: |
+    The class is "no disruption".
+
+    The list stands empty upon practically every machine that has not been changed by hand in that place. The
+    writing of it empty sets down what was found and changes nothing in work.
+
+    I set down that I know of no software used today that would call for this right. An entry in this list is a
+    sign that something upon the machine was set by hand, and it is worth looking at before it is taken away.
+
+    The consequence of any change shows after a signing in again, a token coming about just then. A session at
+    work keeps the rights it had until the signing out.
+
+    What this does not break: logging on, services, the way to files, file shares, or printing.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Program wymagający tego prawa przestanie je otrzymywać, ale takie oprogramowanie dzisiaj nie występuje
+      - Skutek pojawia się po ponownym zalogowaniu, bo token powstaje właśnie wtedy
+      - Sesja trwająca zachowuje dotychczasowe uprawnienia aż do wylogowania
+      - Wpis w tym wykazie jest sygnałem ręcznej zmiany i warto mu się przyjrzeć przed odebraniem prawa
+      - Logowanie, usługi, dostęp do plików, udziały plikowe i drukowanie pozostają bez zmian
+    en:
+      - A program calling for this right will cease to get it, but no such software is met with today
+      - The consequence shows after a signing in again, a token coming about just then
+      - A session at work keeps the rights it had until the signing out
+      - An entry in this list is a sign of a change by hand and is worth looking at before the right is taken away
+      - Logging on, services, the way to files, file shares and printing stay unchanged
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W wykazie stoi wpis dodany ręcznie i nie wiadomo, które oprogramowanie go potrzebowało
+    en:
+      - An entry added by hand stands in the list and it is not known which software needed it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own message
+        # goes to the error stream, so the report can tell a missing privilege from
+        # a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreateTokenPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreateTokenPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreateTokenPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The right goes to nobody at all, so the line is written empty. An empty line
+    # is the setting; leaving the line out would keep whatever stood there before.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreateTokenPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreateTokenPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-a-token-object
+
+notes:
+  pl: |
+    Reguła jest bliźniacza wobec punktu o działaniu jako część systemu
+    i warto, żeby aplikacja pokazała je obok siebie. Oba dają to samo
+    w skutkach, ale inną drogą.
+
+    Argument wart zachowania dotyczy tego, dlaczego to nie jest zwykłe
+    uprawnienie. Zwykłe uprawnienie pozwala wykonać jakąś czynność. To
+    pozwala napisać dokument, na podstawie którego system rozstrzyga
+    o wszystkich czynnościach. Jest to różnica między prawem wstępu
+    a prawem drukowania przepustek.
+
+    Odnotowuję, że raport z wpisem w tym wykazie zasługuje na osobną
+    uwagę, nawet gdy wpis wskazuje na coś nieszkodliwego. Wykaz pusty
+    jest stanem naturalnym; cokolwiek w nim stoi, ktoś tam postawił
+    świadomie i warto wiedzieć po co, zanim się to usunie.
+  en: |
+    The rule is twin to the item about acting as part of the system, and it is well that the application show them
+    beside one another. Both give the same in their effects, but by another road.
+
+    The argument worth keeping touches why this is no ordinary right. An ordinary right lets one do some deed.
+    This lets one write the document by which the system settles every deed. It is the difference between a right
+    of entry and a right of printing passes.
+
+    I set down that a report with an entry in this list deserves a marking apart, even where the entry points at
+    something harmless. An empty list is the natural state; whatever stands in it somebody set there knowingly,
+    and it is worth knowing to what end before it is taken out.

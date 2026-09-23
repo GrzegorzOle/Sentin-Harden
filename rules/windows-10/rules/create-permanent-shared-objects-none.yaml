@@ -1,0 +1,232 @@
+id: win10-create-permanent-shared-objects-none
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Tworzenie trwałych obiektów współdzielonych nieprzyznane nikomu
+    en: Creating permanent shared objects granted to nobody
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie odbiera wszystkim prawo do tworzenia trwałych obiektów
+    współdzielonych.
+
+    Obiekty systemowe znikają normalnie wtedy, gdy ostatni proces, który
+    z nich korzystał, przestaje działać. Prawo to pozwala utworzyć obiekt,
+    który zostaje mimo zakończenia procesu — istnieje dalej, w przestrzeni
+    nazw jądra, bez żadnego właściciela.
+
+    Wartość tego dla napastnika polega na trwałości nazwy. Obiekt
+    zajmujący nazwę, której oczekuje inny program, będzie tam czekał także
+    po restarcie procesu, który go stworzył. Jest to sposób na zastawienie
+    pułapki i zostawienie jej na miejscu.
+
+    Jest to zarazem punkt najsłabszy w tym bloku i warto to przyznać
+    wprost. Samodzielnie nie daje dostępu do niczego — wymaga programu,
+    który zaufa nazwie zamiast sprawdzić obiekt. Wartość leży
+    w wykluczeniu składnika, a nie w zamknięciu drogi.
+
+    Odnotowuję, że wykaz jest domyślnie pusty i żaden znany dzisiaj
+    program tego prawa nie potrzebuje.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    zostawienia w jądrze obiektu, który przeżyje jego własny proces.
+  en: |
+    The setting takes from everybody the right to create permanent shared objects.
+
+    The system's objects go by rule when the last process that used them ceases to work. This right lets an object
+    be made that stays though the process has ended - it goes on, in the kernel's room of names, with no owner at
+    all.
+
+    Its worth to an attacker lies in the lastingness of a name. An object holding a name another program looks for
+    will wait there after a restart of the process that made it as well. It is a way of setting a snare and
+    leaving it in place.
+
+    It is withal the weakest item of this block, and worth owning outright. On its own it gives a way into
+    nothing - it calls for a program that will trust a name instead of proving the object. The worth lies in the
+    shutting out of a part, and not in the shutting of a road.
+
+    I set down that the list is empty by default and that no program known today needs this right.
+
+    What an attacker gains while the item goes unmet: the leaving in the kernel of an object that outlives their
+    own process.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Wykaz jest pusty na maszynach, których nikt w tym miejscu nie
+    zmieniał, a jest to praktycznie wszystko, co pracuje dzisiaj.
+    Zapisanie go pustym utrwala stan zastany.
+
+    Odnotowuję, że nie znam oprogramowania, które by tego prawa
+    potrzebowało do pracy. Wpis w tym wykazie jest wyraźnym sygnałem
+    zmiany ręcznej i warto ustalić jej powód, zanim się ją cofnie.
+
+    Skutek pojawia się po ponownym zalogowaniu. Sesja trwająca zachowuje
+    uprawnienia do wylogowania.
+
+    Czego to nie psuje: logowania, usług systemowych, uruchamiania
+    programów, dostępu do plików, drukowania.
+  en: |
+    The class is "no disruption".
+
+    The list stands empty upon machines nobody has changed in that place, and that is practically everything at
+    work today. The writing of it empty sets down what was found.
+
+    I set down that I know of no software needing this right for its work. An entry in this list is a plain sign
+    of a change by hand, and it is worth settling its ground before it is taken back.
+
+    The consequence shows after a signing in again. A session at work keeps its rights until the signing out.
+
+    What this does not break: logging on, the system's services, the running of programs, the way to files, or
+    printing.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Program wymagający tego prawa przestanie je otrzymywać, ale takiego oprogramowania dzisiaj nie spotyka się
+      - Wpis w tym wykazie jest wyraźnym sygnałem zmiany ręcznej i warto ustalić jej powód
+      - Skutek pojawia się po ponownym zalogowaniu, a sesja trwająca zachowuje uprawnienia do wylogowania
+      - Na maszynie z pustym wykazem zmiana jest zapisem stanu, a nie zmianą
+      - Logowanie, usługi systemowe, uruchamianie programów, dostęp do plików i drukowanie pozostają bez zmian
+    en:
+      - A program calling for this right will cease to get it, but such software is not met with today
+      - An entry in this list is a plain sign of a change by hand and its ground is worth settling
+      - The consequence shows after a signing in again, and a session at work keeps its rights until the signing out
+      - Upon a machine with an empty list the change is a setting down of a state and not a change
+      - Logging on, the system s services, the running of programs, the way to files and printing stay unchanged
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - W wykazie stoi wpis dodany ręcznie i nie wiadomo, które oprogramowanie go potrzebowało
+    en:
+      - An entry added by hand stands in the list and it is not known which software needed it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own message
+        # goes to the error stream, so the report can tell a missing privilege from
+        # a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreatePermanentPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreatePermanentPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreatePermanentPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The right goes to nobody at all, so the line is written empty. An empty line
+    # is the setting; leaving the line out would keep whatever stood there before.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreatePermanentPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreatePermanentPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-permanent-shared-objects
+
+notes:
+  pl: |
+    Reguła jest w tym bloku najsłabsza i warto, żeby aplikacja to
+    powiedziała wprost, zamiast stawiać ją na równi z punktami
+    o poświadczeniach. Ocena średnia jest tu celowa: samodzielnie ten
+    punkt niczego nie zamyka.
+
+    Argument wart zachowania dotyczy tego, po co zajmować się składnikiem,
+    który sam nic nie daje. Atak rzadko składa się z jednego kroku.
+    Trwały obiekt w przestrzeni nazw jądra jest dokładnie tym rodzajem
+    elementu, który sam w sobie wygląda niegroźnie, a w połączeniu
+    z programem ufającym nazwie staje się punktem zaczepienia.
+
+    Odnotowuję, że koszt wdrożenia jest zerowy, i to przesądza o sensie
+    reguły. Punkt, który nic nie kosztuje, nie musi wiele dawać, żeby
+    opłacało się go wdrożyć — i to jest cała argumentacja za tą regułą,
+    podana wprost, zamiast udawania, że zamyka drogę ataku.
+  en: |
+    The rule is the weakest of this block, and it is well that the application say so outright rather than set it
+    level with the items about credentials. The middling grading is here meant: on its own this item shuts
+    nothing.
+
+    The argument worth keeping touches why one should trouble with a part that gives nothing of itself. An attack
+    seldom stands of one step. A lasting object in the kernel's room of names is just the kind of piece that looks
+    harmless in itself and, joined to a program that trusts a name, becomes a hold to take.
+
+    I set down that the cost of the rollout is nought, and that settles the rule's sense. An item that costs
+    nothing need not give much to be worth rolling out - and that is the whole argument for this rule, put
+    outright rather than pretending it shuts a road of attack.

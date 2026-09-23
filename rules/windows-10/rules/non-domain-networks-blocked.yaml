@@ -1,0 +1,163 @@
+id: win10-non-domain-networks-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Windows Connection Manager
+  title:
+    pl: Zakaz łączenia z siecią spoza domeny przy podłączonej sieci domenowej
+    en: Connecting to a non-domain network forbidden while on a domain network
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna podłączona jednocześnie do sieci firmowej i do sieci obcej jest
+    połączeniem między nimi, niezależnie od tego, czy ktoś tego chciał. Nie musi
+    powstać mostek ani udostępnienie — wystarczy, że oprogramowanie na maszynie
+    widzi obie strony.
+
+    Najczęstszy przypadek jest codzienny: laptop wpięty kablem w biurze i wciąż
+    podłączony do sieci bezprzewodowej z poprzedniego miejsca albo do telefonu.
+    Dla napastnika po stronie tej drugiej sieci maszyna jest wejściem do sieci
+    firmowej, omijającym wszystko, co stoi na brzegu.
+
+    Ta zasada zabrania takiego stanu: przy podłączonej sieci domenowej połączenia
+    z sieciami spoza domeny są odrzucane.
+  en: |
+    A machine attached to the company network and to a foreign one at the same
+    time is a connection between them, whether anybody wanted that or not. No
+    bridge and no sharing need be made - it is enough that software on the machine
+    sees both sides.
+
+    The commonest case is an everyday one - a laptop plugged in at the office and
+    still attached to the wireless network of the previous place, or to a phone.
+    To an attacker on that second network the machine is a way into the company
+    one, skirting everything standing at the perimeter.
+
+    This rule forbids that state - while a domain network is attached, connections
+    to networks outside the domain are refused.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna dla użytkownika i bywa zgłaszana jako usterka. Sieć
+    bezprzewodowa, z której korzystał przed chwilą, po wpięciu kabla przestaje być
+    dostępna, a próba połączenia kończy się odmową bez wyjaśnienia.
+
+    Kłopot dotyczy też pracy mieszanej: telefon jako łącze zapasowe przy awarii
+    sieci firmowej przestanie działać, dopóki kabel jest wpięty. To jest
+    zachowanie zamierzone, ale warto uprzedzić o nim ludzi, zanim zaczną szukać
+    przyczyny.
+  en: |
+    The change is visible to the user and does get reported as a fault. The
+    wireless network they were using a moment ago stops being available once the
+    cable goes in, and an attempt to connect ends with an unexplained refusal.
+
+    Mixed working suffers as well - a phone as a backup link during a company
+    network outage stops working while the cable is in. That is intended
+    behaviour, but people are worth warning before they start hunting for the
+    cause.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - remote-management
+  what_breaks:
+    pl:
+      - Sieci bezprzewodowe spoza domeny przestaną być dostępne w chwili podłączenia sieci domenowej, a próba połączenia zakończy się odmową
+      - Telefon jako łącze zapasowe przy awarii sieci firmowej nie zadziała, dopóki maszyna widzi sieć domenową
+      - Użytkownik zobaczy odmowę bez wyjaśnienia przyczyny, więc zgłosi to jako usterkę karty bezprzewodowej
+      - Praca w sieci domenowej, tunele, udziały plikowe i drukowanie pozostają bez zmian
+    en:
+      - Wireless networks outside the domain stop being available the moment the domain network is attached, and an attempt to connect is refused
+      - A phone as a backup link during a company network outage does not work while the machine sees the domain network
+      - The user meets a refusal with no explanation and reports it as a wireless adapter fault
+      - Work on the domain network, tunnels, file shares and printing are all unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska korzystające z łącza zapasowego przez telefon przy awarii sieci firmowej
+      - Maszyny w oddziałach, gdzie sieć domenowa bywa niestabilna, a sieć zapasowa jest spoza domeny
+      - Środowiska bez sieci domenowej, gdzie zasada nie ma do czego się odnieść
+    en:
+      - Stations relying on a backup link through a phone during a company network outage
+      - Machines in branches where the domain network is unstable and the backup one lies outside the domain
+      - Environments with no domain network, where the rule has nothing to apply to
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'fBlockNonDomain'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+    $name = 'fBlockNonDomain'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'fBlockNonDomain' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-wifi
+
+notes:
+  pl: |
+    Zasada działa wyłącznie wtedy, gdy maszyna widzi sieć domenową — poza biurem
+    nie ogranicza niczego. Razem z ograniczeniem równoczesnych połączeń opisuje
+    jedno zagadnienie: maszynę stojącą w dwóch sieciach naraz.
+  en: |
+    The rule works only while the machine sees a domain network; away from the
+    office it restricts nothing. Together with limiting simultaneous connections
+    it describes one matter - a machine standing on two networks at once.

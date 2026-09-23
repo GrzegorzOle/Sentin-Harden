@@ -1,0 +1,169 @@
+id: win10-simultaneous-connections-minimized
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Windows Connection Manager
+  title:
+    pl: Równoczesne połączenia z wieloma sieciami ograniczone
+    en: Simultaneous connections to several networks limited
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zakaz łączenia z sieciami spoza domeny nie obejmuje wszystkiego: maszyna wciąż
+    może stać w dwóch sieciach naraz, jeśli obie są domenowe albo jeśli sieci
+    domenowej akurat nie ma. Ta zasada zamyka sprawę od drugiej strony — ogranicza
+    samą liczbę jednoczesnych połączeń.
+
+    W wariancie wskazanym przez punkt maszyna rozłącza sieć bezprzewodową, gdy
+    działa połączenie kablowe. Zostaje jedna droga do sieci, więc nie ma sytuacji,
+    w której ruch idzie jedną stroną, a odpowiedzi wracają drugą.
+
+    Zysk jest ten sam co poprzednio, tylko szerszy: maszyna przestaje być punktem
+    styku dwóch odcinków sieci, niezależnie od tego, czyje one są.
+  en: |
+    Forbidding connections to networks outside the domain does not cover
+    everything - the machine may still stand on two networks at once if both are
+    domain ones, or if no domain network happens to be present. This rule closes
+    the matter from the other side, by limiting the number of simultaneous
+    connections itself.
+
+    In the variant this item calls for, the machine drops the wireless network
+    while a cable connection is working. One road to the network is left, so there
+    is no situation in which traffic goes out one way and answers return the
+    other.
+
+    The gain is the same as before, only wider - the machine stops being a meeting
+    point of two network stretches, whoever owns them.
+
+disruption_description:
+  pl: |
+    To jest zmiana, którą użytkownik zauważa natychmiast. Po wpięciu kabla sieć
+    bezprzewodowa znika, a po jego wyjęciu wraca z kilkusekundową przerwą —
+    wystarczającą, żeby zerwać sesję pulpitu zdalnego albo połączenie tunelowe.
+
+    Najbardziej uciążliwa jest praca z dokowaniem: odłączenie laptopa od stacji
+    dokującej oznacza chwilę bez sieci, w trakcie której połączenia padają.
+    Sprawa jest do zniesienia, ale trzeba o niej uprzedzić.
+  en: |
+    This is a change the user notices at once. Plug the cable in and the wireless
+    network disappears; pull it out and it returns after a gap of several seconds -
+    long enough to drop a remote desktop session or a tunnel connection.
+
+    Docking is where it hurts most. Undocking a laptop means a moment without a
+    network, during which connections fall over. It is bearable, but people have
+    to be warned.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - remote-management
+  what_breaks:
+    pl:
+      - Po wpięciu kabla sieć bezprzewodowa zostanie rozłączona, a otwarte na niej połączenia przepadną
+      - Odłączenie laptopa od stacji dokującej daje kilkusekundową przerwę w łączności, w trakcie której padają sesje pulpitu zdalnego i tunele
+      - Praca z dwoma łączami naraz dla zwiększenia przepustowości przestanie być możliwa
+      - Narzędzia mierzące dostępność łącza zobaczą krótkie przerwy przy każdym przełączeniu, co bywa zgłaszane jako awaria
+      - Dostęp do zasobów, przepustowość na łączu czynnym i pozostała praca sieciowa działają bez zmian
+    en:
+      - Plugging the cable in disconnects the wireless network, and connections open on it are lost
+      - Undocking a laptop gives a gap of several seconds in connectivity, during which remote desktop sessions and tunnels fall over
+      - Working with two links at once for extra throughput stops being possible
+      - Tools measuring link availability see short gaps at every switch, which gets reported as an outage
+      - Access to resources, throughput on the live link and the rest of network work are unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska pracujące z dwoma łączami naraz, gdzie druga droga jest zabezpieczeniem, a nie wygodą
+      - Maszyny często dokowane i odłączane, gdzie przerwa przy każdym przełączeniu zrywa sesje
+      - Środowiska z połączeniem tunelowym wrażliwym na zerwanie, dopóki nie zostanie ono skonfigurowane do odtwarzania
+    en:
+      - Stations working with two links at once, where the second road is a safeguard rather than a convenience
+      - Machines docked and undocked often, where a gap at each switch drops sessions
+      - Environments with a tunnel connection sensitive to interruption, until it is set up to re-establish itself
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The setting is a choice out of four, not a switch. Three is the variant
+    # the item calls for - wireless dropped while the cable is in. The weaker
+    # variants are reported with their own value so the report says which one
+    # was found.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'fMinimizeConnections'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+    $name = 'fMinimizeConnections'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'fMinimizeConnections' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-wifi
+
+notes:
+  pl: |
+    Ustawienie jest wyborem z czterech możliwości, a nie przełącznikiem. Trójka to
+    wariant wskazany przez punkt — rozłączenie sieci bezprzewodowej przy wpiętym
+    kablu. Warianty słabsze sprawdzenie zgłasza ich własną wartością, żeby raport
+    mówił, który z nich zastano, zamiast tylko stwierdzać niezgodność.
+  en: |
+    The setting is a choice out of four, not a switch. Three is the variant this
+    item calls for - the wireless network dropped while the cable is in. The
+    weaker variants are reported by the check with their own value, so the report
+    says which one was found rather than merely stating non-compliance.

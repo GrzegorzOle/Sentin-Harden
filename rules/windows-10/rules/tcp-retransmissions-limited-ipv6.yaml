@@ -1,0 +1,165 @@
+id: win10-tcp-retransmissions-limited-ipv6
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Liczba powtórzeń wysyłki danych ograniczona do trzech w protokole szóstej wersji
+    en: The number of data send repeats limited to three in the sixth version protocol
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Nowsza wersja protokołu sieciowego liczy powtórzenia wysyłki osobno i ma na to
+    własny parametr, o nazwie takiej samej jak w wersji starszej. Ograniczenie
+    zapisane tylko w jednej gałęzi obejmuje więc połowę ruchu maszyny.
+
+    Sens zmiany jest ten sam: połączenia porzucone przez drugą stronę zwalniają
+    się szybciej, a milczenie przestaje wystarczać do związania zasobów maszyny na
+    minuty. Nie jest to zamknięcie drogi wejścia i ocena ryzyka to odzwierciedla.
+
+    Punkt ma znaczenie praktyczne właśnie dlatego, że nowsza wersja protokołu bywa
+    uznawana za nieużywaną, podczas gdy maszyna korzysta z niej na co dzień.
+  en: |
+    The newer version of the network protocol counts send repeats separately and
+    has a parameter of its own for it, named exactly as in the older version. A
+    limit written into one branch alone therefore covers half the machine s
+    traffic.
+
+    The point of the change is the same - connections abandoned by the far side
+    are released sooner and silence stops being enough to tie up the machine s
+    resources for minutes. It is not the closing of a way in, and the risk rating
+    reflects that.
+
+    The item matters in practice precisely because the newer version of the
+    protocol tends to be thought unused, while the machine relies on it daily.
+
+disruption_description:
+  pl: |
+    Skutki pokrywają się z bliźniaczym punktem dla starszej wersji protokołu
+    i spadają na te same łącza: słabe, dalekie, mobilne. Mniejsza liczba powtórzeń
+    oznacza tam zerwane połączenie zamiast powolnego.
+
+    Warto wdrażać oba punkty razem. Ustawienie tylko jednego daje maszynę, która
+    zachowuje się różnie w zależności od wersji protokołu użytej przez aplikację —
+    a tego nikt nie widzi, dopóki nie zacznie szukać przyczyny nierównego
+    zachowania.
+  en: |
+    The effects match the twin item for the older version of the protocol and land
+    on the same links - weak, distant, mobile. Fewer repeats mean a broken
+    connection there instead of a slow one.
+
+    The two items are worth deploying together. Setting only one leaves a machine
+    that behaves differently depending on which version of the protocol an
+    application used - and nobody sees that until they start hunting for the cause
+    of uneven behaviour.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Połączenia nowszej wersji protokołu przez łącza o dużych stratach będą zrywane tam, gdzie dotąd trwały mimo zakłóceń
+      - Kopiowanie dużych plików i sesje pulpitu zdalnego przez sieć komórkową będą przerywane częściej
+      - Starsze aplikacje bez własnego ponawiania zgłoszą błąd transmisji zamiast dokończyć operację
+      - Zmiana obowiązuje po ponownym uruchomieniu maszyny, a jej wycofanie również
+      - Praca w sieci lokalnej, przepustowość i połączenia na łączach stabilnych pozostają bez zmian
+    en:
+      - Connections in the newer version of the protocol over lossy links are dropped where they used to carry on despite interference
+      - Copying large files and remote desktop sessions over a cellular network are interrupted more often
+      - Older applications with no retry of their own report a transmission error instead of finishing the operation
+      - The change takes effect after a restart, and so does undoing it
+      - Work on the local network, throughput and connections over stable links are unchanged
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska pracujące przez łącza mobilne i satelitarne, gdzie straty pakietów są normą
+      - Środowiska ze starszymi aplikacjami, które nie ponawiają operacji po błędzie transmisji
+      - Maszyny bez możliwości ponownego uruchomienia w rozsądnym czasie
+    en:
+      - Stations working over mobile and satellite links, where packet loss is the norm
+      - Environments with older applications that do not retry after a transmission error
+      - Machines that cannot be restarted within a reasonable time
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry is named as in the older stack, but lives in the key of the
+    # sixth version protocol and is counted separately from it.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'TcpMaxDataRetransmissions'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '3'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+    $name = 'TcpMaxDataRetransmissions'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'TcpMaxDataRetransmissions' -Value 3 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/tcpip-and-nbt-configuration-parameters
+
+notes:
+  pl: |
+    Nazwa parametru jest identyczna jak w gałęzi starszej wersji protokołu, więc
+    przy ręcznym sprawdzaniu łatwo odczytać jedno zamiast drugiego. Porównanie
+    jest na górną granicę, a punkt spełnia się wyłącznie razem z bliźniaczym.
+  en: |
+    The parameter name is identical to the one in the older protocol branch, so on
+    a manual check it is easy to read one instead of the other. The comparison is
+    an upper bound, and the item is met only together with its twin.

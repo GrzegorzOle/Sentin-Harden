@@ -1,0 +1,163 @@
+id: win10-smart-multi-homed-name-resolution-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > DNS Client
+  title:
+    pl: Rozsyłanie zapytań o nazwę wszystkimi kartami wyłączone
+    en: Sending name queries out on every adapter switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna z kilkoma kartami sieciowymi potrafi wysłać to samo zapytanie o nazwę
+    wszystkimi naraz i przyjąć odpowiedź, która wróci pierwsza. Brzmi to jak
+    przyspieszenie, a jest w istocie oddaniem rozstrzygnięcia najszybszej sieci
+    zamiast właściwej.
+
+    Na laptopie podłączonym kablem w biurze i jednocześnie do sieci bezprzewodowej
+    gościnnej znaczy to, że nazwa firmowego serwera może zostać rozstrzygnięta
+    przez sieć gościnną. Kto kontroluje tamtą stronę, dostaje połączenie razem
+    z poświadczeniami, choć maszyna siedzi w sieci firmowej.
+
+    Wyłączenie każe pytać we właściwej kolejności: najpierw sieć, do której nazwa
+    należy. Wyścig przestaje decydować, gdzie trafi ruch.
+  en: |
+    A machine with several network adapters can send the same name query out on
+    all of them at once and take whichever answer returns first. It sounds like a
+    speed-up and is in truth handing the decision to the fastest network rather
+    than the right one.
+
+    On a laptop plugged in at the office and attached to a guest wireless network
+    at the same time, that means the name of a company server may be resolved by
+    the guest network. Whoever controls that side gets the connection along with
+    the credentials, though the machine sits on the company network.
+
+    Switching it off makes the machine ask in the proper order - first the network
+    the name belongs to. A race stops deciding where traffic goes.
+
+disruption_description:
+  pl: |
+    Zmiana nie odbiera żadnej funkcji, zmienia wyłącznie kolejność pytań. Skutkiem
+    bywa nieznaczne wydłużenie czasu rozwiązywania nazw w chwili, gdy jedna z
+    sieci nie odpowiada.
+
+    Odczuwalna staje się na maszynach z kilkoma kartami naraz, a zwłaszcza tam,
+    gdzie połączenie tunelowe odpowiada wolniej niż sieć lokalna. Wcześniej wygrał
+    wyścig, teraz maszyna czeka na właściwego rozmówcę — i to jest zachowanie
+    poprawne, choć wolniejsze.
+  en: |
+    The change takes no function away; it only changes the order of the questions.
+    Its effect is a slight lengthening of name resolution at moments when one of
+    the networks does not answer.
+
+    It is felt on machines with several adapters at once, especially where a
+    tunnel connection answers slower than the local network. Earlier the race
+    decided, now the machine waits for the proper respondent - correct behaviour,
+    though slower.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-authentication
+    - remote-management
+  what_breaks:
+    pl:
+      - Rozwiązywanie nazw może potrwać dłużej tam, gdzie jedna z sieci odpowiada wolno albo milczy
+      - Maszyny z połączeniem tunelowym poczekają na odpowiedź z sieci właściwej zamiast przyjąć szybszą z sieci lokalnej
+      - Narzędzia mierzące czas rozwiązywania nazw pokażą wyższe wartości, co bywa mylone z usterką sieci
+      - Dostęp do zasobów, przepustowość, praca aplikacji sieciowych i pozostałe rozwiązywanie nazw działają bez zmian
+    en:
+      - Name resolution may take longer where one of the networks answers slowly or stays silent
+      - Machines with a tunnel connection wait for the answer from the proper network instead of taking the faster local one
+      - Tools measuring name resolution time show higher figures, which is easily mistaken for a network fault
+      - Access to resources, throughput, the working of network applications and the rest of name resolution are unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których czas rozwiązywania nazw jest krytyczny, a jedna z sieci bywa niedostępna
+      - Maszyny z połączeniem tunelowym o dużych opóźnieniach, gdzie oczekiwanie na właściwą sieć jest odczuwalne
+    en:
+      - Stations where name resolution time is critical and one of the networks is sometimes unavailable
+      - Machines with a high-latency tunnel connection, where waiting for the proper network is noticeable
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableSmartNameResolution'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    $name = 'DisableSmartNameResolution'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableSmartNameResolution' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/networking/dns/dns-top
+
+notes:
+  pl: |
+    Punkt dotyczy kolejności pytań, a nie samych mechanizmów rozpoznawania nazw —
+    te wyłączają osobne reguły. Razem tworzą całość: tamte zamykają drogi pytania
+    całej sieci, ta pilnuje, żeby pytanie skierowane poszło we właściwą stronę.
+  en: |
+    The item covers the order of the questions rather than the name resolution
+    mechanisms themselves, which separate rules switch off. Together they form a
+    whole - those close the roads for asking the whole network, this one makes
+    sure a directed question goes the right way.

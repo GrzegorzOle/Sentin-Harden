@@ -1,0 +1,160 @@
+id: win10-network-bridge-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Network Connections
+  title:
+    pl: Tworzenie mostka sieciowego zabronione
+    en: Creating a network bridge forbidden
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mostek sieciowy łączy dwie karty maszyny w jeden odcinek sieci. Ruch z jednej
+    strony przechodzi na drugą bez trasowania i bez zapory, a maszyna staje się
+    przejściem między sieciami, które miały pozostać rozdzielone.
+
+    Skutek bywa poważniejszy, niż zamierzał ten, kto mostek tworzył. Sieć gościnna
+    albo domowa zostaje połączona z firmową przez laptopa stojącego na biurku,
+    a wszystkie zabezpieczenia brzegowe przestają mieć znaczenie, bo ruch ich nie
+    mija.
+
+    Zakaz tworzenia mostka zamyka tę drogę na poziomie zasad, więc nie zależy od
+    tego, czy użytkownik zna skutki swojego działania.
+  en: |
+    A network bridge joins two adapters of a machine into one stretch of network.
+    Traffic from one side passes to the other with no routing and no firewall, and
+    the machine becomes a crossing between networks that were meant to stay apart.
+
+    The consequence tends to be graver than whoever made the bridge intended. A
+    guest or home network ends up joined to the company one through a laptop on a
+    desk, and every perimeter protection stops mattering, because the traffic
+    never goes past it.
+
+    Forbidding the bridge closes that road at policy level, so it does not depend
+    on the user knowing what their action brings.
+
+disruption_description:
+  pl: |
+    Mostek sieciowy jest w codziennej pracy nieużywany. Zakaz nie odbiera żadnej
+    funkcji, z której korzysta zwykły użytkownik, i nie wymaga przerwy ani
+    ponownego uruchomienia.
+
+    Wyjątkiem są stanowiska laboratoryjne i warsztatowe, gdzie mostek bywa
+    narzędziem: podłączenie urządzenia bez własnego dostępu do sieci, analiza
+    ruchu między dwoma odcinkami. Tam trzeba go świadomie pozostawić albo
+    zastąpić innym rozwiązaniem.
+  en: |
+    A network bridge is unused in daily work. Forbidding it takes away no function
+    an ordinary user relies on, and calls for no interruption and no restart.
+
+    The exceptions are laboratory and workshop stations, where a bridge is a tool -
+    attaching a device with no network access of its own, watching traffic between
+    two stretches. There it has to be deliberately left in place or replaced by
+    something else.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Tworzenie mostka z poziomu okna połączeń sieciowych przestanie być możliwe i zakończy się komunikatem o zablokowaniu przez zasady
+      - Stanowiska laboratoryjne udostępniające sieć podłączonemu urządzeniu przez mostek stracą tę możliwość
+      - Istniejące mostki utworzone wcześniej mogą wymagać usunięcia osobno, bo zakaz dotyczy tworzenia nowych
+      - Praca w sieci, karty sieciowe, połączenia bezprzewodowe i tunelowe oraz udostępnianie plików działają bez zmian
+    en:
+      - Creating a bridge from the network connections window stops being possible and ends with a message about policy blocking it
+      - Laboratory stations giving an attached device network access through a bridge lose that option
+      - Bridges created earlier may have to be removed separately, since the ban covers making new ones
+      - Work on the network, adapters, wireless and tunnel connections and file sharing all work unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska laboratoryjne i warsztatowe, na których mostek jest narzędziem pracy
+      - Maszyny udostępniające sieć urządzeniom bez własnego dostępu, dopóki nie ma innego rozwiązania
+    en:
+      - Laboratory and workshop stations, where a bridge is a working tool
+      - Machines giving network access to devices that have none of their own, until another arrangement exists
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NC_AllowNetBridge_NLA'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+    $name = 'NC_AllowNetBridge_NLA'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NC_AllowNetBridge_NLA' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-networkisolation
+
+notes:
+  pl: |
+    Zakaz dotyczy tworzenia nowych mostków; mostek istniejący wcześniej trzeba
+    usunąć osobno, bo sam zapis go nie rozbiera. Punkt idzie w parze z zakazem
+    udostępniania połączenia — obie zasady zamykają to samo: maszynę jako przejście
+    między sieciami.
+  en: |
+    The ban covers creating new bridges; one made earlier has to be removed
+    separately, since the setting does not take it apart. The item pairs with
+    forbidding connection sharing - both close the same thing, the machine as a
+    crossing between networks.

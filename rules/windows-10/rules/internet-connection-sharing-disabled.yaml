@@ -1,0 +1,158 @@
+id: win10-internet-connection-sharing-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Network Connections
+  title:
+    pl: Udostępnianie połączenia internetowego wyłączone
+    en: Sharing an internet connection switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna potrafi udostępnić własne połączenie innym urządzeniom, stając się dla
+    nich bramą, serwerem adresów i punktem rozpoznawania nazw naraz. Wystarczy
+    kilka kliknięć i nie wymaga to żadnych uprawnień poza tymi, które użytkownik
+    zwykle ma.
+
+    Konsekwencje wykraczają poza samą maszynę. Udostępniony odcinek sieci żyje
+    obok tego, który zbudował dział informatyczny, rozdaje własne adresy i
+    odpowiada na pytania o nazwy — a urządzenia, które do niego dołączą, nie są
+    widoczne w żadnym spisie.
+
+    Wyłączenie zamyka tę możliwość na poziomie zasad, zanim ktokolwiek zdąży z
+    niej skorzystać w dobrej wierze.
+  en: |
+    A machine can share its own connection with other devices, becoming their
+    gateway, address server and name resolution point all at once. It takes a few
+    clicks and calls for no privileges beyond those a user ordinarily has.
+
+    The consequences reach past the machine itself. The shared stretch of network
+    lives alongside the one the IT department built, hands out addresses of its
+    own and answers name questions - and the devices that join it appear on no
+    inventory.
+
+    Switching it off closes the option at policy level, before anybody makes use
+    of it in good faith.
+
+disruption_description:
+  pl: |
+    Funkcja jest w środowisku firmowym nieużywana, a jej wyłączenie nie odbiera
+    niczego z codziennej pracy. Nie wymaga przerwy ani ponownego uruchomienia.
+
+    Odczuje to jedynie ten, kto używał maszyny jako punktu dostępowego dla innego
+    sprzętu: telefonu przy braku zasięgu, urządzenia pomiarowego bez własnej
+    karty, laptopa kolegi w delegacji. Takie użycia bywają realne i wtedy trzeba
+    wskazać zamiennik, a nie samo zabronić.
+  en: |
+    The function is unused in a company setting and switching it off takes nothing
+    from daily work. It calls for no interruption and no restart.
+
+    The only person who feels it is whoever used the machine as an access point
+    for other equipment - a phone out of coverage, a measuring device with no
+    adapter of its own, a colleague s laptop on a trip. Such uses do occur, and
+    then a replacement has to be named rather than the practice merely forbidden.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Udostępnianie połączenia innym urządzeniom przestanie być dostępne w ustawieniach połączeń sieciowych
+      - Urządzenia korzystające dotąd z tej maszyny jako bramy stracą dostęp do sieci i nie dostaną adresu
+      - Stanowiska pomiarowe i serwisowe podłączające sprzęt bez własnej karty sieciowej stracą tę drogę
+      - Własna łączność maszyny, karty sieciowe, sieci bezprzewodowe i tunelowe oraz udziały plikowe działają bez zmian
+    en:
+      - Sharing the connection with other devices stops being available in the network connection settings
+      - Devices that used this machine as their gateway lose network access and receive no address
+      - Measuring and service stations attaching equipment with no adapter of its own lose that route
+      - The machine s own connectivity, adapters, wireless and tunnel networks and file shares all work unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska serwisowe i pomiarowe, na których udostępnianie połączenia jest sposobem podłączenia sprzętu
+      - Maszyny używane w terenie jako punkt dostępowy dla innych urządzeń zespołu
+    en:
+      - Service and measuring stations, where sharing the connection is how equipment is attached
+      - Machines used in the field as an access point for other devices of the team
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NC_ShowSharedAccessUI'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+    $name = 'NC_ShowSharedAccessUI'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NC_ShowSharedAccessUI' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-networkisolation
+
+notes:
+  pl: |
+    Ustawienie usuwa możliwość włączenia udostępniania; udostępnienie skonfigurowane
+    wcześniej warto sprawdzić osobno. Punkt ocenia się razem z zakazem tworzenia
+    mostka sieciowego — to dwie drogi do tego samego skutku.
+  en: |
+    The setting removes the ability to switch sharing on; a share configured
+    earlier is worth checking separately. The item is judged together with
+    forbidding a network bridge - two roads to the same outcome.

@@ -70,18 +70,20 @@ audit:
       echo CHECK_ERROR; exit 0
     fi
     state() {
+      inst=""
+      for p in autofs; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
       bad=""
       for u in autofs.service; do
         e=$(systemctl is-enabled "$u" 2>/dev/null) || true
         a=$(systemctl is-active "$u" 2>/dev/null) || true
-        case "$e" in
-          enabled|enabled-runtime|linked|linked-runtime) ;;
-          *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+        case "$a" in
+          active|activating|reloading) ;;
+          *)
+            [ -n "$inst" ] || continue
+            case "$e" in enabled|enabled-runtime|linked|linked-runtime) ;; *) continue ;; esac ;;
         esac
         bad="$bad,$u=${e:-none}/${a:-unknown}"
       done
-      inst=""
-      for p in autofs; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
       if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
       elif [ -z "$inst" ]; then echo NOT_INSTALLED
       else echo "NOT_IN_USE:${inst#,}"; fi
@@ -115,18 +117,20 @@ remediation:
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
       state() {
+        inst=""
+        for p in autofs; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
         bad=""
         for u in autofs.service; do
           e=$(systemctl is-enabled "$u" 2>/dev/null) || true
           a=$(systemctl is-active "$u" 2>/dev/null) || true
-          case "$e" in
-            enabled|enabled-runtime|linked|linked-runtime) ;;
-            *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+          case "$a" in
+            active|activating|reloading) ;;
+            *)
+              [ -n "$inst" ] || continue
+              case "$e" in enabled|enabled-runtime|linked|linked-runtime) ;; *) continue ;; esac ;;
           esac
           bad="$bad,$u=${e:-none}/${a:-unknown}"
         done
-        inst=""
-        for p in autofs; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
         if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
         elif [ -z "$inst" ]; then echo NOT_INSTALLED
         else echo "NOT_IN_USE:${inst#,}"; fi
@@ -141,7 +145,11 @@ remediation:
         fi
         m="$m $u"
       done
-      if [ -z "$m" ]; then echo "None of the units is installed, nothing to change"; exit 0; fi
+      if [ -z "$m" ]; then
+        s=$(state)
+        case "$s" in IN_USE:*) echo "Running without a unit file, stop the processes by hand ($s)" >&2; exit 1 ;; esac
+        echo "None of the units is installed, nothing to change"; exit 0
+      fi
       systemctl mask --now $m
       s=$(state)
       case "$s" in IN_USE:*) echo "The units are still in use ($s)" >&2; exit 1 ;; esac
@@ -193,7 +201,9 @@ notes:
     wymienia jednostki w użyciu razem ze stanem z systemctl is-enabled
     i is-active, a NOT_IN_USE pakiety, które są zainstalowane, ale nie
     działają. Pakiet usunięty bez --purge, z pozostawionymi plikami
-    konfiguracyjnymi, liczy się jako niezainstalowany.
+    konfiguracyjnymi, liczy się jako niezainstalowany. Gdy żaden z pakietów
+    nie jest zainstalowany, wynik IN_USE daje tylko jednostka, która nadal
+    działa.
 
     Naprawa nie usuwa pakietów, bo mogą od nich zależeć inne programy.
     Zatrzymuje i maskuje jednostki poleceniem systemctl mask --now, więc nie
@@ -212,7 +222,8 @@ notes:
     use with their state from systemctl is-enabled and is-active, and
     NOT_IN_USE lists the packages that are installed but not running. A
     package removed without --purge, with its configuration files left,
-    counts as not installed.
+    counts as not installed. When none of the packages is installed, only a
+    unit that is still running gives the IN_USE result.
 
     The remediation does not remove packages, because other programs may
     depend on them. It stops and masks the units with systemctl mask --now,

@@ -1,13 +1,13 @@
-id: fedora44-dev-shm-nosuid
+id: fedora44-home-nosuid
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 1.1.2.2.3
-  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /dev/shm
+  item: 1.1.2.3.3
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /home
   title:
-    pl: Opcja nosuid ustawiona dla /dev/shm
-    en: Ensure nosuid option set on /dev/shm partition
+    pl: Opcja nosuid ustawiona dla /home
+    en: Ensure nosuid option set on /home partition
   level: 1
   profile: workstation
 
@@ -16,42 +16,45 @@ platform:
 
 risk_category: low
 disruption: none
-assessment_state: assessed-no-impact
+assessment_state: assessed-impact-described
 
 description:
   pl: |
     Bit setuid lub setgid każe uruchomić program z uprawnieniami jego
     właściciela, zwykle roota, a nie osoby, która go uruchamia; podobnie działają
     uprawnienia plików (file capabilities). Opcja nosuid sprawia, że jądro
-    ignoruje jedno i drugie dla plików w /dev/shm: program działa, ale z uprawnieniami
+    ignoruje jedno i drugie dla plików w /home: program działa, ale z uprawnieniami
     uruchamiającego. Kopia powłoki z ustawionym bitem, zostawiona tam przez
     kogoś, kto na chwilę miał uprawnienia roota, nie staje się trwałym wejściem.
 
-    Pamięć współdzielona nie jest miejscem na programy, a skoro każdy może do
-    niej pisać, program z bitem setuid w niej to niemal zawsze ślad włamania.
-    Kategoria jest niska, bo systemd montuje /dev/shm z tą opcją domyślnie.
+    Użytkownik nie może sam nadać bitu setuid z właścicielem root, ale może go
+    dostać z zewnątrz: w archiwum rozpakowanym przez roota albo po chwilowym
+    dostępie do konta administratora. Kategoria jest niska, bo wymaga to
+    wcześniejszego kroku z uprawnieniami roota.
   en: |
     The setuid or setgid bit makes a program run with the privileges of its
     owner, usually root, rather than those of the person starting it; file
     capabilities work in a similar way. The nosuid option makes the kernel
-    ignore both for files in /dev/shm: the program runs, but with the privileges of
+    ignore both for files in /home: the program runs, but with the privileges of
     whoever started it. A copy of a shell with the bit set, left there by
     somebody who briefly had root privileges, does not become a lasting way in.
 
-    Shared memory is not a place for programs, and since everybody can write to
-    it, a program with the setuid bit there is almost always a trace of a break-in.
-    The category is low because systemd mounts /dev/shm with this option by
-    default.
+    A user cannot set a root-owned setuid bit alone, but can get one from
+    outside: in an archive unpacked by root or after brief access to an
+    administrator account. The category is low because this needs an earlier step
+    with root privileges.
 
 disruption_description:
   pl: |
-    Nic nie przestaje działać. Żaden program nie korzysta z bitu setuid w
-    pamięci współdzielonej, a na Fedorze opcja jest ustawiona domyślnie.
+    Nic nie przestaje działać. Programy systemowe z bitem setuid leżą w /usr,
+    a aplikacje instalowane przez użytkownika, np. Flatpak i AppImage, korzystają
+    z programów pomocniczych z /usr.
 
     Zmiana nie wymaga restartu ani wylogowania.
   en: |
-    Nothing stops working. No program relies on the setuid bit in shared memory,
-    and on Fedora the option is set by default.
+    Nothing stops working. System programs with the setuid bit live in /usr, and
+    applications a user installs, such as Flatpak and AppImage, use helper
+    programs from /usr.
 
     The change needs no restart and no sign-out.
 
@@ -59,8 +62,10 @@ implementation_consequences:
   impact_areas:
     - accounts-and-passwords
   what_breaks:
-    pl: []
-    en: []
+    pl:
+      - Program z bitem setuid lub uprawnieniami plików zainstalowany w katalogu domowym, np. własna kompilacja narzędzia sieciowego, zgłasza brak uprawnień
+    en:
+      - A program with the setuid bit or file capabilities installed in a home directory, such as a custom build of a network tool, reports missing permissions
   interruption: none
   user_visible: false
   reversibility: immediate
@@ -68,7 +73,7 @@ implementation_consequences:
 audit:
   shell: bash
   test_command: |
-    t=/dev/shm
+    t=/home
     o=nosuid
     if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
       echo CHECK_ERROR; exit 0
@@ -94,7 +99,7 @@ remediation:
   backup_command: |
     (
       set -e
-      t=/dev/shm
+      t=/home
       o=nosuid
       f=/etc/fstab
       mkdir -p "$(dirname '{{backup_file}}')"
@@ -114,7 +119,7 @@ remediation:
   change_command: |
     (
       set -e
-      t=/dev/shm
+      t=/home
       o=nosuid
       f=/etc/fstab
       n=$(awk -v t="$t" '$1 !~ /^#/ && $2 == t' "$f" | wc -l)
@@ -135,9 +140,8 @@ remediation:
           }
           { print }' "$f" > "$new"
       else
-        opts=defaults,nosuid,nodev
-        case ",$opts," in *",$o,"*) ;; *) opts="$opts,$o" ;; esac
-        line="tmpfs /dev/shm tmpfs $opts 0 0"
+        echo "$t is mounted from a definition outside $f; add $o where it is defined" >&2
+        exit 1
         { cat "$f"; echo "# Sentin-Harden: $t"; printf '%s\n' "$line"; } > "$new"
       fi
       got=$(findmnt -sn --tab-file "$new" --mountpoint "$t" -o OPTIONS)
@@ -156,7 +160,7 @@ remediation:
   rollback_command: |
     (
       set -e
-      t=/dev/shm
+      t=/home
       o=nosuid
       f=/etc/fstab
       b='{{backup_file}}'
@@ -213,8 +217,7 @@ runnable: true
 sources:
   - https://man7.org/linux/man-pages/man5/fstab.5.html
   - https://man7.org/linux/man-pages/man8/mount.8.html
-  - https://www.freedesktop.org/software/systemd/man/latest/systemd-remount-fs.service.html
-  - https://docs.kernel.org/filesystems/tmpfs.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
 
 notes:
   pl: |
@@ -224,7 +227,7 @@ notes:
     montującą ten katalog. Opcja obecna tylko w bieżącym montowaniu daje wynik
     niespełniony, bo zniknie po restarcie.
 
-    Gdy /dev/shm nie jest osobnym punktem montowania, wynik to nie dotyczy: opcji nie
+    Gdy /home nie jest osobnym punktem montowania, wynik to nie dotyczy: opcji nie
     ma gdzie ustawić, a brak osobnej partycji zgłasza punkt o partycji.
 
     Naprawa dopisuje opcję do wpisu w /etc/fstab i od razu montuje katalog
@@ -233,13 +236,6 @@ notes:
     zostaje nietknięty. Wycofanie usuwa tylko tę jedną opcję, a nie przywraca
     całego pliku, więc nie cofa zmian w innych wpisach wprowadzonych w
     międzyczasie.
-
-    Jeśli /etc/fstab nie ma wpisu dla /dev/shm, naprawa dodaje go, poprzedzony
-    komentarzem „# Sentin-Harden: /dev/shm”, z opcjami, z jakimi system montuje ten
-    katalog domyślnie, i z dodaną opcją. Wycofanie tej reguły usuwa cały dodany
-    wpis razem z opcjami dopisanymi do niego później przez inne reguły, dlatego
-    reguły tego katalogu należy wycofywać w odwrotnej kolejności niż
-    stosowanie.
   en: |
     The check looks in two places. First at the current mount, because only that
     is in effect now, then at the record the mount will come from at the next
@@ -247,7 +243,7 @@ notes:
     mounts the directory. An option present only in the current mount gives a
     non-compliant result, because it will disappear after a restart.
 
-    When /dev/shm is not a separate mount point, the result is not applicable: there
+    When /home is not a separate mount point, the result is not applicable: there
     is nowhere to set the option, and the missing partition is reported by the
     partition item.
 
@@ -257,10 +253,3 @@ notes:
     give the expected result, the original stays untouched. Rollback removes only
     this one option rather than restoring the whole file, so it does not undo
     changes to other entries made in the meantime.
-
-    If /etc/fstab has no entry for /dev/shm, the remediation adds one, preceded by the
-    comment "# Sentin-Harden: /dev/shm", with the options the system mounts the
-    directory with by default, plus the new option. Rolling back this rule
-    removes the whole added entry together with options added to it later by
-    other rules, so the rules for this directory should be rolled back in the
-    reverse order of applying them.

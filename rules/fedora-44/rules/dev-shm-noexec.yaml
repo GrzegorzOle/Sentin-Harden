@@ -1,13 +1,13 @@
-id: fedora44-dev-shm-nosuid
+id: fedora44-dev-shm-noexec
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 1.1.2.2.3
+  item: 1.1.2.2.4
   section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /dev/shm
   title:
-    pl: Opcja nosuid ustawiona dla /dev/shm
-    en: Ensure nosuid option set on /dev/shm partition
+    pl: Opcja noexec ustawiona dla /dev/shm
+    en: Ensure noexec option set on /dev/shm partition
   level: 1
   profile: workstation
 
@@ -15,61 +15,75 @@ platform:
   system: fedora-44
 
 risk_category: low
-disruption: none
-assessment_state: assessed-no-impact
+disruption: needs-review
+assessment_state: assessed-impact-described
 
 description:
   pl: |
-    Bit setuid lub setgid każe uruchomić program z uprawnieniami jego
-    właściciela, zwykle roota, a nie osoby, która go uruchamia; podobnie działają
-    uprawnienia plików (file capabilities). Opcja nosuid sprawia, że jądro
-    ignoruje jedno i drugie dla plików w /dev/shm: program działa, ale z uprawnieniami
-    uruchamiającego. Kopia powłoki z ustawionym bitem, zostawiona tam przez
-    kogoś, kto na chwilę miał uprawnienia roota, nie staje się trwałym wejściem.
+    Opcja noexec sprawia, że jądro nie uruchamia programów z plików w /dev/shm ani
+    nie ładuje z nich bibliotek do wykonania. Nie jest to pełna blokada: skrypt
+    da się nadal wykonać, podając go wprost interpreterowi, np. bash plik.sh albo
+    python3 plik.py. Zamyka jednak najprostszą ścieżkę ataku, w której pobrany
+    program zostaje zapisany w katalogu otwartym do zapisu i od razu uruchomiony.
 
-    Pamięć współdzielona nie jest miejscem na programy, a skoro każdy może do
-    niej pisać, program z bitem setuid w niej to niemal zawsze ślad włamania.
-    Kategoria jest niska, bo systemd montuje /dev/shm z tą opcją domyślnie.
+    /dev/shm leży w pamięci i znika przy restarcie, dlatego złośliwe programy
+    chętnie się tam zapisują: nie zostawiają śladu na dysku. Kategoria jest
+    niska, bo to jedna z wielu dróg, a Fedora nie ustawia tej opcji domyślnie:
+    systemd montuje /dev/shm z nosuid i nodev, ale bez noexec.
   en: |
-    The setuid or setgid bit makes a program run with the privileges of its
-    owner, usually root, rather than those of the person starting it; file
-    capabilities work in a similar way. The nosuid option makes the kernel
-    ignore both for files in /dev/shm: the program runs, but with the privileges of
-    whoever started it. A copy of a shell with the bit set, left there by
-    somebody who briefly had root privileges, does not become a lasting way in.
+    The noexec option makes the kernel refuse to start programs from files in
+    /dev/shm and to load libraries from them for execution. It is not a complete
+    block: a script can still be run by handing it directly to an interpreter,
+    for example bash file.sh or python3 file.py. It does, however, close the
+    simplest attack path, in which a downloaded program is saved in a directory
+    open for writing and started at once.
 
-    Shared memory is not a place for programs, and since everybody can write to
-    it, a program with the setuid bit there is almost always a trace of a break-in.
-    The category is low because systemd mounts /dev/shm with this option by
-    default.
+    /dev/shm lives in memory and disappears at restart, which is why malicious
+    programs like to save themselves there: they leave no trace on disk. The
+    category is low because this is one of many paths, and Fedora does not set
+    this option by default: systemd mounts /dev/shm with nosuid and nodev, but
+    without noexec.
 
 disruption_description:
   pl: |
-    Nic nie przestaje działać. Żaden program nie korzysta z bitu setuid w
-    pamięci współdzielonej, a na Fedorze opcja jest ustawiona domyślnie.
+    Klasa wymaga przeglądu, bo nieliczne programy tworzą w /dev/shm kod, który
+    potem mapują do wykonania, np. niektóre silniki JIT, emulatory i starsze
+    wersje przeglądarek lub maszyn wirtualnych. Na typowej stacji z Fedorą nic
+    nie przestaje działać, ale program spoza repozytoriów trzeba po zmianie
+    sprawdzić.
 
     Zmiana nie wymaga restartu ani wylogowania.
   en: |
-    Nothing stops working. No program relies on the setuid bit in shared memory,
-    and on Fedora the option is set by default.
+    The class needs review because a few programs create code in /dev/shm and
+    then map it for execution, for example some JIT engines, emulators and older
+    versions of browsers or virtual machines. On a typical Fedora workstation
+    nothing stops working, but a program from outside the repositories has to be
+    checked after the change.
 
     The change needs no restart and no sign-out.
 
 implementation_consequences:
   impact_areas:
-    - accounts-and-passwords
+    - legacy-applications
   what_breaks:
-    pl: []
-    en: []
+    pl:
+      - Program, który zapisuje w /dev/shm kod i mapuje go do wykonania, np. starszy emulator lub silnik JIT, kończy się błędem przy starcie
+    en:
+      - A program that writes code to /dev/shm and maps it for execution, such as an older emulator or JIT engine, fails at start
   interruption: none
   user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na stacji działa oprogramowanie spoza repozytoriów Fedory, o którym wiadomo, że uruchamia kod z pamięci współdzielonej
+    en:
+      - The workstation runs software from outside the Fedora repositories that is known to run code from shared memory
   reversibility: immediate
 
 audit:
   shell: bash
   test_command: |
     t=/dev/shm
-    o=nosuid
+    o=noexec
     if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
       echo CHECK_ERROR; exit 0
     fi
@@ -95,7 +109,7 @@ remediation:
     (
       set -e
       t=/dev/shm
-      o=nosuid
+      o=noexec
       f=/etc/fstab
       mkdir -p "$(dirname '{{backup_file}}')"
       n=$(awk -v t="$t" '$1 !~ /^#/ && $2 == t' "$f" | wc -l)
@@ -115,7 +129,7 @@ remediation:
     (
       set -e
       t=/dev/shm
-      o=nosuid
+      o=noexec
       f=/etc/fstab
       n=$(awk -v t="$t" '$1 !~ /^#/ && $2 == t' "$f" | wc -l)
       new=$(mktemp "$f.sentin.XXXXXX")
@@ -157,7 +171,7 @@ remediation:
     (
       set -e
       t=/dev/shm
-      o=nosuid
+      o=noexec
       f=/etc/fstab
       b='{{backup_file}}'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
@@ -202,7 +216,7 @@ remediation:
       if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
       if [ "$live" = 0 ]; then
         vfs=$(findmnt -kn --mountpoint "$t" -o VFS-OPTIONS | tail -n 1)
-        mount --options-mode ignore --options-source disable -o "remount,$vfs,suid" "$t"
+        mount --options-mode ignore --options-source disable -o "remount,$vfs,exec" "$t"
       fi
       echo "Removed $o from $t in $f"
     )

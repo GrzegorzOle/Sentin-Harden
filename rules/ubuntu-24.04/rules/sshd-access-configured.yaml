@@ -1,0 +1,131 @@
+id: ubuntu2404-sshd-access-configured
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.1.4
+  section: Access Control > Configure SSH Server
+  title:
+    pl: Dostęp do sshd jest ograniczony
+    en: Ensure sshd access is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Domyślnie przez SSH może się zalogować każde konto z hasłem lub kluczem,
+    także konta, które nigdy nie powinny pracować zdalnie. Każde takie konto
+    jest dodatkowym celem zgadywania haseł.
+
+    Punkt wymaga, żeby serwer SSH miał ustawioną co najmniej jedną z list
+    AllowUsers, AllowGroups, DenyUsers lub DenyGroups, która ogranicza, kto
+    może się logować.
+  en: |
+    By default any account with a password or key can log in over SSH,
+    including accounts that should never work remotely. Each such account is
+    another target for password guessing.
+
+    The item requires the SSH server to have at least one of the AllowUsers,
+    AllowGroups, DenyUsers or DenyGroups lists set, which limits who can log
+    in.
+
+disruption_description:
+  pl: |
+    Lista źle dobrana odcina od SSH konta, które go potrzebują, w tym konto
+    administratora pracującego zdalnie. Listę układa się dla konkretnego
+    komputera, np. AllowGroups sudo, i sprawdza przy otwartej drugiej sesji.
+  en: |
+    A badly chosen list cuts off SSH for accounts that need it, including the
+    administrator working remotely. The list is written for the specific
+    computer, for example AllowGroups sudo, and tested with a second session
+    open.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Logowanie przez SSH kont spoza listy, także kont serwisowych i automatyzacji, np. kopii zapasowych lub Ansible
+    en:
+      - SSH login of accounts outside the list, including service and automation accounts, for example backups or Ansible
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Zmiana przez połączenie zdalne bez sprawdzenia, że własne konto jest na liście
+    en:
+      - A change over a remote connection without checking that one's own account is on the list
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/sbin/sshd ]; then echo NOT_APPLICABLE; exit 0; fi
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+    cfg=$(sshd_t) || { echo CHECK_ERROR; exit 0; }
+    set=$(printf '%s\n' "$cfg" | awk '$1 ~ /^(allowusers|allowgroups|denyusers|denygroups)$/ { print $1 }' | sort -u | paste -sd, -)
+    if [ -n "$set" ]; then echo "OK:$set"; else echo "NOT_OK:no-access-list"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man.openbsd.org/sshd_config
+  - https://man.openbsd.org/sshd
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje skuteczną konfigurację serwera poleceniem sshd -T,
+    które wymaga uprawnień roota. Ubuntu uruchamia ssh.service dopiero przy
+    pierwszym połączeniu (ssh.socket), a bez niego nie ma katalogu /run/sshd,
+    bez którego sshd -T się zatrzymuje. W takim przypadku sprawdzenie
+    uruchamia sshd -T we własnej przestrzeni montowania z pustym /run, więc
+    w systemie nic się nie zmienia; bez kluczy hosta sshd -T dostaje klucz
+    tymczasowy.
+    W wyniku OK podaje ustawione listy.
+    Listy ustawione tylko w blokach Match nie są brane pod uwagę. Brak
+    serwera SSH daje wynik NOT_APPLICABLE.
+
+    Reguła tylko sprawdza stan, bo skład listy zależy od komputera
+    i organizacji. Przykład: plik /etc/ssh/sshd_config.d/01-access.conf
+    z wierszem AllowGroups sudo sshusers z uprawnieniami 0600, a potem
+    sshd -t i systemctl reload ssh.
+  en: |
+    The check reads the effective server configuration with sshd -T, which
+    needs root privileges. Ubuntu starts ssh.service only on the first
+    connection (ssh.socket), and without it there is no /run/sshd directory,
+    without which sshd -T stops. In that case the check runs sshd -T in its
+    own mount namespace with an empty /run, so nothing changes in the
+    system; without host keys sshd -T gets a temporary key.
+    The OK result lists the lists that
+    are set. Lists set only in Match blocks are not taken into account. No
+    SSH server gives the NOT_APPLICABLE result.
+
+    The rule only checks the state, because the content of the list depends
+    on the computer and the organization. An example: the
+    /etc/ssh/sshd_config.d/01-access.conf file with the line AllowGroups
+    sudo sshusers and the mode 0600, then sshd -t and systemctl reload ssh.

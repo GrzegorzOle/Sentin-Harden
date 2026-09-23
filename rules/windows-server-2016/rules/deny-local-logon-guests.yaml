@@ -1,0 +1,241 @@
+id: win2016-deny-local-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania lokalnego dla grupy Goście
+    en: Local sign-in refused to the Guests group
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt wpisuje grupę Goście na listę kont, którym odmawia się logowania
+    lokalnego, czyli przy konsoli maszyny.
+
+    Na serwerze konsola jest czymś innym niż na stanowisku. Rzadko jest to
+    klawiatura w tej samej sali — częściej konsola karty zarządzającej albo
+    konsola maszyny wirtualnej w panelu wirtualizacji. Dostęp do niej ma więc
+    ten, kto ma dostęp do sieci zarządzania albo do panelu hosta, a nie ten,
+    kto wszedł do serwerowni.
+
+    To przesuwa ocenę punktu. Logowanie lokalne na serwerze nie wymaga
+    obecności fizycznej i bywa dostępne szerzej, niż sugeruje nazwa. Odmowa dla
+    grupy Goście zamyka tę drogę trwale, niezależnie od późniejszych zmian
+    członkostwa w grupach.
+
+    Kategoria średnia, bo droga wymaga dostępu do konsoli, a ten sam w sobie
+    jest już poważnym warunkiem.
+
+    Na serwerze 2016 warto pamiętać, że logowanie lokalne obejmuje także sesję
+    podniesioną z konsoli karty zarządzającej — a te karty bywają na maszynach
+    tego rocznika dostępne z sieci ogólnej, a nie z wydzielonej.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: sesję przy
+    konsoli maszyny bez żadnego poświadczenia, o ile konto gościa zostanie
+    kiedykolwiek włączone.
+  en: |
+    The item puts the Guests group onto the list of accounts refused local sign-in,
+    that is, sign-in at the machine's console.
+
+    On a server the console is something other than on a workstation. It is rarely
+    a keyboard in the same room - more often the console of a management card or
+    the console of a virtual machine in the virtualisation panel. Access to it
+    therefore belongs to whoever reaches the management network or the host's
+    panel, not to whoever walked into the server room.
+
+    That shifts how the item is judged. Local sign-in on a server needs no physical
+    presence and is sometimes available more widely than the name suggests. A
+    refusal for the Guests group closes that road for good, regardless of later
+    changes to group membership.
+
+    The category is medium, because the road needs console access, and that is
+    already a serious condition in itself.
+
+    On Server 2016 it is worth remembering that local sign-in also covers a session
+    raised from a management card's console - and on machines of this vintage those
+    cards are sometimes reachable from the general network rather than a separate
+    one.
+
+    What an attacker gains while the item goes unmet: a session at the machine's
+    console with no credential at all, should the guest account ever be switched
+    on.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Nikt nie loguje się przy konsoli serwera na
+    koncie gościa, bo konto to jest domyślnie wyłączone.
+
+    Zmiana jest zabezpieczeniem na przyszłość i warto ją zastosować właśnie
+    dlatego, że nic nie kosztuje. Jedyny przypadek wymagający uwagi to maszyna,
+    na której konto gościa włączono kiedyś celowo — a wtedy pytaniem jest, po co,
+    a nie czy tę odmowę wpisać.
+
+    Czego to nie psuje: logowania administratorów przy konsoli, pracy przez
+    pulpit zdalny, kont domenowych ani kont usługowych.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". Nobody signs in at a server's console under the
+    guest account, because that account is disabled by default.
+
+    The change is a safeguard for the future and is worth applying precisely
+    because it costs nothing. The one case needing attention is a machine where the
+    guest account was once switched on deliberately - and then the question is what
+    for, not whether to write this refusal.
+
+    What this does not break: administrators signing in at the console, work
+    through remote desktop, domain accounts, or service accounts.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - boot-and-firmware
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Logowanie na koncie gościa przy konsoli maszyny przestaje być możliwe
+      - Odmowa obejmuje także sesję z konsoli karty zarządzającej i z panelu wirtualizacji
+      - Odmowa obowiązuje także po ewentualnym włączeniu konta gościa i nadaniu mu hasła
+      - Logowanie administratorów przy konsoli, pulpit zdalny i konta domenowe działają bez zmian
+    en:
+      - Signing in under the guest account at the machine's console stops being possible
+      - The refusal also covers a session from a management card's console and from the virtualisation panel
+      - The refusal holds even after the guest account is switched on and given a password
+      - Administrators signing in at the console, remote desktop and domain accounts work unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Konto gościa włączono na tej maszynie celowo i nie ustalono, czemu to służy
+    en:
+      - The guest account was switched on deliberately on this machine and it has not been established what purpose it serves
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyInteractiveLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'S-1-5-32-546'
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyInteractiveLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyInteractiveLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyInteractiveLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    # The right is replaced wholesale, so whoever is already denied has to be
+    # carried over - otherwise the change would quietly grant somebody access.
+    if (-not ($members -contains '*S-1-5-32-546')) { $members += '*S-1-5-32-546' }
+
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyInteractiveLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyInteractiveLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-locally
+
+notes:
+  pl: |
+    Logowanie lokalne obejmuje na serwerze więcej niż klawiaturę przy maszynie:
+    konsolę karty zarządzającej, konsolę maszyny wirtualnej i sesję przy
+    panelu hosta. To jest powód, dla którego punkt ma tu sens mimo
+    ograniczonego dostępu fizycznego do serwerowni.
+
+    Odmowa logowania przez pulpit zdalny jest osobnym uprawnieniem i opisuje ją
+    osobna reguła. Te dwa tryby nie pokrywają się, choć oba wyglądają dla
+    użytkownika jak ta sama sesja.
+
+    Polecenie naprawcze dopisuje grupę do listy, zamiast listę zastępować.
+  en: |
+    Local sign-in covers more on a server than the keyboard at the machine: a
+    management card's console, a virtual machine's console and a session at the
+    host's panel. That is why the item has a point here despite limited physical
+    access to the server room.
+
+    Refusing sign-in through remote desktop is a separate right and a separate rule
+    describes it. The two modes do not overlap, although to a user both look like
+    the same session.
+
+    The remedy adds the group to the list rather than replacing the list.

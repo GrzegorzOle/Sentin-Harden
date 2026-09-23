@@ -1,0 +1,235 @@
+id: win2016-deny-service-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania jako usługa dla grupy Goście
+    en: Service sign-in refused to the Guests group
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt wpisuje grupę Goście na listę kont, którym odmawia się logowania
+    jako usługa.
+
+    Usługa to proces, który wstaje razem z systemem i działa dalej, kiedy nikt
+    nie jest zalogowany. Jest to najtrwalszy sposób obecności na maszynie, jaki
+    system oferuje, i dlatego właśnie konto, na którym usługa działa, ma
+    znaczenie.
+
+    Odmowa w tym trybie jest zabezpieczeniem na przyszłość. Chroni przed stanem,
+    w którym ktoś zakłada usługę na koncie o nazwie niewzbudzającej podejrzeń
+    i o uprawnieniach pozornie żadnych — a usługa i tak wstaje przy każdym
+    uruchomieniu maszyny.
+
+    Kategoria średnia, bo punkt nie blokuje ataku, tylko jedną wygodną drogę
+    jego utrwalenia, i to tylko dla jednej grupy.
+
+    Na serwerze 2016 warto to ustawić z tego samego powodu co odmowę
+    w trybie wsadowym: maszyna z długą historią ma listę usług, której nikt
+    nie przeglądał od wdrożenia.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: obecność na
+    maszynie przeżywającą każdy restart, w miejscu, do którego nikt nie
+    zagląda.
+  en: |
+    The item puts the Guests group onto the list of accounts refused sign-in as a
+    service.
+
+    A service is a process that starts with the system and carries on when nobody
+    is signed in. It is the most lasting form of presence on a machine that the
+    system offers, and that is exactly why the account a service runs under
+    matters.
+
+    A refusal in this mode is a safeguard for the future. It guards against a state
+    in which somebody sets up a service under an account with an unsuspicious name
+    and apparently no rights - and the service starts anyway at every start of the
+    machine.
+
+    The category is medium, because the item blocks no attack, only one convenient
+    road to making it permanent, and only for one group.
+
+    On Server 2016 it is worth setting for the same reason as the batch refusal: a
+    machine with a long history has a list of services nobody has reviewed since
+    deployment.
+
+    What an attacker gains while the item goes unmet: a presence on the machine
+    surviving every restart, in a place nobody looks at.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Żadna usługa nie działa na koncie gościa, bo
+    konto to jest domyślnie wyłączone i nie ma hasła nadającego się do zapisania
+    w konfiguracji usługi.
+
+    Zmiana jest więc zabezpieczeniem na przyszłość, a nie naprawą stanu
+    bieżącego — i warto ją zastosować właśnie dlatego, że nic nie kosztuje.
+
+    Czego to nie psuje: usług systemowych, usług działających na kontach
+    usługowych, na koncie usługi lokalnej ani na koncie usługi sieciowej.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". No service runs under the guest account, because
+    that account is disabled by default and has no password worth recording in a
+    service's configuration.
+
+    The change is therefore a safeguard for the future rather than a repair of the
+    present state - and it is worth applying precisely because it costs nothing.
+
+    What this does not break: the system's services, services running under service
+    accounts, under the local service account, or under the network service
+    account.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Usługa ustawiona na koncie gościa przestaje wstawać przy uruchomieniu maszyny
+      - Odmowa obowiązuje także po ewentualnym włączeniu konta gościa i nadaniu mu hasła
+      - Usługi systemowe i usługi na kontach usługowych działają bez zmian
+      - Konto usługi lokalnej i konto usługi sieciowej pozostają nietknięte
+    en:
+      - A service set to run under the guest account stops starting when the machine starts
+      - The refusal holds even after the guest account is switched on and given a password
+      - The system's services and services under service accounts work unchanged
+      - The local service and network service accounts stay untouched
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na tej maszynie działa usługa ustawiona na konto gościa i nie ustalono, do czego służy
+    en:
+      - A service set to run under the guest account runs on this machine and it has not been established what it is for
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyServiceLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'S-1-5-32-546'
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyServiceLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyServiceLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyServiceLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    # The right is replaced wholesale, so whoever is already denied has to be
+    # carried over - otherwise the change would quietly grant somebody access.
+    if (-not ($members -contains '*S-1-5-32-546')) { $members += '*S-1-5-32-546' }
+
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyServiceLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyServiceLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-as-a-service
+
+notes:
+  pl: |
+    Tryb usługi jest osobny od trybu wsadowego, opisanego sąsiednią regułą.
+    Usługa loguje się jako usługa, zadanie harmonogramu — wsadowo; odmowa
+    w jednym trybie nie obejmuje drugiego i dlatego istnieją dwie reguły,
+    a nie jedna.
+
+    Polecenie naprawcze dopisuje grupę do listy, zamiast listę zastępować,
+    żeby nie zdjąć odmowy nadanej wcześniej komuś innemu.
+
+    Punkt jest z natury zapobiegawczy i tak należy go czytać w raporcie:
+    niski koszt, odległy zysk.
+  en: |
+    The service mode is separate from the batch mode, described by the neighbouring
+    rule. A service signs in as a service, a scheduled task as a batch job; a
+    refusal in one mode does not cover the other, which is why there are two rules
+    rather than one.
+
+    The remedy adds the group to the list rather than replacing the list, so as not
+    to lift a refusal granted earlier against somebody else.
+
+    The item is preventive by nature and should be read so in the report: a low
+    cost and a distant gain.

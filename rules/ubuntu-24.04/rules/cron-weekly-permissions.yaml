@@ -1,0 +1,145 @@
+id: ubuntu2404-cron-weekly-permissions
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.4.1.5
+  section: Services > Job Schedulers > Configure cron
+  title:
+    pl: Uprawnienia do /etc/cron.weekly są skonfigurowane
+    en: Ensure permissions on /etc/cron.weekly are configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Skrypty z katalogu /etc/cron.weekly uruchamiają się jako root raz w tygodniu, przez wpis w /etc/crontab albo przez anacron, jeśli jest zainstalowany.
+    Kto może dodać lub podmienić plik w tym katalogu, uruchomi dowolne
+    polecenie z uprawnieniami roota, a kto może go przeglądać, poznaje
+    zadania systemowe i ich słabe punkty.
+
+    Punkt wymaga, żeby katalog należał do roota i był dostępny tylko dla
+    niego, czyli miał uprawnienia 700 lub bardziej restrykcyjne. Ubuntu
+    tworzy go z uprawnieniami 755.
+  en: |
+    The scripts in the /etc/cron.weekly directory run as root once a week, through the entry in /etc/crontab or through anacron if it is installed. Whoever can
+    add or replace a file in this directory runs any command with root
+    rights, and whoever can list it learns the system jobs and their weak
+    spots.
+
+    The item requires the directory to be owned by root and accessible only
+    to root, that is with mode 700 or stricter. Ubuntu creates it with mode
+    755.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: skrypty z katalogu uruchamia cron działający
+    jako root, a zwykli użytkownicy nie mają powodu go przeglądać.
+  en: |
+    Nobody will notice: the scripts in the directory are run by cron running
+    as root, and regular users have no reason to list it.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    f=/etc/cron.weekly
+    if [ ! -e "$f" ]; then echo ABSENT; exit 0; fi
+    set -- $(stat -Lc '%a %u %g' "$f")
+    if [ $(( 0$1 & 07077 )) -eq 0 ] && [ "$2" = 0 ] && [ "$3" = 0 ]; then echo "RESTRICTED:$1"; else echo "TOO_OPEN:$1:$2:$3"; fi
+  expected: '^(RESTRICTED:|ABSENT$)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/cron.weekly
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=access-1
+        if [ -e "$f" ]; then echo "$(readlink -f "$f") $(stat -Lc '%a %u %g' "$f")"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/cron.weekly
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if [ ! -e "$f" ]; then echo "$f does not exist, nothing to change"; exit 0; fi
+      tg=$(readlink -f "$f")
+      set -- $(stat -c '%a' "$tg")
+      chown 0:0 "$tg"
+      # Five digits: with fewer, chmod keeps the setuid and setgid bits of a directory.
+      chmod "$(printf '0%04o' $(( 0$1 & 0700 )))" "$tg"
+      echo "Set owner root:root and mode $(stat -c '%a' "$tg") on $tg"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=access-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      tail -n +2 "$b" | while read -r f mode uid gid; do
+        case "$mode" in ""|*[!0-7]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$uid:$gid" in :*|*:|*[!0-9:]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
+        chown "$uid:$gid" "$f"
+        chmod "$(printf '0%04o' $(( 0$mode )))" "$f"
+        echo "Restored owner and mode of $f"
+      done
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/cron.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/run-parts.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/anacron.8.html
+
+notes:
+  pl: |
+    Wynik RESTRICTED podaje obecne uprawnienia, TOO_OPEN uprawnienia,
+    właściciela i grupę (UID i GID), a ABSENT oznacza brak katalogu, co też
+    spełnia regułę. Naprawa ustawia właściciela root:root i usuwa prawa
+    spoza 700, a wycofanie przywraca poprzedniego właściciela
+    i uprawnienia zapisane w kopii.
+
+    Ścieżka należy do pakietu cron-daemon-common. Ponowna instalacja i aktualizacja
+    pakietu nie zmieniają uprawnień istniejącej ścieżki, a dpkg --verify
+    ich nie sprawdza.
+    Uprawnienia plików w katalogu się nie zmieniają.
+  en: |
+    The RESTRICTED result gives the current mode, TOO_OPEN the mode, owner
+    and group (UID and GID), and ABSENT means the directory does not exist,
+    which also meets the rule. The remediation sets the owner to root:root
+    and removes the permissions beyond 700, and rollback restores
+    the previous owner and mode recorded in the backup.
+
+    The path belongs to the cron-daemon-common package. Reinstalling or updating the
+    package does not change the mode of an existing path, and dpkg --verify
+    does not check it.
+    The permissions of the files in the directory do not change.

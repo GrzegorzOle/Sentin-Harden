@@ -1,0 +1,235 @@
+id: fedora44-nologin-accounts-locked
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.4.2.8
+  section: Access Control > User Accounts and Environment > Configure root and system accounts and environment
+  title:
+    pl: Konta bez powłoki logowania mają zablokowane hasło
+    en: Ensure accounts without a valid login shell are locked
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Konto bez powłoki logowania nie służy do pracy w terminalu, ale jego
+    hasło może nadal działać w usługach, które logują przez PAM, na przykład
+    FTP albo poczcie, i w ten sposób dawać dostęp do systemu.
+
+    Punkt wymaga, żeby każde konto poza root bez powłoki z /etc/shells
+    miało zablokowane hasło, tak jak pokazuje to passwd -S.
+  en: |
+    An account without a login shell is not meant for terminal work, but
+    its password can still work in services that log in through PAM, for
+    example FTP or mail, and give access to the system that way.
+
+    The item requires every account other than root without a shell from
+    /etc/shells to have a locked password, as passwd -S shows it.
+
+disruption_description:
+  pl: |
+    Fedora zakłada konta systemowe z zablokowanym hasłem, więc zwykle nic
+    się nie zmienia. Konta z nologin, które logują się hasłem do poczty albo
+    FTP, przestają się logować.
+  en: |
+    Fedora creates system accounts with a locked password, so usually
+    nothing changes. Accounts with nologin that log in to mail or FTP with a
+    password can no longer log in.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konta tylko do poczty albo FTP z powłoką nologin, które logują się hasłem z /etc/shadow
+    en:
+      - Mail-only or FTP-only accounts with the nologin shell that log in with the password from /etc/shadow
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwer poczty albo FTP, którego użytkownicy mają konta systemowe z nologin
+    en:
+      - A mail or FTP server whose users have system accounts with nologin
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # unlocked: "name state" of accounts other than root without a valid shell that are not locked
+    unlocked() {
+      awk -F: -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        FNR == NR { s[$1] = $2; has[$1] = 1; next }
+        $1 != "root" && !($NF in v) {
+          if (!($1 in has)) print $1, "no-shadow-entry"
+          else if (s[$1] == "") print $1, "empty"
+          else if (s[$1] !~ /^[!*]/) print $1, "password"
+        }' /etc/shadow /etc/passwd
+    }
+    evaluate() {
+      local u
+      [ -r /etc/shadow ] || { echo "NOT_OK:shadow-unreadable"; return; }
+      u=$(unlocked | tr ' ' '=' | paste -sd, -)
+      if [ -z "$u" ]; then echo "OK:all-locked"; else echo "NOT_OK:$u"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # unlocked: "name state" of accounts other than root without a valid shell that are not locked
+    unlocked() {
+      awk -F: -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        FNR == NR { s[$1] = $2; has[$1] = 1; next }
+        $1 != "root" && !($NF in v) {
+          if (!($1 in has)) print $1, "no-shadow-entry"
+          else if (s[$1] == "") print $1, "empty"
+          else if (s[$1] !~ /^[!*]/) print $1, "password"
+        }' /etc/shadow /etc/passwd
+    }
+    evaluate() {
+      local u
+      [ -r /etc/shadow ] || { echo "NOT_OK:shadow-unreadable"; return; }
+      u=$(unlocked | tr ' ' '=' | paste -sd, -)
+      if [ -z "$u" ]; then echo "OK:all-locked"; else echo "NOT_OK:$u"; fi
+    }
+      [ -r /etc/shadow ] || { echo "Cannot read /etc/shadow; run as root" >&2; exit 1; }
+      { echo format=nologinlock-1; unlocked | awk '$2 != "no-shadow-entry" { print "user", $1, $2 }'; } > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=nologinlock-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # unlocked: "name state" of accounts other than root without a valid shell that are not locked
+    unlocked() {
+      awk -F: -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        FNR == NR { s[$1] = $2; has[$1] = 1; next }
+        $1 != "root" && !($NF in v) {
+          if (!($1 in has)) print $1, "no-shadow-entry"
+          else if (s[$1] == "") print $1, "empty"
+          else if (s[$1] !~ /^[!*]/) print $1, "password"
+        }' /etc/shadow /etc/passwd
+    }
+    evaluate() {
+      local u
+      [ -r /etc/shadow ] || { echo "NOT_OK:shadow-unreadable"; return; }
+      u=$(unlocked | tr ' ' '=' | paste -sd, -)
+      if [ -z "$u" ]; then echo "OK:all-locked"; else echo "NOT_OK:$u"; fi
+    }
+    # unlock_saved: accounts locked by this rule that are still locked get unlocked
+    unlock_saved() {
+      local tag n st cur
+      while read -r tag n st; do
+        [ "$tag" = user ] || continue
+        cur=$(awk -F: -v n="$n" '$1 == n { print $2; exit }' /etc/shadow)
+        case "$st:$cur" in
+          empty:!) usermod -p '' "$n"; echo "Unlocked $n (no password, as before)" ;;
+          password:!?*) usermod -U "$n" >/dev/null; echo "Unlocked $n" ;;
+        esac
+      done < "$b"
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item, nothing to change"; exit 0 ;;
+        *shadow-unreadable*) echo "Cannot read /etc/shadow; run as root" >&2; exit 1 ;;
+      esac
+      m=$(unlocked | awk '$2 == "no-shadow-entry" { print $1 }' | paste -sd, -)
+      [ -z "$m" ] || { echo "These accounts have no entry in /etc/shadow; fix them by hand (pwck, pwconv): $m" >&2; exit 1; }
+      unlocked | while read -r n st; do
+        grep -qx "user $n $st" "$b" || { echo "$n is not in the backup; run backup again" >&2; exit 1; }
+      done
+      unlocked | while read -r n st; do
+        usermod -L "$n" || { unlock_saved >/dev/null; echo "usermod failed for $n; restored the previous state" >&2; exit 1; }
+        echo "Locked the password of $n"
+      done
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) unlock_saved >/dev/null; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=nologinlock-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    # unlock_saved: accounts locked by this rule that are still locked get unlocked
+    unlock_saved() {
+      local tag n st cur
+      while read -r tag n st; do
+        [ "$tag" = user ] || continue
+        cur=$(awk -F: -v n="$n" '$1 == n { print $2; exit }' /etc/shadow)
+        case "$st:$cur" in
+          empty:!) usermod -p '' "$n"; echo "Unlocked $n (no password, as before)" ;;
+          password:!?*) usermod -U "$n" >/dev/null; echo "Unlocked $n" ;;
+        esac
+      done < "$b"
+    }
+      unlock_saved
+      echo "Rollback finished"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/shadow.5.html
+  - https://man7.org/linux/man-pages/man8/usermod.8.html
+  - https://man7.org/linux/man-pages/man5/shells.5.html
+
+notes:
+  pl: |
+    Hasło liczy się jako zablokowane, gdy pole w /etc/shadow zaczyna się od
+    ! albo *; tak samo pokazuje to passwd -S z shadow-utils na Fedorze 44.
+    Wynik NOT_OK podaje konta z dopiskiem password (hasło działa), empty
+    (puste hasło) albo no-shadow-entry (brak wpisu w /etc/shadow). Naprawa
+    blokuje hasło poleceniem usermod -L, a konta bez wpisu w /etc/shadow
+    zostawia do poprawy ręcznej (pwck, pwconv). Kopia zapasowa zapisuje
+    tylko to, które konta zablokowano i czy miały puste hasło, bez skrótów
+    haseł. Wycofanie odblokowuje je; konto z pustym hasłem znów je dostaje,
+    bo usermod -U odmawia pozostawienia pustego hasła. Sprawdzenie wymaga
+    odczytu /etc/shadow, więc bez uprawnień roota daje wynik NOT_OK
+    z dopiskiem shadow-unreadable.
+  en: |
+    A password counts as locked when its field in /etc/shadow starts with !
+    or *; passwd -S from shadow-utils on Fedora 44 shows it the same way.
+    The NOT_OK result gives the accounts with a password note (the password
+    works), empty (an empty password) or no-shadow-entry (no entry in
+    /etc/shadow). The remediation locks the password with usermod -L and
+    leaves accounts without an entry in /etc/shadow to be fixed by hand
+    (pwck, pwconv). The backup only records which accounts were locked and
+    whether they had an empty password, without password hashes. Rollback
+    unlocks them; an account with an empty password gets it back, because
+    usermod -U refuses to leave an empty password. The check needs to read
+    /etc/shadow, so without root privileges it gives the NOT_OK result with
+    a shadow-unreadable note.

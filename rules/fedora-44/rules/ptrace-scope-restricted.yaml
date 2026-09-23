@@ -1,0 +1,189 @@
+id: fedora44-ptrace-scope-restricted
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.5.2
+  section: Initial Setup > Configure Additional Process Hardening
+  title:
+    pl: Dołączanie do procesów przez ptrace jest ograniczone
+    en: Ensure ptrace_scope is restricted
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wywołanie ptrace pozwala jednemu procesowi czytać i zmieniać pamięć innego;
+    korzystają z niego debuggery i strace. Bez dodatkowych ograniczeń każdy
+    proces może dołączyć do każdego innego procesu tego samego użytkownika.
+    Złośliwy kod uruchomiony z konta użytkownika może więc odczytać hasła
+    i klucze z pamięci przeglądarki, menedżera haseł lub agenta SSH.
+
+    Moduł Yama ogranicza to parametrem kernel.yama.ptrace_scope. Wartość 1
+    pozwala dołączyć tylko do własnych procesów potomnych albo procesów, które
+    wyraźnie na to zezwoliły; 2 tylko rootowi; 3 nikomu. Punkt wymaga wartości
+    1, 2 lub 3.
+
+    Fedora celowo ustawia wartość 0 w /usr/lib/sysctl.d/10-default-yama-scope.conf,
+    więc na domyślnej instalacji punkt nie jest spełniony.
+  en: |
+    The ptrace call lets one process read and change the memory of another;
+    debuggers and strace use it. Without further restrictions every process can
+    attach to every other process of the same user. Malicious code run from a
+    user account can therefore read passwords and keys from the memory of a
+    browser, a password manager or an SSH agent.
+
+    The Yama module restricts this with the kernel.yama.ptrace_scope parameter.
+    Value 1 allows attaching only to one's own child processes or processes
+    that explicitly allowed it; 2 only to root; 3 to nobody. The item requires
+    value 1, 2 or 3.
+
+    Fedora deliberately sets value 0 in
+    /usr/lib/sysctl.d/10-default-yama-scope.conf, so a default installation
+    does not meet the item.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo zmiana dotyczy głównie programistów
+    i administratorów. Uruchomienie programu pod debuggerem od początku nadal
+    działa, ale dołączenie do już działającego procesu wymaga sudo. Naprawa
+    ustawia wartość 1, która zostawia najwięcej możliwości. Zmiana działa od
+    razu, bez restartu.
+  en: |
+    The class needs review because the change mostly affects developers and
+    administrators. Starting a program under a debugger from the beginning
+    still works, but attaching to an already running process needs sudo. The
+    remediation sets value 1, which leaves the most options. The change takes
+    effect at once, without a restart.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Polecenia gdb -p i strace -p nie mogą dołączyć do działającego procesu użytkownika bez sudo
+      - Programy, które czytają pamięć innych procesów tego samego użytkownika, np. niektóre gry uruchamiane przez Wine lub profilery dołączające do procesu, dostają odmowę dostępu
+    en:
+      - The gdb -p and strace -p commands cannot attach to a running user process without sudo
+      - Programs that read the memory of other processes of the same user, such as some games run through Wine or profilers attaching to a process, get an access denial
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stacja programisty, który regularnie debuguje działające procesy bez uprawnień roota
+    en:
+      - A developer workstation where running processes are regularly debugged without root privileges
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    k=kernel.yama.ptrace_scope
+    p=/proc/sys/kernel/yama/ptrace_scope
+    if [ ! -r "$p" ] || [ ! -x /usr/lib/systemd/systemd-sysctl ]; then echo CHECK_ERROR; exit 0; fi
+    r=$(tr -s ' \t' ' ' < "$p")
+    c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+    ok() { printf '%s\n' "$1" | grep -qxE "$2"; }
+    if ok "$r" '[123]' && ok "$c" '[123]'; then echo "OK:$r"; else echo "NOT_OK:runtime=$r,config=${c:-none}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      k=kernel.yama.ptrace_scope
+      f=/etc/sysctl.d/sentin-harden-ptrace-scope.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo "runtime=$(cat /proc/sys/kernel/yama/ptrace_scope)"
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      k=kernel.yama.ptrace_scope
+      f=/etc/sysctl.d/sentin-harden-ptrace-scope.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      printf '%s\n' '# Sentin-Harden: fedora44-ptrace-scope-restricted' "$k = 1" > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      sysctl -q -w "$k=1"
+      c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ "$c" != "1" ]; then
+        echo "Another sysctl.d file sets $k after $f; the next start will set $c" >&2; exit 1
+      fi
+      echo "Set $k = 1 now and in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      k=kernel.yama.ptrace_scope
+      f=/etc/sysctl.d/sentin-harden-ptrace-scope.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      existed=$(sed -n 's/^existed=//p' "$b" | head -n 1)
+      rt=$(sed -n 's/^runtime=//p' "$b" | head -n 1)
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      [ -n "$rt" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
+      sysctl -q -w "$k=$rt"
+      echo "Restored $k = $rt and the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/admin-guide/LSM/Yama.html
+  - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
+
+notes:
+  pl: |
+    Sprawdzenie porównuje wartość bieżącą z wartością, którą ustawi następny
+    start według systemd-sysctl --cat-config; wynik NOT_OK podaje obie.
+
+    Naprawa zapisuje ustawienie w /etc/sysctl.d/sentin-harden-ptrace-scope.conf,
+    które sortuje się po pliku Fedory, więc go nadpisuje. Wycofanie przywraca
+    poprzednią zawartość pliku i wartość bieżącą. Wartości 3 nie da się obniżyć
+    bez restartu, więc naprawa jej nie ustawia.
+  en: |
+    The check compares the current value with the value the next start will
+    set according to systemd-sysctl --cat-config; the NOT_OK result gives both.
+
+    The remediation writes the setting to
+    /etc/sysctl.d/sentin-harden-ptrace-scope.conf, which sorts after the Fedora
+    file and so overrides it. Rollback restores the previous file content and
+    the current value. Value 3 cannot be lowered without a restart, so the
+    remediation does not set it.

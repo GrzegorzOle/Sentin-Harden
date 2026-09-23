@@ -1,0 +1,183 @@
+id: ubuntu2404-libpam-pwquality-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.3.1.3
+  section: Access Control > Pluggable Authentication Modules > Configure PAM software packages
+  title:
+    pl: Pakiet libpam-pwquality jest zainstalowany
+    en: Ensure libpam-pwquality is installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Moduł pam_pwquality z pakietu libpam-pwquality sprawdza przy zmianie
+    hasła jego długość, złożoność i podobieństwo do słów ze słownika. Ubuntu
+    domyślnie tego pakietu nie instaluje, więc passwd sprawdza tylko proste
+    warunki modułu pam_unix.
+
+    Punkt wymaga zainstalowanego pakietu libpam-pwquality.
+  en: |
+    The pam_pwquality module from the libpam-pwquality package checks the
+    length and complexity of a new password and its similarity to dictionary
+    words. Ubuntu does not install this package by default, so passwd only
+    checks the simple conditions of the pam_unix module.
+
+    The item requires the libpam-pwquality package to be installed.
+
+disruption_description:
+  pl: |
+    Instalacja pakietu od razu włącza profil PAM pwquality, więc przy
+    zmianie hasła passwd odrzuca hasła krótsze niż 8 znaków, słownikowe albo
+    zawierające nazwę użytkownika. Root ustawiający hasło innym kontom
+    dostaje tylko ostrzeżenie.
+  en: |
+    Installing the package at once enables the pwquality PAM profile, so at
+    password change passwd rejects passwords shorter than 8 characters,
+    dictionary words or passwords that contain the user name. Root setting
+    the password of other accounts only gets a warning.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - "Użytkownicy zmieniający hasło na krótkie albo słownikowe: passwd je odrzuca"
+    en:
+      - "Users who change the password to a short or dictionary one: passwd rejects it"
+  interruption: none
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    have=""; miss=""
+    for p in libpam-pwquality; do
+      if [ "$(st "$p")" = installed ]; then have="$have,$p=$(dpkg-query -W -f='${Version}' "$p")"
+      else miss="$miss,$p"; fi
+    done
+    if [ -n "$miss" ]; then echo "NOT_INSTALLED:${miss#,}"; else echo "INSTALLED:${have#,}"; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      {
+        echo format=dpkg-on-1
+        for p in libpam-pwquality cracklib-runtime; do s=$(st "$p"); echo "$p ${s:-not-installed}"; done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      miss=""
+      for p in libpam-pwquality cracklib-runtime; do [ "$(st "$p")" = installed ] || miss="$miss $p"; done
+      if [ -z "$miss" ]; then echo "Already installed: libpam-pwquality cracklib-runtime"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      o="-y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $miss; then apt-get update -qq; apt-get install $o $miss; fi
+      for p in $miss; do [ "$(st "$p")" = installed ] || { echo "$p is still not installed" >&2; exit 1; }; done
+      echo "Installed:$miss"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | cut -d' ' -f1 | tr '\n' ' ')" = "libpam-pwquality cracklib-runtime " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""; purge=""
+      while read -r p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != installed ] && [ "$(st "$p")" = installed ] || continue
+        rm="$rm $p"
+        # A package that was not there at all loses its configuration files too.
+        [ "$s" != not-installed ] || purge="$purge $p"
+      done < <(tail -n +2 "$b")
+      if [ -z "$rm" ]; then echo "Nothing to restore"; exit 0; fi
+      # Packages installed since then may need them; then they stay.
+      if ! dpkg -r --dry-run $rm >/dev/null 2>&1; then
+        echo "Kept$rm: other installed packages need them now"; exit 0
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get remove -y -qq $rm
+      if [ -n "$purge" ]; then dpkg --purge $purge >/dev/null; fi
+      echo "Removed again:$rm"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://github.com/libpwquality/libpwquality
+  - https://manpages.ubuntu.com/manpages/noble/man8/pam-auth-update.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
+
+notes:
+  pl: |
+    Sprawdzenie pyta dpkg-query o pakiet libpam-pwquality; pakiet usunięty
+    bez usunięcia plików konfiguracyjnych nie liczy się jako zainstalowany.
+    Naprawa instaluje pakiet przez apt-get, co wymaga dostępu do
+    repozytorium. Instalacja sama włącza profil pwquality poleceniem
+    pam-auth-update, więc w /etc/pam.d/common-password od razu pojawia się
+    wiersz password requisite pam_pwquality.so retry=3 (punkt 5.3.2.3),
+    a pam_unix dostaje opcję use_authtok. Wycofanie usuwa pakiet tylko
+    wtedy, gdy naprawa go zainstalowała i żaden inny pakiet go teraz nie
+    wymaga; usunięcie pakietu usuwa też jego profil i wiersz
+    z common-password.
+
+    Naprawa instaluje razem z nim pakiet cracklib-runtime, który buduje
+    słownik haseł w /var/cache/cracklib. Bez słownika pam_pwquality przy
+    domyślnym dictcheck=1 odrzuca każde nowe hasło, także silne. apt-get
+    zwykle instaluje ten pakiet sam jako zalecany, ale nie na systemach
+    z wyłączoną instalacją pakietów zalecanych (APT::Install-Recommends).
+    Wycofanie usuwa go na tych samych zasadach. Wymagania co do haseł ustawia się
+    w /etc/security/pwquality.conf (punkty 5.3.3.2.x).
+  en: |
+    The check asks dpkg-query for the libpam-pwquality package; a package
+    removed without removing its configuration files does not count as
+    installed. The remediation installs the package with apt-get, which
+    needs access to a repository. The installation itself enables the
+    pwquality profile with pam-auth-update, so the line password requisite
+    pam_pwquality.so retry=3 appears in /etc/pam.d/common-password at once
+    (item 5.3.2.3) and pam_unix gets the use_authtok option. Rollback
+    removes the package only when the remediation installed it and no other
+    package needs it now; removing the package also removes its profile and
+    its line from common-password.
+
+    The remediation installs the cracklib-runtime package with it, which
+    builds the password dictionary in /var/cache/cracklib. Without the
+    dictionary pam_pwquality with the default dictcheck=1 rejects every new
+    password, even a strong one. apt-get usually installs this package
+    itself as a recommended one, but not on systems where installing
+    recommended packages is turned off (APT::Install-Recommends). Rollback
+    removes it by the same rules. The password requirements are set in
+    /etc/security/pwquality.conf (items 5.3.3.2.x).

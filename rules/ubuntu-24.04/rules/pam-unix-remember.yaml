@@ -1,0 +1,105 @@
+id: ubuntu2404-pam-unix-remember
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.3.3.4.2
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_unix module
+  title:
+    pl: Moduł pam_unix nie prowadzi historii haseł
+    en: Ensure pam_unix does not include remember
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Argument remember= modułu pam_unix to stary sposób pamiętania haseł,
+    który zapisuje ich skróty w /etc/security/opasswd obok pam_pwhistory.
+    Dwa mechanizmy historii z różnymi ustawieniami trudno sprawdzić
+    i utrzymać, a historię haseł obsługuje już pam_pwhistory.
+
+    Punkt wymaga, żeby żaden wiersz pam_unix w plikach /etc/pam.d/common-*
+    nie miał argumentu remember=.
+  en: |
+    The remember= argument of pam_unix is an old way of remembering
+    passwords that keeps their hashes in /etc/security/opasswd next to
+    pam_pwhistory. Two history mechanisms with different settings are hard
+    to check and maintain, and pam_pwhistory already handles the password
+    history.
+
+    The item requires that no pam_unix line in the /etc/pam.d/common-*
+    files has the remember= argument.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: sprawdzenie tylko czyta pliki PAM.
+  en: |
+    Nobody will notice: the check only reads the PAM files.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_lines() {
+      [ -r "$1" ] || return 0
+      awk -v m="$2" '
+        { sub(/#.*/, "") }
+        NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        p[n] == m { s = $1; for (i = 4; i <= NF; i++) s = s " " $i; print s }' "$1"
+    }
+    bad=""
+    for f in common-auth common-account common-password common-session; do
+      for a in $(pam_lines "/etc/pam.d/$f" pam_unix.so | awk '{ for (i = 2; i <= NF; i++) if ($i ~ /^remember=/) print $1 ":" $i }'); do
+        bad="$bad,$f:$a"
+      done
+    done
+    if [ -z "$bad" ]; then echo "OK:no-remember"; else echo "NOT_OK:${bad#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_unix.8.html
+
+notes:
+  pl: |
+    Sprawdzenie czyta aktywne wiersze pam_unix w /etc/pam.d/common-auth,
+    common-account, common-password i common-session; inne pliki
+    w /etc/pam.d dołączają te cztery. Wiersze pam_unix dodaje profil unix
+    z pakietu libpam-runtime, z którego pam-auth-update buduje pliki common-*
+    (punkt 5.3.2.1).
+
+    Profil unix nie dodaje remember= do pam_unix, więc wynik NOT_OK oznacza
+    argument dopisany ręcznie albo własny profil pam-auth-update. Liczbę
+    pamiętanych haseł ustawia się wtedy w pam_pwhistory (punkt 5.3.3.3.1).
+    Reguła tylko sprawdza stan.
+  en: |
+    The check reads the active pam_unix lines in /etc/pam.d/common-auth,
+    common-account, common-password and common-session; other files in
+    /etc/pam.d include these four. The pam_unix lines come from the unix
+    profile of the libpam-runtime package, from which pam-auth-update builds
+    the common-* files (item 5.3.2.1).
+
+    The unix profile does not add remember= to pam_unix, so the NOT_OK
+    result means an argument added by hand or a custom pam-auth-update
+    profile. The number of remembered passwords is then set in pam_pwhistory
+    (item 5.3.3.3.1). The rule only checks the state.

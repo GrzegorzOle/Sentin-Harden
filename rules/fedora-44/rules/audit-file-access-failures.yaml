@@ -1,13 +1,13 @@
-id: fedora44-audit-scope
+id: fedora44-audit-file-access-failures
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 6.3.3.1
+  item: 6.3.3.7
   section: Logging and Auditing > System Accounting (auditd) > Configure auditd Rules
   title:
-    pl: Zmiany zakresu uprawnień administratorów (sudoers) są zapisywane
-    en: Ensure changes to system administration scope (sudoers) is collected
+    pl: Nieudane próby dostępu do plików są zapisywane
+    en: Ensure unsuccessful file access attempts are collected
   level: 2
   profile: workstation
 
@@ -20,29 +20,35 @@ assessment_state: assessed-impact-described
 
 description:
   pl: |
-    /etc/sudoers i pliki w /etc/sudoers.d określają, kto i jakie polecenia
-    może uruchamiać z uprawnieniami innego użytkownika. Nieoczekiwana zmiana
-    tych plików to częsty sposób na utrzymanie dostępu po włamaniu.
+    Seria odmów dostępu do plików często poprzedza włamanie: ktoś sprawdza,
+    co może przeczytać lub zmienić. Bez audytu takie próby nie zostawiają
+    śladu.
 
-    Punkt wymaga reguł audytu, które zapisują każdy zapis i zmianę
-    atrybutów /etc/sudoers i katalogu /etc/sudoers.d.
+    Punkt wymaga reguł audytu, które zapisują wywołania creat, open, openat,
+    truncate i ftruncate zakończone błędem EACCES lub EPERM, wykonane przez
+    zwykłych zalogowanych użytkowników (auid od UID_MIN), dla obu
+    architektur.
   en: |
-    /etc/sudoers and the files in /etc/sudoers.d define who may run which
-    commands with the privileges of another user. An unexpected change to
-    these files is a common way to keep access after a break-in.
+    A series of denied file accesses often comes before a break-in: someone
+    checks what they can read or change. Without auditing, such attempts
+    leave no trace.
 
-    The item requires audit rules that record every write to and attribute
-    change of /etc/sudoers and the /etc/sudoers.d directory.
+    The item requires audit rules that record the creat, open, openat,
+    truncate and ftruncate calls that fail with EACCES or EPERM, made by
+    regular logged-in users (auid from UID_MIN), for both architectures.
 
 disruption_description:
   pl: |
     Klasa wymaga przeglądu, bo pierwsza reguła audytu wyłącza domyślną
     w Fedorze regułę -a task,never, a to włącza audyt wywołań systemowych
-    dla wszystkich procesów. Same zdarzenia z sudoers są rzadkie.
+    dla wszystkich procesów. Programy użytkownika (przeglądarki, środowisko
+    graficzne) często próbują otwierać pliki bez uprawnień, więc dziennik
+    może rosnąć szybko.
   en: |
     The class needs review because the first audit rule turns off the
     -a task,never rule that Fedora has by default, which enables syscall
-    auditing for all processes. The sudoers events themselves are rare.
+    auditing for all processes. User programs (browsers, the desktop) often try
+    to open files they have no access to, so the log can grow quickly.
 
 implementation_consequences:
   impact_areas:
@@ -51,9 +57,11 @@ implementation_consequences:
     pl:
       - Wyłączenie reguły -a task,never włącza audyt wywołań systemowych dla wszystkich procesów, co nieco spowalnia system
       - Procesy uruchomione przed zmianą są audytowane dopiero po ponownym uruchomieniu komputera
+      - Programy użytkownika często trafiają na odmowę dostępu, więc dziennik audytu może rosnąć szybko
     en:
       - Turning off the -a task,never rule enables syscall auditing for all processes, which slows the system down slightly
       - Processes started before the change are only audited after the computer restarts
+      - User programs often hit denied access, so the audit log can grow quickly
   interruption: none
   user_visible: false
   reversibility: immediate
@@ -63,11 +71,13 @@ audit:
   test_command: |
     export LC_ALL=C
     d=/etc/audit/rules.d
-    own=$d/50-sentin-harden-audit-scope.rules
-    head='# Sentin-Harden: fedora44-audit-scope (CIS 6.3.3.1); rollback removes this file'
+    own=$d/50-sentin-harden-audit-file-access-failures.rules
+    head='# Sentin-Harden: fedora44-audit-file-access-failures (CIS 6.3.3.7); rollback removes this file'
     mark='# Sentin-Harden: audit-task-never: '
-    wl='-w /etc/sudoers -p wa -k scope
-    -w /etc/sudoers.d -p wa -k scope'
+    wl='-a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=%UID_MIN% -F auid!=unset -k access'
     aawk='function canon(line, out,   t, n, i, a, act, arch, sys, path, perm, w, nf, fl, j, k, x, s, m, ns, sy, f) {
       split("", out); split("", fl); m = 0
       sub(/^[ \t]+/, "", line); sub(/[ \t\r]+$/, "", line)
@@ -224,11 +234,13 @@ remediation:
       mkdir -p "$(dirname "$b")"
     export LC_ALL=C
     d=/etc/audit/rules.d
-    own=$d/50-sentin-harden-audit-scope.rules
-    head='# Sentin-Harden: fedora44-audit-scope (CIS 6.3.3.1); rollback removes this file'
+    own=$d/50-sentin-harden-audit-file-access-failures.rules
+    head='# Sentin-Harden: fedora44-audit-file-access-failures (CIS 6.3.3.7); rollback removes this file'
     mark='# Sentin-Harden: audit-task-never: '
-    wl='-w /etc/sudoers -p wa -k scope
-    -w /etc/sudoers.d -p wa -k scope'
+    wl='-a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=%UID_MIN% -F auid!=unset -k access'
     aawk='function canon(line, out,   t, n, i, a, act, arch, sys, path, perm, w, nf, fl, j, k, x, s, m, ns, sy, f) {
       split("", out); split("", fl); m = 0
       sub(/^[ \t]+/, "", line); sub(/[ \t\r]+$/, "", line)
@@ -389,11 +401,13 @@ remediation:
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
     export LC_ALL=C
     d=/etc/audit/rules.d
-    own=$d/50-sentin-harden-audit-scope.rules
-    head='# Sentin-Harden: fedora44-audit-scope (CIS 6.3.3.1); rollback removes this file'
+    own=$d/50-sentin-harden-audit-file-access-failures.rules
+    head='# Sentin-Harden: fedora44-audit-file-access-failures (CIS 6.3.3.7); rollback removes this file'
     mark='# Sentin-Harden: audit-task-never: '
-    wl='-w /etc/sudoers -p wa -k scope
-    -w /etc/sudoers.d -p wa -k scope'
+    wl='-a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=%UID_MIN% -F auid!=unset -k access'
     aawk='function canon(line, out,   t, n, i, a, act, arch, sys, path, perm, w, nf, fl, j, k, x, s, m, ns, sy, f) {
       split("", out); split("", fl); m = 0
       sub(/^[ \t]+/, "", line); sub(/[ \t\r]+$/, "", line)
@@ -583,11 +597,13 @@ remediation:
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
     export LC_ALL=C
     d=/etc/audit/rules.d
-    own=$d/50-sentin-harden-audit-scope.rules
-    head='# Sentin-Harden: fedora44-audit-scope (CIS 6.3.3.1); rollback removes this file'
+    own=$d/50-sentin-harden-audit-file-access-failures.rules
+    head='# Sentin-Harden: fedora44-audit-file-access-failures (CIS 6.3.3.7); rollback removes this file'
     mark='# Sentin-Harden: audit-task-never: '
-    wl='-w /etc/sudoers -p wa -k scope
-    -w /etc/sudoers.d -p wa -k scope'
+    wl='-a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=%UID_MIN% -F auid!=unset -k access
+    -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=%UID_MIN% -F auid!=unset -k access'
     aawk='function canon(line, out,   t, n, i, a, act, arch, sys, path, perm, w, nf, fl, j, k, x, s, m, ns, sy, f) {
       split("", out); split("", fl); m = 0
       sub(/^[ \t]+/, "", line); sub(/[ \t\r]+$/, "", line)
@@ -764,11 +780,14 @@ sources:
   - https://man7.org/linux/man-pages/man7/audit.rules.7.html
   - https://man7.org/linux/man-pages/man8/auditctl.8.html
   - https://man7.org/linux/man-pages/man8/augenrules.8.html
-  - https://www.sudo.ws/docs/man/sudoers.man/
   - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/security_hardening/auditing-the-system_security-hardening
 
 notes:
   pl: |
+    UID_MIN test odczytuje z /etc/login.defs (domyślnie 1000). Punkt nie
+    obejmuje openat2; sprawdzamy dokładnie wymagany zestaw. Na architekturze
+    bez creat i open (aarch64) reguły obejmują pozostałe wywołania.
+
     Fedora ma w /etc/audit/rules.d/audit.rules regułę -a task,never, która
     wyłącza audyt wywołań systemowych dla każdego nowego procesu; przy niej
     żadna reguła -a always,exit ani -w nie zapisuje zdarzeń. Naprawa
@@ -795,6 +814,11 @@ notes:
     tam brakuje. /etc/audit jest dostępny tylko dla roota, więc bez tych
     uprawnień wynik to NOT_OK:needs-root.
   en: |
+    The test reads UID_MIN from /etc/login.defs (1000 by default). The item
+    does not cover openat2; we check exactly the required set. On an
+    architecture without creat and open (aarch64), the rules cover the
+    remaining calls.
+
     Fedora has the -a task,never rule in /etc/audit/rules.d/audit.rules,
     which turns syscall auditing off for every new process; with it no
     -a always,exit or -w rule records any events. The remediation comments

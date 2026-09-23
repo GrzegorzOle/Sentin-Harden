@@ -1,13 +1,13 @@
-id: fedora44-audit-scope
+id: fedora44-audit-time-change
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 6.3.3.1
+  item: 6.3.3.4
   section: Logging and Auditing > System Accounting (auditd) > Configure auditd Rules
   title:
-    pl: Zmiany zakresu uprawnień administratorów (sudoers) są zapisywane
-    en: Ensure changes to system administration scope (sudoers) is collected
+    pl: Zmiany daty i czasu są zapisywane
+    en: Ensure events that modify date and time information are collected
   level: 2
   profile: workstation
 
@@ -20,29 +20,35 @@ assessment_state: assessed-impact-described
 
 description:
   pl: |
-    /etc/sudoers i pliki w /etc/sudoers.d określają, kto i jakie polecenia
-    może uruchamiać z uprawnieniami innego użytkownika. Nieoczekiwana zmiana
-    tych plików to częsty sposób na utrzymanie dostępu po włamaniu.
+    Zegar systemowy decyduje o znacznikach czasu we wszystkich dziennikach.
+    Kto go przestawi, może ukryć kolejność zdarzeń albo obejść ograniczenia
+    zależne od czasu, na przykład ważność certyfikatów i haseł.
 
-    Punkt wymaga reguł audytu, które zapisują każdy zapis i zmianę
-    atrybutów /etc/sudoers i katalogu /etc/sudoers.d.
+    Punkt wymaga reguł audytu, które zapisują wywołania adjtimex
+    i settimeofday, ustawienie zegara czasu rzeczywistego przez
+    clock_settime (a0 = 0, CLOCK_REALTIME) dla obu architektur oraz każdą
+    zmianę /etc/localtime.
   en: |
-    /etc/sudoers and the files in /etc/sudoers.d define who may run which
-    commands with the privileges of another user. An unexpected change to
-    these files is a common way to keep access after a break-in.
+    The system clock sets the timestamps in every log. Whoever moves it can
+    hide the order of events or get around time-based limits, such as the
+    validity of certificates and passwords.
 
-    The item requires audit rules that record every write to and attribute
-    change of /etc/sudoers and the /etc/sudoers.d directory.
+    The item requires audit rules that record the adjtimex and settimeofday
+    calls, setting the real-time clock with clock_settime (a0 = 0,
+    CLOCK_REALTIME) for both architectures, and every change to
+    /etc/localtime.
 
 disruption_description:
   pl: |
     Klasa wymaga przeglądu, bo pierwsza reguła audytu wyłącza domyślną
     w Fedorze regułę -a task,never, a to włącza audyt wywołań systemowych
-    dla wszystkich procesów. Same zdarzenia z sudoers są rzadkie.
+    dla wszystkich procesów. Synchronizacja czasu (chronyd) co jakiś czas
+    wywołuje adjtimex, więc w dzienniku pojawiają się regularne wpisy.
   en: |
     The class needs review because the first audit rule turns off the
     -a task,never rule that Fedora has by default, which enables syscall
-    auditing for all processes. The sudoers events themselves are rare.
+    auditing for all processes. Time synchronisation (chronyd) calls adjtimex
+    from time to time, so regular entries appear in the log.
 
 implementation_consequences:
   impact_areas:
@@ -51,9 +57,11 @@ implementation_consequences:
     pl:
       - Wyłączenie reguły -a task,never włącza audyt wywołań systemowych dla wszystkich procesów, co nieco spowalnia system
       - Procesy uruchomione przed zmianą są audytowane dopiero po ponownym uruchomieniu komputera
+      - chronyd regularnie wywołuje adjtimex, co dodaje wpisy do dziennika audytu
     en:
       - Turning off the -a task,never rule enables syscall auditing for all processes, which slows the system down slightly
       - Processes started before the change are only audited after the computer restarts
+      - chronyd calls adjtimex regularly, which adds entries to the audit log
   interruption: none
   user_visible: false
   reversibility: immediate
@@ -63,11 +71,14 @@ audit:
   test_command: |
     export LC_ALL=C
     d=/etc/audit/rules.d
-    own=$d/50-sentin-harden-audit-scope.rules
-    head='# Sentin-Harden: fedora44-audit-scope (CIS 6.3.3.1); rollback removes this file'
+    own=$d/50-sentin-harden-audit-time-change.rules
+    head='# Sentin-Harden: fedora44-audit-time-change (CIS 6.3.3.4); rollback removes this file'
     mark='# Sentin-Harden: audit-task-never: '
-    wl='-w /etc/sudoers -p wa -k scope
-    -w /etc/sudoers.d -p wa -k scope'
+    wl='-a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
+    -a always,exit -F arch=b32 -S adjtimex,settimeofday -k time-change
+    -a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -k time-change
+    -a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -k time-change
+    -w /etc/localtime -p wa -k time-change'
     aawk='function canon(line, out,   t, n, i, a, act, arch, sys, path, perm, w, nf, fl, j, k, x, s, m, ns, sy, f) {
       split("", out); split("", fl); m = 0
       sub(/^[ \t]+/, "", line); sub(/[ \t\r]+$/, "", line)
@@ -224,11 +235,14 @@ remediation:
       mkdir -p "$(dirname "$b")"
     export LC_ALL=C
     d=/etc/audit/rules.d
-    own=$d/50-sentin-harden-audit-scope.rules
-    head='# Sentin-Harden: fedora44-audit-scope (CIS 6.3.3.1); rollback removes this file'
+    own=$d/50-sentin-harden-audit-time-change.rules
+    head='# Sentin-Harden: fedora44-audit-time-change (CIS 6.3.3.4); rollback removes this file'
     mark='# Sentin-Harden: audit-task-never: '
-    wl='-w /etc/sudoers -p wa -k scope
-    -w /etc/sudoers.d -p wa -k scope'
+    wl='-a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
+    -a always,exit -F arch=b32 -S adjtimex,settimeofday -k time-change
+    -a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -k time-change
+    -a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -k time-change
+    -w /etc/localtime -p wa -k time-change'
     aawk='function canon(line, out,   t, n, i, a, act, arch, sys, path, perm, w, nf, fl, j, k, x, s, m, ns, sy, f) {
       split("", out); split("", fl); m = 0
       sub(/^[ \t]+/, "", line); sub(/[ \t\r]+$/, "", line)
@@ -389,11 +403,14 @@ remediation:
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
     export LC_ALL=C
     d=/etc/audit/rules.d
-    own=$d/50-sentin-harden-audit-scope.rules
-    head='# Sentin-Harden: fedora44-audit-scope (CIS 6.3.3.1); rollback removes this file'
+    own=$d/50-sentin-harden-audit-time-change.rules
+    head='# Sentin-Harden: fedora44-audit-time-change (CIS 6.3.3.4); rollback removes this file'
     mark='# Sentin-Harden: audit-task-never: '
-    wl='-w /etc/sudoers -p wa -k scope
-    -w /etc/sudoers.d -p wa -k scope'
+    wl='-a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
+    -a always,exit -F arch=b32 -S adjtimex,settimeofday -k time-change
+    -a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -k time-change
+    -a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -k time-change
+    -w /etc/localtime -p wa -k time-change'
     aawk='function canon(line, out,   t, n, i, a, act, arch, sys, path, perm, w, nf, fl, j, k, x, s, m, ns, sy, f) {
       split("", out); split("", fl); m = 0
       sub(/^[ \t]+/, "", line); sub(/[ \t\r]+$/, "", line)
@@ -583,11 +600,14 @@ remediation:
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
     export LC_ALL=C
     d=/etc/audit/rules.d
-    own=$d/50-sentin-harden-audit-scope.rules
-    head='# Sentin-Harden: fedora44-audit-scope (CIS 6.3.3.1); rollback removes this file'
+    own=$d/50-sentin-harden-audit-time-change.rules
+    head='# Sentin-Harden: fedora44-audit-time-change (CIS 6.3.3.4); rollback removes this file'
     mark='# Sentin-Harden: audit-task-never: '
-    wl='-w /etc/sudoers -p wa -k scope
-    -w /etc/sudoers.d -p wa -k scope'
+    wl='-a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
+    -a always,exit -F arch=b32 -S adjtimex,settimeofday -k time-change
+    -a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -k time-change
+    -a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -k time-change
+    -w /etc/localtime -p wa -k time-change'
     aawk='function canon(line, out,   t, n, i, a, act, arch, sys, path, perm, w, nf, fl, j, k, x, s, m, ns, sy, f) {
       split("", out); split("", fl); m = 0
       sub(/^[ \t]+/, "", line); sub(/[ \t\r]+$/, "", line)
@@ -764,11 +784,17 @@ sources:
   - https://man7.org/linux/man-pages/man7/audit.rules.7.html
   - https://man7.org/linux/man-pages/man8/auditctl.8.html
   - https://man7.org/linux/man-pages/man8/augenrules.8.html
-  - https://www.sudo.ws/docs/man/sudoers.man/
   - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/security_hardening/auditing-the-system_security-hardening
 
 notes:
   pl: |
+    Punkt nie obejmuje clock_adjtime ani 32-bitowego clock_settime64;
+    sprawdzamy dokładnie wymagany zestaw, żeby wynik dało się porównać
+    z CIS. Wartość argumentu a0 porównujemy liczbowo (auditctl -l wypisuje
+    ją szesnastkowo). /etc/localtime jest dowiązaniem do strefy
+    w /usr/share/zoneinfo; timedatectl zmienia strefę, podmieniając
+    dowiązanie, co reguła zapisuje.
+
     Fedora ma w /etc/audit/rules.d/audit.rules regułę -a task,never, która
     wyłącza audyt wywołań systemowych dla każdego nowego procesu; przy niej
     żadna reguła -a always,exit ani -w nie zapisuje zdarzeń. Naprawa
@@ -795,6 +821,13 @@ notes:
     tam brakuje. /etc/audit jest dostępny tylko dla roota, więc bez tych
     uprawnień wynik to NOT_OK:needs-root.
   en: |
+    The item does not cover clock_adjtime or the 32-bit clock_settime64; we
+    check exactly the required set so that the result can be compared with
+    CIS. The a0 argument value is compared as a number (auditctl -l prints
+    it in hexadecimal). /etc/localtime is a link to a zone in
+    /usr/share/zoneinfo; timedatectl changes the zone by replacing the link,
+    which the rule records.
+
     Fedora has the -a task,never rule in /etc/audit/rules.d/audit.rules,
     which turns syscall auditing off for every new process; with it no
     -a always,exit or -w rule records any events. The remediation comments

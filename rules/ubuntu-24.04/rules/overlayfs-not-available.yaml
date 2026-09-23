@@ -1,0 +1,310 @@
+id: ubuntu2404-overlayfs-not-available
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.1.6
+  section: Initial Setup > Filesystem > Configure Filesystem Kernel Modules
+  title:
+    pl: Moduł jądra overlayfs niedostępny
+    en: Ensure overlayfs kernel module is not available
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Overlayfs składa jeden widok plików z kilku warstw: dolnych, tylko do
+    odczytu, i górnej, do której trafiają zmiany. Na nim stoją silniki
+    kontenerów (Docker i containerd ze sterownikiem overlay2, Podman), a na
+    Ubuntu także pakiet overlayroot, który potrafi przykryć główny system
+    plików warstwą w pamięci, oraz rozszerzenia systemd-sysext. Serwer bez
+    kontenerów w codziennej pracy go nie potrzebuje.
+
+    Sterownik ma za sobą kilka poważnych błędów podniesienia uprawnień.
+    Część z nich dotyczyła tylko Ubuntu, bo jego jądro miało własne zmiany
+    w overlayfs: CVE-2021-3493 oraz para CVE-2023-2640 i CVE-2023-32629
+    pozwalały zwykłemu kontu zostać rootem przez overlayfs zamontowany we
+    własnej przestrzeni nazw użytkownika. W odróżnieniu od sterowników
+    nośników wymiennych nie trzeba do tego ani dostępu do konsoli, ani
+    administratora, wystarczy konto z powłoką.
+
+    Punkt zamyka tę drogę: moduł overlay nie ładuje się ani na żądanie
+    jądra, ani wywołany wprost. Moduł jest w pakiecie linux-modules, więc ma go każde jądro Ubuntu, także
+    wariant linux-virtual.
+
+    Kategoria jest średnia. Wymienione błędy są naprawione w aktualnych
+    jądrach, a Ubuntu 24.04 domyślnie ogranicza nieuprzywilejowane
+    przestrzenie nazw użytkownika przez AppArmor, więc program uruchomiony
+    ze zwykłego konta nie dostaje w nowej przestrzeni uprawnień potrzebnych
+    do montowania. Punkt należy do poziomu 2, bo odbiera podstawę działania
+    kontenerów.
+  en: |
+    Overlayfs puts together one view of files from several layers: lower,
+    read-only ones and an upper one that receives the changes. Container
+    engines stand on it (Docker and containerd with the overlay2 driver,
+    Podman), and on Ubuntu so do the overlayroot package, which can cover
+    the root file system with an in-memory layer, and systemd-sysext
+    extensions. A server without containers does not need it in daily work.
+
+    The driver has a history of serious privilege escalation bugs. Some of
+    them affected only Ubuntu, because its kernel carried its own overlayfs
+    changes: CVE-2021-3493 and the pair CVE-2023-2640 and CVE-2023-32629 let
+    an ordinary account become root through overlayfs mounted in its own
+    user namespace. Unlike the removable media drivers, this needs neither
+    console access nor an administrator, just an account with a shell.
+
+    The item closes that path: the overlay module does not load, neither on
+    the kernel's request nor when called directly. The module ships in the linux-modules package, so every Ubuntu kernel has
+    it, the linux-virtual variant included.
+
+    The category is medium. The bugs named are fixed in current kernels,
+    and Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor
+    by default, so a program started from an ordinary account does not get
+    the privileges needed to mount inside a new namespace. The item belongs
+    to level 2 because it takes away what containers are built on.
+
+disruption_description:
+  pl: |
+    Wdrożenie trzeba zaplanować, bo bez tego modułu nie działają kontenery.
+    Docker, containerd i Podman nie uruchomią kontenera na sterowniku
+    overlay, węzeł Kubernetes przestanie uruchamiać pody, a overlayroot
+    i rozszerzenia systemd-sysext nie zadziałają.
+
+    Naprawa kończy się błędem bez zmian, gdy w systemie jest zamontowany
+    overlayfs, gdy zainstalowano Dockera, containerd, Podmana, CRI-O albo
+    Buildah lub snap docker, lxd albo microk8s, oraz gdy overlayroot jest
+    włączony w /etc/overlayroot.conf albo w parametrach jądra. Sama usługa
+    lxd-installer, którą Ubuntu Server instaluje domyślnie i która dopiero
+    na żądanie instaluje snap LXD, naprawy nie blokuje. Na maszynie
+    z kontenerami zostaje zapisanie wyjątku.
+
+    Zmiana nie wymaga restartu ani wylogowania; system plików zamontowany
+    wcześniej działa do odmontowania, a moduł zostaje wtedy w pamięci.
+  en: |
+    The rollout needs planning, because containers do not work without this
+    module. Docker, containerd and Podman do not start a container on the
+    overlay driver, a Kubernetes node stops starting pods, and overlayroot
+    and systemd-sysext extensions stop working.
+
+    The remediation fails without changes when an overlayfs is mounted, when
+    Docker, containerd, Podman, CRI-O or Buildah is installed, or the docker,
+    lxd or microk8s snap, and when overlayroot is enabled in
+    /etc/overlayroot.conf or on the kernel command line. The lxd-installer
+    service alone, which Ubuntu Server installs by default and which
+    installs the LXD snap only on request, does not block the remediation.
+    On a machine with containers the remaining option is to record an
+    exception.
+
+    The change needs no restart and no sign-out; a file system mounted
+    earlier keeps working until it is unmounted, and the module stays in
+    memory until then.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Docker, containerd lub Podman nie uruchamia kontenera, bo sterownik przechowywania overlay nie może zamontować warstw obrazu
+      - Węzeł Kubernetes przestaje uruchamiać pody, bo containerd nie może przygotować ich systemów plików
+      - Włączony overlayroot nie może przykryć głównego systemu plików i system nie startuje
+    en:
+      - Docker, containerd or Podman does not start a container, because the overlay storage driver cannot mount the image layers
+      - A Kubernetes node stops starting pods, because containerd cannot prepare their file systems
+      - An enabled overlayroot cannot cover the root file system and the system does not start
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na maszynie działają kontenery Dockera, containerd, Podmana lub LXD albo jest węzłem Kubernetes
+      - Główny system plików jest przykryty warstwą overlayroot, np. w kiosku lub na urządzeniu tylko do odczytu
+    en:
+      - The machine runs Docker, containerd, Podman or LXD containers, or is a Kubernetes node
+      - The root file system is covered by an overlayroot layer, for example in a kiosk or on a read-only appliance
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    m=overlay
+    n=overlay
+    mods=/usr/lib/modules
+    if [ ! -d "$mods" ] || [ ! -r /proc/modules ] || ! command -v modprobe >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if grep -q "^$n " /proc/modules; then echo LOADED; exit 0; fi
+    for list in "$mods"/*/modules.builtin; do
+      [ -e "$list" ] || continue
+      [ -r "$list" ] || { echo CHECK_ERROR; exit 0; }
+      if grep -Eq "/$m\.ko$" "$list"; then echo BUILTIN; exit 0; fi
+    done
+    if ! found=$(find "$mods" -name "$m.ko*" -print -quit 2>/dev/null); then
+      echo CHECK_ERROR; exit 0
+    fi
+    if [ -z "$found" ]; then echo NOT_PRESENT; exit 0; fi
+    if ! config=$(modprobe --showconfig 2>/dev/null); then echo CHECK_ERROR; exit 0; fi
+    blocked=no; listed=no
+    if printf '%s\n' "$config" | grep -Eq "^install $n (/usr)?/bin/(false|true)$"; then blocked=yes; fi
+    if printf '%s\n' "$config" | grep -qx "blacklist $n"; then listed=yes; fi
+    case "$blocked$listed" in
+      yesyes) echo BLOCKED ;;
+      yesno)  echo NOT_BLACKLISTED ;;
+      noyes)  echo LOADABLE_ON_REQUEST ;;
+      *)      echo AVAILABLE ;;
+    esac
+  expected: '^(BLOCKED|NOT_PRESENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      m=overlay
+      n=overlay
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        if grep -q "^$n " /proc/modules; then echo loaded=1; else echo loaded=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b.tmp"
+      mv "$b.tmp" "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      m=overlay
+      n=overlay
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      for list in /usr/lib/modules/*/modules.builtin; do
+        if [ -e "$list" ] && grep -Eq "/$m\.ko$" "$list"; then
+          echo "Module $m is built into the kernel and a configuration file cannot block it; record an exception instead" >&2
+          exit 1
+        fi
+      done
+      if awk '$3 == "overlay" { f = 1 } END { exit !f }' /proc/mounts; then
+        echo "An overlay file system is mounted; blocking the module would break whatever uses it" >&2
+        exit 1
+      fi
+      for b in dockerd containerd podman crio buildah; do
+        if command -v "$b" >/dev/null 2>&1 || [ -x "/usr/bin/$b" ] || [ -x "/usr/sbin/$b" ]; then
+          echo "$b is installed and runs containers on overlayfs; record an exception instead" >&2
+          exit 1
+        fi
+      done
+      for s in docker lxd microk8s; do
+        if [ -e "/snap/$s" ]; then
+          echo "The $s snap is installed and runs containers on overlayfs; record an exception instead" >&2
+          exit 1
+        fi
+      done
+      v=$(sed -n 's/^overlayroot=//p' /etc/overlayroot.conf 2>/dev/null | tail -n 1 | tr -d '"')
+      c=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^overlayroot=//p' | tail -n 1)
+      [ -z "$c" ] || v=$c
+      case "$v" in
+        ""|disabled) ;;
+        *) echo "overlayroot is enabled ($v); blocking overlayfs would stop the system from starting" >&2; exit 1 ;;
+      esac
+      printf '%s\n' \
+        '# Sentin-Harden: ubuntu2404-overlayfs-not-available' \
+        "install $n /bin/false" \
+        "blacklist $n" > "$f.tmp"
+      chmod 0644 "$f.tmp"
+      mv "$f.tmp" "$f"
+      if grep -q "^$n " /proc/modules; then
+        if ! modprobe -r "$n"; then
+          echo "Module $m is in use and stays loaded until whatever uses it is stopped or the machine restarts" >&2
+        fi
+      fi
+      echo "Wrote $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      m=overlay
+      n=overlay
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      grep -qx -- --- "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n 's/^existed=//p' "$b" | head -n 1)
+      loaded=$(sed -n 's/^loaded=//p' "$b" | head -n 1)
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f.tmp"; chmod 0644 "$f.tmp"; mv "$f.tmp" "$f" ;;
+        0) rm -f "$f" ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      if [ "$loaded" = 1 ] && ! grep -q "^$n " /proc/modules; then modprobe "$n"; fi
+      echo "Restored previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/modprobe.d.5.html
+  - https://docs.kernel.org/filesystems/overlayfs.html
+  - https://ubuntu.com/security/CVE-2021-3493
+  - https://ubuntu.com/security/CVE-2023-2640
+
+notes:
+  pl: |
+    Sprawdzenie czyta wynikową konfigurację modprobe, a nie jeden wybrany
+    plik. Blokada zapisana wcześniej gdzie indziej, np. w
+    /etc/modprobe.d/overlay.conf, także spełnia punkt, a naprawa jej nie
+    dubluje, bo przy spełnionym punkcie nie jest uruchamiana. Naprawa
+    zapisuje plik /etc/modprobe.d/sentin-harden-overlay.conf, a wycofanie
+    przywraca go z kopii albo usuwa.
+
+    Potrzebne są obie linie. Wpis blacklist powstrzymuje tylko ładowanie po
+    aliasie, czyli wtedy, gdy jądro samo prosi o sterownik; modprobe
+    wywołane z nazwą modułu go omija. Linia install zastępuje ładowanie
+    uruchomieniem /bin/false, więc każda taka próba kończy się błędem.
+    Obu mechanizmów nie zatrzymuje insmod z pełną ścieżką do pliku, ale to
+    wymaga roota i świadomego działania.
+
+    Test szuka modułu we wszystkich jądrach w /usr/lib/modules, także
+    w plikach .ko.zst, w których Ubuntu je dostarcza. Punkt jest
+    spełniony także wtedy, gdy żadne zainstalowane jądro nie zawiera
+    modułu. Moduł załadowany w chwili sprawdzenia daje wynik niespełniony
+    nawet przy obecnej blokadzie; naprawa próbuje go wyładować, a jeśli
+    jest w użyciu, zostaje w pamięci do zakończenia tego, co go używa, albo
+    do restartu. Sterownika wkompilowanego w jądro (wynik BUILTIN) plikiem
+    konfiguracji nie da się zablokować i zostaje zapisanie wyjątku.
+  en: |
+    The check reads the effective modprobe configuration rather than one
+    chosen file. A block written earlier somewhere else, for example in
+    /etc/modprobe.d/overlay.conf, also meets the item, and the remediation
+    does not duplicate it, because it is not run when the item is met. The
+    remediation writes /etc/modprobe.d/sentin-harden-overlay.conf, and
+    rollback restores it from the backup or removes it.
+
+    Both lines are needed. The blacklist entry only stops loading by alias,
+    that is, when the kernel itself asks for the driver; running modprobe
+    with the module name bypasses it. The install line replaces loading
+    with running /bin/false, so every such attempt fails. Neither mechanism
+    stops insmod with the full path to the file, but that needs root and a
+    deliberate action.
+
+    The test looks for the module in every kernel under /usr/lib/modules,
+    including the .ko.zst files Ubuntu ships them as. The item is also met
+    when no installed kernel contains the module. A module that is loaded
+    at the time of the check gives a non-compliant result even when the
+    block is in place; the remediation tries to unload it, and if it is in
+    use it stays in memory until whatever uses it stops or the machine
+    restarts. A driver compiled into the kernel (the BUILTIN result) cannot
+    be blocked by a configuration file, and the remaining option is to
+    record an exception.

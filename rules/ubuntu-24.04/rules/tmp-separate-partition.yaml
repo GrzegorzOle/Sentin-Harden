@@ -1,0 +1,255 @@
+id: ubuntu2404-tmp-separate-partition
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.2.1.1
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /tmp
+  title:
+    pl: Katalog /tmp jest osobną partycją
+    en: Ensure /tmp is a separate partition
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Do katalogu /tmp może pisać każdy użytkownik i każda usługa. Jeśli leży na
+    tym samym systemie plików co reszta systemu, jeden proces, który zapisze
+    tam za dużo, zabiera miejsce bazom danych, dziennikom i aktualizacjom,
+    a te zaczynają kończyć się błędami. Osobne montowanie ogranicza taki wyciek
+    do samego /tmp.
+
+    Osobne montowanie jest też warunkiem kolejnych punktów: opcje nodev,
+    nosuid i noexec ustawia się dla punktu montowania, więc bez niego nie ma
+    ich gdzie zapisać.
+
+    Ubuntu Server trzyma /tmp jako zwykły katalog na głównym systemie plików.
+    Systemd dostarcza jednostkę tmp.mount, która montuje /tmp jako tmpfs
+    w pamięci, ale Ubuntu kładzie ją tylko w /usr/share/systemd i jej nie
+    włącza. Na świeżej instalacji punkt nie jest więc spełniony.
+  en: |
+    Every user and every service can write to /tmp. If it sits on the same
+    file system as the rest of the system, one process that writes too much
+    there takes space away from databases, logs and updates, and they start
+    failing. A separate mount confines such a leak to /tmp itself.
+
+    A separate mount is also the condition for the following items: the
+    nodev, nosuid and noexec options are set for a mount point, so without one
+    there is nowhere to put them.
+
+    Ubuntu Server keeps /tmp as an ordinary directory on the root file
+    system. Systemd ships the tmp.mount unit, which mounts /tmp as an
+    in-memory tmpfs, but Ubuntu only places it in /usr/share/systemd and does
+    not enable it. On a fresh installation the item is therefore not met.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo po zmianie /tmp leży w pamięci RAM, a przy jej
+    braku w pliku wymiany, i ma rozmiar do połowy RAM. Na małej maszynie
+    wirtualnej to kilkaset megabajtów, a pliki w /tmp zajmują pamięć, której
+    potrzebują usługi. Trzeba sprawdzić, czy któraś usługa trzyma w /tmp duże
+    pliki robocze, np. baza danych z domyślnym katalogiem tymczasowym albo
+    skrypt robiący zrzuty i archiwa.
+
+    Czas życia plików się nie zmienia: Ubuntu i tak czyści /tmp przy każdym
+    starcie regułą systemd-tmpfiles.
+
+    Zmiana działa dopiero po restarcie, bo zamontowanie tmpfs na działającym
+    /tmp zasłoniłoby pliki i gniazda, z których usługi właśnie korzystają.
+  en: |
+    The class needs review because after the change /tmp lives in RAM, or in
+    swap when RAM runs short, and is limited to half of RAM. On a small virtual
+    machine that is a few hundred megabytes, and files in /tmp take memory
+    that services need. Somebody has to check whether a service keeps large
+    working files in /tmp, such as a database with the default temporary
+    directory or a script that makes dumps and archives.
+
+    The lifetime of files does not change: Ubuntu already empties /tmp at
+    every start through a systemd-tmpfiles rule.
+
+    The change only takes effect after a restart, because mounting a tmpfs
+    over a live /tmp would hide files and sockets that services are using
+    right now.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Zapis w /tmp pliku większego niż połowa pamięci RAM, np. zrzutu bazy danych albo archiwum kopii zapasowej, kończy się błędem braku miejsca
+      - MySQL lub MariaDB z domyślnym tmpdir=/tmp przerywa zapytanie, które buduje dużą tabelę tymczasową na dysku, błędem braku miejsca
+      - Na maszynie z małą ilością pamięci pliki zostawione w /tmp zabierają RAM usługom, a system zaczyna przenosić pamięć do pliku wymiany
+    en:
+      - Writing a file larger than half of RAM to /tmp, such as a database dump or a backup archive, fails with an out of space error
+      - MySQL or MariaDB with the default tmpdir=/tmp aborts a query that builds a large on-disk temporary table with an out of space error
+      - On a machine with little memory, files left in /tmp take RAM from services, and the system starts moving memory to swap
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwer ma mało pamięci RAM, a jego usługi zapisują w /tmp duże pliki robocze i nie ustawiono im innego katalogu tymczasowego
+      - Katalog /tmp ma leżeć na osobnej partycji dyskowej lub woluminie logicznym, który administrator przygotuje sam zamiast tmpfs
+    en:
+      - The server has little RAM, its services write large working files to /tmp, and no other temporary directory has been set for them
+      - /tmp is meant to live on a separate disk partition or logical volume that the administrator will set up instead of a tmpfs
+  reversibility: after-restart
+
+audit:
+  shell: bash
+  test_command: |
+    t=/tmp
+    if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if findmnt -kn --mountpoint "$t" >/dev/null 2>&1; then echo SEPARATE; else echo NOT_SEPARATE; fi
+  expected: '^SEPARATE$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      t=/tmp
+      f=/etc/fstab
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      n=$(awk -v t="$t" '$1 !~ /^#/ && $2 == t' "$f" | wc -l)
+      {
+        echo "entry=$n"
+        echo ---
+        cat "$f"
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      t=/tmp
+      f=/etc/fstab
+      if [ -L "$t" ]; then
+        echo "$t is a symbolic link; systemd does not mount over it, so decide by hand where temporary files should live" >&2
+        exit 1
+      fi
+      n=$(awk -v t="$t" '$1 !~ /^#/ && $2 == t' "$f" | wc -l)
+      if [ "$n" -gt 0 ]; then
+        echo "$f already has an entry for $t, yet $t is not mounted; check that entry and the boot log" >&2
+        exit 1
+      fi
+      if [ -d /run/systemd/system ]; then
+        state=$(systemctl is-enabled tmp.mount 2>/dev/null || true)
+        if [ "$state" = masked ]; then
+          echo "tmp.mount is masked, so somebody deliberately kept $t off a separate mount; unmask it first if that no longer holds" >&2
+          exit 1
+        fi
+        src=$(systemctl show -P FragmentPath tmp.mount 2>/dev/null || true)
+        if [ -n "$src" ]; then
+          echo "$t is defined in $src, yet it is not mounted; check that unit and the boot log" >&2
+          exit 1
+        fi
+      fi
+      opts=$(sed -n 's/^Options=//p' /usr/share/systemd/tmp.mount 2>/dev/null | tail -n 1 | sed 's/%%/%/g')
+      [ -n "$opts" ] || opts=mode=1777,strictatime,nosuid,nodev,size=50%,nr_inodes=1m
+      new=$(mktemp "$f.sentin.XXXXXX")
+      trap 'rm -f "$new"' EXIT
+      { awk '{ print }' "$f"; echo "# Sentin-Harden: $t"; printf 'tmpfs %s tmpfs %s 0 0\n' "$t" "$opts"; } > "$new"
+      got=$(findmnt -sn --tab-file "$new" --mountpoint "$t" -o FSTYPE)
+      if [ "$got" != tmpfs ]; then
+        echo "The new $f does not parse as expected; nothing was changed" >&2
+        exit 1
+      fi
+      chmod --reference="$f" "$new"
+      chown --reference="$f" "$new"
+      mv -f "$new" "$f"
+      trap - EXIT
+      if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
+      echo "Added a tmpfs entry for $t to $f ($opts); $t becomes a separate file system at the next start"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      t=/tmp
+      f=/etc/fstab
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      entry=$(sed -n 's/^entry=//p' "$b" | head -n 1)
+      [ "$entry" = 0 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      grep -qx "# Sentin-Harden: $t" "$f" || { echo "The entry for $t added earlier is no longer in $f" >&2; exit 1; }
+      new=$(mktemp "$f.sentin.XXXXXX")
+      trap 'rm -f "$new"' EXIT
+      awk -v m="# Sentin-Harden: $t" -v t="$t" '
+        skip && $2 == t { skip = 0; next }
+        { skip = 0 }
+        $0 == m { skip = 1; next }
+        { print }' "$f" > "$new"
+      chmod --reference="$f" "$new"
+      chown --reference="$f" "$new"
+      mv -f "$new" "$f"
+      trap - EXIT
+      if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
+      echo "Removed the entry for $t from $f; $t goes back to the root file system at the next start"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.freedesktop.org/software/systemd/man/latest/tmp.mount.html
+  - https://docs.kernel.org/filesystems/tmpfs.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
+  - https://man7.org/linux/man-pages/man5/fstab.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje punkt za spełniony, gdy /tmp jest osobnym punktem
+    montowania, bez względu na to, czy jest to tmpfs, partycja dyskowa czy
+    wolumin logiczny.
+
+    Naprawa dopisuje do /etc/fstab wpis tmpfs dla /tmp, poprzedzony komentarzem
+    „# Sentin-Harden: /tmp”, z opcjami jednostki tmp.mount z
+    /usr/share/systemd: mode=1777, strictatime, nosuid, nodev, size=50% i
+    nr_inodes=1m. Nie montuje /tmp od razu; nowy system plików pojawia się przy
+    następnym starcie. Pliki, które w chwili restartu leżą w /tmp na dysku,
+    zostają pod nim zasłonięte i zajmują miejsce, dopóki ktoś ich nie usunie.
+
+    Naprawa kończy się błędem bez zmian, gdy /etc/fstab ma już wpis dla /tmp,
+    gdy jednostka tmp.mount jest zamaskowana albo zdefiniowana w innym pliku,
+    oraz gdy /tmp jest dowiązaniem symbolicznym. W każdym z tych przypadków
+    ktoś już zdecydował o /tmp inaczej i trzeba to sprawdzić ręcznie.
+
+    Wycofanie usuwa cały dodany wpis, także z opcjami dopisanymi do niego
+    później przez reguły 1.1.2.1.2-1.1.2.1.4, dlatego reguły /tmp należy
+    wycofywać w odwrotnej kolejności niż stosowanie. /tmp wraca na główny
+    system plików przy następnym starcie.
+  en: |
+    The check considers the item met when /tmp is a separate mount point,
+    whether it is a tmpfs, a disk partition or a logical volume.
+
+    The remediation adds a tmpfs entry for /tmp to /etc/fstab, preceded by the
+    comment "# Sentin-Harden: /tmp", with the options of the tmp.mount unit
+    from /usr/share/systemd: mode=1777, strictatime, nosuid, nodev, size=50%
+    and nr_inodes=1m. It does not mount /tmp at once; the new file system
+    appears at the next start. Files that sit in /tmp on disk at the time of
+    the restart stay hidden under it and take space until somebody removes
+    them.
+
+    The remediation fails without changes when /etc/fstab already has an entry
+    for /tmp, when the tmp.mount unit is masked or defined in another file, and
+    when /tmp is a symbolic link. In each of these cases somebody has already
+    decided otherwise about /tmp and it has to be checked by hand.
+
+    Rollback removes the whole added entry, including options added to it
+    later by rules 1.1.2.1.2-1.1.2.1.4, so the /tmp rules should be rolled back
+    in the reverse order of applying them. /tmp returns to the root file system
+    at the next start.

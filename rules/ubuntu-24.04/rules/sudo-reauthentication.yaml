@@ -1,0 +1,133 @@
+id: ubuntu2404-sudo-reauthentication
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.2.5
+  section: Access Control > Configure privilege escalation
+  title:
+    pl: Ponowne uwierzytelnianie przy podnoszeniu uprawnień nie jest wyłączone globalnie
+    en: Ensure re-authentication for privilege escalation is not disabled globally
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Opcja !authenticate w konfiguracji sudo wyłącza pytanie o hasło dla
+    wszystkich poleceń, których dotyczy wpis. Każdy proces działający na
+    koncie użytkownika, np. złośliwy skrypt, może wtedy od razu wykonywać
+    polecenia jako root.
+
+    Punkt wymaga, żeby żaden wpis Defaults nie wyłączał uwierzytelniania.
+  en: |
+    The !authenticate option in the sudo configuration turns off the
+    password prompt for every command the entry covers. Any process running
+    under the user's account, for example a malicious script, can then run
+    commands as root at once.
+
+    The item requires no Defaults entry to turn off authentication.
+
+disruption_description:
+  pl: |
+    Konta i skrypty, które dziś używają sudo bez hasła dzięki
+    !authenticate, przestaną działać bez interakcji. Trzeba je przenieść na
+    inny mechanizm, np. usługę systemd działającą jako root.
+  en: |
+    Accounts and scripts that use sudo without a password today thanks to
+    !authenticate stop working without interaction. They have to be moved
+    to another mechanism, for example a systemd service running as root.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Skrypty i narzędzia wywołujące sudo bez hasła dzięki Defaults !authenticate, np. automatyzacja lub kopie zapasowe
+    en:
+      - Scripts and tools that call sudo without a password thanks to Defaults !authenticate, for example automation or backups
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na komputerze działa automatyzacja, która wymaga sudo bez hasła i nie ma zamiennika
+    en:
+      - The computer runs automation that needs sudo without a password and has no replacement
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v sudo >/dev/null 2>&1; then echo NOT_APPLICABLE; exit 0; fi
+    sudo_flat() {
+      local so
+      command -v cvtsudoers >/dev/null 2>&1 || return 1
+      so=$(cvtsudoers -f sudoers /etc/sudoers 2>/dev/null) || return 1
+      printf '%s\n' "$so" | awk '{ if (sub(/\\$/, "")) { buf = buf $0; next } print buf $0; buf = "" }'
+    }
+    # One "binding<TAB>parameter" line per Defaults parameter, in sudoers order;
+    # binding is empty for global Defaults, else e.g. ":alice" or "@host".
+    sudo_defs() {
+      local sf
+      sf=$(sudo_flat) || return 1
+      printf '%s\n' "$sf" | awk '
+        /^Defaults/ {
+          match($0, /^Defaults([:@>!][^ \t]*)?/)
+          bind = substr($0, 9, RLENGTH - 8); rest = substr($0, RLENGTH + 1)
+          p = ""; q = 0
+          for (i = 1; i <= length(rest); i++) {
+            c = substr(rest, i, 1)
+            if (c == "\"") q = !q
+            if (c == "," && !q) { emit(bind, p); p = ""; continue }
+            p = p c
+          }
+          emit(bind, p)
+        }
+        function emit(b, s) { gsub(/^[ \t]+|[ \t]+$/, "", s); gsub(/[ \t]*=[ \t]*/, "=", s); if (s != "") print b "\t" s }'
+    }
+    d=$(sudo_defs) || { echo CHECK_ERROR; exit 0; }
+    g=$(printf '%s\n' "$d" | awk -F'\t' '$1 == "" && ($2 == "authenticate" || $2 == "!authenticate") { v = $2 } END { print v }')
+    o=$(printf '%s\n' "$d" | awk -F'\t' '$1 != "" && $2 == "!authenticate" { print "Defaults" $1 }' | sort -u | paste -sd, -)
+    n=""
+    if [ "$g" = "!authenticate" ]; then n=global; fi
+    if [ -n "$o" ]; then n="${n:+$n,}$o"; fi
+    if [ -n "$n" ]; then echo "NOT_OK:no-authenticate=$n"; else echo "OK:authenticate"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://www.sudo.ws/docs/man/sudoers.man/
+  - https://www.sudo.ws/docs/man/cvtsudoers.man/
+
+notes:
+  pl: |
+    Sprawdzenie czyta konfigurację sudo poleceniem cvtsudoers, które
+    wypisuje /etc/sudoers razem z dołączanymi plikami w tej samej
+    kolejności, w jakiej czyta je sudo, i pomija te same pliki, np. pliki
+    z kropką w nazwie w /etc/sudoers.d. Brak sudo daje wynik NOT_APPLICABLE.
+
+    Wynik NOT_OK wymienia global, gdy ostatni globalny wpis to Defaults
+    !authenticate, oraz wpisy dla wybranych użytkowników, komputerów lub
+    poleceń z tą opcją, np. Defaults:alice. Reguła tylko sprawdza stan, bo
+    takie wpisy zwykle są potrzebne jakiemuś narzędziu. Wpis usuwa się
+    poleceniem visudo, np. visudo -f /etc/sudoers.d/nazwa-pliku.
+  en: |
+    The check reads the sudo configuration with cvtsudoers, which prints
+    /etc/sudoers together with its included files in the order sudo reads
+    them and skips the same files, such as files with a dot in the name in
+    /etc/sudoers.d. No sudo gives the NOT_APPLICABLE result.
+
+    The NOT_OK result lists global when the last global entry is Defaults
+    !authenticate, and the entries for selected users, hosts or commands
+    with this option, for example Defaults:alice. The rule only checks the
+    state, because such entries are usually needed by some tool. The entry
+    is removed with visudo, for example visudo -f /etc/sudoers.d/file-name.

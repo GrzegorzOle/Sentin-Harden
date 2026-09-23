@@ -1,0 +1,280 @@
+id: ubuntu2404-faillock-unlock-time
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.3.3.1.2
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_faillock module
+  title:
+    pl: Czas odblokowania konta jest skonfigurowany
+    en: Ensure password unlock time is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Parametr unlock_time modułu pam_faillock mówi, po ilu sekundach
+    zablokowane konto odblokowuje się samo. Krótki czas pozwala zgadywać
+    hasło seriami, z przerwą na odblokowanie.
+
+    Punkt wymaga, żeby unlock_time wynosił co najmniej 900 sekund albo 0,
+    czyli odblokowanie tylko przez administratora.
+  en: |
+    The unlock_time parameter of pam_faillock sets after how many seconds a
+    locked account is unlocked by itself. A short time allows guessing the
+    password in rounds, with a pause for the unlock.
+
+    The item requires unlock_time to be at least 900 seconds, or 0, which
+    means only an administrator unlocks the account.
+
+disruption_description:
+  pl: |
+    Domyślnie unlock_time wynosi 600 sekund. Naprawa ustawia 900, więc
+    zablokowane konto czeka 15 minut zamiast 10, chyba że root odblokuje je
+    wcześniej.
+  en: |
+    The default unlock_time is 600 seconds. The remediation sets 900, so a
+    locked account waits 15 minutes instead of 10, unless root unlocks it
+    sooner.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Użytkownik z zablokowanym kontem czeka 15 minut zamiast 10 albo prosi administratora o odblokowanie
+    en:
+      - A user with a locked account waits 15 minutes instead of 10 or asks an administrator to unlock it
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Komputer bez administratora na miejscu, na którym dłuższa blokada zatrzymałaby pracę
+    en:
+      - A computer without an administrator nearby, where a longer lock would stop work
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    # conf_get KEY FILE...: value of the key in the files read in this order;
+    # the last entry wins (the first with first=1), ic=1 ignores the case of names.
+    conf_get() {
+      local k=$1 f
+      shift
+      set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
+      [ $# -gt 0 ] || return 1
+      awk -v k="$k" -v ic=0 -v first=0 '
+        { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
+        name == "" || (ic ? tolower(name) != tolower(k) : name != k) { next }
+        { v = substr(n, length(name) + 1); sub(/^[ \t]*=?[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
+          if (!(first && seen)) val = v; seen = 1 }
+        END { if (seen) print val; exit !seen }' "$@"
+    }
+    # Arguments KEY=value, KEY alone and conf=... on active lines of a module,
+    # one "file:argument" item each.
+    pam_args() {
+      local f
+      for f in common-auth common-account; do
+        [ -r "/etc/pam.d/$f" ] || continue
+        awk -v m="$1" -v k="$2" -v f="$f" '
+          /^[ \t]*#/ || NF == 0 { next }
+          { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+          p[n] != m { next }
+          { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
+      done
+    }
+    ok() { awk -v v="$1" 'BEGIN { exit !(v == "never" || (v ~ /^[0-9]+$/ && (v + 0 == 0 || v + 0 >= 900))) }'; }
+    evaluate() {
+      local v s a bad=""
+      if v=$(conf_get unlock_time /etc/security/faillock.conf); then s="unlock_time=$v"; else v='600'; s="unlock_time=$v(default)"; fi
+      for a in $(pam_args pam_faillock.so unlock_time); do
+        case "${a#*:}" in
+          conf=*) bad="$bad,$a" ;;
+          unlock_time) ;;
+          *) ok "${a#*=}" || bad="$bad,$a" ;;
+        esac
+      done
+      if [ -n "$bad" ]; then echo "NOT_OK:$s,by-hand:${bad#,}"
+      elif ok "$v"; then echo "OK:$s"
+      else echo "NOT_OK:$s"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=secconf-1
+        if [ -e /etc/security/faillock.conf ]; then echo existed=1; else echo existed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/security/faillock.conf
+      mark='# Sentin-Harden: ubuntu2404-faillock-unlock-time'
+      line='unlock_time = 900'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    # conf_get KEY FILE...: value of the key in the files read in this order;
+    # the last entry wins (the first with first=1), ic=1 ignores the case of names.
+    conf_get() {
+      local k=$1 f
+      shift
+      set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
+      [ $# -gt 0 ] || return 1
+      awk -v k="$k" -v ic=0 -v first=0 '
+        { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
+        name == "" || (ic ? tolower(name) != tolower(k) : name != k) { next }
+        { v = substr(n, length(name) + 1); sub(/^[ \t]*=?[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
+          if (!(first && seen)) val = v; seen = 1 }
+        END { if (seen) print val; exit !seen }' "$@"
+    }
+    # Arguments KEY=value, KEY alone and conf=... on active lines of a module,
+    # one "file:argument" item each.
+    pam_args() {
+      local f
+      for f in common-auth common-account; do
+        [ -r "/etc/pam.d/$f" ] || continue
+        awk -v m="$1" -v k="$2" -v f="$f" '
+          /^[ \t]*#/ || NF == 0 { next }
+          { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+          p[n] != m { next }
+          { for (i = 4; i <= NF; i++) if ($i == k || index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
+      done
+    }
+    ok() { awk -v v="$1" 'BEGIN { exit !(v == "never" || (v ~ /^[0-9]+$/ && (v + 0 == 0 || v + 0 >= 900))) }'; }
+    evaluate() {
+      local v s a bad=""
+      if v=$(conf_get unlock_time /etc/security/faillock.conf); then s="unlock_time=$v"; else v='600'; s="unlock_time=$v(default)"; fi
+      for a in $(pam_args pam_faillock.so unlock_time); do
+        case "${a#*:}" in
+          conf=*) bad="$bad,$a" ;;
+          unlock_time) ;;
+          *) ok "${a#*=}" || bad="$bad,$a" ;;
+        esac
+      done
+      if [ -n "$bad" ]; then echo "NOT_OK:$s,by-hand:${bad#,}"
+      elif ok "$v"; then echo "OK:$s"
+      else echo "NOT_OK:$s"; fi
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "$f already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        *by-hand:*) echo "The pam_faillock lines in the PAM files have arguments that decide it instead of $f (${r##*by-hand:}); change them by hand in /etc/pam.d or in the pam-auth-update profile that adds them" >&2; exit 1 ;;
+      esac
+      d=$(dirname "$f")
+      old=$(mktemp "$d/.sentin-harden-old.XXXXXX")
+      t=$(mktemp "$d/.sentin-harden.XXXXXX")
+      trap 'rm -f "$old" "$t"' EXIT
+      if [ -e "$f" ]; then had=1; cat "$f" > "$old"; else had=0; fi
+      # The last entry wins, so the line of this rule goes at the end; an older
+      # copy of it is removed.
+      { if [ "$had" = 1 ]; then awk -v mark="$mark" -v line="$line" 'skip { skip = 0; if ($0 == line) next } $0 == mark { skip = 1; next } { print }' "$f"; fi
+        echo "$mark"; echo "$line"; } > "$t"
+      if [ "$had" = 1 ]; then chmod --reference="$f" "$t"; chown --reference="$f" "$t"; else chmod 644 "$t"; chown root:root "$t"; fi
+      mv -f "$t" "$f"
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) if [ "$had" = 1 ]; then cat "$old" > "$f"; else rm -f "$f"; fi
+           echo "$f does not meet the item after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Set $line in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/security/faillock.conf
+      mark='# Sentin-Harden: ubuntu2404-faillock-unlock-time'
+      line='unlock_time = 900'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      e=$(sed -n '2s/^existed=//p' "$b")
+      case "$e" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ ! -f "$f" ] || ! grep -qxF "$mark" "$f"; then echo "The line of this rule is not in $f, nothing to restore"; exit 0; fi
+      t=$(mktemp "$(dirname "$f")/.sentin-harden.XXXXXX")
+      trap 'rm -f "$t"' EXIT
+      # Only the marked line of this rule goes; the rest of the file stays as it is now.
+      awk -v mark="$mark" -v line="$line" 'skip { skip = 0; if ($0 == line) next } $0 == mark { skip = 1; next } { print }' "$f" > "$t"
+      if grep -A 1 -xF "$mark" "$f" | grep -qxF "$line"; then kept=0; else kept=1; fi
+      if [ "$e" = 0 ] && ! grep -q '[^[:space:]]' "$t"; then
+        rm -f "$f"; echo "Removed $f, which this rule created"; exit 0
+      fi
+      chmod --reference="$f" "$t"; chown --reference="$f" "$t"; mv -f "$t" "$f"
+      if [ "$kept" = 1 ]; then
+        echo "Removed the comment of this rule from $f; the line under it was changed by hand and stays"
+      else
+        echo "Removed the unlock_time line of this rule from $f"
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/faillock.conf.5.html
+  - https://man7.org/linux/man-pages/man8/pam_faillock.8.html
+
+notes:
+  pl: |
+    pam_faillock czyta najpierw /etc/security/faillock.conf, a potem
+    argumenty ze swoich wierszy w /etc/pam.d/common-auth i common-account,
+    więc argument w pliku PAM wygrywa z plikiem faillock.conf. W pliku
+    wygrywa ostatni wpis danego klucza. Sprawdzenie bierze ostatni wpis
+    z faillock.conf, a gdy go nie ma, wartość domyślną modułu. Argument
+    w wierszu pam_faillock z niepoprawną wartością albo argument conf= daje
+    wynik NOT_OK z dopiskiem by-hand; naprawa wtedy niczego nie zmienia,
+    bo taki wiersz trzeba poprawić ręcznie w /etc/pam.d albo w profilu
+    pam-auth-update, który go dodaje.
+
+    Naprawa dopisuje na końcu faillock.conf wiersz tej reguły pod
+    komentarzem Sentin-Harden, a wcześniejsze wpisy zostawia bez zmian.
+    Wycofanie usuwa tylko te dwa wiersze. Ustawienie działa dopiero wtedy,
+    gdy pam_faillock jest włączony (punkt 5.3.2.2); Ubuntu domyślnie go nie
+    włącza.
+
+    Domyślnie unlock_time=600. Wartość 0 i never znaczą to samo: konto
+    pozostaje zablokowane, dopóki root nie wykona faillock --user nazwa
+    --reset. Naprawa ustawia unlock_time = 900, żeby konta odblokowywały się
+    same.
+  en: |
+    pam_faillock reads /etc/security/faillock.conf first and then the
+    arguments on its lines in /etc/pam.d/common-auth and common-account, so
+    an argument in the PAM file wins over faillock.conf. In the file the
+    last entry of a key wins. The check takes the last entry in
+    faillock.conf and, when there is none, the default of the module. An
+    argument on a pam_faillock line with a wrong value, or a conf= argument,
+    gives the NOT_OK result with a by-hand note; the remediation then
+    changes nothing, because such a line has to be fixed by hand in
+    /etc/pam.d or in the pam-auth-update profile that adds it.
+
+    The remediation appends the line of this rule at the end of
+    faillock.conf under a Sentin-Harden comment and leaves earlier entries
+    as they are. Rollback removes only these two lines. The setting only
+    works when pam_faillock is enabled (item 5.3.2.2); Ubuntu does not
+    enable it by default.
+
+    The default is unlock_time=600. The values 0 and never mean the same:
+    the account stays locked until root runs faillock --user name --reset.
+    The remediation sets unlock_time = 900, so that accounts are still
+    unlocked by themselves.

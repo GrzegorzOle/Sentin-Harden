@@ -1,0 +1,319 @@
+id: ubuntu2404-pam-faillock-enabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.3.2.2
+  section: Access Control > Pluggable Authentication Modules > Configure pam-auth-update profiles
+  title:
+    pl: Moduł pam_faillock jest włączony
+    en: Ensure pam_faillock module is enabled
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bez limitu nieudanych prób logowania można zgadywać hasło bez końca,
+    np. przez SSH albo na ekranie blokady. pam_faillock zapisuje nieudane
+    próby i po ich przekroczeniu na pewien czas blokuje konto.
+
+    Punkt wymaga wierszy pam_faillock w /etc/pam.d/common-auth (przed
+    i po pam_unix) oraz w common-account.
+  en: |
+    Without a limit on failed login attempts, a password can be guessed
+    without end, for example over SSH or on the lock screen. pam_faillock
+    records failed attempts and locks the account for a while when there
+    are too many of them.
+
+    The item requires pam_faillock lines in /etc/pam.d/common-auth (before
+    and after pam_unix) and in common-account.
+
+disruption_description:
+  pl: |
+    Użytkownik, który trzy razy w ciągu 15 minut poda złe hasło, np. przy
+    logowaniu, odblokowaniu ekranu albo w sudo, ma konto zablokowane na
+    10 minut. Konto root nie jest domyślnie blokowane.
+  en: |
+    A user who enters a wrong password three times within 15 minutes, for
+    example at login, when unlocking the screen or in sudo, has the account
+    locked for 10 minutes. The root account is not locked by default.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - "Użytkownicy mylący hasło: po trzech błędach w 15 minut konto jest zablokowane na 10 minut, także dla sudo"
+      - Każdy, kto zna nazwę konta i ma dostęp do logowania, np. przez SSH, może celowo zablokować to konto złymi hasłami
+    en:
+      - "Users who mistype the password: after three errors within 15 minutes the account is locked for 10 minutes, also for sudo"
+      - Anyone who knows the account name and can reach a login, for example over SSH, can lock the account on purpose with wrong passwords
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Konta współdzielone lub logujące się hasłem przez sieć, których celowe zablokowanie zatrzymałoby pracę, a nie ma innej ochrony przed zgadywaniem hasła
+    en:
+      - Shared accounts or accounts that log in with a password over the network, where locking them on purpose would stop work and there is no other protection against password guessing
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    evaluate() {
+      local miss="" s f ty mo ar
+      for s in common-auth:auth:pam_faillock.so:preauth common-auth:auth:pam_faillock.so:authfail common-account:account:pam_faillock.so:; do
+        f=${s%%:*}; s=${s#*:}; ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+        pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_faillock"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      # Without the list of enabled profiles, rollback could turn off profiles that were on.
+      debconf-show libpam-runtime 2>/dev/null | grep -q 'libpam-runtime/profiles:' ||
+        { echo "debconf does not report the enabled PAM profiles (debconf-show libpam-runtime); nothing saved" >&2; exit 1; }
+      {
+        echo format=pamprof-1
+        for p in sentin-harden-faillock sentin-harden-faillock-authfail; do
+          if prof_on "$p"; then e=1; else e=0; fi
+          if [ -e "$D/$p" ]; then x=1; else x=0; fi
+          echo "prof $p $e $x"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pamprof-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | awk '$1 == "prof" && $3 ~ /^[01]$/ && $4 ~ /^[01]$/ && NF == 4 { printf "%s ", $2; next } { print "bad" }')" = "sentin-harden-faillock sentin-harden-faillock-authfail " ] ||
+        { echo "Backup file is damaged: $b" >&2; exit 1; }
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    evaluate() {
+      local miss="" s f ty mo ar
+      for s in common-auth:auth:pam_faillock.so:preauth common-auth:auth:pam_faillock.so:authfail common-account:account:pam_faillock.so:; do
+        f=${s%%:*}; s=${s#*:}; ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+        pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_faillock"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "PAM already uses pam_faillock, nothing to change"; exit 0 ;; esac
+      command -v pam-auth-update >/dev/null 2>&1 || { echo "pam-auth-update is not installed; add pam_faillock to the PAM files by hand" >&2; exit 1; }
+      if [ ! -e "$D/sentin-harden-faillock" ]; then
+        t=$(mktemp "$D/.sentin-harden.XXXXXX")
+        printf '%b\n' 'Name: Lock accounts after failed logins (pam_faillock, Sentin-Harden)' 'Default: no' 'Priority: 1024' 'Auth-Type: Primary' 'Auth:' '\trequisite\tpam_faillock.so preauth' 'Account-Type: Primary' 'Account:' '\trequired\tpam_faillock.so' > "$t"
+        chmod 644 "$t"; chown root:root "$t"; mv -f "$t" "$D/sentin-harden-faillock"
+      fi
+      if [ ! -e "$D/sentin-harden-faillock-authfail" ]; then
+        t=$(mktemp "$D/.sentin-harden.XXXXXX")
+        printf '%b\n' 'Name: Count failed logins (pam_faillock, Sentin-Harden)' 'Default: no' 'Priority: 0' 'Auth-Type: Primary' 'Auth:' '\t[default=die]\tpam_faillock.so authfail' > "$t"
+        chmod 644 "$t"; chown root:root "$t"; mv -f "$t" "$D/sentin-harden-faillock-authfail"
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      pam-auth-update --enable sentin-harden-faillock sentin-harden-faillock-authfail >/dev/null
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) undo "$b" >/dev/null
+           echo "PAM does not use pam_faillock after enabling the profiles ($r), for example because the common-* files were changed by hand outside the part that pam-auth-update manages; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Enabled the PAM profiles sentin-harden-faillock sentin-harden-faillock-authfail with pam-auth-update"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pamprof-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | awk '$1 == "prof" && $3 ~ /^[01]$/ && $4 ~ /^[01]$/ && NF == 4 { printf "%s ", $2; next } { print "bad" }')" = "sentin-harden-faillock sentin-harden-faillock-authfail " ] ||
+        { echo "Backup file is damaged: $b" >&2; exit 1; }
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      command -v pam-auth-update >/dev/null 2>&1 || { echo "pam-auth-update is not installed; nothing changed" >&2; exit 1; }
+      out=$(undo "$b")
+      echo "${out:-Nothing to restore}"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_faillock.8.html
+  - https://man7.org/linux/man-pages/man5/faillock.conf.5.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/pam-auth-update.8.html
+
+notes:
+  pl: |
+    Ubuntu buduje pliki /etc/pam.d/common-auth, common-account,
+    common-password i common-session poleceniem pam-auth-update z profili
+    w /usr/share/pam-configs, a listę włączonych profili trzyma w debconf
+    (debconf-show libpam-runtime). pam-auth-update zapisuje od nowa tylko
+    część plików między swoimi znacznikami; argumenty dopisane ręcznie do
+    wierszy w tej części zachowuje, a wiersze poza nią zostawia bez zmian.
+    Naprawa włącza profil poleceniem pam-auth-update --enable i sprawdza
+    pliki ponownie; gdy moduł nadal nie jest aktywny, np. po ręcznych
+    zmianach w plikach common-*, przywraca poprzedni stan i kończy się
+    błędem. Wycofanie wyłącza profil tylko wtedy, gdy przed naprawą był
+    wyłączony.
+
+    Ubuntu nie ma profilu pam-auth-update dla pam_faillock, choć sam moduł
+    jest w pakiecie libpam-modules. Naprawa tworzy dwa profile
+    w /usr/share/pam-configs: sentin-harden-faillock (priorytet 1024,
+    wiersz auth requisite pam_faillock.so preauth przed pam_unix i wiersz
+    account required pam_faillock.so) oraz sentin-harden-faillock-authfail
+    (priorytet 0, wiersz auth [default=die] pam_faillock.so authfail po
+    pam_unix), i włącza oba. Istniejących plików o tych nazwach nie zmienia.
+    Wycofanie usuwa oba profile poleceniem pam-auth-update --remove i kasuje
+    ich pliki, jeśli utworzyła je naprawa. pam-auth-update nie obsługuje
+    komentarzy w profilach, więc profile tej reguły rozpoznaje się po nazwie
+    pliku.
+
+    Liczbę prób i czas blokady ustawia się w /etc/security/faillock.conf
+    (punkty 5.3.3.1.x); domyślnie deny=3, fail_interval=900
+    i unlock_time=600. Zablokowane konto odblokowuje root poleceniem
+    faillock --user nazwa --reset, a stan blokad w /var/run/faillock znika
+    po restarcie.
+  en: |
+    Ubuntu builds the /etc/pam.d/common-auth, common-account,
+    common-password and common-session files with pam-auth-update from the
+    profiles in /usr/share/pam-configs and keeps the list of enabled
+    profiles in debconf (debconf-show libpam-runtime). pam-auth-update
+    writes again only the part of the files between its markers; it keeps
+    arguments added by hand to lines in that part and leaves lines outside
+    it unchanged. The remediation enables the profile with pam-auth-update
+    --enable and checks the files again; when the module is still not
+    active, for example after manual changes to the common-* files, it
+    restores the previous state and fails. Rollback turns the profile off
+    only when it was off before the remediation.
+
+    Ubuntu has no pam-auth-update profile for pam_faillock, although the
+    module itself is in the libpam-modules package. The remediation creates
+    two profiles in /usr/share/pam-configs: sentin-harden-faillock
+    (priority 1024, the line auth requisite pam_faillock.so preauth before
+    pam_unix and the line account required pam_faillock.so) and
+    sentin-harden-faillock-authfail (priority 0, the line auth
+    [default=die] pam_faillock.so authfail after pam_unix), and enables
+    both. It does not change existing files with these names. Rollback
+    removes both profiles with pam-auth-update --remove and deletes their
+    files if the remediation created them. pam-auth-update does not accept
+    comments in profiles, so the profiles of this rule are recognised by
+    their file names.
+
+    The number of attempts and the lock time are set in
+    /etc/security/faillock.conf (items 5.3.3.1.x); the defaults are deny=3,
+    fail_interval=900 and unlock_time=600. Root unlocks a locked account
+    with faillock --user name --reset, and the lock state in
+    /var/run/faillock is gone after a restart.

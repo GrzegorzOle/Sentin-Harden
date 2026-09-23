@@ -1,0 +1,278 @@
+id: ubuntu2404-pam-unix-enabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.3.2.1
+  section: Access Control > Pluggable Authentication Modules > Configure pam-auth-update profiles
+  title:
+    pl: Moduł pam_unix jest włączony
+    en: Ensure pam_unix module is enabled
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    pam_unix sprawdza hasła z /etc/shadow, pilnuje ważności kont i haseł,
+    zapisuje nowe hasła i odnotowuje otwarcie i zamknięcie sesji. Bez niego
+    logowanie kontami lokalnymi nie działa albo działa bez tych
+    sprawdzeń.
+
+    Punkt wymaga, żeby pam_unix był aktywny w /etc/pam.d/common-auth,
+    common-account, common-password i common-session.
+  en: |
+    pam_unix checks passwords from /etc/shadow, enforces account and
+    password expiry, stores new passwords and records the opening and
+    closing of sessions. Without it, login with local accounts does not
+    work or works without these checks.
+
+    The item requires pam_unix to be active in /etc/pam.d/common-auth,
+    common-account, common-password and common-session.
+
+disruption_description:
+  pl: |
+    Na zwykłej instalacji nikt tego nie zauważy, bo profil unix jest
+    w Ubuntu domyślnie włączony. Jeśli wcześniej go wyłączono, np. przy
+    logowaniu tylko przez LDAP albo SSSD, konta lokalne znów mogą logować
+    się hasłem z /etc/shadow.
+  en: |
+    On a regular installation nobody will notice, because the unix profile
+    is on by default in Ubuntu. If it was turned off before, for example for
+    login only through LDAP or SSSD, local accounts can log in again with
+    their password from /etc/shadow.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - "Systemy, na których celowo wyłączono logowanie kontami lokalnymi: znów działa ono hasłem z /etc/shadow"
+    en:
+      - "Systems where login with local accounts was turned off on purpose: it works again with the password from /etc/shadow"
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    evaluate() {
+      local miss="" s f ty mo ar
+      for s in common-auth:auth:pam_unix.so: common-account:account:pam_unix.so: common-password:password:pam_unix.so: common-session:session:pam_unix.so:; do
+        f=${s%%:*}; s=${s#*:}; ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+        pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_unix"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      # Without the list of enabled profiles, rollback could turn off profiles that were on.
+      debconf-show libpam-runtime 2>/dev/null | grep -q 'libpam-runtime/profiles:' ||
+        { echo "debconf does not report the enabled PAM profiles (debconf-show libpam-runtime); nothing saved" >&2; exit 1; }
+      {
+        echo format=pamprof-1
+        for p in unix; do
+          if prof_on "$p"; then e=1; else e=0; fi
+          if [ -e "$D/$p" ]; then x=1; else x=0; fi
+          echo "prof $p $e $x"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pamprof-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | awk '$1 == "prof" && $3 ~ /^[01]$/ && $4 ~ /^[01]$/ && NF == 4 { printf "%s ", $2; next } { print "bad" }')" = "unix " ] ||
+        { echo "Backup file is damaged: $b" >&2; exit 1; }
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    evaluate() {
+      local miss="" s f ty mo ar
+      for s in common-auth:auth:pam_unix.so: common-account:account:pam_unix.so: common-password:password:pam_unix.so: common-session:session:pam_unix.so:; do
+        f=${s%%:*}; s=${s#*:}; ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+        pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_unix"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "PAM already uses pam_unix, nothing to change"; exit 0 ;; esac
+      command -v pam-auth-update >/dev/null 2>&1 || { echo "pam-auth-update is not installed; add pam_unix to the PAM files by hand" >&2; exit 1; }
+      [ -e "$D/unix" ] || { echo "The PAM profile $D/unix does not exist; reinstall the libpam-runtime package" >&2; exit 1; }
+      export DEBIAN_FRONTEND=noninteractive
+      pam-auth-update --enable unix >/dev/null
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) undo "$b" >/dev/null
+           echo "PAM does not use pam_unix after enabling the profiles ($r), for example because the common-* files were changed by hand outside the part that pam-auth-update manages; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Enabled the PAM profiles unix with pam-auth-update"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pamprof-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | awk '$1 == "prof" && $3 ~ /^[01]$/ && $4 ~ /^[01]$/ && NF == 4 { printf "%s ", $2; next } { print "bad" }')" = "unix " ] ||
+        { echo "Backup file is damaged: $b" >&2; exit 1; }
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      command -v pam-auth-update >/dev/null 2>&1 || { echo "pam-auth-update is not installed; nothing changed" >&2; exit 1; }
+      out=$(undo "$b")
+      echo "${out:-Nothing to restore}"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_unix.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/pam-auth-update.8.html
+
+notes:
+  pl: |
+    Ubuntu buduje pliki /etc/pam.d/common-auth, common-account,
+    common-password i common-session poleceniem pam-auth-update z profili
+    w /usr/share/pam-configs, a listę włączonych profili trzyma w debconf
+    (debconf-show libpam-runtime). pam-auth-update zapisuje od nowa tylko
+    część plików między swoimi znacznikami; argumenty dopisane ręcznie do
+    wierszy w tej części zachowuje, a wiersze poza nią zostawia bez zmian.
+    Naprawa włącza profil poleceniem pam-auth-update --enable i sprawdza
+    pliki ponownie; gdy moduł nadal nie jest aktywny, np. po ręcznych
+    zmianach w plikach common-*, przywraca poprzedni stan i kończy się
+    błędem. Wycofanie wyłącza profil tylko wtedy, gdy przed naprawą był
+    wyłączony.
+
+    Sprawdzenie szuka aktywnych wierszy pam_unix.so w częściach auth,
+    account, password i session plików common-*. Wszystkie cztery wiersze
+    dodaje profil unix z pakietu libpam-runtime, a naprawa włącza go
+    poleceniem pam-auth-update --enable unix.
+  en: |
+    Ubuntu builds the /etc/pam.d/common-auth, common-account,
+    common-password and common-session files with pam-auth-update from the
+    profiles in /usr/share/pam-configs and keeps the list of enabled
+    profiles in debconf (debconf-show libpam-runtime). pam-auth-update
+    writes again only the part of the files between its markers; it keeps
+    arguments added by hand to lines in that part and leaves lines outside
+    it unchanged. The remediation enables the profile with pam-auth-update
+    --enable and checks the files again; when the module is still not
+    active, for example after manual changes to the common-* files, it
+    restores the previous state and fails. Rollback turns the profile off
+    only when it was off before the remediation.
+
+    The check looks for active pam_unix.so lines in the auth, account,
+    password and session parts of the common-* files. All four lines come
+    from the unix profile of the libpam-runtime package, and the remediation
+    enables it with pam-auth-update --enable unix.

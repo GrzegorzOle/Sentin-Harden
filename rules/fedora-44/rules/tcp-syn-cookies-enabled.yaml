@@ -1,13 +1,13 @@
-id: fedora44-ip-forwarding-disabled
+id: fedora44-tcp-syn-cookies-enabled
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 3.3.1
+  item: 3.3.10
   section: Network > Configure Network Kernel Parameters
   title:
-    pl: Przekazywanie pakietów IP jest wyłączone
-    en: Ensure IP forwarding is disabled
+    pl: Ciasteczka TCP SYN są włączone
+    en: Ensure tcp syn cookies is enabled
   level: 1
   profile: workstation
 
@@ -15,68 +15,48 @@ platform:
   system: fedora-44
 
 risk_category: medium
-disruption: needs-planned-rollout
-assessment_state: assessed-impact-described
+disruption: none
+assessment_state: assessed-no-impact
 
 description:
   pl: |
-    Przy włączonym przekazywaniu pakietów komputer działa jak router:
-    pakiety, które przyszły jednym interfejsem, a są adresowane gdzie
-    indziej, wysyła dalej. Intruz w jednej sieci może wtedy przez ten
-    komputer dotrzeć do drugiej, np. z sieci Wi-Fi do sieci VPN albo do
-    sieci maszyn wirtualnych.
+    Atak SYN flood polega na wysyłaniu wielu żądań otwarcia połączenia TCP
+    bez ich kończenia. Kolejka połączeń oczekujących się zapełnia i komputer
+    przestaje przyjmować nowe połączenia. Ciasteczka SYN pozwalają jądru
+    odpowiadać na żądania bez zajmowania miejsca w kolejce, gdy ta jest
+    pełna.
 
-    Punkt wymaga wartości 0 parametrów net.ipv4.ip_forward
-    i net.ipv6.conf.all.forwarding. To wartości domyślne jądra, ale
-    przekazywanie włączają programy, które same robią z komputera router
-    dla kontenerów i maszyn wirtualnych, np. Docker i libvirt.
+    Punkt wymaga wartości 1 parametru net.ipv4.tcp_syncookies, przy której
+    jądro używa ciasteczek tylko wtedy, gdy kolejka się przepełni. Parametr
+    działa też dla połączeń IPv6. To wartość domyślna jądra; punkt
+    sprawdza, że żaden plik w sysctl.d jej nie zmienia.
   en: |
-    With packet forwarding turned on, the computer works as a router: it
-    sends on packets that came in on one interface but are addressed
-    elsewhere. An intruder in one network can then reach another through
-    this computer, for example from a Wi-Fi network to a VPN or to a network
-    of virtual machines.
+    A SYN flood attack sends many requests to open a TCP connection without
+    completing them. The queue of pending connections fills up, and the
+    computer stops accepting new connections. SYN cookies let the kernel
+    answer the requests without taking room in the queue when it is full.
 
-    The item requires the value 0 for net.ipv4.ip_forward and
-    net.ipv6.conf.all.forwarding. These are the kernel defaults, but
-    forwarding is turned on by programs that make the computer a router for
-    containers and virtual machines themselves, such as Docker and libvirt.
+    The item requires the value 1 for net.ipv4.tcp_syncookies, with which
+    the kernel uses the cookies only when the queue overflows. The parameter
+    also applies to IPv6 connections. This is the kernel default; the item
+    checks that no sysctl.d file changes it.
 
 disruption_description:
   pl: |
-    Na komputerze bez kontenerów i maszyn wirtualnych nikt tego nie zauważy.
-    Tam, gdzie działa Docker albo maszyny wirtualne w sieci NAT, kontenery
-    i maszyny od razu tracą dostęp do internetu i sieci lokalnej.
+    Nikt tego nie zauważy: to wartość domyślna, a ciasteczka działają tylko
+    przy przepełnionej kolejce połączeń.
   en: |
-    On a computer without containers and virtual machines nobody will
-    notice. Where Docker or virtual machines in a NAT network run, the
-    containers and machines lose access to the internet and the local
-    network at once.
+    Nobody will notice: it is the default value, and the cookies work only
+    when the connection queue is full.
 
 implementation_consequences:
   impact_areas:
     - network-and-firewall
-    - virtualization-and-containers
   what_breaks:
-    pl:
-      - Kontenery Dockera i kontenery Podmana uruchamiane przez roota w sieciach typu bridge tracą dostęp do internetu i sieci lokalnej
-      - Maszyny wirtualne libvirt w sieci NAT, np. w sieci default, tracą dostęp do internetu i sieci lokalnej
-      - Udostępnianie połączenia przez NetworkManager, np. hotspot Wi-Fi, nie przekazuje ruchu podłączonych urządzeń
-    en:
-      - Docker containers and root Podman containers on bridge networks lose access to the internet and the local network
-      - libvirt virtual machines in a NAT network, such as the default network, lose access to the internet and the local network
-      - Connection sharing through NetworkManager, such as a Wi-Fi hotspot, does not forward the traffic of connected devices
+    pl: []
+    en: []
   interruption: none
-  user_visible: true
-  do_not_apply_when:
-    pl:
-      - Na komputerze działa Docker albo Podman uruchamiany przez roota z kontenerami w sieciach typu bridge
-      - Na komputerze działają maszyny wirtualne libvirt w sieci NAT
-      - Komputer udostępnia połączenie innym urządzeniom albo pracuje jako router lub brama VPN
-    en:
-      - Docker, or Podman run by root, with containers on bridge networks runs on the computer
-      - libvirt virtual machines in a NAT network run on the computer
-      - The computer shares its connection with other devices or works as a router or VPN gateway
+  user_visible: false
   reversibility: immediate
 
 audit:
@@ -104,8 +84,7 @@ audit:
       if [ "$r" = "$want" ] && { [ "$c" = "$want" ] || [ "$c" = default ]; }; then ok="$ok,$n=$r"
       else bad="$bad;$n:runtime=$r,config=${c:-none}"; fi
     done <<'EOF'
-    net.ipv4.ip_forward 0 1
-    net.ipv6.conf.all.forwarding 0 1
+    net.ipv4.tcp_syncookies 1 1
     EOF
     # Interfaces with their own value, for information only: the item checks all and default.
     ifs=""
@@ -129,13 +108,13 @@ remediation:
   backup_command: |
     (
       set -e
-      f=/etc/sysctl.d/sentin-harden-forwarding.conf
+      f=/etc/sysctl.d/sentin-harden-syncookies.conf
       b='{{backup_file}}'
       mkdir -p "$(dirname "$b")"
       {
         echo format=sysctl-2
         if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
-        for k in net.ipv4.ip_forward net.ipv6.conf.all.forwarding net.ipv4.conf.all.accept_redirects; do
+        for k in net.ipv4.tcp_syncookies ; do
           p=/proc/sys/$(printf '%s' "$k" | tr . /)
           if [ -r "$p" ]; then echo "rt $k $(tr -s ' \t' ' ' < "$p")"; fi
         done
@@ -157,20 +136,20 @@ remediation:
   change_command: |
     (
       set -e
-      f=/etc/sysctl.d/sentin-harden-forwarding.conf
+      f=/etc/sysctl.d/sentin-harden-syncookies.conf
       b='{{backup_file}}'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       command -v sysctl >/dev/null 2>&1 || { echo "sysctl is not installed" >&2; exit 1; }
       # Writing some keys makes the kernel reset others; those keep their value.
       keep=""
-      for k in net.ipv4.conf.all.accept_redirects; do
+      for k in ; do
         p=/proc/sys/$(printf '%s' "$k" | tr . /)
         if [ -r "$p" ]; then keep="$keep $k=$(cat "$p")"; fi
       done
-      printf '%s\n' '# Sentin-Harden: fedora44-ip-forwarding-disabled' 'net.ipv4.ip_forward = 0' '-net.ipv6.conf.all.forwarding = 0' > "$f"
+      printf '%s\n' '# Sentin-Harden: fedora44-tcp-syn-cookies-enabled' 'net.ipv4.tcp_syncookies = 1' > "$f"
       chmod 0644 "$f"
       if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
-      for kv in net.ipv4.ip_forward=0 net.ipv6.conf.all.forwarding=0; do
+      for kv in net.ipv4.tcp_syncookies=1; do
         k=${kv%%=*}
         [ -e "/proc/sys/$(printf '%s' "$k" | tr . /)" ] || { echo "Skipped $k: IPv6 is disabled"; continue; }
         sysctl -q -w "$kv"
@@ -187,7 +166,7 @@ remediation:
         done
       done
       late=""
-      for kv in net.ipv4.ip_forward=0 net.ipv6.conf.all.forwarding=0; do
+      for kv in net.ipv4.tcp_syncookies=1; do
         k=${kv%%=*}
         c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
       /^[ \t]*[#;]/ || !/=/ { next }
@@ -202,13 +181,13 @@ remediation:
       if [ -n "$late" ]; then
         echo "Another sysctl.d file is applied after $f and the next start will set:$late" >&2; exit 1
       fi
-      echo "Set net.ipv4.ip_forward=0 net.ipv6.conf.all.forwarding=0 now and in $f"
+      echo "Set net.ipv4.tcp_syncookies=1 now and in $f"
     )
 
   rollback_command: |
     (
       set -e
-      f=/etc/sysctl.d/sentin-harden-forwarding.conf
+      f=/etc/sysctl.d/sentin-harden-syncookies.conf
       b='{{backup_file}}'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=sysctl-2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
@@ -221,7 +200,7 @@ remediation:
         bad=0
         case "$v" in ""|*[!0-9-]*) bad=1 ;; esac
         case "$t" in
-          rt) case " net.ipv4.ip_forward net.ipv6.conf.all.forwarding net.ipv4.conf.all.accept_redirects " in *" $k "*) ;; *) bad=1 ;; esac ;;
+          rt) case " net.ipv4.tcp_syncookies  " in *" $k "*) ;; *) bad=1 ;; esac ;;
           if)
             known=0
             for spec in ; do
@@ -239,12 +218,12 @@ remediation:
       # The kept keys go after the others, because writing those can reset them.
       while read -r t k v; do
         [ "$t" = rt ] || continue
-        case " net.ipv4.conf.all.accept_redirects " in *" $k "*) continue ;; esac
+        case "  " in *" $k "*) continue ;; esac
         sysctl -q -w "$k=$v"
       done <<< "$rts"
       while read -r t k v; do
         [ "$t" = rt ] || continue
-        case " net.ipv4.conf.all.accept_redirects " in *" $k "*) sysctl -q -w "$k=$v" ;; esac
+        case "  " in *" $k "*) sysctl -q -w "$k=$v" ;; esac
       done <<< "$rts"
       # Interfaces removed since the backup are skipped.
       while read -r t k v; do
@@ -260,7 +239,7 @@ runnable: true
 sources:
   - https://docs.kernel.org/networking/ip-sysctl.html
   - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
-  - https://docs.docker.com/engine/network/packet-filtering-firewalls/
+  - https://www.rfc-editor.org/rfc/rfc4987
 
 notes:
   pl: |
@@ -269,61 +248,28 @@ notes:
     systemd-sysctl --cat-config, które wypisuje pliki z /usr/lib/sysctl.d,
     /run/sysctl.d i /etc/sysctl.d w kolejności stosowania, więc liczy się
     ostatnie przypisanie. Brak wpisu oznacza wartość wbudowaną
-    w jądro, czyli 0, i też spełnia punkt. Parametr IPv6 jest spełniony, gdy
-    IPv6 wyłączono przy starcie jądra, a naprawa zapisuje go z minusem na
-    początku, więc systemd-sysctl nie zgłasza wtedy błędu. Wynik NOT_OK podaje obie wartości każdego
+    w jądro, czyli 1, i też spełnia punkt. Wartość 2, przy której jądro
+    używa ciasteczek zawsze, nie spełnia punktu. Wynik NOT_OK podaje obie wartości każdego
     parametru, który nie spełnia punktu.
 
-    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-forwarding.conf
+    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-syncookies.conf
     i od razu je stosuje. Nazwa bez numeru na początku sortuje się po plikach
     typu 99-*.conf, więc ustawienia wygrywają z nimi; jeśli mimo to inny
     plik nadpisuje wartość, naprawa kończy się błędem. Wycofanie przywraca
     poprzednią zawartość pliku i poprzednie wartości bieżące.
-
-    Docker i libvirt po uruchomieniu same włączają przekazywanie z powrotem,
-    więc naprawa nie wyłączy go na stałe tam, gdzie działają, a sprawdzenie
-    znów pokaże NOT_OK z wartością bieżącą 1. Kontenery Podmana uruchamiane
-    bez roota i maszyny w GNOME Boxes mają własną sieć w przestrzeni
-    użytkownika i nie potrzebują przekazywania.
-
-    Zmiana net.ipv4.ip_forward ustawia w jądrze
-    net.ipv4.conf.all.accept_redirects na wartość przeciwną. Naprawa
-    i wycofanie zapamiętują ten parametr i przywracają go po zmianie, żeby
-    nie włączyć przyjmowania przekierowań ICMP. Przy starcie systemu
-    przekazywanie jest wyłączone, zanim zostaną zastosowane pliki, więc zapis
-    0 niczego nie zmienia. Ponowne zastosowanie plików przy włączonym
-    przekazywaniu, np. poleceniem sysctl --system po uruchomieniu Dockera,
-    może jednak włączyć przyjmowanie przekierowań; pokaże to sprawdzenie
-    punktu 3.3.5.
   en: |
     For each parameter, the check compares the current value from /proc/sys
     with the value the next start will set. The latter comes from
     systemd-sysctl --cat-config, which prints the files from
     /usr/lib/sysctl.d, /run/sysctl.d and /etc/sysctl.d in the order they are
-    applied, so the last assignment counts. No entry means the value built into
-    the kernel, which is 0, and also meets the item. The IPv6 parameter is
-    met when IPv6 was turned off at kernel start, and the remediation writes
-    it with a leading minus, so systemd-sysctl reports no error then. The NOT_OK result gives
+    applied, so the last assignment counts. No entry means the value built into the
+    kernel, which is 1, and also meets the item. The value 2, with which the
+    kernel always uses the cookies, does not meet the item. The NOT_OK result gives
     both values of every parameter that does not meet the item.
 
     The remediation writes the settings to
-    /etc/sysctl.d/sentin-harden-forwarding.conf and applies them at once. A name
+    /etc/sysctl.d/sentin-harden-syncookies.conf and applies them at once. A name
     without a leading number sorts after files such as 99-*.conf, so the
     settings win over them; if another file still overrides a value, the
     remediation ends with an error. Rollback restores the previous file
     content and the previous current values.
-
-    Docker and libvirt turn forwarding back on themselves when they start,
-    so the remediation does not turn it off for good where they run, and the
-    check shows NOT_OK again with the current value 1. Podman containers run
-    without root and machines in GNOME Boxes have their own network in user
-    space and do not need forwarding.
-
-    Changing net.ipv4.ip_forward makes the kernel set
-    net.ipv4.conf.all.accept_redirects to the opposite value. The
-    remediation and rollback record that parameter and restore it after the
-    change, so that accepting ICMP redirects is not turned on. At system
-    start forwarding is off before the files are applied, so writing 0
-    changes nothing. Applying the files again while forwarding is on, for
-    example with sysctl --system after Docker started, can still turn on
-    accepting redirects; the check of item 3.3.5 shows it.

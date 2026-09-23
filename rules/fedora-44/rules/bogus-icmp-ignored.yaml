@@ -85,7 +85,20 @@ audit:
     done <<'EOF'
     net.ipv4.icmp_ignore_bogus_error_responses 1 1
     EOF
-    if [ -n "$bad" ]; then echo "NOT_OK:${bad#;}"; else echo "OK:${ok#,}"; fi
+    # Interfaces with their own value, for information only: the item checks all and default.
+    ifs=""
+    for spec in ; do
+      d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
+      for p in /proc/sys/$d/*/$q; do
+        [ -r "$p" ] || continue
+        i=${p#/proc/sys/$d/}; i=${i%/$q}
+        case "$i" in all|default|lo) continue ;; esac
+        v=$(cat "$p")
+        [ "$v" = "$want" ] || ifs="$ifs,${d#net/}/$i/$q=$v"
+      done
+    done
+    [ -z "$ifs" ] || ifs=";interfaces:${ifs#,}"
+    if [ -n "$bad" ]; then echo "NOT_OK:${bad#;}$ifs"; else echo "OK:${ok#,}$ifs"; fi
   expected: '^OK:'
   comparison: regex
 
@@ -103,6 +116,15 @@ remediation:
         for k in net.ipv4.icmp_ignore_bogus_error_responses ; do
           p=/proc/sys/$(printf '%s' "$k" | tr . /)
           if [ -r "$p" ]; then echo "rt $k $(tr -s ' \t' ' ' < "$p")"; fi
+        done
+        # Interface values are stored as paths, because interface names may contain dots.
+        for spec in ; do
+          d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
+          for p in /proc/sys/$d/*/$q; do
+            [ -r "$p" ] || continue
+            case "$p" in */all/$q|*/default/$q) continue ;; esac
+            echo "if ${p#/proc/sys/} $(cat "$p")"
+          done
         done
         echo ---
         if [ -e "$f" ]; then cat "$f"; fi
@@ -132,6 +154,16 @@ remediation:
         sysctl -q -w "$kv"
       done
       for kv in $keep; do sysctl -q -w "$kv"; done
+      # The file covers interfaces added later; the existing ones are set here.
+      for spec in ; do
+        d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
+        for p in /proc/sys/$d/*/$q; do
+          [ -e "$p" ] || continue
+          case "$p" in */all/$q|*/default/$q) continue ;; esac
+          # An interface can disappear meanwhile, e.g. a container's veth.
+          printf '%s\n' "$want" 2>/dev/null > "$p" || [ ! -e "$p" ] || { echo "Cannot write $p" >&2; exit 1; }
+        done
+      done
       late=""
       for kv in net.ipv4.icmp_ignore_bogus_error_responses=1; do
         k=${kv%%=*}
@@ -162,22 +194,40 @@ remediation:
       case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
       grep -qx -- --- "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
       rts=$(sed -n '3,/^---$/p' "$b" | sed '$d')
-      [ -n "$rts" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
       while read -r t k v; do
+        [ -n "$t$k$v" ] || continue
         bad=0
-        [ "$t" = rt ] || bad=1
-        case " net.ipv4.icmp_ignore_bogus_error_responses  " in *" $k "*) ;; *) bad=1 ;; esac
         case "$v" in ""|*[!0-9-]*) bad=1 ;; esac
+        case "$t" in
+          rt) case " net.ipv4.icmp_ignore_bogus_error_responses  " in *" $k "*) ;; *) bad=1 ;; esac ;;
+          if)
+            known=0
+            for spec in ; do
+              d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
+              case "$k" in "$d"/*/"$q") ;; *) continue ;; esac
+              i=${k#"$d"/}; i=${i%/"$q"}
+              case "$i" in ""|*/*|.|..|all|default) ;; *) known=1 ;; esac
+            done
+            [ "$known" = 1 ] || bad=1 ;;
+          *) bad=1 ;;
+        esac
         if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
       done <<< "$rts"
       if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
-      # The kept keys go last, because writing the others can reset them.
+      # The kept keys go after the others, because writing those can reset them.
       while read -r t k v; do
+        [ "$t" = rt ] || continue
         case "  " in *" $k "*) continue ;; esac
         sysctl -q -w "$k=$v"
       done <<< "$rts"
       while read -r t k v; do
+        [ "$t" = rt ] || continue
         case "  " in *" $k "*) sysctl -q -w "$k=$v" ;; esac
+      done <<< "$rts"
+      # Interfaces removed since the backup are skipped.
+      while read -r t k v; do
+        [ "$t" = if ] || continue
+        if [ -e "/proc/sys/$k" ]; then printf '%s\n' "$v" > "/proc/sys/$k"; fi
       done <<< "$rts"
       echo "Restored the previous values and the previous state of $f"
     )

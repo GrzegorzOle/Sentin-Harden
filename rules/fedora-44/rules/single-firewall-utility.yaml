@@ -1,0 +1,247 @@
+id: fedora44-single-firewall-utility
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 4.1.2
+  section: Host Based Firewall > Configure a firewall utility
+  title:
+    pl: Działa tylko jedno narzędzie do konfiguracji zapory
+    en: Ensure a single firewall configuration utility is in use
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    firewalld i usługa nftables ładują własne reguły zapory i nie wiedzą
+    o sobie nawzajem. Jeśli działają obie albo obie są włączone, reguły
+    jednej mogą zastąpić reguły drugiej przy starcie systemu, a wtedy
+    zapora wpuszcza ruch, który miała blokować, albo odwrotnie. Jeśli nie
+    działa żadna, komputer nie filtruje ruchu przychodzącego.
+
+    Punkt wymaga, żeby dokładnie jedna z usług firewalld i nftables była
+    włączona i działała. Na Fedorze Workstation domyślnie działa firewalld.
+  en: |
+    firewalld and the nftables service each load their own firewall rules
+    and do not know about each other. If both run or both are enabled, the
+    rules of one can replace the rules of the other at system start, and
+    then the firewall lets in traffic it should block, or the other way
+    round. If neither runs, the computer does not filter incoming traffic.
+
+    The item requires exactly one of the firewalld and nftables services to
+    be enabled and running. On Fedora Workstation firewalld runs by default.
+
+disruption_description:
+  pl: |
+    Gdy działa już jedna zapora, naprawa tylko wyłącza pozostałe usługi
+    i niczego nie zmienia w filtrowaniu. Gdy nie działała żadna, uruchamia
+    firewalld ze strefą domyślną, co może odciąć od sieci usługi
+    nasłuchujące na portach, których strefa nie otwiera.
+  en: |
+    When one firewall already runs, the remediation only turns off the
+    other services and changes nothing in filtering. When none ran, it
+    starts firewalld with the default zone, which can cut services that
+    listen on ports the zone does not open off from the network.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Gdy nie działała żadna zapora, usługi nasłuchujące na portach zamkniętych w strefie domyślnej firewalld, np. serwer WWW na porcie 80, przestają być osiągalne z sieci
+      - Włączone usługi nftables, iptables i ip6tables zostają wyłączone, gdy zostaje firewalld, więc reguły z ich plików konfiguracyjnych nie są już ładowane przy starcie
+    en:
+      - When no firewall ran, services that listen on ports closed in the firewalld default zone, such as a web server on port 80, can no longer be reached from the network
+      - Enabled nftables, iptables and ip6tables services are turned off when firewalld stays, so the rules from their configuration files are no longer loaded at start
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na komputerze celowo nie działa zapora, bo ruch filtruje urządzenie sieciowe, a organizacja przyjęła to jako odstępstwo od CIS
+      - Reguły zapory ładuje przy starcie usługa iptables albo nftables, a firewalld jest tylko zainstalowany i nieużywany
+    en:
+      - No firewall runs on the computer on purpose, because a network device filters the traffic, and the organization accepted this as a deviation from CIS
+      - The firewall rules are loaded at start by the iptables or nftables service, and firewalld is only installed and unused
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    f=$(st firewalld.service); n=$(st nftables.service)
+    on() { [ "$1" = enabled/active ]; }
+    off() { case "$1" in enabled*|*/active|*/activating|*/reloading) return 1 ;; esac; }
+    # iptables-services is reported for information; the item names firewalld and nftables.
+    x=""
+    for u in iptables.service ip6tables.service; do
+      s=$(st $u)
+      if ! off "$s"; then x="$x,$u=$s"; fi
+    done
+    [ -z "$x" ] || x=";other:${x#,}"
+    if on "$f" && off "$n"; then echo "SINGLE:firewalld$x"
+    elif on "$n" && off "$f"; then echo "SINGLE:nftables$x"
+    else echo "NOT_SINGLE:firewalld=$f,nftables=$n$x"; fi
+  expected: '^SINGLE:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    {
+        echo format=fw-1
+        if rpm -q --quiet firewalld; then echo installed=1; else echo installed=0; fi
+        for u in firewalld.service nftables.service iptables.service ip6tables.service; do s=$(st $u); echo "$u ${s%%/*} ${s#*/}"; done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    f=$(st firewalld.service); n=$(st nftables.service)
+      # The service that already filters stays; otherwise the enabled one, and
+      # firewalld, the Fedora default, when neither is.
+      if [ "${f#*/}" = active ]; then keep=firewalld.service
+      elif [ "${n#*/}" = active ]; then keep=nftables.service
+      elif [ "${f#enabled}" = "$f" ] && [ "${n#enabled}" != "$n" ]; then keep=nftables.service
+      else keep=firewalld.service; fi
+      if [ $keep = firewalld.service ]; then
+        drop="nftables.service iptables.service ip6tables.service"
+        if ! rpm -q --quiet firewalld; then dnf -y -q install firewalld; echo "Installed firewalld"; fi
+      else
+        drop=firewalld.service
+      fi
+      case "$(st $keep)" in masked*) echo "$keep is masked; unmask it by hand if it should run" >&2; exit 1 ;; esac
+      for u in $drop; do
+        s=$(st $u)
+        case "${s%%/*}" in enabled|enabled-runtime) systemctl disable -q "$u"; echo "Disabled $u" ;; esac
+        case "${s#*/}" in active|activating|reloading) systemctl stop "$u"; echo "Stopped $u" ;; esac
+      done
+      systemctl enable -q --now $keep
+      s=$(st $keep)
+      [ "$s" = enabled/active ] || { echo "$keep is still not running ($s)" >&2; exit 1; }
+      echo "Kept $keep as the only firewall service"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=fw-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      inst=$(sed -n '2s/^installed=//p' "$b")
+      case "$inst" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      lines=$(tail -n +3 "$b")
+      if [ "$(printf '%s\n' "$lines" | cut -d' ' -f1 | tr '\n' ' ')" != "firewalld.service nftables.service iptables.service ip6tables.service " ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      while read -r u e a x; do
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    if [ "$inst" = 0 ] && rpm -q --quiet firewalld; then
+        systemctl disable -q --now firewalld.service
+        if rpm -e --test firewalld >/dev/null 2>&1; then dnf -y -q remove --no-autoremove firewalld; echo "Removed firewalld again"
+        else echo "Kept firewalld: other installed packages need it now"; fi
+      fi
+      # Stop first, because firewalld conflicts with the other services.
+      while read -r u e a; do
+        case "$a" in active|activating|reloading) continue ;; esac
+        case "$(st $u)" in */active|*/activating|*/reloading) systemctl stop "$u"; echo "Stopped $u" ;; esac
+      done <<< "$lines"
+      start=""
+      while read -r u e a; do
+        s=$(st $u)
+        case "${s%%/*}" in none|masked*|not-found) continue ;; esac
+        case "$e" in
+          enabled) systemctl enable -q "$u" ;;
+          enabled-runtime) systemctl enable -q --runtime "$u" ;;
+          disabled) case "${s%%/*}" in enabled|enabled-runtime) systemctl disable -q "$u" ;; esac ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$lines"
+      if [ -n "$start" ]; then systemctl start $start; fi
+      echo "Restored the previous state of the firewall services"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://firewalld.org/documentation/
+  - https://wiki.nftables.org/wiki-nftables/index.php/Main_Page
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje przez systemctl, czy usługi firewalld.service
+    i nftables.service są włączone i czy działają. Wynik SINGLE wymaga, żeby
+    jedna była włączona i działała, a druga nie była ani włączona, ani
+    uruchomiona; także sama włączona druga usługa jest błędem, bo przy
+    starcie obie próbują załadować reguły. Usługi iptables i ip6tables
+    z pakietu iptables-services sprawdzenie wypisuje po średniku jako
+    informację, gdy są włączone albo działają, bo punkt ich nie wymienia.
+
+    Naprawa zostawia usługę, która już filtruje ruch; gdy nie działa żadna,
+    zostawia włączoną, a gdy żadna nie jest włączona, firewalld, domyślną
+    zaporę Fedory, i instaluje ją, jeśli jej brakuje. Pozostałe usługi
+    zatrzymuje i wyłącza; przy firewalld także iptables i ip6tables, bo
+    firewalld nie działa razem z nimi. Zamaskowanej usługi nie odmaskowuje,
+    tylko kończy się błędem. Wycofanie przywraca poprzedni stan włączenia
+    i działania wszystkich czterech usług, a firewalld zainstalowany przez
+    naprawę usuwa, o ile nie potrzebują go inne pakiety. Pakiety
+    doinstalowane jako jego zależności, np. python3, zostają.
+  en: |
+    The check uses systemctl to read whether firewalld.service and
+    nftables.service are enabled and running. The SINGLE result requires
+    one to be enabled and running and the other to be neither enabled nor
+    started; the other service being only enabled is also a finding,
+    because both try to load rules at start. The check lists the iptables
+    and ip6tables services from the iptables-services package after a
+    semicolon for information when they are enabled or running, because the
+    item does not name them.
+
+    The remediation keeps the service that already filters traffic; when
+    none runs, it keeps the enabled one, and when none is enabled, firewalld,
+    the Fedora default firewall, which it installs if missing. It stops and
+    disables the other services; with firewalld also iptables and
+    ip6tables, because firewalld does not run together with them. It does
+    not unmask a masked service and ends with an error instead. Rollback
+    restores the previous enabled and running state of all four services
+    and removes firewalld if the remediation installed it and no other
+    package needs it. Packages pulled in as its dependencies, such as
+    python3, stay.

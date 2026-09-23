@@ -1,0 +1,205 @@
+id: iis-application-pool-identity-default
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Application Pools
+  title:
+    pl: Pule aplikacji uruchamiane pod własną tożsamością puli
+    en: Application pools run under their own pool identity
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pula aplikacji wykonuje kod strony pod jakimś kontem. Konto to rozstrzyga, do
+    czego kod ma dostęp: do których plików, udziałów sieciowych i baz.
+
+    Domyślne konta wbudowane są wspólne dla wielu usług naraz. Kod jednej witryny
+    sięga wtedy tam, gdzie sięga inna, a przejęcie jednej aplikacji otwiera dostęp
+    do zasobów pozostałych. Konto usługi sieciowej występuje dodatkowo w sieci pod
+    tożsamością maszyny, więc błąd w aplikacji zamienia się w dostęp do zasobów
+    serwerowych.
+
+    Tożsamość puli daje każdej puli osobne konto tworzone razem z nią. Przejęcie
+    jednej aplikacji zostaje wtedy przy jednej aplikacji.
+  en: |
+    An application pool runs the code of a site under some account. That account
+    settles what the code can reach - which files, network shares and databases.
+
+    The built-in default accounts are shared between many services at once. The
+    code of one site then reaches where another one reaches, and taking over one
+    application opens access to the resources of the rest. The network service
+    account additionally appears on the network under the machine s identity, so a
+    flaw in an application turns into access to server resources.
+
+    A pool identity gives every pool a separate account created along with it.
+    Taking over one application then stays with one application.
+
+disruption_description:
+  pl: |
+    To jest zmiana wymagająca świadomego wdrożenia, bo zmienia konto, pod którym
+    działa kod — a wraz z nim wszystkie przyznane temu kontu uprawnienia.
+
+    Przed zmianą trzeba spisać, do czego aplikacja sięga: katalogi na dysku,
+    udziały sieciowe, bazy z uwierzytelnianiem zintegrowanym, certyfikaty. Każde z
+    tych uprawnień trzeba nadać nowej tożsamości, inaczej aplikacja przestanie
+    działać natychmiast po odświeżeniu puli.
+
+    Uwierzytelnianie do bazy wymaga osobnej uwagi. Tożsamość puli występuje w
+    sieci jako konto maszyny, więc uprawnienie nadane wcześniej kontu usługi nie
+    przeniesie się samo.
+
+    Zapis obejmuje ustawienie domyślne dla nowych pul. Pule istniejące z własnym
+    ustawieniem pozostaną przy nim i trzeba je zmienić osobno.
+  en: |
+    This is a change calling for a planned rollout, since it changes the account
+    the code runs under - and with it every privilege granted to that account.
+
+    Before the change it has to be written down what the application reaches -
+    folders on the disk, network shares, databases with integrated authentication,
+    certificates. Every one of those privileges has to be granted to the new
+    identity, or the application stops working the moment the pool recycles.
+
+    Database authentication needs separate attention. A pool identity appears on
+    the network as the machine account, so a privilege granted earlier to the
+    service account does not carry over by itself.
+
+    The setting is written as the default for new pools. Existing pools with a
+    setting of their own stay with it and have to be changed apart.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - accounts-and-passwords
+    - file-sharing
+  what_breaks:
+    pl:
+      - Aplikacja straci dostęp do katalogów, udziałów i baz, dopóki uprawnienia nie zostaną nadane nowej tożsamości
+      - Uwierzytelnianie zintegrowane do bazy przestanie działać, bo pula występuje w sieci jako konto maszyny
+      - Dostęp do certyfikatów i kluczy przypisanych wcześniejszemu kontu zostanie utracony
+      - Pule istniejące z własnym ustawieniem pozostaną przy nim i wymagają osobnej zmiany
+      - Zawartość stron, uwierzytelnianie odwiedzających, nazwy witryn i porty pozostają bez zmian
+    en:
+      - The application loses access to folders, shares and databases until the privileges are granted to the new identity
+      - Integrated database authentication stops working, since the pool appears on the network as the machine account
+      - Access to certificates and keys assigned to the previous account is lost
+      - Existing pools with a setting of their own stay with it and call for a change apart
+      - Page contents, visitor authentication, site names and ports are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery z aplikacją sięgającą do udziału sieciowego albo bazy pod kontem usługi, dopóki uprawnienia nie zostaną przeniesione
+      - Środowiska, w których nie spisano zasobów używanych przez aplikację
+      - Zasoby korzystające z certyfikatu przypisanego wcześniejszemu kontu
+    en:
+      - Servers with an application reaching a network share or a database under a service account, until the privileges have been moved
+      - Environments where the resources used by the application have not been written down
+      - Resources using a certificate assigned to the previous account
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/processModel' -Name 'identityType' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'ApplicationPoolIdentity'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/processModel' -Name 'identityType' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.applicationHost/applicationPools/applicationPoolDefaults/processModel'
+      name    = 'identityType'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/processModel' -Name 'identityType' -Value ApplicationPoolIdentity
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/manage/configuring-security/application-pool-identities
+
+notes:
+  pl: |
+    Zapis ustawia wartość domyślną dla pul, które nie mają własnej. Pule
+    istniejące trzeba przejrzeć osobno, bo zasada ich nie dotyka. Zmiana
+    konfiguracji odświeża pule aplikacji, więc żądania w locie zostaną przerwane.
+  en: |
+    The setting sets the default for pools that have none of their own. Existing
+    pools have to be reviewed apart, since the rule does not touch them. A
+    configuration change recycles the application pools, so requests in flight are
+    broken.

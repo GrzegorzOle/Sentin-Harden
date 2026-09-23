@@ -1,0 +1,199 @@
+id: iis-detailed-errors-not-sent
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Basic Configurations
+  title:
+    pl: Szczegółowe komunikaty o błędach nieodsyłane poza serwer
+    en: Detailed fault messages not sent beyond the server
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przy błędzie serwer może odesłać komunikat szczegółowy: ścieżkę pliku,
+    nazwę modułu, który błąd zgłosił, stan żądania i miejsce w konfiguracji, które
+    o tym rozstrzygnęło.
+
+    Dla atakującego jest to pętla zwrotna. Zmienia żądanie, ogląda odpowiedź i
+    z samego komunikatu dowiaduje się, jak zbudowany jest zasób, gdzie leżą pliki
+    i który moduł obsługuje którą ścieżkę. Rozpoznanie wykonuje wtedy sam serwer,
+    za darmo i bez śladu, bo to są żądania poprawne, a nie ataki.
+
+    Ograniczenie szczegółów do połączeń lokalnych zostawia diagnozę osobie przy
+    serwerze, a odwiedzającemu daje sam fakt błędu.
+  en: |
+    On a fault the server may send back a detailed message - the file path, the
+    name of the module that raised the fault, the state of the request and the
+    place in the configuration that settled it.
+
+    For an attacker it is a feedback loop. They alter the request, look at the
+    answer and learn from the message alone how the resource is built, where the
+    files lie and which module serves which path. The reconnaissance is then done
+    by the server itself, free of charge and without a trace, since these are
+    proper requests rather than attacks.
+
+    Limiting the detail to local connections leaves the diagnosis with the person
+    at the server and gives the visitor the bare fact of a fault.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo odbiera informację nie tylko atakującemu, ale i
+    zespołowi pracującemu zdalnie. Osoba diagnozująca z własnej maszyny zobaczy
+    odtąd komunikat ogólny, tak samo jak każdy inny odwiedzający.
+
+    Właściwą drogą jest wtedy dziennik serwera i dziennik żądań nieudanych, a nie
+    komunikat w przeglądarce. Oba trzeba mieć uruchomione przed zmianą, żeby
+    diagnoza była w ogóle możliwa.
+
+    Część aplikacji polega na treści komunikatu przy obsłudze błędów po swojej
+    stronie. Warto sprawdzić, czy zmiana nie psuje obsługi błędu w samej
+    aplikacji, zanim obejmie cały serwer.
+  en: |
+    The change calls for a review, since it takes information away not only from
+    an attacker but from a team working remotely. Somebody diagnosing from their
+    own machine sees from now on a general message, just as any other visitor
+    does.
+
+    The proper road is then the server log and the failed request log rather than
+    a message in a browser. Both have to be running before the change, so that
+    diagnosis is possible at all.
+
+    Some applications rely on the contents of the message when handling faults on
+    their own side. It is worth checking whether the change breaks fault handling
+    in the application itself before it covers the whole server.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Komunikaty o błędach oglądane zdalnie przestaną zawierać ścieżki plików, nazwy modułów i stan żądania
+      - Diagnoza z maszyny innej niż serwer będzie wymagała dziennika zamiast komunikatu w przeglądarce
+      - Aplikacje odczytujące treść komunikatu przy własnej obsłudze błędów mogą zachować się inaczej
+      - Zgłoszenia użytkowników staną się mniej konkretne, bo komunikat przestanie wskazywać przyczynę
+      - Strony działające poprawnie, uwierzytelnianie, wydajność i zawartość zasobów pozostają bez zmian
+    en:
+      - Fault messages seen remotely stop holding file paths, module names and the state of the request
+      - Diagnosis from a machine other than the server calls for a log instead of a message in a browser
+      - Applications reading the message when handling faults themselves may behave differently
+      - User reports become less specific, since the message stops naming the cause
+      - Pages working properly, authentication, performance and the contents of resources are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery testowe, na których diagnoza zdalna opiera się na komunikacie w przeglądarce
+      - Zasoby bez uruchomionego dziennika żądań nieudanych, dopóki dziennik nie zacznie działać
+    en:
+      - Test servers where remote diagnosis rests on the message in a browser
+      - Resources with no failed request log running, until such a log is in place
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/httpErrors' -Name 'errorMode' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(DetailedLocalOnly|Custom)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/httpErrors' -Name 'errorMode' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/httpErrors'
+      name    = 'errorMode'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/httpErrors' -Name 'errorMode' -Value DetailedLocalOnly
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/httperrors/
+
+notes:
+  pl: |
+    Punkt spełniają dwa ustawienia: szczegóły wyłącznie dla połączeń lokalnych oraz
+    własna strona błędu. Oba zgłaszane są jako spełnienie, bo w obu przypadkach
+    szczegóły nie opuszczają serwera. Naprawa ustawia wariant pierwszy, bo nie
+    wymaga przygotowania własnej strony.
+  en: |
+    Two settings satisfy the item - detail for local connections only, and a
+    custom fault page. Both are reported as met, since in either case the detail
+    does not leave the server. The remediation sets the first, since it calls for
+    no custom page to be prepared.

@@ -1,0 +1,205 @@
+id: iis-anonymous-identity-uses-pool-account
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Authentication and Authorization
+  title:
+    pl: Dostęp anonimowy realizowany tożsamością puli, a nie osobnym kontem
+    en: Anonymous access carried by the pool identity rather than a separate account
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Żądanie bez uwierzytelnienia obsługiwane jest pod kontem wskazanym w
+    ustawieniach dostępu anonimowego. Domyślnie jest to osobne konto wbudowane,
+    wspólne dla wszystkich witryn na serwerze.
+
+    Konto wspólne znosi granicę między witrynami. Uprawnienie nadane mu dla jednej
+    witryny obowiązuje przy obsłudze żądań do każdej innej, więc zasób o niższych
+    wymaganiach otwiera drogę do plików zasobu o wyższych. Granica, którą widać w
+    konfiguracji jako rozdzielone witryny, w praktyce nie istnieje.
+
+    Pozostawienie pola pustego sprawia, że żądanie anonimowe idzie pod tożsamością
+    puli — czyli pod kontem osobnym dla każdej aplikacji.
+  en: |
+    A request without authentication is served under the account named in the
+    anonymous access settings. By default that is a separate built-in account,
+    shared by every site on the server.
+
+    A shared account removes the boundary between sites. A privilege granted to it
+    for one site holds while serving requests to any other, so a resource with
+    lower requirements opens the road to the files of one with higher. The
+    boundary visible in the configuration as separate sites does not exist in
+    practice.
+
+    Leaving the field empty makes an anonymous request run under the pool
+    identity - that is, under an account separate for every application.
+
+disruption_description:
+  pl: |
+    To jest zmiana wymagająca świadomego wdrożenia, bo konto obsługujące żądania
+    anonimowe zmienia się razem z uprawnieniami, które mu nadano.
+
+    Przed zmianą trzeba sprawdzić uprawnienia do katalogu zawartości. Tam, gdzie
+    nadano je wprost kontu anonimowemu, po zmianie zabraknie ich tożsamości puli i
+    witryna zwróci odmowę dostępu przy pierwszym żądaniu.
+
+    Naprawa najlepiej idzie razem z ustawieniem tożsamości puli — obie zasady
+    opisują to samo rozdzielenie witryn i osobno dają mniej, niż wyglądają.
+
+    Zmiana dotyczy poziomu serwera. Witryna z własnym ustawieniem pozostanie przy
+    nim i wymaga osobnej decyzji.
+  en: |
+    This is a change calling for a planned rollout, since the account serving
+    anonymous requests changes along with the privileges granted to it.
+
+    Before the change the permissions on the content folder have to be checked.
+    Where they were granted to the anonymous account directly, after the change
+    the pool identity lacks them and the site returns an access denied error on
+    the first request.
+
+    The remediation goes best together with setting the pool identity - both rules
+    describe the same separation of sites and apart give less than they appear to.
+
+    The change concerns server level. A site with a setting of its own stays with
+    it and calls for a decision apart.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - accounts-and-passwords
+    - file-sharing
+  what_breaks:
+    pl:
+      - Witryny z uprawnieniami nadanymi wprost kontu anonimowemu zwrócą odmowę dostępu przy pierwszym żądaniu
+      - Uprawnienia do katalogu zawartości trzeba będzie nadać tożsamości puli zamiast konta wspólnego
+      - Dostęp do udziału sieciowego spod obsługi żądań anonimowych przestanie działać dotychczasową drogą
+      - Witryny z własnym ustawieniem pozostaną przy nim i wymagają osobnej decyzji
+      - Uwierzytelnianie odwiedzających, zawartość stron, nazwy witryn i porty pozostają bez zmian
+    en:
+      - Sites with permissions granted to the anonymous account directly return an access denied error on the first request
+      - Permissions on the content folder have to be granted to the pool identity in place of the shared account
+      - Access to a network share from within anonymous request handling stops working the accustomed way
+      - Sites with a setting of their own stay with it and call for a decision apart
+      - Visitor authentication, page contents, site names and ports are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery, na których uprawnienia do katalogu zawartości nadano wprost kontu anonimowemu
+      - Środowiska, w których obsługa żądań anonimowych sięga do udziału sieciowego
+      - Zasoby dzielące katalog zawartości między witrynami, dopóki podział nie zostanie rozstrzygnięty
+    en:
+      - Servers where permissions on the content folder were granted to the anonymous account directly
+      - Environments where anonymous request handling reaches a network share
+      - Resources sharing a content folder between sites, until that sharing has been settled
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name 'userName' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([string]$value -eq '') { 'EMPTY' }
+          else { 'ACCOUNT ' + [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'EMPTY'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name 'userName' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/security/authentication/anonymousAuthentication'
+      name    = 'userName'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name 'userName' -Value ''
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/security/authentication/anonymousauthentication
+
+notes:
+  pl: |
+    Puste pole nazwy użytkownika oznacza obsługę żądania pod tożsamością puli, a
+    nie brak ustawienia — dlatego sprawdzenie zgłasza je jako spełnienie, a
+    wskazane konto zgłasza wraz z jego nazwą. Punkt ocenia się razem z tożsamością
+    pul aplikacji.
+  en: |
+    An empty user name field means the request is served under the pool identity
+    rather than that nothing is set - hence the check reports it as met and
+    reports a named account together with its name. The item is judged together
+    with the identity of the application pools.

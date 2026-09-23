@@ -1,0 +1,198 @@
+id: iis-directory-browsing-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Basic Configurations
+  title:
+    pl: Wyświetlanie zawartości katalogów wyłączone
+    en: Listing of folder contents switched off
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy w katalogu nie ma pliku startowego, serwer może zamiast błędu pokazać
+    spis jego zawartości. Odwiedzający dostaje wtedy listę plików wraz z ich
+    nazwami, rozmiarami i datami.
+
+    Lista taka jest gotową mapą zasobu. Widać na niej kopie zapasowe zostawione
+    obok plików produkcyjnych, archiwa z wcześniejszych wdrożeń, pliki
+    konfiguracyjne i nazwy, których nikt nie miał zgadywać. Rozpoznanie serwera
+    zaczyna się właśnie od takiego katalogu, bo nie wymaga ani jednego
+    nieudanego żądania.
+
+    Wyłączenie spisu sprawia, że dostać się można wyłącznie do tego, co ktoś
+    wskazał z nazwy.
+  en: |
+    Where a folder holds no start page, the server may show a listing of its
+    contents instead of an error. The visitor then receives a list of files with
+    their names, sizes and dates.
+
+    Such a listing is a ready map of the resource. It shows backups left beside
+    the production files, archives from earlier deployments, configuration files
+    and names nobody was meant to guess. Reconnaissance of a server begins with
+    exactly such a folder, since it calls for not one failed request.
+
+    Switching the listing off means only what somebody names can be reached.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo część zasobów opiera się na spisie katalogu jako
+    sposobie udostępniania plików. Katalog z dokumentami do pobrania, repozytorium
+    paczek, katalog wymiany — wszystkie przestaną się otwierać.
+
+    Objawem jest błąd odmowy dostępu zamiast listy plików. Odnośniki prowadzące
+    wprost do pliku działają dalej, więc uszkodzenie dotyczy wyłącznie samego
+    przeglądania.
+
+    Tam, gdzie spis jest potrzebny, właściwą drogą jest strona z listą, a nie
+    włączony spis katalogu. Zapis zmiany obejmuje cały serwer, więc wyjątek dla
+    jednego zasobu trzeba ustawić na jego poziomie.
+  en: |
+    The change calls for a review, since some resources rest on a folder listing
+    as their way of handing out files. A folder of documents to download, a
+    package repository, an exchange folder - all of them stop opening.
+
+    The symptom is an access denied error in place of a file list. Links leading
+    straight to a file still work, so the damage touches the browsing alone.
+
+    Where a listing is needed, the proper road is a page holding a list rather
+    than a folder listing switched on. The change is written for the whole server,
+    so an exception for one resource has to be set at its own level.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - file-sharing
+  what_breaks:
+    pl:
+      - Katalogi bez pliku startowego przestaną pokazywać listę plików i zwrócą błąd odmowy dostępu
+      - Katalogi wymiany i repozytoria paczek udostępniane właśnie spisem przestaną być dostępne
+      - Odnośniki prowadzące wprost do pliku działają dalej, bo zmiana dotyczy wyłącznie przeglądania
+      - Zmiana obejmuje cały serwer, więc dotknie także zasobów, o których nikt nie pamiętał
+      - Strony z plikiem startowym, aplikacje, uwierzytelnianie i uprawnienia do plików pozostają bez zmian
+    en:
+      - Folders without a start page stop showing a file list and return an access denied error
+      - Exchange folders and package repositories handed out by the listing itself stop being reachable
+      - Links leading straight to a file still work, since the change touches browsing alone
+      - The change covers the whole server, so it reaches resources nobody remembered
+      - Pages with a start page, applications, authentication and file permissions are all unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwery udostępniające katalog wymiany albo repozytorium paczek właśnie przez spis zawartości
+      - Zasoby wewnętrzne, w których spis katalogu zastępuje stronę z listą dokumentów
+    en:
+      - Servers handing out an exchange folder or a package repository by the listing itself
+      - Internal resources where a folder listing stands in for a page with a document list
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/directoryBrowse' -Name 'enabled' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([string]$value -eq 'True') { 'TRUE' }
+          elseif ([string]$value -eq 'False') { 'FALSE' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'FALSE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/directoryBrowse' -Name 'enabled' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/directoryBrowse'
+      name    = 'enabled'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/directoryBrowse' -Name 'enabled' -Value $false
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/directorybrowse
+
+notes:
+  pl: |
+    Zapis idzie na poziomie serwera i obowiązuje wszystkie witryny, które nie mają
+    własnego ustawienia. Wyjątek dla pojedynczego zasobu ustawia się na jego
+    poziomie, a nie przez cofnięcie tej zasady. Zmiana konfiguracji powoduje
+    odświeżenie pul aplikacji, więc żądania w locie mogą zostać przerwane.
+  en: |
+    The setting is written at server level and holds for every site with no
+    setting of its own. An exception for a single resource is set at its own level
+    rather than by reversing this rule. A configuration change brings about a
+    recycle of the application pools, so requests in flight may be broken.

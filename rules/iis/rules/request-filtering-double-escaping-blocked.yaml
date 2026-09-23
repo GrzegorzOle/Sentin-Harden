@@ -1,0 +1,196 @@
+id: iis-request-filtering-double-escaping-blocked
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Request Filtering and Other Restriction Modules
+  title:
+    pl: Żądania z podwójnie zakodowanym adresem odrzucane
+    en: Requests with a doubly encoded address refused
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Znaki specjalne w adresie zapisuje się kodem zastępczym. Podwójne kodowanie
+    polega na zapisaniu kodem zastępczym samego znaku kodowania — adres przechodzi
+    wtedy przez sprawdzenie w jednej postaci, a dociera do obsługi w drugiej.
+
+    Na tym stoi wyjście poza katalog zasobu. Sprawdzenie nie widzi przejścia do
+    katalogu nadrzędnego, bo w tej postaci go tam nie ma, a po rozkodowaniu ono
+    się pojawia. Tą drogą sięga się po pliki konfiguracyjne leżące poza katalogiem
+    zawartości — czyli po dokładnie te, których nikt nie zamierzał wystawiać.
+
+    Odrzucanie takich żądań sprawia, że adres sprawdzony i adres obsłużony są tym
+    samym adresem.
+  en: |
+    Special characters in an address are written with a replacement code. Double
+    encoding consists in writing the encoding character itself with a replacement
+    code - the address then passes the check in one form and reaches the handler in
+    another.
+
+    Escaping a resource s folder rests on this. The check does not see a step up
+    to the parent folder, since in that form it is not there, and after decoding it
+    appears. By this road the configuration files lying outside the content folder
+    are reached - which is to say exactly the ones nobody meant to expose.
+
+    Refusing such requests makes the address checked and the address served one
+    and the same address.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo istnieją aplikacje przekazujące dane w adresie
+    w postaci zakodowanej dwukrotnie. Robi tak część starszych rozwiązań
+    przekazujących pełny adres jako parametr innego adresu.
+
+    Objawem jest odrzucenie żądania z błędem, zanim aplikacja je zobaczy. Wygląda
+    to na awarię aplikacji, choć odpowiada za to warstwa filtrowania serwera — i
+    właśnie dlatego rozpoznanie bywa długie.
+
+    Przed zmianą warto przejrzeć dziennik pod kątem adresów z powtórzonym znakiem
+    kodowania. Jeżeli takich nie ma, zmiana jest bez kosztu.
+  en: |
+    The change calls for a review, since applications exist that pass data in the
+    address doubly encoded. Some older arrangements do so when passing a whole
+    address as a parameter of another address.
+
+    The symptom is a request refused with an error before the application sees it.
+    It looks like a fault in the application, though the server s filtering layer
+    answers for it - and that is exactly why finding the cause tends to take long.
+
+    Before the change it is worth reviewing the log for addresses carrying a
+    repeated encoding character. Where there are none, the change costs nothing.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Żądania z podwójnie zakodowanym adresem zostaną odrzucone, zanim aplikacja je zobaczy
+      - Starsze rozwiązania przekazujące pełny adres jako parametr innego adresu przestaną działać
+      - Objaw wygląda na awarię aplikacji, choć odpowiada za niego warstwa filtrowania serwera
+      - Zwykłe adresy ze znakami specjalnymi, formularze, uwierzytelnianie i zawartość stron pozostają bez zmian
+    en:
+      - Requests with a doubly encoded address are refused before the application sees them
+      - Older arrangements passing a whole address as a parameter of another stop working
+      - The symptom looks like a fault in the application, though the server s filtering layer answers for it
+      - Ordinary addresses with special characters, forms, authentication and page contents are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zasoby z aplikacją przekazującą adres w postaci zakodowanej dwukrotnie
+      - Serwery pośredniczące przekazujące pełny adres docelowy jako parametr
+    en:
+      - Resources with an application passing an address doubly encoded
+      - Intermediary servers passing a whole target address as a parameter
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/security/requestFiltering' -Name 'allowDoubleEscaping' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([string]$value -eq 'True') { 'TRUE' }
+          elseif ([string]$value -eq 'False') { 'FALSE' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'FALSE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering' -Name 'allowDoubleEscaping' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/security/requestFiltering'
+      name    = 'allowDoubleEscaping'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering' -Name 'allowDoubleEscaping' -Value $false
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/security/requestfiltering/
+
+notes:
+  pl: |
+    Filtrowanie żądań działa przed aplikacją, więc odrzucenie nie trafia do jej
+    dzienników — przy rozpoznawaniu trzeba sięgnąć do dziennika żądań
+    nieudanych. Zapis obejmuje poziom serwera; wyjątek dla jednego zasobu ustawia
+    się na jego poziomie.
+  en: |
+    Request filtering works ahead of the application, so a refusal does not reach
+    its logs - when finding the cause, the failed request log has to be consulted.
+    The setting covers server level; an exception for a single resource is set at
+    its own level.

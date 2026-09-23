@@ -1,0 +1,202 @@
+id: iis-asp-net-debug-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Basic Configurations
+  title:
+    pl: Tryb diagnostyczny aplikacji wyłączony
+    en: The debugging mode of applications switched off
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Tryb diagnostyczny zmienia sposób, w jaki aplikacja jest kompilowana i jak
+    zachowuje się przy błędzie. Kod zachowuje informacje o wierszach źródła, a
+    komunikat o błędzie potrafi pokazać fragment kodu wraz ze ścieżką pliku.
+
+    Zostawiony na serwerze produkcyjnym jest jedną z najhojniejszych pomyłek
+    konfiguracyjnych. Odwiedzający, który wywoła błąd, dostaje nazwy plików,
+    strukturę katalogów, fragmenty kodu, czasem parametry połączenia z bazą.
+    Żądania są przy tym obsługiwane wolniej i bez części pamięci podręcznej, więc
+    serwer jest zarazem wolniejszy i bardziej rozmowny.
+
+    Wyłączenie trybu przywraca kompilację produkcyjną i zamyka ten wyciek.
+  en: |
+    The debugging mode changes how an application is compiled and how it behaves
+    on a fault. The code keeps information about source lines, and a fault message
+    can show a fragment of code together with the file path.
+
+    Left on a production server it is one of the most generous configuration
+    mistakes. A visitor who triggers a fault receives file names, the folder
+    structure, fragments of code, sometimes the parameters of a database
+    connection. Requests are served more slowly and without part of the cache
+    along the way, so the server is at once slower and more talkative.
+
+    Switching the mode off restores production compilation and shuts that leak.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo na serwerze, na którym ktoś akurat szuka
+    przyczyny błędu, odbiera mu narzędzie pracy. Poza tym jednym przypadkiem
+    wyłączenie jest czystym zyskiem: aplikacja działa szybciej i zużywa mniej
+    pamięci.
+
+    Aplikacja zostanie skompilowana od nowa przy pierwszym żądaniu po zmianie, co
+    wydłuża jego obsługę. Na zasobie o dużym ruchu warto to zrobić poza godzinami
+    szczytu.
+
+    Komunikaty o błędach staną się ogólne. Jeżeli nie ma zbierania dzienników
+    aplikacji, diagnoza po zmianie będzie trudniejsza — dziennik trzeba mieć
+    wcześniej, nie po fakcie.
+  en: |
+    The change calls for a review, since on a server where somebody is just then
+    looking for the cause of a fault it takes their working tool away. Beyond that
+    one case, switching it off is a plain gain - the application runs faster and
+    uses less memory.
+
+    The application is compiled afresh on the first request after the change,
+    which lengthens the serving of it. On a resource carrying heavy traffic this
+    is worth doing outside the busy hours.
+
+    Fault messages become general. Where application logs are not gathered,
+    diagnosis after the change is harder - the log has to be in place beforehand
+    rather than afterwards.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - diagnostics-and-reporting
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Komunikaty o błędach przestaną zawierać fragmenty kodu, nazwy plików i ścieżki katalogów
+      - Praca nad przyczyną błędu wprost na tym serwerze przestanie być możliwa dotychczasową drogą
+      - Pierwsze żądanie po zmianie potrwa dłużej, bo aplikacja zostanie skompilowana od nowa
+      - Punkty zatrzymania i podłączanie narzędzia diagnostycznego przestaną działać dla tej aplikacji
+      - Działanie aplikacji, uwierzytelnianie, dostęp do bazy i zawartość stron pozostają bez zmian
+    en:
+      - Fault messages stop holding fragments of code, file names and folder paths
+      - Working on the cause of a fault on this server itself stops being possible the accustomed way
+      - The first request after the change takes longer, since the application is compiled afresh
+      - Break points and attaching a debugging tool stop working for this application
+      - The working of the application, authentication, database access and page contents are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery deweloperskie i testowe, na których tryb diagnostyczny jest narzędziem pracy
+      - Zasoby bez zbierania dzienników aplikacji, dopóki dziennik nie zostanie uruchomiony
+    en:
+      - Development and test servers where the debugging mode is a working tool
+      - Resources with no application log gathering, until a log has been put in place
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.web/compilation' -Name 'debug' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([string]$value -eq 'True') { 'TRUE' }
+          elseif ([string]$value -eq 'False') { 'FALSE' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'FALSE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/compilation' -Name 'debug' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.web/compilation'
+      name    = 'debug'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/compilation' -Name 'debug' -Value $false
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/dotnet/api/system.web.configuration.compilationsection
+
+notes:
+  pl: |
+    Ustawienie zapisywane jest na poziomie serwera i obowiązuje aplikacje, które
+    nie mają własnego wpisu. Aplikacja z własnym plikiem konfiguracyjnym może je
+    nadpisać u siebie — sprawdzenie na poziomie serwera tego nie zobaczy i warto
+    przejrzeć konfiguracje poszczególnych zasobów osobno.
+  en: |
+    The setting is written at server level and holds for applications with no
+    entry of their own. An application with its own configuration file may
+    override it there - a check at server level does not see that, and the
+    configurations of individual resources are worth reviewing apart.

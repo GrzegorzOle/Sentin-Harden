@@ -1,0 +1,132 @@
+id: ubuntu2404-chrony-authorized-server
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.3.3.1
+  section: Services > Configure Time Synchronization
+  title:
+    pl: chrony korzysta z wybranych serwerów czasu
+    en: Ensure chrony is configured with authorized timeserver
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zegar jest tak dokładny jak serwer, z którego bierze czas. Konfiguracja
+    bez źródeł czasu zostawia zegar bez korekty, a serwer podstawiony przez
+    atakującego może go przestawić.
+
+    Punkt wymaga, żeby konfiguracja chrony wskazywała źródła czasu,
+    najlepiej serwery NTP wybrane przez organizację. Ubuntu ustawia
+    domyślnie serwer ntp.ubuntu.com i pule ubuntu.pool.ntp.org oraz serwery
+    przekazane przez DHCP.
+  en: |
+    The clock is only as accurate as the server it takes the time from. A
+    configuration without time sources leaves the clock uncorrected, and a
+    server an attacker replaced can set it wrong.
+
+    The item requires the chrony configuration to name time sources,
+    preferably NTP servers chosen by the organization. Ubuntu sets the
+    ntp.ubuntu.com server, the ubuntu.pool.ntp.org pools and the servers
+    passed by DHCP by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli wskazane serwery czasu są osiągalne.
+    W sieci, która blokuje ruch NTP do internetu, trzeba wskazać serwery
+    czasu organizacji, inaczej zegar nie będzie synchronizowany.
+  en: |
+    Nobody will notice if the configured time servers are reachable. In a
+    network that blocks NTP traffic to the internet, the organization's
+    time servers have to be configured, otherwise the clock is not
+    synchronized.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Gdy żaden ze wskazanych serwerów czasu nie jest osiągalny, zegar komputera przestaje być synchronizowany
+    en:
+      - When none of the configured time servers can be reached, the computer clock is no longer synchronized
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if ! [ "$(dpkg-query -W -f='${db:Status-Status}' chrony 2>/dev/null)" = installed ]; then echo NOT_INSTALLED; exit 0; fi
+    c=/etc/chrony/chrony.conf
+    if [ ! -r "$c" ]; then echo CHECK_ERROR; exit 0; fi
+    cfiles() {
+      echo "c $c"
+      awk '{ d = tolower($1) } d == "include" || d == "confdir" || d == "sourcedir" { for (i = 2; i <= NF; i++) print d, $i }' "$c" |
+      while read -r d p; do
+        case "$d" in
+          include) for f in $p; do if [ -f "$f" ]; then echo "c $f"; fi; done ;;
+          confdir) for f in "$p"/*.conf; do if [ -f "$f" ]; then echo "c $f"; fi; done ;;
+          sourcedir) for f in "$p"/*.sources; do if [ -f "$f" ]; then echo "s $f"; fi; done ;;
+        esac
+      done
+    }
+    st=0; dy=0
+    while read -r k f; do
+      n=$(grep -Eic '^[[:space:]]*(server|pool|peer|refclock)[[:space:]]+[^[:space:]]' "$f" 2>/dev/null) || true
+      n=${n:-0}
+      if [ "$k" = s ]; then dy=$((dy + n)); else st=$((st + n)); fi
+    done < <(cfiles)
+    if [ $((st + dy)) -gt 0 ]; then echo "CONFIGURED:static=$st,sourcedir=$dy"; else echo NO_SOURCES; fi
+  expected: '^(CONFIGURED:|NOT_INSTALLED$)'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man5/chrony.conf.5.html
+
+notes:
+  pl: |
+    Reguła tylko sprawdza stan, bo wybór serwerów czasu należy do
+    organizacji. Na Ubuntu źródła najlepiej dopisać w pliku .sources
+    w katalogu /etc/chrony/sources.d/ i przeładować je poleceniem chronyc
+    reload sources, albo w pliku .conf w /etc/chrony/conf.d/, a domyślne
+    pule zakomentować w /etc/chrony/chrony.conf i zrestartować usługę
+    poleceniem systemctl restart chrony.
+
+    Sprawdzenie liczy dyrektywy server, pool, peer i refclock
+    w /etc/chrony/chrony.conf i w plikach dołączonych dyrektywami include
+    i confdir (static) oraz w plikach .sources z katalogów sourcedir, w tym
+    /run/chrony-dhcp z serwerami z DHCP (sourcedir). Pliki dołączone na
+    drugim poziomie nie są sprawdzane. Wynik CONFIGURED wymaga co najmniej
+    jednego źródła, a NO_SOURCES oznacza, że nie ma żadnego. Domyślna
+    konfiguracja Ubuntu spełnia punkt, ale nie sprawdza, czy to serwery
+    zatwierdzone przez organizację.
+  en: |
+    The rule only checks the state, because choosing the time servers is up
+    to the organization. On Ubuntu sources are best added in a .sources file
+    in the /etc/chrony/sources.d/ directory and reloaded with chronyc
+    reload sources, or in a .conf file in /etc/chrony/conf.d/, with the
+    default pools commented out in /etc/chrony/chrony.conf and the service
+    restarted with systemctl restart chrony.
+
+    The check counts the server, pool, peer and refclock directives in
+    /etc/chrony/chrony.conf and in the files included with include and
+    confdir (static), and in the .sources files from the sourcedir
+    directories, including /run/chrony-dhcp with the servers from DHCP
+    (sourcedir). Files included at the second level are not checked. The
+    CONFIGURED result requires at least one source, and NO_SOURCES means
+    there is none. The default Ubuntu configuration meets the item, but the
+    check does not verify that these are servers approved by the
+    organization.

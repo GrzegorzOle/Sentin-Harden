@@ -1,0 +1,215 @@
+id: ubuntu2404-timesyncd-enabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.3.2.2
+  section: Services > Configure Time Synchronization
+  title:
+    pl: systemd-timesyncd jest włączony i działa
+    en: Ensure systemd-timesyncd is enabled and running
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Skonfigurowana usługa czasu nic nie daje, jeśli nie działa. Zegar bez
+    synchronizacji rozjeżdża się o sekundy na dobę, co po pewnym czasie
+    psuje zestawianie dzienników, Kerberos i kody jednorazowe.
+
+    Punkt wymaga, żeby systemd-timesyncd był włączony i działał, jeśli to on
+    synchronizuje czas. Ubuntu uruchamia go domyślnie.
+  en: |
+    A configured time service does nothing if it does not run. A clock
+    without synchronization drifts by seconds a day, which after a while
+    breaks log correlation, Kerberos and one-time codes.
+
+    The item requires systemd-timesyncd to be enabled and running if it is
+    the service that synchronizes the time. Ubuntu runs it by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli systemd-timesyncd już działał.
+    W przeciwnym razie komputer zaczyna wysyłać zapytania NTP do
+    skonfigurowanych serwerów, a zegar może zostać przestawiony.
+  en: |
+    Nobody will notice if systemd-timesyncd was already running. Otherwise
+    the computer starts sending NTP queries to the configured servers, and
+    the clock can be adjusted.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Komputer wysyła zapytania NTP do skonfigurowanych serwerów, a zegar może przeskoczyć do właściwego czasu
+    en:
+      - The computer sends NTP queries to the configured servers, and the clock can jump to the correct time
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Czas synchronizuje chrony, a systemd-timesyncd jest wyłączony lub zamaskowany
+    en:
+      - chrony synchronizes the time, and systemd-timesyncd is disabled or masked
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      if [ -z "$(systemctl list-unit-files --no-legend systemd-timesyncd.service 2>/dev/null)" ]; then echo NOT_INSTALLED; return; fi
+      e=$(systemctl is-enabled systemd-timesyncd.service 2>/dev/null) || true
+      a=$(systemctl is-active systemd-timesyncd.service 2>/dev/null) || true
+      oe=$(systemctl is-enabled chrony.service 2>/dev/null) || true
+      if [ "$a" = active ]; then
+        case "$e" in enabled|enabled-runtime) echo "RUNNING:enabled=$e,active=$a"; return ;; esac
+      elif [ "$e" != enabled ] && [ "$e" != enabled-runtime ]; then
+        case "$oe" in enabled|enabled-runtime) echo "OTHER_DAEMON:chrony"; return ;; esac
+        if systemctl is-active -q chrony.service; then echo "OTHER_DAEMON:chrony"; return; fi
+      fi
+      echo "NOT_RUNNING:enabled=${e:-none},active=${a:-unknown}"
+    }
+    state
+  expected: '^(RUNNING:|OTHER_DAEMON:|NOT_INSTALLED$)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=time-units-1
+        for u in systemd-timesyncd.service; do
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "unit $u ${a:--}"
+        done
+        find /etc/systemd/system /run/systemd/system -type l \( -name systemd-timesyncd.service -o -lname '*/systemd-timesyncd.service' -o -name systemd-timesyncd.service -o -lname '*/systemd-timesyncd.service' \) \
+          -printf 'link %p %l\n' 2>/dev/null | sort
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        if [ -z "$(systemctl list-unit-files --no-legend systemd-timesyncd.service 2>/dev/null)" ]; then echo NOT_INSTALLED; return; fi
+        e=$(systemctl is-enabled systemd-timesyncd.service 2>/dev/null) || true
+        a=$(systemctl is-active systemd-timesyncd.service 2>/dev/null) || true
+        oe=$(systemctl is-enabled chrony.service 2>/dev/null) || true
+        if [ "$a" = active ]; then
+          case "$e" in enabled|enabled-runtime) echo "RUNNING:enabled=$e,active=$a"; return ;; esac
+        elif [ "$e" != enabled ] && [ "$e" != enabled-runtime ]; then
+          case "$oe" in enabled|enabled-runtime) echo "OTHER_DAEMON:chrony"; return ;; esac
+          if systemctl is-active -q chrony.service; then echo "OTHER_DAEMON:chrony"; return; fi
+        fi
+        echo "NOT_RUNNING:enabled=${e:-none},active=${a:-unknown}"
+      }
+      s=$(state)
+      case "$s" in
+        RUNNING:*) echo "systemd-timesyncd.service is enabled and running, nothing to change"; exit 0 ;;
+        NOT_INSTALLED) echo "systemd-timesyncd.service is not installed, nothing to change"; exit 0 ;;
+        OTHER_DAEMON:*) echo "chrony synchronizes the time, nothing to change"; exit 0 ;;
+      esac
+      case "$(systemctl is-enabled systemd-timesyncd.service 2>/dev/null)" in masked|masked-runtime) systemctl unmask -q systemd-timesyncd.service; systemctl unmask -q --runtime systemd-timesyncd.service ;; esac
+      systemctl enable -q --now systemd-timesyncd.service
+      s=$(state)
+      case "$s" in RUNNING:*) ;; *) echo "systemd-timesyncd.service did not start ($s)" >&2; exit 1 ;; esac
+      echo "Enabled and started systemd-timesyncd.service ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=time-units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(sed -n 's/^unit \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "systemd-timesyncd.service " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r k u a x; do
+        case "$a" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      done < <(grep '^unit ' "$b")
+      while read -r k p t x; do
+        bad=0
+        if [ -z "$t" ] || [ -n "$x" ]; then bad=1; fi
+        case "$p" in /etc/systemd/system/*|/run/systemd/system/*) ;; *) bad=1 ;; esac
+        case "$p$t" in *..*) bad=1 ;; esac
+        case "${p##*/} ${t##*/}" in *systemd-timesyncd.service*|*systemd-timesyncd.service*) ;; *) bad=1 ;; esac
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done < <(grep '^link ' "$b")
+      grep -qv '^\(format=\|unit \|link \)' "$b" && { echo "Backup file is damaged: $b" >&2; exit 1; }
+      # Stop what was not running, then put back the links in /etc and /run as
+      # they were, which brings back the enabled and masked state of both units.
+      while read -r k u a; do
+        case "$a" in active|activating|reloading) ;; *) systemctl stop "$u" 2>/dev/null || true ;; esac
+      done < <(grep '^unit ' "$b")
+      find /etc/systemd/system /run/systemd/system -type l \( -name systemd-timesyncd.service -o -lname '*/systemd-timesyncd.service' -o -name systemd-timesyncd.service -o -lname '*/systemd-timesyncd.service' \) \
+          -delete 2>/dev/null || true
+      while read -r k p t; do
+        mkdir -p "$(dirname "$p")"
+        ln -s "$t" "$p"
+      done < <(grep '^link ' "$b")
+      systemctl daemon-reload
+      while read -r k u a; do
+        case "$a" in active|activating|reloading) systemctl start "$u" ;; esac
+      done < <(grep '^unit ' "$b")
+      echo "Restored the previous state of systemd-timesyncd.service"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd-timesyncd.service.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje stan włączenia i działania jednostki systemd-timesyncd.service. Wynik
+    RUNNING wymaga, żeby była włączona i działała, a NOT_RUNNING podaje jej
+    stan. Jeśli systemd-timesyncd nie jest używany, a czas synchronizuje chrony, wynik
+    to OTHER_DAEMON, a jeśli jednostki nie ma, NOT_INSTALLED; ten punkt
+    wtedy nie dotyczy komputera, a jedną usługę czasu sprawdza reguła 2.3.1.1.
+
+    Naprawa zdejmuje maskowanie, włącza i uruchamia systemd-timesyncd.service. Kopia zapisuje, czy
+    jednostka działała, oraz jej dowiązania w /etc/systemd/system
+    i /run/systemd/system, a wycofanie odtwarza te dowiązania, co przywraca
+    także maskowanie i stan włączenia.
+
+    W kontenerze systemd-timesyncd się nie uruchamia, bo jednostka ma
+    warunek ConditionVirtualization=!container, więc naprawa kończy się
+    wtedy błędem.
+  en: |
+    The check reads the enabled and running state of the systemd-timesyncd.service unit. The
+    RUNNING result requires it to be enabled and running, and NOT_RUNNING
+    gives its state. If systemd-timesyncd is not in use and chrony synchronizes the
+    time, the result is OTHER_DAEMON, and if the unit is missing,
+    NOT_INSTALLED; the item then does not apply to the computer, and rule
+    2.3.1.1 checks for a single time service.
+
+    The remediation unmasks, enables and starts systemd-timesyncd.service. The backup records
+    whether the unit was running and its links in /etc/systemd/system and
+    /run/systemd/system, and rollback recreates these links, which also
+    brings back the mask and the enabled state.
+
+    In a container systemd-timesyncd does not start, because the unit has
+    the ConditionVirtualization=!container condition, so the remediation
+    then ends with an error.

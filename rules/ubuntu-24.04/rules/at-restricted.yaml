@@ -1,0 +1,235 @@
+id: ubuntu2404-at-restricted
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.4.2.1
+  section: Services > Job Schedulers > Configure at
+  title:
+    pl: Dostęp do at mają tylko uprawnieni użytkownicy
+    en: Ensure at is restricted to authorized users
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Polecenia at i batch pozwalają użytkownikowi zaplanować jednorazowe
+    zadanie, które demon atd uruchomi później z jego uprawnieniami, także
+    gdy użytkownik jest już wylogowany. Intruz, który przejął zwykłe konto,
+    może w ten sposób odłożyć uruchomienie swojego programu na później.
+
+    Punkt wymaga pliku /etc/at.allow z listą użytkowników, którzy mogą
+    używać at. Plik ma należeć do roota i grupy daemon i mieć uprawnienia
+    640 lub bardziej restrykcyjne; te same wymagania dotyczą /etc/at.deny,
+    jeśli istnieje. Pakiet at dostarcza tylko /etc/at.deny z listą kont
+    systemowych, więc domyślnie at może użyć każdy inny użytkownik.
+  en: |
+    The at and batch commands let a user schedule a one-off job that the atd
+    daemon runs later with that user's rights, also when the user has
+    already logged out. An intruder who took over a regular account can use
+    it to postpone running their program.
+
+    The item requires an /etc/at.allow file listing the users who may use
+    at. The file has to be owned by root and the daemon group, with mode 640
+    or stricter; the same applies to /etc/at.deny if it exists. The at
+    package ships only /etc/at.deny listing system accounts, so by default
+    any other user can use at.
+
+disruption_description:
+  pl: |
+    Użytkownicy, którzy mają zaplanowane zadania at, nie zauważą zmiany, bo
+    naprawa wpisuje ich do /etc/at.allow. Pozostali przy próbie użycia at,
+    batch, atq albo atrm dostaną komunikat o braku uprawnień.
+  en: |
+    Users who have pending at jobs will not notice the change, because the
+    remediation lists them in /etc/at.allow. The others get a permission
+    message when they try to use at, batch, atq or atrm.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Użytkownicy spoza /etc/at.allow nie mogą planować zadań poleceniami at i batch ani przeglądać i usuwać ich poleceniami atq i atrm
+      - Skrypty, które odkładają wykonanie poleceń przez at, kończą się błędem dla użytkowników spoza listy
+    en:
+      - Users not in /etc/at.allow cannot schedule jobs with at and batch or list and remove them with atq and atrm
+      - Scripts that postpone commands through at fail for users not on the list
+  interruption: none
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if ! [ "$(dpkg-query -W -f='${db:Status-Status}' at 2>/dev/null)" = installed ]; then echo NOT_INSTALLED; exit 0; fi
+    gids="$(getent group daemon 2>/dev/null | cut -d: -f3)"
+    state() {
+      ok=""; bad=""
+      for f in /etc/at.allow /etc/at.deny; do
+        n=${f##*/}
+        if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+          if [ "$f" = /etc/at.allow ]; then bad="$bad,$n=absent"; fi
+          continue
+        fi
+        if [ ! -f "$f" ]; then bad="$bad,$n=not-a-file"; continue; fi
+        set -- $(stat -Lc '%a %u %g' "$f")
+        g=no; for x in $gids; do if [ "$3" = "$x" ]; then g=yes; fi; done
+        if [ $(( 0$1 & 07137 )) -eq 0 ] && [ "$2" = 0 ] && [ "$g" = yes ]; then ok="$ok,$n=$1"
+        else bad="$bad,$n=$1:$2:$3"; fi
+      done
+      if [ -n "$bad" ]; then echo "NOT_RESTRICTED:${bad#,}"; else echo "RESTRICTED:${ok#,}"; fi
+    }
+    state
+  expected: '^(RESTRICTED:|NOT_INSTALLED$)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=allow-1
+        for f in /etc/at.allow /etc/at.deny; do
+          if [ -e "$f" ]; then echo "$f $(readlink -f "$f") $(stat -Lc '%a %u %g' "$f")"
+          else echo "$f absent"; fi
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if ! [ "$(dpkg-query -W -f='${db:Status-Status}' at 2>/dev/null)" = installed ]; then echo "at is not installed, nothing to change"; exit 0; fi
+      g=$(getent group daemon 2>/dev/null | cut -d: -f3)
+      [ -n "$g" ] || { echo "Group daemon does not exist" >&2; exit 1; }
+      a=/etc/at.allow; d=/etc/at.deny
+      for f in "$a" "$d"; do
+        if [ -L "$f" ] && [ ! -e "$f" ]; then echo "$f is a broken symbolic link; fix it by hand" >&2; exit 1; fi
+        if [ -e "$f" ] && [ ! -f "$f" ]; then echo "$f is not a regular file; fix it by hand" >&2; exit 1; fi
+      done
+      if [ ! -e "$a" ]; then
+        # Users who already have pending at jobs stay allowed, unless the deny file
+        # blocked them; root is always allowed and needs no entry.
+        t=$(mktemp "$a.XXXXXX")
+        find /var/spool/cron/atjobs -maxdepth 1 -type f ! -name .SEQ -printf '%u\n' 2>/dev/null | sort -u | while read -r u; do
+          [ "$u" = root ] && continue
+          if [ -f "$d" ] && grep -Fqx -- "$u" "$d"; then continue; fi
+          if getent passwd "$u" >/dev/null; then echo "$u"; fi
+        done > "$t"
+        chown "0:$g" "$t"; chmod 0640 "$t"
+        mv "$t" "$a"
+        echo "Created $a with the users: $(tr '\n' ' ' < "$a")"
+      fi
+      for f in "$a" "$d"; do
+        [ -e "$f" ] || continue
+        tg=$(readlink -f "$f")
+        set -- $(stat -c '%a %g' "$tg")
+        chown "0:$g" "$tg"
+        # Five digits: with fewer, chmod keeps the setuid and setgid bits of a directory.
+        chmod "$(printf '0%04o' $(( 0$1 & 0640 )))" "$tg"
+        echo "Set owner root, group $g and mode $(stat -c '%a' "$tg") on $tg"
+      done
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=allow-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      if [ "$(printf '%s\n' "$lines" | cut -d' ' -f1 | tr '\n' ' ')" != "/etc/at.allow /etc/at.deny " ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      while read -r f tg mode uid gid x; do
+        if [ "$tg" = absent ] && [ -z "$mode" ]; then continue; fi
+        bad=0
+        case "$tg" in /*) ;; *) bad=1 ;; esac
+        case "$mode" in ""|*[!0-7]*) bad=1 ;; esac
+        case "$uid:$gid" in :*|*:|*[!0-9:]*) bad=1 ;; esac
+        if [ -n "$x" ]; then bad=1; fi
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      while read -r f tg mode uid gid; do
+        if [ "$tg" = absent ]; then
+          # Only the regular file created by the change is removed, never a link.
+          if [ -f "$f" ] && [ ! -L "$f" ]; then rm -f "$f"; echo "Removed $f"; fi
+          continue
+        fi
+        if [ ! -e "$f" ] || [ "$(readlink -f "$f")" != "$tg" ]; then
+          echo "Skipped $f: it no longer points to $tg"; continue
+        fi
+        chown "$uid:$gid" "$tg"
+        chmod "$(printf '0%04o' $(( 0$mode )))" "$tg"
+        echo "Restored owner and mode of $tg"
+      done <<< "$lines"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man1/at.1.html
+
+notes:
+  pl: |
+    Wynik RESTRICTED podaje uprawnienia sprawdzonych plików, a NOT_RESTRICTED
+    brakujący plik albo uprawnienia, właściciela i grupę (UID i GID) pliku,
+    który nie spełnia wymagań. Plik musi należeć do grupy daemon,
+    co jest ostrzejsze od CIS, które dopuszcza też grupę root. Polecenie at
+    działa jako użytkownik daemon i pliku z grupą root nie odczyta, a wtedy
+    go pomija i wpuszcza każdego spoza /etc/at.deny.
+
+    Jeśli /etc/at.allow nie istnieje, naprawa go tworzy i wpisuje do niego
+    użytkowników, którzy mają już zadania w /var/spool/cron/atjobs, pomijając wymienionych
+    w /etc/at.deny. Dzięki temu nadal mogą przeglądać i zmieniać swoje zadania,
+    a nowe może tworzyć tylko ktoś z listy. Root nie potrzebuje wpisu. Treść
+    listy należy do administratora: kolejnych użytkowników trzeba dopisywać
+    ręcznie, po jednym w wierszu.
+
+    Istniejący plik /etc/at.allow zachowuje treść, a naprawa zmienia tylko
+    właściciela i grupę i usuwa prawa spoza 640. /etc/at.deny przestaje mieć
+    znaczenie, gdy istnieje /etc/at.allow, ale jeśli jest, naprawa także ogranicza
+    jego uprawnienia. Pakiet at instaluje /etc/at.deny już z grupą daemon i uprawnieniami
+    640, a ponowna instalacja pakietu nie zmienia uprawnień.
+
+    Wycofanie przywraca zapisanych właścicieli i uprawnienia, a plik
+    /etc/at.allow utworzony przez naprawę usuwa razem z późniejszymi dopiskami.
+  en: |
+    The RESTRICTED result gives the modes of the checked files, and
+    NOT_RESTRICTED the missing file or the mode, owner and group (UID and
+    GID) of the file that does not meet the requirements. The file has to belong to the daemon
+    group, which is stricter than CIS, which also allows the root group.
+    The at command runs as the daemon user and cannot read a file with the
+    root group, and then skips it and lets in everyone not in /etc/at.deny.
+
+    If /etc/at.allow does not exist, the remediation creates it and lists the
+    users who already have jobs in /var/spool/cron/atjobs, leaving out the ones listed in
+    /etc/at.deny. They can therefore still list and change their jobs, and only
+    someone on the list can create new ones. Root needs no entry. The
+    content of the list belongs to the administrator: further users have to
+    be added by hand, one per line.
+
+    An existing /etc/at.allow file keeps its content, and the remediation only
+    changes the owner and group and removes the permissions beyond 640.
+    /etc/at.deny has no effect once /etc/at.allow exists, but if it is present, the
+    remediation restricts its permissions too. The at package installs /etc/at.deny with the daemon group and mode
+    640 already, and reinstalling the package does not change the mode.
+
+    Rollback restores the recorded owners and modes, and removes an /etc/at.allow
+    file created by the remediation together with any later additions.

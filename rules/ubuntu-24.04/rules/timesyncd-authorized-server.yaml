@@ -1,0 +1,133 @@
+id: ubuntu2404-timesyncd-authorized-server
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.3.2.1
+  section: Services > Configure Time Synchronization
+  title:
+    pl: systemd-timesyncd korzysta z wybranych serwerów czasu
+    en: Ensure systemd-timesyncd configured with authorized timeserver
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zegar jest tak dokładny jak serwer, z którego bierze czas. Serwer
+    podstawiony albo przestawiony przez atakującego może cofnąć zegar
+    i np. przywrócić ważność wygasłych certyfikatów lub zatrzeć kolejność
+    zdarzeń w dziennikach.
+
+    Punkt wymaga, żeby konfiguracja systemd-timesyncd wskazywała serwery
+    czasu wybrane przez organizację, podstawowe (NTP=) i zapasowe
+    (FallbackNTP=). Ubuntu domyślnie nie ustawia żadnych, więc usługa
+    korzysta z serwerów z DHCP i wbudowanego serwera ntp.ubuntu.com.
+  en: |
+    The clock is only as accurate as the server it takes the time from. A
+    server that an attacker replaced or tampered with can set the clock back
+    and, for example, make expired certificates valid again or blur the
+    order of events in the logs.
+
+    The item requires the systemd-timesyncd configuration to name time
+    servers chosen by the organization, both primary (NTP=) and fallback
+    (FallbackNTP=). Ubuntu sets none by default, so the service uses the
+    servers from DHCP and the built-in ntp.ubuntu.com server.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli wskazane serwery czasu są osiągalne.
+    W sieci, która blokuje ruch NTP do internetu, trzeba wskazać serwery
+    czasu organizacji, inaczej zegar nie będzie synchronizowany.
+  en: |
+    Nobody will notice if the configured time servers are reachable. In a
+    network that blocks NTP traffic to the internet, the organization's
+    time servers have to be configured, otherwise the clock is not
+    synchronized.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Gdy żaden ze wskazanych serwerów czasu nie jest osiągalny, zegar komputera przestaje być synchronizowany
+    en:
+      - When none of the configured time servers can be reached, the computer clock is no longer synchronized
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1 || ! command -v systemd-analyze >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if ! [ "$(dpkg-query -W -f='${db:Status-Status}' systemd-timesyncd 2>/dev/null)" = installed ]; then echo NOT_INSTALLED; exit 0; fi
+    cfg=$(systemd-analyze cat-config systemd/timesyncd.conf 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    # NTP= and FallbackNTP= add servers to the list, an empty value clears it.
+    printf '%s\n' "$cfg" | awk '
+      /^[[:space:]]*[#;]/ { next }
+      /^[[:space:]]*\[/ { s = $0; gsub(/[[:space:]]/, "", s); next }
+      s != "[Time]" { next }
+      {
+        i = index($0, "="); if (!i) next
+        k = substr($0, 1, i - 1); gsub(/[[:space:]]/, "", k)
+        n = split(substr($0, i + 1), a, " ")
+      }
+      k == "NTP" { ntp = n ? ntp + n : 0 }
+      k == "FallbackNTP" { fb = n ? fb + n : 0; fbset = 1 }
+      END {
+        f = fbset ? fb + 0 : "default"
+        if (ntp > 0 && fbset) print "CONFIGURED:ntp=" ntp ",fallback=" f
+        else if (ntp > 0) print "DEFAULT_FALLBACK:ntp=" ntp
+        else print "NO_NTP:fallback=" f
+      }'
+  expected: '^(CONFIGURED:|NOT_INSTALLED$)'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://www.freedesktop.org/software/systemd/man/latest/timesyncd.conf.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd-analyze.html
+
+notes:
+  pl: |
+    Reguła tylko sprawdza stan, bo wybór serwerów czasu należy do
+    organizacji. Serwery ustawia się w pliku .conf w katalogu
+    /etc/systemd/timesyncd.conf.d/, w sekcji [Time], np. NTP=ntp1.example.org
+    ntp2.example.org i FallbackNTP=ntp3.example.org, a potem restartuje
+    usługę poleceniem systemctl restart systemd-timesyncd. Puste
+    FallbackNTP= wyłącza serwery zapasowe.
+
+    Sprawdzenie czyta konfigurację wynikową z polecenia systemd-analyze
+    cat-config systemd/timesyncd.conf, czyli plik główny i pliki z katalogów
+    timesyncd.conf.d w /etc, /run i /usr/lib, i liczy serwery z NTP=
+    i FallbackNTP=. Wynik CONFIGURED wymaga co najmniej jednego serwera
+    w NTP= i ustawionego FallbackNTP=. NO_NTP oznacza brak serwerów
+    podstawowych, a DEFAULT_FALLBACK, że serwerem zapasowym zostaje
+    wbudowany ntp.ubuntu.com. Serwerów z DHCP sprawdzenie nie liczy.
+  en: |
+    The rule only checks the state, because choosing the time servers is up
+    to the organization. The servers are set in a .conf file in the
+    /etc/systemd/timesyncd.conf.d/ directory, in the [Time] section, for
+    example NTP=ntp1.example.org ntp2.example.org and
+    FallbackNTP=ntp3.example.org, and then the service is restarted with
+    systemctl restart systemd-timesyncd. An empty FallbackNTP= turns off
+    the fallback servers.
+
+    The check reads the resulting configuration from the systemd-analyze
+    cat-config systemd/timesyncd.conf command, that is the main file and the
+    files from the timesyncd.conf.d directories in /etc, /run and /usr/lib,
+    and counts the servers in NTP= and FallbackNTP=. The CONFIGURED result
+    requires at least one server in NTP= and FallbackNTP= to be set. NO_NTP
+    means there are no primary servers, and DEFAULT_FALLBACK that the
+    built-in ntp.ubuntu.com stays the fallback server. The check does not
+    count the servers from DHCP.

@@ -1,0 +1,190 @@
+id: ubuntu2404-cron-daemon-enabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.4.1.1
+  section: Services > Job Schedulers > Configure cron
+  title:
+    pl: Demon cron jest włączony i działa
+    en: Ensure cron daemon is enabled and active
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Demon cron uruchamia zadania okresowe, także te, które dbają
+    o bezpieczeństwo, np. rotację dzienników, sprawdzanie integralności
+    plików czy czyszczenie plików tymczasowych. Gdy demon nie działa, takie
+    zadania po cichu się nie wykonują.
+
+    Punkt wymaga, żeby usługa cron była włączona i działała, jeśli cron
+    jest zainstalowany. Ubuntu Server instaluje go i uruchamia domyślnie.
+  en: |
+    The cron daemon runs periodic jobs, including security-related ones,
+    such as log rotation, file integrity checks or cleaning up temporary
+    files. When the daemon is not running, such jobs silently do not run.
+
+    The item requires the cron service to be enabled and running when cron
+    is installed. Ubuntu Server installs and runs it by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli cron już działał. W przeciwnym razie
+    zaczną się wykonywać zadania z /etc/crontab, /etc/cron.d i crontabów
+    użytkowników, które dotąd nie działały.
+  en: |
+    Nobody will notice if cron was already running. Otherwise the jobs in
+    /etc/crontab, /etc/cron.d and the users' crontabs that did not run so
+    far start running.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Zadania z /etc/crontab, /etc/cron.d i crontabów użytkowników, które nie działały, zaczynają się wykonywać
+    en:
+      - Jobs in /etc/crontab, /etc/cron.d and the users' crontabs that did not run start running
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      if [ -z "$(systemctl list-unit-files --no-legend cron.service 2>/dev/null)" ]; then echo NOT_INSTALLED; return; fi
+      e=$(systemctl is-enabled cron.service 2>/dev/null) || true
+      a=$(systemctl is-active cron.service 2>/dev/null) || true
+      case "$e:$a" in
+        enabled:active|enabled-runtime:active) echo "RUNNING:enabled=$e,active=$a" ;;
+        *) echo "NOT_RUNNING:enabled=${e:-none},active=${a:-unknown}" ;;
+      esac
+    }
+    state
+  expected: '^(RUNNING:|NOT_INSTALLED$)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=time-units-1
+        for u in cron.service; do
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "unit $u ${a:--}"
+        done
+        find /etc/systemd/system /run/systemd/system -type l \( -name cron.service -o -lname '*/cron.service' -o -name cron.service -o -lname '*/cron.service' \) \
+          -printf 'link %p %l\n' 2>/dev/null | sort
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        if [ -z "$(systemctl list-unit-files --no-legend cron.service 2>/dev/null)" ]; then echo NOT_INSTALLED; return; fi
+        e=$(systemctl is-enabled cron.service 2>/dev/null) || true
+        a=$(systemctl is-active cron.service 2>/dev/null) || true
+        case "$e:$a" in
+          enabled:active|enabled-runtime:active) echo "RUNNING:enabled=$e,active=$a" ;;
+          *) echo "NOT_RUNNING:enabled=${e:-none},active=${a:-unknown}" ;;
+        esac
+      }
+      s=$(state)
+      case "$s" in
+        RUNNING:*) echo "cron.service is enabled and running, nothing to change"; exit 0 ;;
+        NOT_INSTALLED) echo "cron.service is not installed, nothing to change"; exit 0 ;;
+      esac
+      case "$(systemctl is-enabled cron.service 2>/dev/null)" in masked|masked-runtime) systemctl unmask -q cron.service; systemctl unmask -q --runtime cron.service ;; esac
+      systemctl enable -q --now cron.service
+      s=$(state)
+      case "$s" in RUNNING:*) ;; *) echo "cron.service did not start ($s)" >&2; exit 1 ;; esac
+      echo "Enabled and started cron.service ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=time-units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(sed -n 's/^unit \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "cron.service " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r k u a x; do
+        case "$a" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      done < <(grep '^unit ' "$b")
+      while read -r k p t x; do
+        bad=0
+        if [ -z "$t" ] || [ -n "$x" ]; then bad=1; fi
+        case "$p" in /etc/systemd/system/*|/run/systemd/system/*) ;; *) bad=1 ;; esac
+        case "$p$t" in *..*) bad=1 ;; esac
+        case "${p##*/} ${t##*/}" in *cron.service*|*cron.service*) ;; *) bad=1 ;; esac
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done < <(grep '^link ' "$b")
+      grep -qv '^\(format=\|unit \|link \)' "$b" && { echo "Backup file is damaged: $b" >&2; exit 1; }
+      # Stop what was not running, then put back the links in /etc and /run as
+      # they were, which brings back the enabled and masked state of both units.
+      while read -r k u a; do
+        case "$a" in active|activating|reloading) ;; *) systemctl stop "$u" 2>/dev/null || true ;; esac
+      done < <(grep '^unit ' "$b")
+      find /etc/systemd/system /run/systemd/system -type l \( -name cron.service -o -lname '*/cron.service' -o -name cron.service -o -lname '*/cron.service' \) \
+          -delete 2>/dev/null || true
+      while read -r k p t; do
+        mkdir -p "$(dirname "$p")"
+        ln -s "$t" "$p"
+      done < <(grep '^link ' "$b")
+      systemctl daemon-reload
+      while read -r k u a; do
+        case "$a" in active|activating|reloading) systemctl start "$u" ;; esac
+      done < <(grep '^unit ' "$b")
+      echo "Restored the previous state of cron.service"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/cron.8.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Gdy jednostki cron.service nie ma, reguła jest spełniona (NOT_INSTALLED),
+    bo CIS pozwala wtedy pominąć ten punkt. Wynik NOT_RUNNING podaje stan
+    włączenia i działania usługi cron.
+
+    Naprawa zdejmuje maskowanie usługi, jeśli było, włącza ją i uruchamia.
+    Kopia zapisuje stan działania usługi i jej dowiązania
+    w /etc/systemd/system i /run/systemd/system, a wycofanie odtwarza te
+    dowiązania, więc wraca także stan włączenia ukryty pod maskowaniem.
+  en: |
+    When the cron.service unit does not exist, the rule is met
+    (NOT_INSTALLED), because CIS allows skipping the item then. The
+    NOT_RUNNING result gives the enabled and running state of the cron
+    service.
+
+    The remediation unmasks the service if it was masked, enables and starts
+    it. The backup records the running state of the service and its links in
+    /etc/systemd/system and /run/systemd/system, and rollback recreates
+    these links, which also brings back the enabled state hidden under a
+    mask.

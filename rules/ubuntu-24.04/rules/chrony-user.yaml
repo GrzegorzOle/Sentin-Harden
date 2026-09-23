@@ -1,0 +1,233 @@
+id: ubuntu2404-chrony-user
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.3.3.2
+  section: Services > Configure Time Synchronization
+  title:
+    pl: chrony działa jako użytkownik _chrony
+    en: Ensure chrony is running as user _chrony
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Chronyd odbiera pakiety NTP z sieci. Jeśli błąd w ich obsłudze pozwoli
+    przejąć proces, napastnik dostaje uprawnienia użytkownika, jako który
+    chronyd działa. Proces działający jako root oddaje mu cały system.
+
+    Punkt wymaga, żeby chronyd działał jako użytkownik _chrony, który może
+    tylko ustawiać zegar. Ubuntu uruchamia go tak domyślnie.
+  en: |
+    chronyd receives NTP packets from the network. If a flaw in handling
+    them lets someone take over the process, the attacker gets the rights
+    of the user chronyd runs as. A process running as root hands over the
+    whole system.
+
+    The item requires chronyd to run as the _chrony user, which can only
+    set the clock. Ubuntu runs it this way by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy na Ubuntu z domyślną konfiguracją. Jeśli
+    administrator ustawił innego użytkownika celowo, np. dla zegara
+    referencyjnego dostępnego tylko dla roota, to źródło czasu może
+    przestać działać.
+  en: |
+    Nobody will notice on Ubuntu with the default configuration. If an
+    administrator set another user on purpose, for example for a reference
+    clock only root can access, that time source can stop working.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Zegary referencyjne (refclock) i inne źródła czasu dostępne tylko dla roota przestają działać
+    en:
+      - Reference clocks (refclock) and other time sources only root can access stop working
+  interruption: service-restart
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1 || ! command -v ps >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if ! [ "$(dpkg-query -W -f='${db:Status-Status}' chrony 2>/dev/null)" = installed ]; then echo NOT_INSTALLED; exit 0; fi
+    s=/etc/default/chrony
+    c=/etc/chrony/chrony.conf
+    cfiles() {
+      echo "c $c"
+      awk '{ d = tolower($1) } d == "include" || d == "confdir" || d == "sourcedir" { for (i = 2; i <= NF; i++) print d, $i }' "$c" |
+      while read -r d p; do
+        case "$d" in
+          include) for f in $p; do if [ -f "$f" ]; then echo "c $f"; fi; done ;;
+          confdir) for f in "$p"/*.conf; do if [ -f "$f" ]; then echo "c $f"; fi; done ;;
+          sourcedir) for f in "$p"/*.sources; do if [ -f "$f" ]; then echo "s $f"; fi; done ;;
+        esac
+      done
+    }
+    state() {
+      w=""; ou=""; cu=""
+      if [ -r "$s" ]; then
+        ou=$(sed -nE "s/^[[:space:]]*DAEMON_OPTS=(.*[\"'[:space:]])?-u[[:space:]]*([^\"'[:space:]]+).*/\2/p" "$s" | tail -n 1)
+      fi
+      if [ -n "$ou" ] && [ "$ou" != _chrony ]; then w="$w,options=$ou"; fi
+      if [ -r "$c" ]; then
+        while read -r k f; do
+          [ "$k" = c ] || continue
+          x=$(awk 'tolower($1) == "user" { u = $2 } END { print u }' "$f" 2>/dev/null) || true
+          if [ -n "$x" ]; then cu=$x; fi
+        done < <(cfiles)
+      fi
+      if [ -z "$ou" ] && [ -n "$cu" ] && [ "$cu" != _chrony ]; then w="$w,user-directive=$cu"; fi
+      pu=$(ps -o user= -C chronyd 2>/dev/null | sort -u | tr '\n' ' ') || true
+      for u in $pu; do if [ "$u" != _chrony ]; then w="$w,process=$u"; fi; done
+      if [ -n "$w" ]; then echo "OTHER_USER:${w#,}"
+      elif [ -n "$pu" ]; then echo "CHRONY_USER:${pu% }"
+      else echo CHRONY_USER:not-running; fi
+    }
+    state
+  expected: '^(CHRONY_USER:|NOT_INSTALLED$)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/default/chrony
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=file-1
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if ! [ "$(dpkg-query -W -f='${db:Status-Status}' chrony 2>/dev/null)" = installed ]; then echo "chrony is not installed, nothing to change"; exit 0; fi
+      s=/etc/default/chrony
+      c=/etc/chrony/chrony.conf
+      cfiles() {
+        echo "c $c"
+        awk '{ d = tolower($1) } d == "include" || d == "confdir" || d == "sourcedir" { for (i = 2; i <= NF; i++) print d, $i }' "$c" |
+        while read -r d p; do
+          case "$d" in
+            include) for f in $p; do if [ -f "$f" ]; then echo "c $f"; fi; done ;;
+            confdir) for f in "$p"/*.conf; do if [ -f "$f" ]; then echo "c $f"; fi; done ;;
+            sourcedir) for f in "$p"/*.sources; do if [ -f "$f" ]; then echo "s $f"; fi; done ;;
+          esac
+        done
+      }
+      state() {
+        w=""; ou=""; cu=""
+        if [ -r "$s" ]; then
+          ou=$(sed -nE "s/^[[:space:]]*DAEMON_OPTS=(.*[\"'[:space:]])?-u[[:space:]]*([^\"'[:space:]]+).*/\2/p" "$s" | tail -n 1)
+        fi
+        if [ -n "$ou" ] && [ "$ou" != _chrony ]; then w="$w,options=$ou"; fi
+        if [ -r "$c" ]; then
+          while read -r k f; do
+            [ "$k" = c ] || continue
+            x=$(awk 'tolower($1) == "user" { u = $2 } END { print u }' "$f" 2>/dev/null) || true
+            if [ -n "$x" ]; then cu=$x; fi
+          done < <(cfiles)
+        fi
+        if [ -z "$ou" ] && [ -n "$cu" ] && [ "$cu" != _chrony ]; then w="$w,user-directive=$cu"; fi
+        pu=$(ps -o user= -C chronyd 2>/dev/null | sort -u | tr '\n' ' ') || true
+        for u in $pu; do if [ "$u" != _chrony ]; then w="$w,process=$u"; fi; done
+        if [ -n "$w" ]; then echo "OTHER_USER:${w#,}"
+        elif [ -n "$pu" ]; then echo "CHRONY_USER:${pu% }"
+        else echo CHRONY_USER:not-running; fi
+      }
+      st=$(state)
+      case "$st" in
+        CHRONY_USER:*) echo "chronyd runs as _chrony ($st), nothing to change"; exit 0 ;;
+        *user-directive*) echo "The user directive in the chrony configuration sets another user ($st); change it by hand" >&2; exit 1 ;;
+        *options=*) ;;
+        *) echo "chronyd runs as another user ($st), but not because of $s; check ExecStart of chrony.service" >&2; exit 1 ;;
+      esac
+      tmp=$(mktemp)
+      trap 'rm -f "$tmp"' EXIT
+      sed -E ":a; s/^([[:space:]]*DAEMON_OPTS=(.*[\"'[:space:]])?)-u[[:space:]]*[^\"'[:space:]]+[[:space:]]*/\1/; ta" "$s" > "$tmp"
+      cat "$tmp" > "$s"
+      systemctl try-restart chrony.service
+      st=$(state)
+      case "$st" in OTHER_USER:*) echo "chronyd still runs as another user ($st)" >&2; exit 1 ;; esac
+      echo "Removed -u from DAEMON_OPTS in $s and restarted chrony ($st)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/default/chrony
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=file-1 ] && [ "$(sed -n 3p "$b")" = --- ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in
+        1) ;;
+        0) echo "$f did not exist before the change, nothing to restore"; exit 0 ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      tmp=$(mktemp)
+      trap 'rm -f "$tmp"' EXIT
+      sed '1,/^---$/d' "$b" > "$tmp"
+      if [ -f "$f" ] && cmp -s "$tmp" "$f"; then echo "$f is unchanged, nothing to restore"; exit 0; fi
+      cat "$tmp" > "$f"
+      systemctl try-restart chrony.service
+      echo "Restored the previous content of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/chronyd.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man5/chrony.conf.5.html
+  - https://chrony-project.org/doc/latest/chronyd.html
+
+notes:
+  pl: |
+    Sprawdzenie szuka opcji -u w zmiennej DAEMON_OPTS w pliku
+    /etc/default/chrony, z którego usługa chrony.service bierze opcje,
+    dyrektywy user w konfiguracji chrony, jeśli nie ma opcji -u, i odczytuje
+    użytkownika działającego procesu chronyd. Wynik OTHER_USER wymienia, co
+    z tych rzeczy wskazuje innego użytkownika niż _chrony, a CHRONY_USER
+    podaje użytkownika procesu albo not-running.
+
+    Naprawa usuwa opcję -u z DAEMON_OPTS i restartuje działający chronyd,
+    co przerywa synchronizację na chwilę. Dyrektywy user w konfiguracji
+    nie zmienia, tylko kończy się błędem, bo o jej zastąpieniu powinien
+    zdecydować administrator. Kopia zapisuje cały plik /etc/default/chrony,
+    a wycofanie przywraca jego treść i restartuje działający chronyd.
+  en: |
+    The check looks for the -u option in the DAEMON_OPTS variable of
+    /etc/default/chrony, where chrony.service takes its options from, for a
+    user directive in the chrony configuration when there is no -u option,
+    and reads the user of the running chronyd process. The OTHER_USER result
+    lists which of these point to a user other than _chrony, and CHRONY_USER
+    gives the process user or not-running.
+
+    The remediation removes the -u option from DAEMON_OPTS and restarts a
+    running chronyd, which pauses synchronization for a moment. It does not
+    change a user directive in the configuration and fails instead, because
+    replacing it is up to the administrator. The backup records the whole
+    /etc/default/chrony file, and rollback restores its content and
+    restarts a running chronyd.

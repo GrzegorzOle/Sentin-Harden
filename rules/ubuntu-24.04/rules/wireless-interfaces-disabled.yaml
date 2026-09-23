@@ -1,0 +1,133 @@
+id: ubuntu2404-wireless-interfaces-disabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 3.1.2
+  section: Network > Configure Network Devices
+  title:
+    pl: Interfejsy bezprzewodowe są wyłączone
+    en: Ensure wireless interfaces are disabled
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Karta Wi-Fi odbiera ramki od każdego nadajnika w zasięgu, a jej
+    sterownik i oprogramowanie układowe przetwarzają je, zanim system
+    sprawdzi, skąd pochodzą. Serwer, który korzysta z sieci przewodowej,
+    nie potrzebuje tej drogi do siebie, a włączona karta może też połączyć
+    go z siecią spoza kontroli organizacji.
+
+    Punkt wymaga, żeby w systemie nie było aktywnych interfejsów
+    bezprzewodowych, czyli żeby sterowniki kart Wi-Fi nie były załadowane
+    i nie dało się ich załadować. Ubuntu instaluje sterowniki Wi-Fi razem
+    z domyślnym jądrem, więc karta w serwerze działa od razu.
+  en: |
+    A Wi-Fi card receives frames from every transmitter in range, and its
+    driver and firmware process them before the system checks where they
+    came from. A server on a wired network does not need that path into it,
+    and an enabled card can also connect it to a network outside the
+    organization's control.
+
+    The item requires that the system has no active wireless interfaces,
+    that is, the Wi-Fi card drivers are neither loaded nor loadable. Ubuntu
+    installs the Wi-Fi drivers with the default kernel, so a card in the
+    server works right away.
+
+disruption_description:
+  pl: |
+    Na serwerze bez karty Wi-Fi nikt tego nie zauważy. Komputer połączony
+    z siecią tylko przez Wi-Fi traci po wyłączeniu karty łączność, także
+    zdalny dostęp przez SSH.
+  en: |
+    On a server without a Wi-Fi card nobody will notice. A computer
+    connected to the network only over Wi-Fi loses connectivity once the
+    card is disabled, including remote access over SSH.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Połączenia przez Wi-Fi zrywają się, a komputer nie widzi sieci bezprzewodowych
+      - Komputer połączony z siecią tylko przez Wi-Fi traci łączność, także zdalny dostęp przez SSH
+    en:
+      - Wi-Fi connections drop, and the computer does not see wireless networks
+      - A computer connected to the network only over Wi-Fi loses connectivity, including remote access over SSH
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Komputer łączy się z siecią tylko przez Wi-Fi i nie ma podłączonego kabla sieciowego
+    en:
+      - The computer connects to the network only over Wi-Fi and has no network cable attached
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -d /sys/class/net ]; then echo CHECK_ERROR; exit 0; fi
+    found=""
+    for i in /sys/class/net/*; do
+      [ -e "$i" ] || continue
+      if [ -d "$i/wireless" ] || [ -e "$i/phy80211" ]; then
+        d=$(readlink -f "$i/device/driver/module" 2>/dev/null) || d=""
+        d=${d##*/}
+        found="$found,${i##*/}=${d:-unknown}"
+      fi
+    done
+    if [ -z "$found" ]; then echo NO_WIRELESS; else echo "WIRELESS:${found#,}"; fi
+  expected: '^NO_WIRELESS$'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://wireless.docs.kernel.org/en/latest/en/users/documentation/iw.html
+  - https://docs.kernel.org/driver-api/rfkill.html
+  - https://man7.org/linux/man-pages/man5/modprobe.d.5.html
+
+notes:
+  pl: |
+    Reguła tylko sprawdza stan. Wyłączenie karty, przez którą komputer może
+    mieć jedyne połączenie z siecią, zrywa zdalny dostęp, a sterowniki
+    zależą od sprzętu, więc zmianę trzeba zaplanować dla konkretnej maszyny.
+
+    Wynik NO_WIRELESS oznacza brak interfejsów bezprzewodowych,
+    a WIRELESS wymienia każdy interfejs razem z modułem jego sterownika.
+    Interfejs istnieje tylko wtedy, gdy sterownik jest załadowany, więc
+    zablokowany sterownik daje po restarcie wynik NO_WIRELESS.
+
+    Sterownik blokuje się dla nazwy modułu z wyniku plikiem
+    w /etc/modprobe.d, np. sentin-harden-wireless.conf, z liniami install
+    z nazwą modułu i /bin/false oraz blacklist z nazwą modułu, a potem
+    wyładowuje poleceniem modprobe -r albo restartem. Samo rfkill block
+    wifi wyłącza nadajnik, ale zostawia interfejs i sterownik, więc punkt
+    nie jest wtedy spełniony.
+  en: |
+    The rule only checks the state. Disabling a card that may carry the
+    computer's only network connection cuts remote access, and the drivers
+    depend on the hardware, so the change has to be planned for the specific
+    machine.
+
+    The NO_WIRELESS result means there are no wireless interfaces, and
+    WIRELESS lists each interface with the module of its driver. An
+    interface exists only while the driver is loaded, so a blocked driver
+    gives NO_WIRELESS after a restart.
+
+    The driver is blocked for the module name from the result with a file in
+    /etc/modprobe.d, such as sentin-harden-wireless.conf, holding an install
+    line with the module name and /bin/false and a blacklist line with the
+    module name, and then unloaded with modprobe -r or a restart. rfkill
+    block wifi alone turns the transmitter off but keeps the interface and
+    the driver, so the item is not met then.

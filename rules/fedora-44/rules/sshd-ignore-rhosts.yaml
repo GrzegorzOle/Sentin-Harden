@@ -1,0 +1,280 @@
+id: fedora44-sshd-ignore-rhosts
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.1.13
+  section: Access Control > Configure SSH Server
+  title:
+    pl: IgnoreRhosts sshd jest włączone
+    en: Ensure sshd IgnoreRhosts is enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pliki .rhosts i .shosts w katalogach domowych pozwalają użytkownikowi
+    samemu wskazać komputery, z których można się logować na jego konto bez
+    hasła. Kontrolę nad dostępem ma wtedy każdy właściciel konta, a nie
+    administrator.
+
+    Punkt wymaga ustawienia IgnoreRhosts yes, przez które serwer SSH pomija
+    te pliki.
+  en: |
+    The .rhosts and .shosts files in home directories let a user name
+    computers from which their account can be logged into without a
+    password. Every account owner, not the administrator, then controls
+    access.
+
+    The item requires IgnoreRhosts yes, which makes the SSH server skip
+    these files.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: Fedora ma to ustawienie domyślnie włączone.
+  en: |
+    Nobody will notice: Fedora has this setting enabled by default.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Logowanie przez SSH na podstawie plików .rhosts i .shosts użytkowników
+    en:
+      - SSH login based on users' .rhosts and .shosts files
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/sbin/sshd ]; then echo NOT_APPLICABLE; exit 0; fi
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+    # Values set inside Match blocks, one "key<TAB>value<TAB>file" line each.
+    match_vals() {
+      for mf in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [ -f "$mf" ] || continue
+        awk -v F="$mf" '
+          { l = $0; sub(/#.*/, "", l); sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l)
+            if (l == "") next
+            k = tolower(l); sub(/[ \t=].*/, "", k)
+            # sshd -T without -C skips every Match block, Match all too.
+            if (k == "match") { m = 1; next }
+            if (m) { v = l; sub(/^[^ \t=]+[ \t]*=?[ \t]*/, "", v); print k "\t" v "\t" F } }' "$mf"
+      done
+    }
+    good() {
+      lv=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+      case "$1" in
+        ignorerhosts) [ "$lv" = yes ] ;;
+      esac
+    }
+    evaluate() {
+      cfg=$(sshd_t) || { echo CHECK_ERROR; return 0; }
+      ok=""; bad=""
+      for k in ignorerhosts; do
+        v=$(printf '%s\n' "$cfg" | awk -v k="$k" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }')
+        if good "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=${v:-unset}"; fi
+      done
+      while IFS=$'\t' read -r k v f; do
+        case " ignorerhosts " in *" $k "*) good "$k" "$v" || bad="$bad,match:$k=$v:$f" ;; esac
+      done <<< "$(match_vals)"
+      if [ -z "$bad" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:${bad#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-ignore-rhosts.conf
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sshopt-1
+        if [ -f "$f" ]; then echo existed=1; cat "$f"; else echo existed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-ignore-rhosts.conf
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshopt-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+    # Values set inside Match blocks, one "key<TAB>value<TAB>file" line each.
+    match_vals() {
+      for mf in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [ -f "$mf" ] || continue
+        awk -v F="$mf" '
+          { l = $0; sub(/#.*/, "", l); sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l)
+            if (l == "") next
+            k = tolower(l); sub(/[ \t=].*/, "", k)
+            # sshd -T without -C skips every Match block, Match all too.
+            if (k == "match") { m = 1; next }
+            if (m) { v = l; sub(/^[^ \t=]+[ \t]*=?[ \t]*/, "", v); print k "\t" v "\t" F } }' "$mf"
+      done
+    }
+    good() {
+      lv=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+      case "$1" in
+        ignorerhosts) [ "$lv" = yes ] ;;
+      esac
+    }
+    evaluate() {
+      cfg=$(sshd_t) || { echo CHECK_ERROR; return 0; }
+      ok=""; bad=""
+      for k in ignorerhosts; do
+        v=$(printf '%s\n' "$cfg" | awk -v k="$k" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }')
+        if good "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=${v:-unset}"; fi
+      done
+      while IFS=$'\t' read -r k v f; do
+        case " ignorerhosts " in *" $k "*) good "$k" "$v" || bad="$bad,match:$k=$v:$f" ;; esac
+      done <<< "$(match_vals)"
+      if [ -z "$bad" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:${bad#,}"; fi
+    }
+      revert() {
+        if [ "$(sed -n 2p "$b")" = existed=1 ]; then tail -n +3 "$b" > "$f"; chmod 0600 "$f"; else rm -f "$f"; fi
+      }
+      r=$(evaluate)
+      case "$r" in
+        OK:*) echo "sshd already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        CHECK_ERROR) echo "Cannot read the effective sshd configuration with sshd -T" >&2; exit 1 ;;
+        *match:*) echo "A Match block sets a value of this item; change it by hand: ${r#NOT_OK:}" >&2; exit 1 ;;
+      esac
+      t=$(mktemp "$f.XXXXXX")
+      printf '%s\n' '# Sentin-Harden' 'IgnoreRhosts yes' > "$t"
+      chmod 0600 "$t"
+      mv -f "$t" "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      r=$(evaluate)
+      case "$r" in
+        OK:*) ;;
+        *) revert; echo "sshd does not meet the item after the change ($r), for example because an earlier directive wins over $f; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Set IgnoreRhosts yes in $f"
+      # A reload keeps open sessions; new connections use the new settings.
+      if [ "$(systemctl is-active sshd.service 2>/dev/null)" = active ]; then systemctl reload sshd.service; echo "Reloaded sshd"; fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-ignore-rhosts.conf
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshopt-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+      if [ "$ex" = 1 ]; then
+        # Only comments and the directives of this rule may come back.
+        if tail -n +3 "$b" | grep -Evq -e '^(#.*)?$' -e '^(IgnoreRhosts) [A-Za-z0-9@.,:/_+-]+$'; then
+          echo "Backup file is damaged: $b" >&2; exit 1
+        fi
+        tail -n +3 "$b" > "$f.sentin-new"
+        chmod 0600 "$f.sentin-new"
+        mv -f "$f.sentin-new" "$f"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+        echo "Restored $f"
+      else
+        rm -f "$f"
+        echo "Removed $f"
+      fi
+      if [ "$(systemctl is-active sshd.service 2>/dev/null)" = active ]; then
+        # A reload with a broken configuration would stop sshd.
+        if sshd_t >/dev/null; then systemctl reload sshd.service; echo "Reloaded sshd"
+        else echo "sshd rejects its configuration, so it was not reloaded; check it with sshd -t" >&2; exit 1; fi
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man.openbsd.org/sshd_config
+  - https://man.openbsd.org/sshd
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje skuteczną konfigurację serwera poleceniem sshd -T,
+    które wymaga uprawnień roota; bez kluczy hosta dostaje ono klucz
+    tymczasowy. Sprawdza też wartości ustawione w blokach Match
+    w /etc/ssh/sshd_config i w plikach .conf z katalogu /etc/ssh/sshd_config.d,
+    bo sshd -T bez parametrów połączenia ich nie stosuje. Brak serwera SSH
+    daje wynik NOT_APPLICABLE.
+
+    Naprawa zapisuje ustawienie w pliku /etc/ssh/sshd_config.d/01-sentin-harden-ignore-rhosts.conf z uprawnieniami 0600. sshd
+    bierze pierwszą znalezioną wartość, a ten plik jest czytany przed
+    pozostałymi plikami z katalogu, np. 50-redhat.conf. Gdy blok Match
+    ustawia niezgodną wartość, naprawa nic nie zmienia i prosi o ręczną
+    poprawkę. Po zapisie sprawdza konfigurację jeszcze raz; gdy sshd ją
+    odrzuca albo wcześniejsza dyrektywa w /etc/ssh/sshd_config wygrywa,
+    przywraca poprzedni stan i kończy się błędem. Działający sshd dostaje
+    polecenie reload, które nie przerywa otwartych sesji. Wycofanie usuwa
+    plik albo przywraca jego poprzednią treść.
+
+    Fedora ma domyślnie IgnoreRhosts yes, więc naprawa zwykle nie ma nic do
+    zrobienia. Wartość shosts-only też jest niezgodna, bo wciąż uwzględnia
+    pliki .shosts.
+  en: |
+    The check reads the effective server configuration with sshd -T, which
+    needs root privileges; without host keys it gets a temporary key. It
+    also checks values set in Match blocks in /etc/ssh/sshd_config and in the
+    .conf files in the /etc/ssh/sshd_config.d directory, because sshd -T
+    without connection parameters does not apply them. No SSH server gives
+    the NOT_APPLICABLE result.
+
+    The remediation writes the setting to /etc/ssh/sshd_config.d/01-sentin-harden-ignore-rhosts.conf with the mode 0600. sshd takes
+    the first value it finds, and this file is read before the other files
+    in the directory, such as 50-redhat.conf. When a Match block sets a
+    non-compliant value, the remediation changes nothing and asks for a
+    manual fix. After writing, it checks the configuration again; when sshd
+    rejects it or an earlier directive in /etc/ssh/sshd_config wins, it
+    restores the previous state and ends with an error. A running sshd gets
+    a reload, which keeps open sessions. Rollback removes the file or
+    restores its previous content.
+
+    Fedora has IgnoreRhosts yes by default, so the remediation usually has
+    nothing to do. The shosts-only value is non-compliant too, because it
+    still uses the .shosts files.

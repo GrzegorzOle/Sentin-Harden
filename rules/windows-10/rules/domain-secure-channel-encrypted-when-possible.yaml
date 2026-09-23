@@ -1,0 +1,199 @@
+id: win10-domain-secure-channel-encrypted-when-possible
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Kanał bezpieczny do kontrolera szyfrowany, gdy druga strona to potrafi
+    en: The secure channel to the controller encrypted where the other side can
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie sprawia, że maszyna szyfruje ruch w kanale do kontrolera
+    zawsze, gdy druga strona szyfrowanie obsługuje.
+
+    Reguła jest siostrzana wobec poprzedniej i ma tę samą warunkowość, ale
+    chroni co innego. Podpis mówi, że treści po drodze nie zmieniono.
+    Szyfrowanie mówi, że treści po drodze nie odczytano.
+
+    Rozróżnienie to ma tutaj znaczenie praktyczne, bo kanał ten niesie dane
+    o kontach i o zasadach obowiązujących w domenie. Podpisany, ale nie
+    zaszyfrowany, jest odporny na podmianę i zupełnie czytelny dla kogoś,
+    kto ruch podsłuchuje.
+
+    Tak jak przy regule poprzedniej ochrona jest wybierana, nie wymuszana.
+    Napastnik w środku rozmowy może udać stronę, która szyfrowania nie
+    obsługuje. Znaczenie punkt nabiera w zestawieniu z regułą wymagającą.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    odczytania danych o kontach i zasadach przesyłanych między maszyną
+    a kontrolerem.
+  en: |
+    The setting makes the machine encrypt the traffic in the channel to the controller whenever the other side
+    serves encryption.
+
+    The rule is sister to the foregoing one and carries the same conditionality, but guards another thing. A
+    signature says the content was not changed on the way. Encryption says the content was not read on the way.
+
+    That parting has here a practical bearing, the channel carrying data about accounts and about the policies
+    that hold within the domain. Signed but not encrypted, it is hardy against a changing and entirely legible
+    to whoever listens in upon the traffic.
+
+    As at the foregoing rule the guard is chosen, not enforced. An attacker in the middle of the conversation
+    can feign a side that does not serve encryption. The item takes on meaning beside the rule that requires.
+
+    What an attacker gains while the item goes unmet: the means of reading the data about accounts and policies
+    sent between the machine and the controller.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Wartość wymagana jest domyślna, a ustawienie z definicji nie zrywa
+    rozmowy: szyfruje, gdy można, a gdy nie można, rozmawia dalej.
+
+    Koszt obliczeniowy jest pomijalny z tego samego powodu co przy regule
+    poprzedniej — ruch w tym kanale jest rzadki i krótki.
+
+    Poza domeną ustawienie nie robi nic.
+
+    Nie ma znanych regresji.
+
+    Czego to nie psuje: logowania, kont domenowych, pobierania zasad,
+    udziałów plikowych, drukowania, aplikacji, sieci.
+
+    Nie wymaga restartu ani wylogowania.
+  en: |
+    The class is "no disruption".
+
+    The value called for is the default, and the setting by its own definition breaks off no conversation: it
+    encrypts where it can, and where it cannot it speaks on.
+
+    The reckoning cost is beneath notice for the same reason as at the foregoing rule - the traffic in that
+    channel is seldom and short.
+
+    Outside a domain the setting does nothing.
+
+    There are no known regressions.
+
+    What this does not break: logging on, domain accounts, the fetching of policies, file shares, printing,
+    applications, or the network.
+
+    Calls for no restart and no logging off.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Ustawienie nie zrywa żadnej rozmowy, bo szyfruje tylko wtedy, gdy druga strona to obsługuje
+      - Koszt obliczeniowy jest pomijalny, bo ruch w tym kanale jest rzadki i krótki
+      - Poza domeną ustawienie nie robi nic, bo kanału takiego nie ma wcale
+      - Logowanie, konta domenowe i pobieranie zasad domenowych pozostają bez zmian
+      - Udziały plikowe, drukowanie, aplikacje i praca sieci pozostają bez zmian
+    en:
+      - The setting breaks off no conversation, encrypting only where the other side serves it
+      - The reckoning cost is beneath notice, the traffic in that channel being seldom and short
+      - Outside a domain the setting does nothing, there being no such channel at all
+      - Logging on, domain accounts and the fetching of domain policies stay unchanged
+      - File shares, printing, applications and the working of the network stay unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Nie ma takiego przypadku dla tej maszyny, bo ustawienie z definicji nie zrywa rozmowy bez ochrony
+    en:
+      - There is no such case for this machine, the setting by its own definition breaking off no conversation without a guard
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+      $name = 'SealSecureChannel'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { ([string]$item.$name).Trim() }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    $name = 'SealSecureChannel'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Encryption is chosen where it can be had and left out where it cannot, so
+    # nothing here refuses a conversation.
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SealSecureChannel' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      # Only the value is removed. The key holds unrelated settings and stays.
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/domain-member-digitally-encrypt-secure-channel-data-when-possible
+
+notes:
+  pl: |
+    Reguła jest trzecia w rodzinie i różni się od drugiej wyłącznie tym,
+    przed czym broni: podpis przed zmianą, szyfrowanie przed odczytem.
+    Warto, żeby aplikacja pokazała je obok siebie i nazwała tę różnicę,
+    bo z nazw ustawień jej nie widać.
+
+    Argument wart zachowania jest jeden: kanał podpisany, ale nieszyfrowany,
+    jest czytelny dla podsłuchującego, a niesie dane o kontach i zasadach
+    domeny. Jest to konkretny powód, żeby obu tych reguł nie traktować
+    jako jednej.
+
+    Odnotowuję, tak jak przy poprzedniej, że ochrona jest warunkowa
+    i o warunku decyduje strona druga. Kategoria średnia jest z tego powodu
+    i nie należy jej podnosić.
+  en: |
+    The rule is the third in the family and parts from the second only in what it guards against: a signature
+    against a changing, encryption against a reading. It is well that the application show them side by side and
+    name that difference, which cannot be seen from the settings' names.
+
+    One argument is worth keeping: a channel signed but not encrypted is legible to a listener, and it carries
+    data about the domain's accounts and policies. That is a plain reason not to hold these two rules as one.
+
+    I set down, as at the foregoing one, that the guard is conditional and that the other side settles the
+    condition. The medium category comes of that, and is not to be raised.

@@ -1,0 +1,360 @@
+id: ubuntu2404-ufw-loopback-configured
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.2.4
+  section: Host Based Firewall > Configure UncomplicatedFirewall
+  title:
+    pl: Ruch pętli zwrotnej w ufw jest skonfigurowany
+    en: Ensure ufw loopback traffic is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Adresy 127.0.0.0/8 i ::1 należą tylko do interfejsu pętli zwrotnej lo,
+    przez który rozmawiają ze sobą programy na tym samym komputerze. Pakiet
+    z takim adresem nadawcy, który przychodzi z sieci, jest podrobiony.
+
+    Punkt wymaga reguł ufw, które przepuszczają ruch przychodzący
+    i wychodzący na interfejsie lo oraz odrzucają ruch przychodzący
+    z adresów 127.0.0.0/8 i, gdy ufw obsługuje IPv6, z adresu ::1.
+  en: |
+    The 127.0.0.0/8 and ::1 addresses belong only to the loopback interface
+    lo, through which programs on the same computer talk to each other. A
+    packet with such a sender address that arrives from the network is
+    forged.
+
+    The item requires ufw rules that allow incoming and outgoing traffic on
+    the lo interface and drop incoming traffic from 127.0.0.0/8 and, when
+    ufw handles IPv6, from ::1.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: ufw już w swoich regułach wstępnych przepuszcza
+    ruch na lo, więc nowe reguły go nie zmieniają, a pakietów z adresem
+    pętli zwrotnej z sieci jądro i tak nie przyjmuje, chyba że interfejs ma
+    włączony parametr route_localnet.
+  en: |
+    Nobody will notice: ufw already allows traffic on lo in its initial
+    rules, so the new rules do not change it, and the kernel does not
+    accept packets with a loopback address from the network anyway, unless
+    an interface has route_localnet enabled.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in nftables|iptables|multiple:nftables,iptables) echo NOT_APPLICABLE; exit 0 ;; esac
+    [ -x /usr/sbin/ufw ] || { echo NOT_INSTALLED; exit 0; }
+    ufw_v6() { grep -qsiE '^IPV6="?yes"?[[:space:]]*$' /etc/default/ufw; }
+    lo_names() {
+      echo in-lo out-lo deny-127
+      if ufw_v6; then echo in-lo-v6 out-lo-v6 deny-v6; fi
+    }
+    # One family per command, so that rollback removes only what was added.
+    lo_cmd() {
+      case "$1" in
+        in-lo) echo "allow in on lo from 0.0.0.0/0 to 0.0.0.0/0" ;;
+        out-lo) echo "allow out on lo from 0.0.0.0/0 to 0.0.0.0/0" ;;
+        deny-127) echo "deny in from 127.0.0.0/8" ;;
+        in-lo-v6) echo "allow in on lo from ::/0 to ::/0" ;;
+        out-lo-v6) echo "allow out on lo from ::/0 to ::/0" ;;
+        deny-v6) echo "deny in from ::1" ;;
+      esac
+    }
+    # The tuple the rule leaves in user.rules or user6.rules: action, protocol
+    # any, all ports, destination, source and the direction with the interface.
+    lo_has() {
+      case "$1" in
+        in-lo) set -- /etc/ufw/user.rules allow 0.0.0.0/0 0.0.0.0/0 in_lo ;;
+        out-lo) set -- /etc/ufw/user.rules allow 0.0.0.0/0 0.0.0.0/0 out_lo ;;
+        deny-127) set -- /etc/ufw/user.rules deny,reject 0.0.0.0/0 127.0.0.0/8 in ;;
+        in-lo-v6) set -- /etc/ufw/user6.rules allow ::/0 ::/0 in_lo ;;
+        out-lo-v6) set -- /etc/ufw/user6.rules allow ::/0 ::/0 out_lo ;;
+        deny-v6) set -- /etc/ufw/user6.rules deny,reject ::/0 ::1,::1/128 in ;;
+        *) return 1 ;;
+      esac
+      awk -v a="$2" -v d="$3" -v s="$4" -v r="$5" '
+        BEGIN { na = split(a, A, ","); ns = split(s, S, ",") }
+        $1 == "###" && $2 == "tuple" && NF == 10 && $5 == "any" && $6 == "any" && $7 == d && $8 == "any" && $10 == r {
+          x = 0; for (i = 1; i <= na; i++) if ($4 == A[i]) x = 1
+          y = 0; for (i = 1; i <= ns; i++) if ($9 == S[i]) y = 1
+          if (x && y) f = 1
+        } END { exit !f }' "$1" 2>/dev/null
+    }
+    [ -r /etc/ufw/user.rules ] || { echo CHECK_ERROR; exit 0; }
+    ok=""; miss=""
+    for n in $(lo_names); do
+      if lo_has "$n"; then ok="$ok,$n"; else miss="$miss,$n"; fi
+    done
+    if [ -z "$miss" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:missing=${miss#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      ufw_v6() { grep -qsiE '^IPV6="?yes"?[[:space:]]*$' /etc/default/ufw; }
+      lo_names() {
+        echo in-lo out-lo deny-127
+        if ufw_v6; then echo in-lo-v6 out-lo-v6 deny-v6; fi
+      }
+      # One family per command, so that rollback removes only what was added.
+      lo_cmd() {
+        case "$1" in
+          in-lo) echo "allow in on lo from 0.0.0.0/0 to 0.0.0.0/0" ;;
+          out-lo) echo "allow out on lo from 0.0.0.0/0 to 0.0.0.0/0" ;;
+          deny-127) echo "deny in from 127.0.0.0/8" ;;
+          in-lo-v6) echo "allow in on lo from ::/0 to ::/0" ;;
+          out-lo-v6) echo "allow out on lo from ::/0 to ::/0" ;;
+          deny-v6) echo "deny in from ::1" ;;
+        esac
+      }
+      # The tuple the rule leaves in user.rules or user6.rules: action, protocol
+      # any, all ports, destination, source and the direction with the interface.
+      lo_has() {
+        case "$1" in
+          in-lo) set -- /etc/ufw/user.rules allow 0.0.0.0/0 0.0.0.0/0 in_lo ;;
+          out-lo) set -- /etc/ufw/user.rules allow 0.0.0.0/0 0.0.0.0/0 out_lo ;;
+          deny-127) set -- /etc/ufw/user.rules deny,reject 0.0.0.0/0 127.0.0.0/8 in ;;
+          in-lo-v6) set -- /etc/ufw/user6.rules allow ::/0 ::/0 in_lo ;;
+          out-lo-v6) set -- /etc/ufw/user6.rules allow ::/0 ::/0 out_lo ;;
+          deny-v6) set -- /etc/ufw/user6.rules deny,reject ::/0 ::1,::1/128 in ;;
+          *) return 1 ;;
+        esac
+        awk -v a="$2" -v d="$3" -v s="$4" -v r="$5" '
+          BEGIN { na = split(a, A, ","); ns = split(s, S, ",") }
+          $1 == "###" && $2 == "tuple" && NF == 10 && $5 == "any" && $6 == "any" && $7 == d && $8 == "any" && $10 == r {
+            x = 0; for (i = 1; i <= na; i++) if ($4 == A[i]) x = 1
+            y = 0; for (i = 1; i <= ns; i++) if ($9 == S[i]) y = 1
+            if (x && y) f = 1
+          } END { exit !f }' "$1" 2>/dev/null
+      }
+      {
+        echo format=ufwlo-1
+        for n in $(lo_names); do
+          if lo_has "$n"; then echo "rule $n kept"; else echo "rule $n added"; fi
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=ufwlo-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if grep -vqxE 'format=ufwlo-1|rule (in-lo|out-lo|deny-127|in-lo-v6|out-lo-v6|deny-v6) (added|kept)' "$b" ||
+         [ -n "$(sed -n 's/^rule \([^ ]*\) .*/\1/p' "$b" | sort | uniq -d)" ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      ufw_v6() { grep -qsiE '^IPV6="?yes"?[[:space:]]*$' /etc/default/ufw; }
+      lo_names() {
+        echo in-lo out-lo deny-127
+        if ufw_v6; then echo in-lo-v6 out-lo-v6 deny-v6; fi
+      }
+      # One family per command, so that rollback removes only what was added.
+      lo_cmd() {
+        case "$1" in
+          in-lo) echo "allow in on lo from 0.0.0.0/0 to 0.0.0.0/0" ;;
+          out-lo) echo "allow out on lo from 0.0.0.0/0 to 0.0.0.0/0" ;;
+          deny-127) echo "deny in from 127.0.0.0/8" ;;
+          in-lo-v6) echo "allow in on lo from ::/0 to ::/0" ;;
+          out-lo-v6) echo "allow out on lo from ::/0 to ::/0" ;;
+          deny-v6) echo "deny in from ::1" ;;
+        esac
+      }
+      # The tuple the rule leaves in user.rules or user6.rules: action, protocol
+      # any, all ports, destination, source and the direction with the interface.
+      lo_has() {
+        case "$1" in
+          in-lo) set -- /etc/ufw/user.rules allow 0.0.0.0/0 0.0.0.0/0 in_lo ;;
+          out-lo) set -- /etc/ufw/user.rules allow 0.0.0.0/0 0.0.0.0/0 out_lo ;;
+          deny-127) set -- /etc/ufw/user.rules deny,reject 0.0.0.0/0 127.0.0.0/8 in ;;
+          in-lo-v6) set -- /etc/ufw/user6.rules allow ::/0 ::/0 in_lo ;;
+          out-lo-v6) set -- /etc/ufw/user6.rules allow ::/0 ::/0 out_lo ;;
+          deny-v6) set -- /etc/ufw/user6.rules deny,reject ::/0 ::1,::1/128 in ;;
+          *) return 1 ;;
+        esac
+        awk -v a="$2" -v d="$3" -v s="$4" -v r="$5" '
+          BEGIN { na = split(a, A, ","); ns = split(s, S, ",") }
+          $1 == "###" && $2 == "tuple" && NF == 10 && $5 == "any" && $6 == "any" && $7 == d && $8 == "any" && $10 == r {
+            x = 0; for (i = 1; i <= na; i++) if ($4 == A[i]) x = 1
+            y = 0; for (i = 1; i <= ns; i++) if ($9 == S[i]) y = 1
+            if (x && y) f = 1
+          } END { exit !f }' "$1" 2>/dev/null
+      }
+      m=$(fwmode)
+      case "$m" in nftables|iptables|multiple:nftables,iptables)
+        echo "Another firewall utility is in use ($m); ufw rules are not added next to it (see item 4.1.1)" >&2; exit 1 ;;
+      esac
+      [ -x /usr/sbin/ufw ] || { echo "ufw is not installed (see item 4.2.1)" >&2; exit 1; }
+      for n in $(sed -n 's/^rule \([a-z0-9-]*\) added$/\1/p' "$b"); do
+        lo_has "$n" && continue
+        ufw $(lo_cmd "$n") >/dev/null
+        echo "Added the ufw rule: $(lo_cmd "$n")"
+      done
+      miss=""
+      for n in $(lo_names); do lo_has "$n" || miss="$miss $n"; done
+      [ -z "$miss" ] || { echo "Loopback rules still missing:$miss" >&2; exit 1; }
+      echo "The loopback rules of ufw are in place"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=ufwlo-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if grep -vqxE 'format=ufwlo-1|rule (in-lo|out-lo|deny-127|in-lo-v6|out-lo-v6|deny-v6) (added|kept)' "$b" ||
+         [ -n "$(sed -n 's/^rule \([^ ]*\) .*/\1/p' "$b" | sort | uniq -d)" ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      ufw_v6() { grep -qsiE '^IPV6="?yes"?[[:space:]]*$' /etc/default/ufw; }
+      lo_names() {
+        echo in-lo out-lo deny-127
+        if ufw_v6; then echo in-lo-v6 out-lo-v6 deny-v6; fi
+      }
+      # One family per command, so that rollback removes only what was added.
+      lo_cmd() {
+        case "$1" in
+          in-lo) echo "allow in on lo from 0.0.0.0/0 to 0.0.0.0/0" ;;
+          out-lo) echo "allow out on lo from 0.0.0.0/0 to 0.0.0.0/0" ;;
+          deny-127) echo "deny in from 127.0.0.0/8" ;;
+          in-lo-v6) echo "allow in on lo from ::/0 to ::/0" ;;
+          out-lo-v6) echo "allow out on lo from ::/0 to ::/0" ;;
+          deny-v6) echo "deny in from ::1" ;;
+        esac
+      }
+      # The tuple the rule leaves in user.rules or user6.rules: action, protocol
+      # any, all ports, destination, source and the direction with the interface.
+      lo_has() {
+        case "$1" in
+          in-lo) set -- /etc/ufw/user.rules allow 0.0.0.0/0 0.0.0.0/0 in_lo ;;
+          out-lo) set -- /etc/ufw/user.rules allow 0.0.0.0/0 0.0.0.0/0 out_lo ;;
+          deny-127) set -- /etc/ufw/user.rules deny,reject 0.0.0.0/0 127.0.0.0/8 in ;;
+          in-lo-v6) set -- /etc/ufw/user6.rules allow ::/0 ::/0 in_lo ;;
+          out-lo-v6) set -- /etc/ufw/user6.rules allow ::/0 ::/0 out_lo ;;
+          deny-v6) set -- /etc/ufw/user6.rules deny,reject ::/0 ::1,::1/128 in ;;
+          *) return 1 ;;
+        esac
+        awk -v a="$2" -v d="$3" -v s="$4" -v r="$5" '
+          BEGIN { na = split(a, A, ","); ns = split(s, S, ",") }
+          $1 == "###" && $2 == "tuple" && NF == 10 && $5 == "any" && $6 == "any" && $7 == d && $8 == "any" && $10 == r {
+            x = 0; for (i = 1; i <= na; i++) if ($4 == A[i]) x = 1
+            y = 0; for (i = 1; i <= ns; i++) if ($9 == S[i]) y = 1
+            if (x && y) f = 1
+          } END { exit !f }' "$1" 2>/dev/null
+      }
+      [ -x /usr/sbin/ufw ] || { echo "ufw is not installed, there are no rules to remove"; exit 0; }
+      for n in $(sed -n 's/^rule \([a-z0-9-]*\) added$/\1/p' "$b"); do
+        lo_has "$n" || continue
+        ufw delete $(lo_cmd "$n") >/dev/null
+        echo "Removed the ufw rule: $(lo_cmd "$n")"
+      done
+      echo "Restored the previous loopback rules of ufw"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw-framework.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Gdy w użyciu jest nftables albo iptables-persistent, sprawdzenie
+    zwraca NOT_APPLICABLE, bo ten przypadek oceniają punkty 4.1.1, 4.3 i 4.4,
+    a bez pakietu ufw wynik to NOT_INSTALLED. Wynik OK wymienia znalezione reguły,
+    a NOT_OK brakujące: in-lo, out-lo i deny-127 dla IPv4 oraz in-lo-v6,
+    out-lo-v6 i deny-v6 dla IPv6. Reguły IPv6 są wymagane tylko przy
+    IPV6=yes w /etc/default/ufw, bo inaczej ufw ich nie przyjmuje.
+
+    Sprawdzenie czyta wpisy tuple w /etc/ufw/user.rules i user6.rules, więc
+    działa także przy wyłączonym ufw; reguły zaczynają działać, gdy punkt
+    4.2.3 włączy ufw. Reguła odrzucająca może mieć działanie deny albo
+    reject.
+
+    Naprawa dodaje brakujące reguły poleceniami ufw allow in on lo, ufw
+    allow out on lo, ufw deny in from 127.0.0.0/8 i ufw deny in from ::1,
+    osobno dla IPv4 i IPv6. ufw dopisuje je na końcu listy reguł, co nie
+    szkodzi, bo ruch na lo przepuszcza już /etc/ufw/before.rules przed
+    regułami użytkownika. Kopia zapisuje, które reguły już były,
+    a wycofanie usuwa tylko reguły dodane przez naprawę.
+  en: |
+    When nftables or iptables-persistent is in use, the check returns
+    NOT_APPLICABLE, because items 4.1.1, 4.3 and 4.4 assess that case, and
+    without the ufw package the result is NOT_INSTALLED. The OK result lists the rules found,
+    and NOT_OK the missing ones: in-lo, out-lo and deny-127 for IPv4 and
+    in-lo-v6, out-lo-v6 and deny-v6 for IPv6. The IPv6 rules are required
+    only with IPV6=yes in /etc/default/ufw, because otherwise ufw does not
+    accept them.
+
+    The check reads the tuple entries in /etc/ufw/user.rules and
+    user6.rules, so it works also with ufw turned off; the rules take effect
+    when item 4.2.3 turns ufw on. The drop rule may have the deny or reject
+    action.
+
+    The remediation adds the missing rules with ufw allow in on lo, ufw
+    allow out on lo, ufw deny in from 127.0.0.0/8 and ufw deny in from ::1,
+    separately for IPv4 and IPv6. ufw appends them at the end of the rule
+    list, which does no harm, because /etc/ufw/before.rules already allows
+    traffic on lo before the user rules. The backup records which rules were
+    already there, and rollback removes only the rules the remediation
+    added.

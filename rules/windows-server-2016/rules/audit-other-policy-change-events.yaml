@@ -1,0 +1,220 @@
+id: win2016-audit-other-policy-change-events
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja pozostałych zmian zasad — same niepowodzenia
+    en: Auditing of other policy changes - failures only
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zbiera zmiany zasad niemieszczące się w pozostałych:
+    w dostawcach usług kryptograficznych, w zasadach ochrony ruchu oraz
+    w konfiguracji modułu zaufanej platformy.
+
+    Reguła wymaga rejestrowania wyłącznie niepowodzeń i jest to tutaj decyzja
+    o podstawowym znaczeniu. Zdarzenia powodzeń w tej podkategorii są w dużej
+    części rutyną systemu: odświeżenie zasad, cykliczne sprawdzenie modułu,
+    wczytanie dostawcy kryptografii. Powstają regularnie, nie niosą treści
+    i zapełniają dziennik.
+
+    Niepowodzenia są czymś dokładnie odwrotnym. Nieudana zmiana zasad
+    kryptograficznych oznacza, że coś usiłowało przestawić sposób, w jaki
+    maszyna szyfruje, i zostało odrzucone. Nieudana operacja na module zaufanej
+    platformy oznacza, że coś sięgnęło po klucze sprzętowe bez uprawnień.
+    Żadnego z tych zdarzeń nie da się zobaczyć nigdzie indziej.
+
+    Kategoria średnia: punkt nie zamyka drogi, ale zdarzenia, które rejestruje,
+    są rzadkie i praktycznie zawsze warte pytania.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: próby zmiany
+    zasad kryptograficznych i sięgnięcia po klucze sprzętowe bez śladu po
+    tych, które zostały odrzucone.
+  en: |
+    The subcategory gathers policy changes not fitting the others: in cryptographic
+    service providers, in traffic protection policy, and in the configuration of the
+    trusted platform module.
+
+    The rule requires failures alone to be recorded, and that is a decision of basic
+    importance here. Success events in this subcategory are in large part the
+    system's routine: a refresh of policy, a periodic check of the module, the
+    loading of a cryptography provider. They arise regularly, carry no substance and
+    fill the log.
+
+    Failures are exactly the opposite. A failed change of cryptographic policy means
+    something tried to alter the way the machine encrypts and was refused. A failed
+    operation on the trusted platform module means something reached for the
+    hardware keys without rights. Neither of those events can be seen anywhere else.
+
+    The category is medium: the item closes no road, but the events it records are
+    rare and practically always worth a question.
+
+    What an attacker gains while the item goes unmet: attempts to change
+    cryptographic policy and to reach hardware keys, leaving no trace of those that
+    were refused.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości", i tak jak przy szczegółowym dostępie do udziałów,
+    zawdzięcza to ograniczeniu do niepowodzeń.
+
+    Ograniczenie jest tu rdzeniem reguły. Z rejestrowaniem powodzeń punkt
+    generowałby stały strumień rutyny systemowej bez żadnej treści — dokładnie
+    ten rodzaj szumu, który sprawia, że dzienniki przestaje się czytać.
+    Z samymi niepowodzeniami zdarzeń nie ma prawie wcale.
+
+    Jedyny przypadek wart uwagi dotyczy maszyn z modułem zaufanej platformy
+    w stanie niezainicjowanym albo z uszkodzoną konfiguracją kryptografii.
+    Tam niepowodzenia potrafią się powtarzać — ale jest to ustalenie wymagające
+    naprawy, a nie szum do odfiltrowania.
+
+    Nic przy tym nie przestaje działać. Zasady kryptograficzne obowiązują tak
+    samo, moduł zaufanej platformy pracuje tak samo.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption" and, as with detailed share access, owes that to
+    the limitation to failures.
+
+    The limitation is the heart of the rule here. With successes recorded the item
+    would generate a steady stream of the system's routine with no substance at all
+    - precisely the kind of noise that makes logs stop being read. With failures
+    alone there are almost no events whatever.
+
+    The one case worth attention concerns machines with an uninitialised trusted
+    platform module or a damaged cryptography configuration. There failures can
+    recur - but that is a finding calling for repair rather than noise to be
+    filtered out.
+
+    Nothing stops working while this goes on. Cryptographic policy holds as before,
+    the trusted platform module works as before.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — rejestrowane są wyłącznie niepowodzenia, a tych na zdrowej maszynie prawie nie ma
+      - Maszyna z niezainicjowanym modułem zaufanej platformy generuje powtarzające się niepowodzenia
+      - Powtarzające się niepowodzenia są ustaleniem wymagającym naprawy, a nie szumem do odfiltrowania
+      - Zasady kryptograficzne i moduł zaufanej platformy pracują tak samo jak przed zmianą
+    en:
+      - No regression in the working - only failures are recorded, and on a healthy machine there are almost none
+      - A machine with an uninitialised trusted platform module generates recurring failures
+      - Recurring failures are a finding calling for repair rather than noise to be filtered out
+      - Cryptographic policy and the trusted platform module work just as before the change
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przeciwwskazań — przy ograniczeniu do niepowodzeń objętość jest bliska zeru
+    en:
+      - No known contraindication - with the limitation to failures the volume is close to nil
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9234-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[23]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9234-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9234-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9234-69AE-11D9-BED3-505054503030}" /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9234-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-policy-change-events
+
+notes:
+  pl: |
+    Ograniczenie do niepowodzeń jest decyzją projektową i warto ją w raporcie
+    nazwać. Organizacja, która włączy także powodzenia, nie narusza tej reguły
+    — przyjmuje wyłącznie jej koszt, a ten jest w tej podkategorii wysoki
+    i pozbawiony treści.
+
+    Jest to trzeci punkt w bloku, w którym objętość rozstrzyga o kształcie
+    reguły, a nie o jej wdrożeniu. Pozostałe dwa to szczegółowy dostęp do
+    udziałów i blokada konta.
+
+    Oczekiwanie dopuszcza oba stany bitu powodzeń.
+  en: |
+    The limitation to failures is a design decision and is worth naming in the
+    report. An organisation switching successes on too does not break this rule - it
+    takes on only its cost, and in this subcategory that cost is high and devoid of
+    substance.
+
+    This is the third item in the block where volume settles the rule's shape rather
+    than its rollout. The other two are detailed share access and account lockout.
+
+    The expectation admits either state of the success bit.

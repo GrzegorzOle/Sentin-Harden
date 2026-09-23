@@ -1,0 +1,218 @@
+id: win2016-audit-mpssvc-rule-level-policy-change
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja zmian reguł zapory
+    en: Audit changes to firewall rules
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany pojedynczych reguł zapory sieciowej: dodanie,
+    zmianę i usunięcie reguły oraz zmianę ustawień profilu.
+
+    Różnica wobec zatrzymania zapory jest istotna i to ona uzasadnia istnienie
+    osobnego punktu. Wyłączenie zapory jest zdarzeniem krzykliwym — widać je
+    w narzędziach, w monitorowaniu i w przeglądzie stanu maszyny. Dodanie
+    jednej reguły przepuszczającej ruch na jednym porcie jest ciche: zapora
+    dalej jest włączona, wygląda na skonfigurowaną, a raport stanu nic nie
+    zgłasza.
+
+    To jest typowa droga otwarcia sobie kanału powrotnego. Reguła wpuszczająca
+    ruch przychodzący na porcie o niepozornym numerze, opisana nazwą
+    przypominającą wpis systemowy, przetrwa niejeden przegląd.
+
+    Rejestrowanie niepowodzeń ma tu osobną wartość: nieudana próba zmiany
+    reguły zapory oznacza, że ktoś bez uprawnień próbował otworzyć sobie drogę.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: otwarcie
+    w zaporze kanału dla siebie bez śladu wskazującego, kiedy reguła powstała
+    i z czyjej ręki.
+  en: |
+    The subcategory records changes to individual firewall rules: the adding,
+    changing and removing of a rule, and changes to a profile's settings.
+
+    The difference from the firewall being stopped matters, and it justifies a
+    separate item. Switching the firewall off is a loud event - it shows in the
+    tools, in monitoring and in a review of the machine's state. Adding one rule
+    letting traffic through on one port is quiet: the firewall is still on, looks
+    configured, and the state report says nothing.
+
+    That is the typical road to opening oneself a way back. A rule letting incoming
+    traffic in on a port of unremarkable number, described by a name resembling a
+    system entry, will survive more than one review.
+
+    Recording failures has a worth of its own here: a failed attempt to change a
+    firewall rule means somebody without rights tried to open themselves a road.
+
+    What an attacker gains while the item goes unmet: the opening of a channel for
+    themselves in the firewall, with no trace of when the rule came into being or by
+    whose hand.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Reguły zapory zmienia się rzadko, a na maszynie
+    zarządzanej centralnie zmiany są skupione w momentach wdrożenia.
+
+    Jedno źródło objętości warto znać i jest ono takie samo jak przy innych
+    punktach zasad: jeżeli reguły zapory są wdrażane zasadami grupy przy każdym
+    cyklu odświeżania, zdarzenia powstają regularnie mimo braku faktycznej
+    zmiany. Na maszynie z częstym odświeżaniem i dużym zestawem reguł daje to
+    zauważalny strumień.
+
+    Drugie źródło to oprogramowanie, które samo dodaje reguły przy instalacji
+    i przy aktualizacji. Każda aktualizacja takiego programu dopisze komplet
+    zdarzeń.
+
+    Nic przy tym nie przestaje działać. Zapora pracuje tak samo, reguły dają
+    się zmieniać tak samo, wdrożenia idą tak samo.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". Firewall rules are changed seldom, and on a
+    centrally managed machine the changes cluster at moments of deployment.
+
+    One source of volume is worth knowing and it is the same as with the other
+    policy items: if firewall rules are deployed by group policy at every refresh
+    cycle, events arise regularly despite no actual change. On a machine with
+    frequent refreshes and a large set of rules this gives a noticeable stream.
+
+    The second source is software that adds rules of its own at installation and at
+    update. Every update of such a program will add a full set of events.
+
+    Nothing stops working while this goes on. The firewall works as before, rules
+    can be changed as before, deployments proceed as before.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — reguły zapory zmienia się rzadko i zdarzeń przybywa niewiele
+      - Wdrażanie reguł zasadami grupy przy każdym cyklu odświeżania daje zauważalny strumień mimo braku zmian
+      - Oprogramowanie dodające własne reguły przy aktualizacji dopisuje za każdym razem komplet zdarzeń
+      - Zapora pracuje tak samo, a reguły dają się zmieniać tak samo jak przed zmianą
+    en:
+      - No regression in the working - firewall rules are changed seldom and few events accrue
+      - Deploying rules by group policy at every refresh cycle gives a noticeable stream despite no changes
+      - Software adding rules of its own at update adds a full set of events each time
+      - The firewall works as before and rules can be changed just as before
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przeciwwskazań — nawet przy szumie z odświeżania zasad objętość mieści się w zwykłym dzienniku
+    en:
+      - No known contraindication - even with noise from policy refreshes the volume fits in an ordinary log
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9232-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9232-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9232-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9232-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9232-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-mpssvc-rule-level-policy-change
+
+notes:
+  pl: |
+    Punkt jest parą do inspekcji innych zdarzeń systemowych. Tamta zapisuje,
+    że zapora przestała działać; ta zapisuje, że działa dalej, ale inaczej.
+    Drugi przypadek jest cichszy i dlatego wart osobnego punktu.
+
+    Zmiana reguły przez zasady grupy i zmiana ręczna generują zdarzenie tego
+    samego rodzaju. Odróżnienie wymaga zestawienia z cyklem odświeżania —
+    reguła tego nie robi.
+
+    W raporcie warto czytać ten punkt razem z regułami o konfiguracji zapory.
+    Tamte sprawdzają, jak zapora jest ustawiona dzisiaj; ta pozwala odtworzyć,
+    kiedy przestała być ustawiona inaczej.
+  en: |
+    The item is the pair to the auditing of other system events. That one records
+    that the firewall stopped working; this one records that it goes on working, but
+    differently. The second case is quieter and therefore worth an item of its own.
+
+    A rule changed by group policy and one changed by hand generate an event of the
+    same kind. Telling them apart calls for a comparison with the refresh cycle -
+    the rule does not do that.
+
+    In the report the item is worth reading together with the rules on firewall
+    configuration. Those check how the firewall is set today; this one allows the
+    reconstruction of when it stopped being set otherwise.

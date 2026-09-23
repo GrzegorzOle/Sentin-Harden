@@ -1,0 +1,183 @@
+id: ubuntu2404-ip6tables-rules-for-open-ports
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.4.3.4
+  section: Host Based Firewall > Configure iptables > Configure IPv6 ip6tables
+  title:
+    pl: Dla wszystkich otwartych portów istnieją reguły ip6tables
+    en: Ensure ip6tables firewall rules exist for all open ports
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Każda usługa, która nasłuchuje na adresie IPv6 innym niż pętla zwrotna,
+    może być dostępna z sieci. Reguła dla jej portu pokazuje, że ktoś
+    zdecydował, czy ta usługa ma być dostępna, zamiast zdać się na domyślną
+    politykę łańcucha.
+
+    Punkt wymaga, żeby dla każdego portu TCP i UDP, na którym coś nasłuchuje
+    po IPv6 poza pętlą zwrotną, istniała reguła ip6tables w łańcuchu INPUT.
+  en: |
+    Every service that listens on an IPv6 address other than loopback may
+    be reachable from the network. A rule for its port shows that someone
+    decided whether this service should be reachable, instead of leaving it
+    to the default policy of the chain.
+
+    The item requires an ip6tables rule in the INPUT chain for every TCP and UDP
+    port on which something listens over IPv6 outside loopback.
+
+disruption_description:
+  pl: |
+    Samo sprawdzenie niczego nie zmienia. Reguły dopisuje administrator:
+    reguła ACCEPT udostępnia usługę w sieci, a reguła DROP dla portu,
+    z którego ktoś korzysta, odcina tę usługę po IPv6.
+  en: |
+    The check itself changes nothing. The administrator adds the rules: an
+    ACCEPT rule makes the service reachable from the network, and a DROP
+    rule for a port someone uses cuts off that service over IPv6.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Usługa, dla której portu administrator doda regułę DROP, przestaje być dostępna z sieci po IPv6
+    en:
+      - A service whose port the administrator gives a DROP rule becomes unreachable from the network over IPv6
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Nie wiadomo jeszcze, które z nasłuchujących usług mają być dostępne z sieci
+    en:
+      - It is not yet known which of the listening services should be reachable from the network
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in iptables|multiple:*iptables*) ;; *) echo NOT_APPLICABLE; exit 0 ;; esac
+    [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = 0 ] || { echo "OK:ipv6-disabled"; exit 0; }
+    command -v ip6tables >/dev/null 2>&1 || { echo NOT_INSTALLED; exit 0; }
+    r=$(ip6tables -S 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    command -v ss >/dev/null 2>&1 || { echo CHECK_ERROR; exit 0; }
+    l=$(ss -H -tuln 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    # Listening sockets of this address family reachable from the network, as port/protocol.
+    ports=$(printf '%s\n' "$l" | awk -v fam=6 '$1 == "tcp" || $1 == "udp" {
+        n = split($5, x, ":"); p = x[n]; h = substr($5, 1, length($5) - length(p) - 1)
+        if (p !~ /^[0-9]+$/ || h ~ /^127\./ || h ~ /^\[::1\]/ || h ~ /^\[::ffff:127\./ || h ~ /%lo$/) next
+        if (h == "*") f = fam; else if (h ~ /^\[::ffff:/) f = 4; else if (h ~ /^\[/) f = 6; else f = 4
+        if (f == fam) print p "/" $1
+      }' | sort -t/ -k1,1n -k2,2 -u)
+    ok=""; miss=""
+    for pp in $ports; do
+      # A rule in INPUT for the protocol and the port, also through a list or a range, with any target.
+      if printf '%s\n' "$r" | awk -v p="${pp%/*}" -v pr="${pp#*/}" '
+          $1 == "-A" && $2 == "INPUT" {
+            q = ""; d = ""
+            for (i = 3; i < NF; i++) {
+              if ($(i - 1) == "!") continue
+              if ($i == "-p") q = $(i + 1)
+              if ($i == "--dport" || $i == "--dports") d = $(i + 1)
+            }
+            if (q != pr || d == "") next
+            n = split(d, a, ",")
+            for (i = 1; i <= n; i++) {
+              if (a[i] == p) f = 1
+              else if (split(a[i], g, ":") == 2 && p + 0 >= g[1] + 0 && p + 0 <= g[2] + 0) f = 1
+            }
+          }
+          END { exit !f }'; then ok="$ok,$pp"; else miss="$miss,$pp"; fi
+    done
+    if [ -n "$miss" ]; then echo "NOT_OK:missing=${miss#,}"
+    elif [ -n "$ok" ]; then echo "OK:${ok#,}"
+    else echo "OK:none"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ip6tables.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/netfilter-persistent.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/ss.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Punkty 4.4 dotyczą serwera, na którym w użyciu jest iptables-persistent,
+    czyli netfilter-persistent.service jest włączona lub uruchomiona.
+    W pozostałych przypadkach sprawdzenie zwraca NOT_APPLICABLE, a naprawa
+    odmawia. Wybór narzędzia ocenia punkt 4.1.1.
+
+    Reguła tylko sprawdza stan: zestaw reguł zapory projektuje
+    administrator, a jego automatyczna zmiana na zdalnym serwerze grozi
+    odcięciem dostępu. Nowe reguły trzeba zapisać poleceniem
+    netfilter-persistent save, inaczej znikną po restarcie. Reguły iptables zapisane przez iptables-persistent leżą
+    w /etc/iptables/rules.v4 i rules.v6, a zapisuje je polecenie
+    netfilter-persistent save. Reguły dodaje się np. poleceniem ip6tables -A INPUT
+    -p tcp --dport 443 -m state --state NEW -j ACCEPT.
+
+    Sprawdzenie bierze gniazda nasłuchujące z ss -tuln i pomija te na pętli
+    zwrotnej i na interfejsie lo. Gniazda na adresie * liczy dla obu
+    rodzin adresów. Port uznaje za objęty regułą, gdy reguła w łańcuchu
+    INPUT z ip6tables -S ma ten sam protokół i port w --dport albo --dports,
+    także przez listę albo zakres, z dowolnym celem. Reguły w łańcuchach
+    wywoływanych skokiem i reguły bez portu nie są liczone. Wynik OK
+    wymienia porty z regułami albo none, a NOT_OK porty bez reguł w postaci
+    port/protokół. Sprawdzenie wymaga uprawnień roota.
+
+    Gdy IPv6 jest wyłączony, czyli net.ipv6.conf.all.disable_ipv6 ma
+    wartość różną od 0, sprawdzenie zwraca OK:ipv6-disabled.
+  en: |
+    The items in 4.4 concern a server where iptables-persistent is in use,
+    that is netfilter-persistent.service is enabled or running. In the other
+    cases the check returns NOT_APPLICABLE and the remediation refuses. The
+    choice of the tool is assessed by item 4.1.1.
+
+    The rule only checks the state: the firewall ruleset is designed by
+    the administrator, and changing it automatically on a remote server
+    risks cutting off access. New rules have to be saved with
+    netfilter-persistent save, otherwise they disappear after a restart. The iptables rules saved by iptables-persistent are in
+    /etc/iptables/rules.v4 and rules.v6, and the netfilter-persistent save
+    command saves them. The rules are added for example with ip6tables -A INPUT
+    -p tcp --dport 443 -m state --state NEW -j ACCEPT.
+
+    The check takes the listening sockets from ss -tuln and skips those on
+    loopback and on the lo interface. It counts sockets on the * address for
+    both address families. It takes a port as covered when a rule in the
+    INPUT chain from ip6tables -S has the same protocol and the port in --dport
+    or --dports, also through a list or a range, with any target. Rules in
+    chains reached by a jump and rules without a port are not counted. The
+    OK result lists the ports with rules or none, and NOT_OK the ports
+    without rules as port/protocol. The check needs root privileges.
+
+    When IPv6 is turned off, that is net.ipv6.conf.all.disable_ipv6 is not
+    0, the check returns OK:ipv6-disabled.

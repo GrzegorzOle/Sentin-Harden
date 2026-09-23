@@ -1,0 +1,155 @@
+id: ubuntu2404-ip6tables-default-deny
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.4.3.1
+  section: Host Based Firewall > Configure iptables > Configure IPv6 ip6tables
+  title:
+    pl: Domyślna polityka ip6tables odrzuca ruch
+    en: Ensure ip6tables default deny firewall policy
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Polityka wbudowanego łańcucha ip6tables decyduje o pakiecie IPv6, do
+    którego nie pasuje żadna reguła. Polityka ACCEPT przepuszcza cały ruch
+    IPv6, na który nikt nie napisał reguły, nawet gdy iptables blokuje ten
+    sam ruch po IPv4.
+
+    Punkt wymaga polityki DROP albo REJECT w łańcuchach INPUT, FORWARD
+    i OUTPUT tablicy filter ip6tables.
+  en: |
+    The policy of a built-in ip6tables chain decides about an IPv6 packet
+    that matches no rule. The ACCEPT policy lets through all IPv6 traffic
+    nobody wrote a rule for, even when iptables blocks the same traffic over
+    IPv4.
+
+    The item requires the DROP or REJECT policy in the INPUT, FORWARD and
+    OUTPUT chains of the ip6tables filter table.
+
+disruption_description:
+  pl: |
+    Polityka DROP bez reguł zezwalających przerywa ruch IPv6, na który nie
+    ma reguły, także wykrywanie sąsiadów i autokonfigurację adresów przez
+    ICMPv6. Przed zmianą trzeba dodać reguły dla potrzebnego ruchu, ICMPv6
+    i nawiązanych połączeń (punkt 4.4.3.3) i sprawdzić je na serwerze
+    z dostępem lokalnym.
+  en: |
+    The DROP policy without allow rules interrupts IPv6 traffic there is no
+    rule for, also neighbour discovery and address autoconfiguration through
+    ICMPv6. Before the change, rules for the needed traffic, ICMPv6 and
+    established connections (item 4.4.3.3) have to be added and tested on a
+    server with local access.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Połączenia SSH i inne usługi sieciowe serwera po IPv6 bez reguły ACCEPT w łańcuchu INPUT
+      - Wykrywanie sąsiadów i autokonfiguracja adresów IPv6 bez reguł dla ICMPv6
+      - Rozwiązywanie nazw i aktualizacje apt po IPv6 bez reguły ACCEPT w łańcuchu OUTPUT
+    en:
+      - SSH connections and other network services of the server over IPv6 with no ACCEPT rule in the INPUT chain
+      - IPv6 neighbour discovery and address autoconfiguration with no rules for ICMPv6
+      - Name resolution and apt updates over IPv6 with no ACCEPT rule in the OUTPUT chain
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Zmiana przez połączenie zdalne bez przetestowanych reguł ACCEPT i bez dostępu awaryjnego
+    en:
+      - A change over a remote connection without tested ACCEPT rules and without emergency access
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in iptables|multiple:*iptables*) ;; *) echo NOT_APPLICABLE; exit 0 ;; esac
+    [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = 0 ] || { echo "OK:ipv6-disabled"; exit 0; }
+    command -v ip6tables >/dev/null 2>&1 || { echo NOT_INSTALLED; exit 0; }
+    r=$(ip6tables -S 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    ok=1; s=""
+    for c in INPUT FORWARD OUTPUT; do
+      p=$(printf '%s\n' "$r" | awk -v c="$c" '$1 == "-P" && $2 == c { print $3 }')
+      case "${p:=missing}" in DROP|REJECT) ;; *) ok=0 ;; esac
+      s="$s,$(echo "$c" | tr A-Z a-z)=$p"
+    done
+    if [ $ok = 1 ]; then echo "OK:${s#,}"; else echo "NOT_OK:${s#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ip6tables.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/netfilter-persistent.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Punkty 4.4 dotyczą serwera, na którym w użyciu jest iptables-persistent,
+    czyli netfilter-persistent.service jest włączona lub uruchomiona.
+    W pozostałych przypadkach sprawdzenie zwraca NOT_APPLICABLE, a naprawa
+    odmawia. Wybór narzędzia ocenia punkt 4.1.1.
+
+    Reguła tylko sprawdza stan: zestaw reguł zapory projektuje
+    administrator, a jego automatyczna zmiana na zdalnym serwerze grozi
+    odcięciem dostępu. Nowe reguły trzeba zapisać poleceniem
+    netfilter-persistent save, inaczej znikną po restarcie. Reguły iptables zapisane przez iptables-persistent leżą
+    w /etc/iptables/rules.v4 i rules.v6, a zapisuje je polecenie
+    netfilter-persistent save. Politykę ustawia się np. poleceniem ip6tables -P
+    INPUT DROP.
+
+    Sprawdzenie czyta bieżącą politykę z ip6tables -S, które wymaga
+    uprawnień roota. Wynik podaje politykę każdego łańcucha albo missing,
+    gdy jej nie odczytano. Politykę IPv4 ocenia punkt 4.4.2.1.
+
+    Gdy IPv6 jest wyłączony, czyli net.ipv6.conf.all.disable_ipv6 ma
+    wartość różną od 0, sprawdzenie zwraca OK:ipv6-disabled.
+  en: |
+    The items in 4.4 concern a server where iptables-persistent is in use,
+    that is netfilter-persistent.service is enabled or running. In the other
+    cases the check returns NOT_APPLICABLE and the remediation refuses. The
+    choice of the tool is assessed by item 4.1.1.
+
+    The rule only checks the state: the firewall ruleset is designed by
+    the administrator, and changing it automatically on a remote server
+    risks cutting off access. New rules have to be saved with
+    netfilter-persistent save, otherwise they disappear after a restart. The iptables rules saved by iptables-persistent are in
+    /etc/iptables/rules.v4 and rules.v6, and the netfilter-persistent save
+    command saves them. The policy is set for example with ip6tables -P INPUT
+    DROP.
+
+    The check reads the current policy from ip6tables -S, which needs root
+    privileges. The result gives the policy of each chain, or missing when
+    it was not read. The IPv4 policy is assessed by item 4.4.2.1.
+
+    When IPv6 is turned off, that is net.ipv6.conf.all.disable_ipv6 is not
+    0, the check returns OK:ipv6-disabled.

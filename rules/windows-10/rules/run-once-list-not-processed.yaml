@@ -1,0 +1,170 @@
+id: win10-run-once-list-not-processed
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Lista programów uruchamianych jednorazowo pomijana
+    en: The list of programs started once passed over
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Lista jednorazowa różni się od zwykłej jedną rzeczą: wpis kasuje się sam po
+    uruchomieniu. Z punktu widzenia atakującego jest to zaleta, a nie ograniczenie
+    — program się uruchamia, a ślad znika, zanim ktokolwiek zajrzy do rejestru.
+
+    Dodatkowo wpis z tej listy wykonuje się bardzo wcześnie, zanim użytkownik
+    zobaczy pulpit, i przed częścią mechanizmów, które mogłyby go zauważyć. Program
+    uruchomiony stamtąd ma czas, żeby zapisać się w miejscu trwalszym i usunąć po
+    sobie wszystko poza skutkiem.
+
+    Pominięcie tej listy zamyka miejsce, które nie zostawia dowodu i właśnie
+    dlatego jest wygodne.
+  en: |
+    The one-time list differs from the ordinary one in a single respect - the
+    entry deletes itself once run. From an attacker s point of view that is an
+    advantage rather than a limitation - the program starts and the trace vanishes
+    before anybody looks into the registry.
+
+    On top of that an entry from this list runs very early, before the user sees
+    the desktop and ahead of some of the mechanisms that might notice it. A
+    program started from there has the time to write itself somewhere more durable
+    and clear away everything but the consequence.
+
+    Passing this list over shuts a place that leaves no evidence and is convenient
+    for exactly that reason.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo lista jednorazowa jest w codziennym użyciu
+    systemu. Korzystają z niej instalatory kończące pracę po ponownym uruchomieniu
+    i aktualizacje dopinające zmiany przy pierwszym logowaniu.
+
+    Skutkiem po wdrożeniu bywa instalacja, która uruchomiła się, poprosiła o
+    restart i po restarcie nigdy się nie dokończyła. Objaw jest mylący, bo
+    oprogramowanie wygląda na zainstalowane. Przed wdrożeniem trzeba ustalić, czy
+    w organizacji nie działa instalator albo aktualizacja polegająca na tej
+    drodze — i przewidzieć dla nich okno bez tej zasady.
+  en: |
+    The change calls for a review, because the one-time list is in everyday use by
+    the system. Installers finishing their work after a restart and updates
+    completing changes at the first sign-in both rely on it.
+
+    The consequence after the rollout tends to be an installation that started,
+    asked for a restart and after the restart never finished. The symptom is
+    misleading, since the software looks installed. Before the rollout it has to
+    be established whether an installer or an update in the organisation depends
+    on this route - and a window without this rule planned for them.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - scripting-and-automation
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Instalatory kończące pracę po ponownym uruchomieniu maszyny nie dokończą jej, choć oprogramowanie będzie wyglądało na zainstalowane
+      - Aktualizacje dopinające zmiany przy pierwszym logowaniu zostaną w stanie nieukończonym
+      - Skrypty naprawcze uruchamiane tą drogą jednorazowo przestaną się wykonywać
+      - Wpisy na liście pozostają w rejestrze, ale nigdy się nie wykonają ani nie skasują
+      - Usługi systemowe, zadania harmonogramu, zwykła lista uruchamiania i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Installers finishing their work after a restart of the machine do not finish it, though the software looks installed
+      - Updates completing changes at the first sign-in are left unfinished
+      - Repair scripts run once by this route stop executing
+      - Entries in the list stay in the registry but never run and never delete themselves
+      - System services, scheduled tasks, the ordinary start-up list and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny w trakcie instalacji albo aktualizacji oczekującej na dokończenie po ponownym uruchomieniu
+      - Środowiska, w których rozprowadza się oprogramowanie instalatorem dopinającym zmiany tą drogą
+      - Stanowiska serwisowe, na których skrypt naprawczy uruchamia się raz po restarcie
+    en:
+      - Machines in the middle of an installation or an update awaiting completion after a restart
+      - Environments where software is distributed by an installer completing changes this way
+      - Service stations, where a repair script runs once after a restart
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableLocalMachineRunOnce'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $name = 'DisableLocalMachineRunOnce'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableLocalMachineRunOnce' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/setupapi/run-and-runonce-registry-keys
+
+notes:
+  pl: |
+    Punkt dotyczy listy w gałęzi maszyny. Wpisy pozostają w rejestrze, ale nigdy
+    się nie wykonują ani nie kasują — audyt je zobaczy, choć nic z nich nie
+    wystartuje. Zasadę ocenia się razem ze starszą listą uruchamianą przy każdym
+    logowaniu: różni je trwałość wpisu, nie mechanizm.
+  en: |
+    The item covers the list in the machine branch. Entries stay in the registry
+    but never run and never delete themselves - an audit sees them, though nothing
+    starts from them. The rule is judged together with the older list run at every
+    sign-in - they differ in the durability of the entry rather than the
+    mechanism.

@@ -1,0 +1,153 @@
+id: win10-secure-boot-enabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: System Integrity > Boot
+  title:
+    pl: Bezpieczny rozruch włączony
+    en: Secure Boot enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: critical
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bezpieczny rozruch sprawdza podpis każdego elementu ładowanego przed
+    systemem operacyjnym. Bez tego sprawdzenia kolejność jest odwrotna niż
+    powinna: najpierw startuje kod, potem system operacyjny, a dopiero potem
+    cokolwiek, co ten kod mogłoby skontrolować.
+
+    Oprogramowanie osadzone przed systemem jest niewidoczne dla ochrony
+    działającej w systemie — działa wcześniej i może jej po prostu nie
+    pokazać tego, co dzieje się na maszynie. Dlatego właśnie ta droga jest
+    używana do utrzymania dostępu po przejęciu maszyny, a nie do samego
+    przejęcia.
+
+    Sprawdzanie podpisów przy rozruchu odbiera atakującemu miejsce, w którym
+    mógłby się schować przed wszystkim, co uruchamia się później.
+  en: |
+    Secure Boot checks the signature of every element loaded before the
+    operating system. Without that check the order is the reverse of what it
+    should be - code starts first, then the operating system, and only then
+    anything that might inspect that code.
+
+    Software lodged before the system is invisible to protection running
+    inside it - it works earlier and can simply not show it what is happening
+    on the machine. That is exactly why this road is used to keep access after
+    a machine has been taken over, rather than for the taking over itself.
+
+    Checking signatures at boot takes away the place an attacker could hide
+    from everything that starts later.
+
+disruption_description:
+  pl: |
+    To jest zmiana w oprogramowaniu układowym, a nie w systemie. Aplikacja jej
+    nie wykona i nie ma jak jej wycofać poleceniem — dlatego punkt jest
+    wyłącznie do odczytania, a włączenie należy do osoby stojącej przy maszynie.
+
+    Maszyna uruchamiana w trybie zgodności wymaga najpierw konwersji układu
+    dysku. Jest to operacja na strukturze dysku rozruchowego i przeprowadza się
+    ją z zabezpieczoną kopią danych, nie inaczej. Nieudana konwersja kończy się
+    systemem, który nie startuje.
+
+    Przed wdrożeniem trzeba ustalić, czy na maszynie nie uruchamia się coś bez
+    uznawanego podpisu: starsze narzędzie serwisowe, system uruchamiany obok,
+    sterownik producenta sprzed lat. Każda taka pozycja przestanie działać w
+    chwili włączenia sprawdzania.
+  en: |
+    This is a change in the firmware rather than in the system. The application
+    cannot make it and has no way of reversing it with a command - hence the
+    item is for reading only, and switching it on belongs to the person
+    standing at the machine.
+
+    A machine started in compatibility mode needs its disk layout converted
+    first. That is an operation on the structure of the boot disk and is done
+    with a secured copy of the data, not otherwise. A failed conversion ends
+    with a system that does not start.
+
+    Before the rollout it has to be established whether anything without a
+    recognised signature runs on the machine - an older service tool, a system
+    started alongside, a vendor driver from years back. Every such item stops
+    working the moment checking is switched on.
+
+implementation_consequences:
+  impact_areas:
+    - boot-and-firmware
+    - drivers-and-devices
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Niepodpisane programy rozruchowe i narzędzia serwisowe przestaną się uruchamiać
+      - Maszyna w trybie zgodności wymaga konwersji układu dysku, a nieudana konwersja kończy się systemem, który nie startuje
+      - Systemy uruchamiane obok, bez podpisu uznawanego przez to urządzenie, przestaną być dostępne
+      - Starsze sterowniki producenta ładowane przed systemem mogą zostać odrzucone przy starcie
+      - Zainstalowane oprogramowanie, dane na dysku, konta użytkowników i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Unsigned boot programs and service tools stop running
+      - A machine in compatibility mode needs its disk layout converted, and a failed conversion ends with a system that does not start
+      - Other systems started alongside, lacking a signature this device recognises, become unavailable
+      - Older vendor drivers loaded before the system may be rejected at start-up
+      - Installed software, data on the disk, user accounts and work after signing in are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie uruchamia się system albo narzędzie bez podpisu uznawanego przez to urządzenie
+      - Dysk używa układu zgodnościowego, a konwersji nie da się przeprowadzić z zabezpieczoną kopią danych
+      - Producent sprzętu nie dostarcza aktualnych kluczy rozruchowych dla tego modelu
+    en:
+      - The machine runs a system or tool without a signature this device recognises
+      - The disk uses the compatibility layout and conversion cannot be done with a secured copy of the data
+      - The hardware vendor does not supply current boot keys for this model
+  reversibility: difficult
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State'
+      # The key exists only where the firmware knows the mechanism at all.
+      # Its absence means a machine started the old way, and that is a finding
+      # in itself rather than an inability to check.
+      if (-not (Test-Path -Path $path)) { 'LEGACY_BOOT' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).UEFISecureBootEnabled
+        if ($null -eq $value) { 'LEGACY_BOOT' }
+        elseif ([int]$value -eq 1) { 'ENABLED' }
+        else { 'DISABLED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: ENABLED
+  comparison: equals
+
+privileges: user
+runnable: false
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/design/device-experiences/oem-secure-boot
+
+notes:
+  pl: |
+    Ustawienie leży w oprogramowaniu układowym, więc aplikacja może je tylko
+    odczytać — nie ma kopii zapasowej ani procedury wycofania, a to zgodnie z
+    zasadą twardą numer dwa wyklucza uruchomienie z poziomu aplikacji. Brak
+    klucza w rejestrze oznacza maszynę uruchamianą w trybie sprzed tego
+    mechanizmu i sprawdzenie zgłasza to osobnym stanem, bo jest to ustalenie,
+    a nie niemożność sprawdzenia.
+  en: |
+    The setting lies in the firmware, so the application can only read it -
+    there is no backup and no rollback procedure, which under hard rule number
+    two rules out running it from the application. A missing key in the
+    registry means a machine started in the mode that predates this mechanism,
+    and the check reports that as a state of its own, since it is a finding
+    rather than an inability to check.

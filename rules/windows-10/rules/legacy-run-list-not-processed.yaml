@@ -1,0 +1,166 @@
+id: win10-legacy-run-list-not-processed
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Starsza lista programów uruchamianych przy logowaniu pomijana
+    en: The older list of programs started at logon passed over
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Lista programów uruchamianych przy logowaniu to jedno z najstarszych miejsc w
+    systemie i jedno z pierwszych, do których sięga się po przejęciu maszyny.
+    Wpisanie tam ścieżki sprawia, że program wraca przy każdym logowaniu, bez
+    usługi, bez zadania i bez niczego, co wyglądałoby na instalację.
+
+    Miejsce jest atrakcyjne, bo nie wymaga uprawnień wyższych niż te, które
+    atakujący już zdobył, i nie zostawia po sobie nic poza jedną wartością w
+    rejestrze. Wykrycie wymaga zaglądania tam celowo, a przywrócenie maszyny po
+    incydencie bez sprawdzenia tej listy jest pracą wykonaną na darmo.
+
+    Pominięcie listy odbiera atakującemu drogę powrotu przeżywającą każde
+    wylogowanie.
+  en: |
+    The list of programs started at logon is one of the oldest places in the
+    system and one of the first reached for after a machine has been taken over.
+    Writing a path there makes a program come back at every sign-in, with no
+    service, no scheduled task and nothing that would look like an installation.
+
+    The place is attractive because it calls for no privileges beyond those the
+    attacker already holds, and leaves nothing behind beyond one value in the
+    registry. Detecting it calls for looking there on purpose, and restoring a
+    machine after an incident without checking that list is work done for nothing.
+
+    Passing the list over takes away a route back that survives every sign-out.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo lista bywa używana zgodnie z przeznaczeniem.
+    Trafiają na nią narzędzia producenta sprzętu, agenci monitorowania sprzed lat,
+    skrypty mapujące dyski i drukarki. Każda taka pozycja przestanie się uruchamiać
+    w chwili wdrożenia.
+
+    Przegląd jest tu prosty i wart wykonania przed zmianą: zawartość listy da się
+    odczytać jednym poleceniem na każdej maszynie. Pozycje uzasadnione przenosi się
+    do zadania harmonogramu albo do usługi, a dopiero potem wdraża punkt.
+  en: |
+    The change calls for a review, because the list is sometimes used as intended.
+    Hardware vendor tooling, monitoring agents from years back, scripts mapping
+    drives and printers all end up there. Every such item stops starting the moment
+    this is rolled out.
+
+    The review is simple here and worth doing before the change - the contents of
+    the list can be read with one command on every machine. Justified entries are
+    moved into a scheduled task or a service, and only then is the item rolled out.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - legacy-applications
+    - remote-management
+  what_breaks:
+    pl:
+      - Programy wpisane na tę listę przestaną uruchamiać się przy logowaniu, także te uzasadnione
+      - Skrypty mapujące dyski sieciowe i drukarki stamtąd uruchamiane przestaną działać, a użytkownik zgłosi brak zasobów
+      - Narzędzia producenta sprzętu i starsi agenci monitorowania przestaną wstawać razem z sesją
+      - Wpisy na liście pozostają w rejestrze i są widoczne w audycie — punkt je pomija, a nie usuwa
+      - Usługi systemowe, zadania harmonogramu, autostart z folderu użytkownika i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Programs written into that list stop starting at sign-in, the justified ones included
+      - Scripts mapping network drives and printers from there stop working, and the user reports missing resources
+      - Hardware vendor tooling and older monitoring agents stop coming up with the session
+      - Entries in the list stay in the registry and are visible in an audit - the item passes them over rather than removing them
+      - System services, scheduled tasks, the start-up folder of the user and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których lista uruchamia skrypty mapujące dyski albo drukarki i nie zostały one przeniesione gdzie indziej
+      - Maszyny z narzędziem producenta sprzętu, które wstaje wyłącznie tą drogą
+    en:
+      - Stations where the list starts scripts mapping drives or printers that have not been moved elsewhere
+      - Machines with hardware vendor tooling that comes up by this route alone
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableLocalMachineRun'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $name = 'DisableLocalMachineRun'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableLocalMachineRun' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/setupapi/run-and-runonce-registry-keys
+
+notes:
+  pl: |
+    Punkt dotyczy listy w gałęzi maszyny, a nie w gałęzi użytkownika ani folderu
+    autostartu — te są osobnymi miejscami i wymagają osobnych ustawień. Wpisy
+    pozostają w rejestrze i są widoczne w audycie; zasada je pomija przy
+    uruchamianiu, a nie usuwa. Ocenia się ją razem z listą jednorazową.
+  en: |
+    The item covers the list in the machine branch rather than the user branch or
+    the start-up folder - those are separate places calling for separate settings.
+    The entries stay in the registry and are visible in an audit; the rule passes
+    them over at start-up rather than removing them. It is judged together with
+    the one-time list.

@@ -1,0 +1,165 @@
+id: win10-group-policy-registry-reapply-unchanged
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Group Policy
+  title:
+    pl: Ponowne wgrywanie ustawień rejestru nawet bez zmiany zasad
+    en: Registry settings reapplied even when policy has not changed
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Domyślnie system pomija wgrywanie zasad, których treść się nie zmieniła.
+    Oszczędza to pracę i ma sens dopóty, dopóki nikt nie zmienia ustawień poza
+    zasadami. Gdy ktoś to robi, oszczędność zamienia się w lukę.
+
+    Zasada niezmieniona nie zostanie wgrana ponownie, więc wartość nadpisana
+    lokalnie zostaje tam, gdzie ją wpisano — na czas nieokreślony. Atakujący, który
+    raz obniżył ustawienie, nie musi nic robić, żeby je utrzymać: wystarczy, że
+    nikt nie ruszy zasady po stronie domeny.
+
+    Wymuszenie ponownego wgrywania sprawia, że maszyna wraca do stanu z zasad
+    przy każdym cyklu, niezależnie od tego, czy komukolwiek zmieniła się treść
+    zasady.
+  en: |
+    By default the system passes over applying policy whose contents have not
+    changed. That saves work and makes sense as long as nobody alters settings
+    outside policy. Once somebody does, the saving turns into a gap.
+
+    Unchanged policy is not applied again, so a value overwritten locally stays
+    where it was written - indefinitely. An attacker who lowered a setting once
+    need do nothing to keep it that way - it is enough that nobody touches the
+    policy on the domain side.
+
+    Forcing reapplication means the machine returns to the state given by policy
+    at every cycle, whether or not anybody s policy contents have changed.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo wgrywanie wszystkiego przy każdym cyklu kosztuje
+    pracę maszyny i ruch w sieci. Na pojedynczym stanowisku jest to niezauważalne;
+    na kilkuset maszynach odpytujących ten sam kontroler w tym samym momencie już
+    nie.
+
+    Drugim skutkiem jest zanik wyjątków utrzymywanych lokalnie. To jest cel tej
+    zasady, ale trzeba to powiedzieć wprost przed wdrożeniem, bo w wielu
+    środowiskach takie wyjątki istnieją i nikt ich nie spisał.
+  en: |
+    The change calls for a review, because applying everything at every cycle
+    costs the machine work and the network traffic. On a single station that is
+    imperceptible; on several hundred machines polling the same controller at the
+    same moment it is not.
+
+    The second consequence is that locally held exceptions disappear. That is the
+    aim of this rule, but it has to be said plainly before the rollout, since in
+    many environments such exceptions exist and nobody has written them down.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+  what_breaks:
+    pl:
+      - Wszystkie ustawienia rejestru z zasad będą wgrywane przy każdym cyklu, także te niezmienione
+      - Wyjątki wprowadzone lokalnie przestaną się utrzymywać między kolejnymi cyklami odświeżania
+      - Obciążenie kontrolera domeny i ruch w sieci wzrosną, odczuwalnie przy kilkuset maszynach naraz
+      - Cykl odświeżania na maszynie będzie trwał dłużej, co bywa widoczne przy starcie stanowiska
+      - Praca użytkownika, uruchomione programy, dostęp do plików i drukowanie pozostają bez zmian
+    en:
+      - All registry settings from policy are applied at every cycle, including unchanged ones
+      - Exceptions introduced locally stop holding between successive refresh cycles
+      - The load on the domain controller and the network traffic rise, perceptibly with several hundred machines at once
+      - The refresh cycle on the machine takes longer, which is sometimes visible as the station starts
+      - User work, running programs, access to files and printing are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska z kilkuset maszynami odpytującymi jeden kontroler w tym samym oknie czasowym
+      - Stanowiska utrzymujące niespisane wyjątki lokalne, dopóki nie zostaną one przejrzane
+      - Maszyny połączone łączem wąskim albo rozliczanym za przesłane dane
+    en:
+      - Environments with several hundred machines polling one controller in the same time window
+      - Stations holding unwritten local exceptions, until those have been reviewed
+      - Machines on a narrow link or one billed by data transferred
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoGPOListChanges'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+    $name = 'NoGPOListChanges'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoGPOListChanges' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc978526(v=technet.10)
+
+notes:
+  pl: |
+    Nazwa wpisu opisuje zachowanie przez zaprzeczenie, więc wartość zero oznacza
+    wgrywanie wymuszone. Punkt działa tylko wtedy, gdy odświeżanie w tle jest
+    włączone — bez niego nie ma cyklu, w którym cokolwiek byłoby wgrywane ponownie.
+    Obie zasady ocenia się razem.
+  en: |
+    The name of the entry describes the behaviour by negation, so a value of zero
+    means applying is forced. The item works only where the background refresh is
+    on - without it there is no cycle for anything to be reapplied in. The two
+    rules are judged together.

@@ -1,0 +1,166 @@
+id: win10-group-policy-registry-background-processing
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Group Policy
+  title:
+    pl: Okresowe odświeżanie ustawień rejestru z zasad grupy włączone
+    en: Periodic background refresh of registry policy enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienia przychodzące z zasad grupy wgrywają się przy starcie maszyny i przy
+    logowaniu, a następnie są odświeżane co jakiś czas w tle. To odświeżanie jest
+    jedynym mechanizmem, który naprawia zmianę wprowadzoną lokalnie po starcie.
+
+    Bez niego zmiana zrobiona wprost w rejestrze utrzymuje się aż do następnego
+    ponownego uruchomienia maszyny. Na stanowisku pracującym tygodniami bez
+    restartu oznacza to tygodnie, przez które maszyna nie jest taka, jak
+    wynikałoby z zasad — i nikt się o tym nie dowie z żadnego raportu, bo raport
+    czyta stan zasad, a nie stan maszyny.
+
+    Odświeżanie w tle przywraca ustawienia bez czekania na restart, czyli przed
+    tym, zanim ktoś zdąży wykorzystać okno, które sam otworzył.
+  en: |
+    Settings arriving from group policy are applied when the machine starts and at
+    sign-in, and are then refreshed from time to time in the background. That
+    refresh is the one mechanism repairing a change made locally after the start.
+
+    Without it a change made directly in the registry holds until the next restart
+    of the machine. On a station working for weeks without a restart that means
+    weeks in which the machine is not as the policy would have it - and nobody
+    learns of it from any report, because the report reads the state of the policy
+    rather than the state of the machine.
+
+    The background refresh restores the settings without waiting for a restart,
+    that is before anybody manages to use the window they opened themselves.
+
+disruption_description:
+  pl: |
+    Odświeżanie w tle jest zachowaniem domyślnym systemu, więc zasada zwykle
+    utrwala stan istniejący i nic nie kosztuje. Nie wymaga przerwy, nie jest
+    widoczna w pracy i cofa się natychmiast.
+
+    Warto wiedzieć, co się dzieje po włączeniu tam, gdzie odświeżanie było
+    świadomie wyłączone: zmiany wprowadzone lokalnie zaczynają znikać w ciągu
+    kilkudziesięciu minut. Jeżeli ktoś utrzymywał wyjątek ręcznym wpisem w
+    rejestrze, ten wyjątek przestanie się utrzymywać — i to jest zamierzony skutek,
+    a nie awaria.
+  en: |
+    The background refresh is the default behaviour of the system, so the rule
+    usually fixes the existing state in place and costs nothing. It calls for no
+    interruption, is invisible in daily work and reverses at once.
+
+    It is worth knowing what happens after it is switched on where the refresh had
+    been deliberately disabled - changes made locally start vanishing within tens
+    of minutes. If somebody was holding an exception in place with a registry
+    entry made by hand, that exception stops holding - and this is the intended
+    consequence rather than a fault.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+  what_breaks:
+    pl:
+      - Zmiany w rejestrze wprowadzone lokalnie wbrew zasadom zaczną znikać w ciągu kilkudziesięciu minut
+      - Wyjątki utrzymywane ręcznym wpisem przestaną się utrzymywać między restartami maszyny
+      - Ruch sieciowy do kontrolera domeny wzrośnie o cykliczne odpytywanie, niezauważalnie dla użytkownika
+      - Praca użytkownika, uruchomione programy, dostęp do plików i drukowanie pozostają bez zmian
+    en:
+      - Registry changes made locally against policy start vanishing within tens of minutes
+      - Exceptions held in place by a hand-made entry stop holding between restarts of the machine
+      - Network traffic to the domain controller rises by the periodic polling, imperceptibly to the user
+      - User work, running programs, access to files and printing are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska utrzymujące wyjątki ręcznym wpisem w rejestrze, dopóki wyjątek nie zostanie przeniesiony do zasad
+      - Maszyny połączone łączem rozliczanym za przesłane dane, gdzie cykliczne odpytywanie jest kosztem
+    en:
+      - Stations holding exceptions in place with a hand-made registry entry, until the exception is moved into policy
+      - Machines on a link billed by data transferred, where the periodic polling is a cost
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoBackgroundPolicy'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+    $name = 'NoBackgroundPolicy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Group Policy\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoBackgroundPolicy' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc978526(v=technet.10)
+
+notes:
+  pl: |
+    Nazwa wpisu opisuje zachowanie przez zaprzeczenie, więc wartość zero oznacza
+    odświeżanie włączone. Identyfikator w ścieżce wskazuje rozszerzenie
+    odpowiedzialne za ustawienia rejestru — pozostałe rozszerzenia zasad mają
+    własne klucze i własne ustawienia. Punkt ocenia się razem z ponownym wgrywaniem
+    ustawień bez zmiany zasad.
+  en: |
+    The name of the entry describes the behaviour by negation, so a value of zero
+    means the refresh is on. The identifier in the path points at the extension
+    responsible for registry settings - the other policy extensions have keys and
+    settings of their own. The item is judged together with settings being
+    reapplied when policy has not changed.

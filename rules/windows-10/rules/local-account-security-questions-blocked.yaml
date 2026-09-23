@@ -1,0 +1,166 @@
+id: win10-local-account-security-questions-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Credential User Interface
+  title:
+    pl: Pytania pomocnicze do odzyskania hasła konta lokalnego zablokowane
+    en: Helper questions for recovering a local account s password blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pytania pomocnicze są drugą drogą do konta, obok hasła. I są drogą słabszą,
+    bo odpowiedzi na nie bywają publicznie dostępne: nazwisko panieńskie, miasto
+    urodzenia, imię pierwszego zwierzęcia. Wszystkie trzy da się często odczytać
+    z serwisu społecznościowego.
+
+    Wynikiem jest konto zabezpieczone hasłem, do którego wchodzi się bez hasła.
+    Cała praca włożona w złożoność i długość haseł traci znaczenie, bo atakujący
+    nie musi łamać tego, co silne, skoro obok stoi coś słabszego prowadzącego w to
+    samo miejsce.
+
+    Zablokowanie pytań sprawia, że do konta lokalnego prowadzi jedna droga, ta
+    świadomie zabezpieczona.
+  en: |
+    Helper questions are a second road into an account, alongside the password.
+    And a weaker road, because the answers to them are often publicly available -
+    a maiden name, a town of birth, the name of a first pet. All three can often be
+    read off a social network.
+
+    The result is an account protected by a password that is entered without one.
+    All the work put into the complexity and length of passwords loses its
+    meaning, because an attacker need not break what is strong while something
+    weaker stands beside it leading to the same place.
+
+    Blocking the questions means one road leads into a local account - the one
+    deliberately protected.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo odbiera samodzielne odzyskanie hasła, a nie
+    daje nic w zamian. Na maszynie w organizacji z obsługą zgłoszeń nie jest to
+    problem — hasło zresetuje administrator. Na maszynie samodzielnej, bez takiej
+    obsługi, zapomniane hasło oznacza utratę dostępu do konta.
+
+    Trzeba też pamiętać, że blokada dotyczy zakładania nowych pytań. Odpowiedzi
+    ustawione wcześniej pozostają w systemie i trzeba je usunąć osobno, inaczej
+    stara droga wciąż jest otwarta.
+  en: |
+    The change calls for a review, because it takes away self-service password
+    recovery and gives nothing in return. On a machine in an organisation with a
+    service desk that is no problem - an administrator resets the password. On a
+    standalone machine, with no such support, a forgotten password means losing
+    access to the account.
+
+    It should also be borne in mind that the block covers setting up new
+    questions. Answers set earlier stay in the system and have to be removed
+    separately, otherwise the old road is still open.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Samodzielne odzyskanie hasła konta lokalnego przez odpowiedzi na pytania przestanie być możliwe
+      - Na maszynach samodzielnych, bez obsługi zgłoszeń, zapomniane hasło będzie oznaczało utratę dostępu do konta
+      - Zakładanie nowego konta lokalnego nie poprosi już o ustawienie pytań pomocniczych
+      - Odpowiedzi ustawione przed zmianą pozostaną w systemie i trzeba je usunąć osobno
+      - Konta domenowe, logowanie kartą, reset hasła przez administratora i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Recovering a local account s password on one s own through the questions stops being possible
+      - On standalone machines, with no service desk, a forgotten password means losing access to the account
+      - Setting up a new local account no longer asks for helper questions to be set
+      - Answers set before the change stay in the system and have to be removed separately
+      - Domain accounts, signing in with a card, a password reset by an administrator and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny samodzielne bez obsługi zgłoszeń, gdzie odzyskanie hasła przez administratora nie jest możliwe
+      - Stanowiska obsługiwane przez osoby bez innej drogi odzyskania dostępu do konta lokalnego
+    en:
+      - Standalone machines with no service desk, where a password reset by an administrator is not possible
+      - Stations operated by people with no other route back into a local account
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoLocalPasswordResetQuestions'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'NoLocalPasswordResetQuestions'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoLocalPasswordResetQuestions' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/identity-protection/
+
+notes:
+  pl: |
+    Blokada dotyczy zakładania nowych pytań, a nie usuwania już ustawionych
+    odpowiedzi — te trzeba skasować osobno, bo inaczej wcześniejsza droga pozostaje
+    otwarta. Punkt nie ma zastosowania do kont domenowych, które odzyskuje się
+    zupełnie inaczej.
+  en: |
+    The block covers setting up new questions rather than removing answers already
+    set - those have to be cleared separately, since otherwise the earlier road
+    stays open. The item does not apply to domain accounts, which are recovered in
+    an entirely different way.

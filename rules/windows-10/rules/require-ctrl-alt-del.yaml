@@ -1,0 +1,175 @@
+id: win10-require-ctrl-alt-del
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Kombinacja klawiszy wymagana przed logowaniem
+    en: Key combination required before signing in
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kombinacja klawiszy przed logowaniem wygląda na przeżytek, a jest jedynym
+    sygnałem, którego program udający ekran logowania nie potrafi przechwycić.
+    Obsługuje ją system, nie aplikacja, więc jej naciśnięcie zawsze wywołuje
+    prawdziwy ekran logowania.
+
+    Bez tego wymagania okno proszące o hasło może narysować dowolny program
+    uruchomiony w sesji. Użytkownik widzi to, co zna, wpisuje hasło i oddaje je
+    temu, kto narysował okno. Nie trzeba przy tym żadnej luki — wystarczy umieć
+    rysować.
+
+    Zasada przywraca użytkownikowi możliwość upewnienia się, komu podaje hasło.
+  en: |
+    A key combination before signing in looks like a relic, and is the one signal
+    a program posing as the sign-in screen cannot intercept. It is handled by the
+    system rather than an application, so pressing it always brings up the real
+    sign-in screen.
+
+    Without that requirement, a window asking for a password can be drawn by any
+    program running in the session. The user sees what they know, types the
+    password and hands it to whoever drew the window. No flaw is needed for that -
+    being able to draw is enough.
+
+    The rule gives the user back the means of making sure who they are handing the
+    password to.
+
+disruption_description:
+  pl: |
+    Zmiana dotyka odruchu, który ludzie wykonują kilka razy dziennie, więc wymaga
+    świadomego wdrożenia — nie z powodu ryzyka technicznego, tylko dlatego, że
+    zmienia sposób zaczynania pracy dla wszystkich naraz.
+
+    Osobno trzeba przejrzeć maszyny obsługiwane bez klawiatury: ekrany dotykowe,
+    stanowiska terminalowe, urządzenia kioskowe. Tam kombinacji klawiszy nie ma
+    jak nacisnąć i trzeba albo przewidzieć wyjątek, albo zapewnić klawiaturę
+    ekranową obsługującą ten sygnał.
+
+    Trzecia grupa to połączenia zdalne i konsole maszyn wirtualnych — tam
+    kombinacja bywa przechwytywana przez maszynę lokalną i wymaga osobnego
+    przycisku albo skrótu zastępczego.
+  en: |
+    The change touches a reflex people perform several times a day, so it calls
+    for a planned rollout - not because of technical risk, but because it alters
+    how everybody starts work at once.
+
+    Machines operated without a keyboard need a separate review - touch screens,
+    terminal stations, kiosk devices. There the key combination cannot be pressed
+    and either an exception has to be planned or an on-screen keyboard handling
+    that signal provided.
+
+    The third group is remote connections and virtual machine consoles - there the
+    combination tends to be caught by the local machine and calls for a separate
+    button or a substitute shortcut.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - remote-desktop
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Zalogowanie się będzie wymagało naciśnięcia kombinacji klawiszy, a nie samego kliknięcia w ekran
+      - Stanowiska dotykowe i kioskowe bez klawiatury stracą możliwość zalogowania, dopóki nie dostaną klawiatury ekranowej
+      - W połączeniach zdalnych i konsolach maszyn wirtualnych kombinację przechwyci maszyna lokalna i trzeba użyć skrótu zastępczego
+      - Automatyczne logowanie stanowisk pokazowych przestanie dochodzić do skutku
+      - Same poświadczenia, uprawnienia, dostęp do plików i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Signing in calls for pressing a key combination rather than merely clicking the screen
+      - Touch and kiosk stations without a keyboard lose the ability to sign in until they get an on-screen keyboard
+      - On remote connections and virtual machine consoles the combination is caught by the local machine and a substitute shortcut has to be used
+      - Automatic sign-in of demonstration stations stops completing
+      - The credentials themselves, privileges, access to files and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska dotykowe i kioskowe bez klawiatury fizycznej ani ekranowej obsługującej ten sygnał
+      - Maszyny logujące się samoczynnie, na których nikt nie siedzi i nie naciśnie klawiszy
+      - Środowiska zdalne bez przycisku zastępczego wywołującego tę kombinację w sesji
+    en:
+      - Touch and kiosk stations with neither a physical nor an on-screen keyboard handling that signal
+      - Machines signing in by themselves, where nobody sits and nobody presses keys
+      - Remote environments with no substitute button raising that combination inside the session
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableCAD'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'DisableCAD'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableCAD' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-do-not-require-ctrl-alt-del
+
+notes:
+  pl: |
+    Nazwa wpisu opisuje zachowanie przez zaprzeczenie, więc wartość zero oznacza
+    wymaganie włączone. Brak wpisu zgłaszany jest jako niespełnienie, bo punkt
+    wymaga jawnego rozstrzygnięcia. Zasadę ocenia się razem z automatycznym
+    logowaniem: jedno wyklucza drugie.
+  en: |
+    The name of the entry describes the behaviour by negation, so a value of zero
+    means the requirement is on. A missing entry is reported as unmet, since the
+    item calls for an explicit settlement. The rule is judged together with
+    automatic sign-in - one rules the other out.

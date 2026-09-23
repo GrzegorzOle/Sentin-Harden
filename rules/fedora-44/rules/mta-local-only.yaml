@@ -1,0 +1,215 @@
+id: fedora44-mta-local-only
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.1.21
+  section: Services > Configure Server Services
+  title:
+    pl: Serwer poczty przyjmuje połączenia tylko lokalnie
+    en: Ensure mail transfer agents are configured for local-only mode
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Serwer poczty (MTA) na stacji roboczej potrzebny jest najwyżej do
+    wysyłania powiadomień systemowych. Jeśli nasłuchuje na porcie 25 adresu
+    sieciowego, przyjmuje pocztę od innych komputerów, co otwiera drogę do
+    nadużyć, np. rozsyłania spamu, i wystawia na ataki kolejną usługę.
+
+    Punkt wymaga, żeby na porcie 25 nic nie nasłuchiwało albo żeby
+    nasłuchiwało tylko na adresie pętli zwrotnej. Na Fedorze Workstation
+    serwer poczty domyślnie nie jest zainstalowany, a Postfix, Sendmail
+    i OpenSMTPD po instalacji nasłuchują tylko lokalnie.
+  en: |
+    A mail transfer agent (MTA) on a workstation is at most needed to send
+    system notifications. If it listens on port 25 of a network address, it
+    accepts mail from other computers, which opens the way to abuse, such as
+    sending spam, and exposes one more service to attacks.
+
+    The item requires that nothing listens on port 25 or that it listens
+    only on the loopback address. On Fedora Workstation no mail server is
+    installed by default, and Postfix, Sendmail and OpenSMTPD listen only
+    locally after installation.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli komputer nie odbierał poczty z sieci.
+    W przeciwnym razie inne komputery nie dostarczą do niego poczty przez
+    SMTP. Wysyłanie poczty z tego komputera i doręczanie lokalne działają
+    dalej. Zmiana na chwilę restartuje Postfix.
+  en: |
+    Nobody will notice if the computer did not receive mail from the network.
+    Otherwise other computers cannot deliver mail to it over SMTP. Sending
+    mail from this computer and local delivery keep working. The change
+    briefly restarts Postfix.
+
+implementation_consequences:
+  impact_areas:
+    - email-and-attachments
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Inne komputery nie mogą dostarczać poczty do tego komputera przez SMTP
+    en:
+      - Other computers cannot deliver mail to this computer over SMTP
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Komputer jest serwerem poczty, który odbiera pocztę z sieci
+    en:
+      - The computer is a mail server that receives mail from the network
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v ss >/dev/null 2>&1 || ! command -v rpm >/dev/null 2>&1 || ! ss -Hltn >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      l=$(ss -Hltn | awk '{
+        a = $4; p = a; sub(/.*:/, "", p)
+        if (p != "25") next
+        h = a; sub(/:[^:]*$/, "", h); gsub(/[][]/, "", h); sub(/%.*/, "", h)
+        if (h ~ /^127\./ || h == "::1" || h ~ /^::ffff:127\./) { lo = 1; next }
+        bad = bad "," a
+      } END { if (bad != "") print "LISTENING:" substr(bad, 2); else if (lo) print "LOCAL_ONLY" }')
+      if [ -n "$l" ]; then echo "$l"
+      elif rpm -q --quiet --whatprovides MTA; then echo NO_LISTENER
+      else echo NO_MTA; fi
+    }
+    state
+  expected: '^(LOCAL_ONLY|NO_LISTENER|NO_MTA)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/postfix/main.cf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=file-1
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/postfix/main.cf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      command -v ss >/dev/null 2>&1 || { echo "The ss command is not available" >&2; exit 1; }
+      state() {
+        l=$(ss -Hltn | awk '{
+          a = $4; p = a; sub(/.*:/, "", p)
+          if (p != "25") next
+          h = a; sub(/:[^:]*$/, "", h); gsub(/[][]/, "", h); sub(/%.*/, "", h)
+          if (h ~ /^127\./ || h == "::1" || h ~ /^::ffff:127\./) { lo = 1; next }
+          bad = bad "," a
+        } END { if (bad != "") print "LISTENING:" substr(bad, 2); else if (lo) print "LOCAL_ONLY" }')
+        if [ -n "$l" ]; then echo "$l"
+        elif rpm -q --quiet --whatprovides MTA; then echo NO_LISTENER
+        else echo NO_MTA; fi
+      }
+      s=$(state)
+      case "$s" in
+        LISTENING:*) ;;
+        *) echo "No mail server listens on port 25 of a network address ($s), nothing to change"; exit 0 ;;
+      esac
+      a=$(systemctl is-active postfix.service 2>/dev/null) || true
+      if ! rpm -q --quiet postfix || [ "$a" != active ] || [ ! -f "$f" ]; then
+        echo "Port 25 is not served by a running Postfix ($s); set that mail server to listen on the loopback address by hand" >&2
+        exit 1
+      fi
+      postconf -e 'inet_interfaces = loopback-only'
+      systemctl restart postfix.service
+      s=$(state)
+      case "$s" in LISTENING:*) echo "Port 25 still listens on a network address ($s)" >&2; exit 1 ;; esac
+      echo "Set inet_interfaces = loopback-only in $f and restarted Postfix ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/postfix/main.cf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=file-1 ] && [ "$(sed -n 3p "$b")" = --- ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in
+        1) ;;
+        0) echo "$f did not exist before the change, nothing to restore"; exit 0 ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      [ -d "$(dirname "$f")" ] || { echo "Postfix is no longer installed, nothing to restore"; exit 0; }
+      tmp=$(mktemp)
+      trap 'rm -f "$tmp"' EXIT
+      sed '1,/^---$/d' "$b" > "$tmp"
+      if [ -f "$f" ] && cmp -s "$tmp" "$f"; then echo "$f is unchanged, nothing to restore"; exit 0; fi
+      cat "$tmp" > "$f"
+      systemctl try-restart postfix.service
+      echo "Restored the previous content of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.postfix.org/postconf.5.html#inet_interfaces
+  - https://www.postfix.org/postconf.1.html
+  - https://man7.org/linux/man-pages/man8/ss.8.html
+  - https://www.exim.org/exim-html-current/doc/html/spec_html/ch-main_configuration.html
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje poleceniem ss gniazda TCP nasłuchujące na porcie
+    25 i traktuje adresy 127.0.0.0/8, ::1 oraz ::ffff:127.0.0.0/104 jako
+    lokalne. Wynik LISTENING wymienia adresy sieciowe, na których nasłuchuje
+    serwer, LOCAL_ONLY oznacza nasłuch tylko lokalny, NO_LISTENER
+    zainstalowany serwer poczty, który nie nasłuchuje, a NO_MTA brak serwera
+    poczty. Tak jak w CIS sprawdzany jest tylko port 25. Exim domyślnie
+    nasłuchuje na wszystkich adresach także na portach 465 i 587; jego
+    ustawienie local_interfaces ogranicza adresy dla wszystkich tych portów
+    naraz.
+
+    Naprawa obsługuje tylko Postfix, bo tak opisuje ją CIS: ustawia
+    inet_interfaces = loopback-only w /etc/postfix/main.cf poleceniem
+    postconf -e i restartuje Postfix, bo tego ustawienia nie da się
+    przeładować. Gdy na porcie 25 nasłuchuje inny serwer, np. Exim, naprawa
+    kończy się błędem i trzeba go ustawić ręcznie. Kopia zapisuje cały plik
+    main.cf, a wycofanie przywraca jego treść i restartuje działający
+    Postfix.
+  en: |
+    The check reads the TCP sockets listening on port 25 with ss and treats
+    the addresses 127.0.0.0/8, ::1 and ::ffff:127.0.0.0/104 as local. The
+    LISTENING result lists the network addresses the server listens on,
+    LOCAL_ONLY means it listens only locally, NO_LISTENER an installed mail
+    server that does not listen, and NO_MTA no mail server. As in CIS, only
+    port 25 is checked. By default Exim also listens on all addresses on
+    ports 465 and 587; its local_interfaces setting limits the addresses for
+    all of these ports at once.
+
+    The remediation handles only Postfix, as CIS describes it: it sets
+    inet_interfaces = loopback-only in /etc/postfix/main.cf with postconf -e
+    and restarts Postfix, because this setting cannot be reloaded. When a
+    different server, such as Exim, listens on port 25, the remediation
+    fails and that server has to be set by hand. The backup keeps the whole
+    main.cf file, and the rollback restores its content and restarts a
+    running Postfix.

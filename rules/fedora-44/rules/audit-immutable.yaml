@@ -1,0 +1,311 @@
+id: fedora44-audit-immutable
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.3.3.20
+  section: Logging and Auditing > System Accounting (auditd) > Configure auditd Rules
+  title:
+    pl: Konfiguracja audytu jest niezmienna
+    en: Ensure the audit configuration is immutable
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Po wczytaniu -e 2 jądro blokuje konfigurację audytu: do ponownego
+    uruchomienia komputera nie da się zmienić reguł ani wyłączyć audytu.
+    Ktoś z uprawnieniami roota nie wyłączy go więc po cichu; musi
+    zrestartować komputer, a to widać w dziennikach.
+
+    Punkt wymaga, żeby ostatnim ustawieniem -e w plikach /etc/audit/rules.d
+    było -e 2.
+  en: |
+    After -e 2 is loaded, the kernel locks the audit configuration: until
+    the computer restarts, the rules cannot be changed and auditing cannot
+    be turned off. Someone with root privileges therefore cannot turn it
+    off quietly; they have to restart the computer, which shows in the
+    logs.
+
+    The item requires the last -e setting in the /etc/audit/rules.d files
+    to be -e 2.
+
+disruption_description:
+  pl: |
+    Klasa wymaga zaplanowanego wdrożenia: blokada działa dopiero po
+    ponownym uruchomieniu komputera, a potem każda zmiana reguł audytu,
+    także przez Sentin-Harden, wymaga kolejnego restartu.
+  en: |
+    The class needs a planned rollout: the lock only takes effect after the
+    computer restarts, and after that every change of the audit rules,
+    also by Sentin-Harden, needs another restart.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Zmiana reguł audytu działa dopiero po ponownym uruchomieniu komputera
+      - auditctl nie wyłączy audytu ani nie usunie reguł do czasu restartu
+    en:
+      - A change of the audit rules only takes effect after the computer restarts
+      - auditctl cannot turn auditing off or remove rules until the restart
+  interruption: system-restart
+  user_visible: false
+  reversibility: after-restart
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    d=/etc/audit/rules.d
+    own=$d/99-sentin-harden-audit-immutable.rules
+    head='# Sentin-Harden: fedora44-audit-immutable (CIS 6.3.3.20), removed by its rollback'
+    private() { [ -d /etc/audit ] && { [ ! -x /etc/audit ] || { [ -d "$d" ] && { [ ! -r "$d" ] || [ ! -x "$d" ]; }; }; }; }
+    fput() { local t; t=$(mktemp); cat > "$t"; cmp -s "$t" "$1" || cat "$t" > "$1"; rm -f "$t"; }
+    # laste SKIP: the -e value that augenrules puts last (files in sort -V order), leaving out SKIP
+    laste() {
+      local f
+      printf '%s\n' "$d"/*.rules | sort -V | while IFS= read -r f; do
+        [ -f "$f" ] && [ "$f" != "${1:-}" ] || continue
+        cat "$f"; echo
+      done | awk '/^[[:space:]]*-e([[:space:]]|$)/ { v = $2 } END { print v }'
+    }
+    # running: the enabled value of the kernel, unknown without access
+    running() {
+      local s
+      s=$(auditctl -s 2>/dev/null) || { echo unknown; return 0; }
+      printf '%s\n' "$s" | awk '$1 == "enabled" { v = $2 } END { print (v == "" ? "unknown" : v) }'
+    }
+    evaluate() {
+      local e
+      command -v auditctl >/dev/null 2>&1 || { echo "NOT_OK:audit-not-installed"; return; }
+      if private; then echo "NOT_OK:needs-root"; return; fi
+      [ -d "$d" ] || { echo "NOT_OK:no-rules-dir"; return; }
+      e=$(laste)
+      [ "$e" = 2 ] || { echo "NOT_OK:e=${e:-unset}"; return; }
+      echo "OK:e=2,running=$(running)"
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    d=/etc/audit/rules.d
+    own=$d/99-sentin-harden-audit-immutable.rules
+    head='# Sentin-Harden: fedora44-audit-immutable (CIS 6.3.3.20), removed by its rollback'
+    private() { [ -d /etc/audit ] && { [ ! -x /etc/audit ] || { [ -d "$d" ] && { [ ! -r "$d" ] || [ ! -x "$d" ]; }; }; }; }
+    fput() { local t; t=$(mktemp); cat > "$t"; cmp -s "$t" "$1" || cat "$t" > "$1"; rm -f "$t"; }
+    # laste SKIP: the -e value that augenrules puts last (files in sort -V order), leaving out SKIP
+    laste() {
+      local f
+      printf '%s\n' "$d"/*.rules | sort -V | while IFS= read -r f; do
+        [ -f "$f" ] && [ "$f" != "${1:-}" ] || continue
+        cat "$f"; echo
+      done | awk '/^[[:space:]]*-e([[:space:]]|$)/ { v = $2 } END { print v }'
+    }
+    # running: the enabled value of the kernel, unknown without access
+    running() {
+      local s
+      s=$(auditctl -s 2>/dev/null) || { echo unknown; return 0; }
+      printf '%s\n' "$s" | awk '$1 == "enabled" { v = $2 } END { print (v == "" ? "unknown" : v) }'
+    }
+    evaluate() {
+      local e
+      command -v auditctl >/dev/null 2>&1 || { echo "NOT_OK:audit-not-installed"; return; }
+      if private; then echo "NOT_OK:needs-root"; return; fi
+      [ -d "$d" ] || { echo "NOT_OK:no-rules-dir"; return; }
+      e=$(laste)
+      [ "$e" = 2 ] || { echo "NOT_OK:e=${e:-unset}"; return; }
+      echo "OK:e=2,running=$(running)"
+    }
+      command -v auditctl >/dev/null 2>&1 || { echo "audit is not installed; install it first" >&2; exit 1; }
+      [ -d "$d" ] || { echo "$d not found" >&2; exit 1; }
+      {
+        echo format=audit-rules-1
+        if [ -e "$own" ]; then echo 'own present'; sed 's/^/| /' "$own"; else echo 'own absent'; fi
+      } > "$b.tmp"
+      mv "$b.tmp" "$b"
+      echo "Saved the state of $own"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+    export LC_ALL=C
+    d=/etc/audit/rules.d
+    own=$d/99-sentin-harden-audit-immutable.rules
+    head='# Sentin-Harden: fedora44-audit-immutable (CIS 6.3.3.20), removed by its rollback'
+    private() { [ -d /etc/audit ] && { [ ! -x /etc/audit ] || { [ -d "$d" ] && { [ ! -r "$d" ] || [ ! -x "$d" ]; }; }; }; }
+    fput() { local t; t=$(mktemp); cat > "$t"; cmp -s "$t" "$1" || cat "$t" > "$1"; rm -f "$t"; }
+    # laste SKIP: the -e value that augenrules puts last (files in sort -V order), leaving out SKIP
+    laste() {
+      local f
+      printf '%s\n' "$d"/*.rules | sort -V | while IFS= read -r f; do
+        [ -f "$f" ] && [ "$f" != "${1:-}" ] || continue
+        cat "$f"; echo
+      done | awk '/^[[:space:]]*-e([[:space:]]|$)/ { v = $2 } END { print v }'
+    }
+    # running: the enabled value of the kernel, unknown without access
+    running() {
+      local s
+      s=$(auditctl -s 2>/dev/null) || { echo unknown; return 0; }
+      printf '%s\n' "$s" | awk '$1 == "enabled" { v = $2 } END { print (v == "" ? "unknown" : v) }'
+    }
+    evaluate() {
+      local e
+      command -v auditctl >/dev/null 2>&1 || { echo "NOT_OK:audit-not-installed"; return; }
+      if private; then echo "NOT_OK:needs-root"; return; fi
+      [ -d "$d" ] || { echo "NOT_OK:no-rules-dir"; return; }
+      e=$(laste)
+      [ "$e" = 2 ] || { echo "NOT_OK:e=${e:-unset}"; return; }
+      echo "OK:e=2,running=$(running)"
+    }
+      sed -n 1p "$b" | grep -qx 'format=audit-rules-1' || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      os=$(sed -n 2p "$b")
+      case "$os" in
+        'own absent') [ "$(wc -l < "$b")" -eq 2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; } ;;
+        'own present') if tail -n +3 "$b" | grep -qv '^| '; then echo "Backup file is damaged: $b" >&2; exit 1; fi ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      # putback: the saved own file back, or none
+      putback() {
+        if [ "$os" = 'own present' ]; then
+          if [ ! -e "$own" ]; then (umask 027; : > "$own"); fi
+          tail -n +3 "$b" | sed 's/^| //' | fput "$own"
+        else
+          rm -f "$own"
+        fi
+      }
+      command -v auditctl >/dev/null 2>&1 || { echo "audit is not installed; install it first" >&2; exit 1; }
+      if [ "$(laste "$own")" = 2 ]; then
+        rm -f "$own"; echo "Other files already end the rules with -e 2"
+      else
+        [ -e "$own" ] || (umask 027; : > "$own")
+        printf '%s\n' "$head" '-e 2' | fput "$own"
+        echo "Wrote -e 2 to $own"
+      fi
+      r=$(evaluate)
+      case "$r" in OK:*) ;; *)
+        putback
+        echo "The audit configuration is still not immutable ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+      case "$r" in *running=2) ;; *) echo "Restart the computer to lock the audit configuration" ;; esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+    export LC_ALL=C
+    d=/etc/audit/rules.d
+    own=$d/99-sentin-harden-audit-immutable.rules
+    head='# Sentin-Harden: fedora44-audit-immutable (CIS 6.3.3.20), removed by its rollback'
+    private() { [ -d /etc/audit ] && { [ ! -x /etc/audit ] || { [ -d "$d" ] && { [ ! -r "$d" ] || [ ! -x "$d" ]; }; }; }; }
+    fput() { local t; t=$(mktemp); cat > "$t"; cmp -s "$t" "$1" || cat "$t" > "$1"; rm -f "$t"; }
+    # laste SKIP: the -e value that augenrules puts last (files in sort -V order), leaving out SKIP
+    laste() {
+      local f
+      printf '%s\n' "$d"/*.rules | sort -V | while IFS= read -r f; do
+        [ -f "$f" ] && [ "$f" != "${1:-}" ] || continue
+        cat "$f"; echo
+      done | awk '/^[[:space:]]*-e([[:space:]]|$)/ { v = $2 } END { print v }'
+    }
+    # running: the enabled value of the kernel, unknown without access
+    running() {
+      local s
+      s=$(auditctl -s 2>/dev/null) || { echo unknown; return 0; }
+      printf '%s\n' "$s" | awk '$1 == "enabled" { v = $2 } END { print (v == "" ? "unknown" : v) }'
+    }
+    evaluate() {
+      local e
+      command -v auditctl >/dev/null 2>&1 || { echo "NOT_OK:audit-not-installed"; return; }
+      if private; then echo "NOT_OK:needs-root"; return; fi
+      [ -d "$d" ] || { echo "NOT_OK:no-rules-dir"; return; }
+      e=$(laste)
+      [ "$e" = 2 ] || { echo "NOT_OK:e=${e:-unset}"; return; }
+      echo "OK:e=2,running=$(running)"
+    }
+      sed -n 1p "$b" | grep -qx 'format=audit-rules-1' || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      os=$(sed -n 2p "$b")
+      case "$os" in
+        'own absent') [ "$(wc -l < "$b")" -eq 2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; } ;;
+        'own present') if tail -n +3 "$b" | grep -qv '^| '; then echo "Backup file is damaged: $b" >&2; exit 1; fi ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      # putback: the saved own file back, or none
+      putback() {
+        if [ "$os" = 'own present' ]; then
+          if [ ! -e "$own" ]; then (umask 027; : > "$own"); fi
+          tail -n +3 "$b" | sed 's/^| //' | fput "$own"
+        else
+          rm -f "$own"
+        fi
+      }
+      if [ -e "$own" ] && [ "$(head -n 1 "$own")" != "$head" ]; then
+        echo "Kept $own: changed since the remediation"
+      else
+        putback
+        if [ "$os" = 'own present' ]; then echo "Restored $own"; else echo "Removed $own"; fi
+      fi
+      if [ "$(running)" = 2 ]; then echo "The audit configuration stays locked until the computer restarts"; fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/auditctl.8.html
+  - https://man7.org/linux/man-pages/man8/augenrules.8.html
+  - https://man7.org/linux/man-pages/man7/audit.rules.7.html
+  - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/security_hardening/auditing-the-system_security-hardening
+
+notes:
+  pl: |
+    Naprawa zapisuje -e 2 do osobnego pliku
+    /etc/audit/rules.d/99-sentin-harden-audit-immutable.rules, chyba że
+    ostatnie -e w pozostałych plikach (w kolejności augenrules, sort -V)
+    już jest równe 2. Reguł nie wczytuje, więc konfiguracja blokuje się
+    przy następnym uruchomieniu komputera albo wcześniej, gdy inna reguła
+    audytu wywoła augenrules --load. Dlatego tę regułę warto stosować na
+    końcu, po pozostałych regułach audytu.
+
+    Test zwraca OK, gdy -e 2 jest w plikach, a w polu running podaje stan
+    jądra: 2 to zablokowana konfiguracja, unknown oznacza brak dostępu do
+    jądra. Plik z późniejszym -e 0 lub -e 1 daje NOT_OK:e=0 lub e=1 i wtedy
+    naprawa kończy się błędem. Wycofanie usuwa plik, ale zablokowana
+    konfiguracja zostaje do restartu. /etc/audit jest dostępny tylko dla
+    roota, więc bez tych uprawnień wynik to NOT_OK:needs-root.
+  en: |
+    The remediation writes -e 2 to a separate file,
+    /etc/audit/rules.d/99-sentin-harden-audit-immutable.rules, unless the
+    last -e in the other files (in augenrules order, sort -V) is already 2.
+    It does not load the rules, so the configuration locks at the next
+    start of the computer, or earlier when another audit rule runs
+    augenrules --load. It is therefore best to apply this rule last, after
+    the other audit rules.
+
+    The test returns OK when -e 2 is in the files and gives the kernel
+    state in the running field: 2 is a locked configuration, unknown means
+    no access to the kernel. A file with a later -e 0 or -e 1 gives
+    NOT_OK:e=0 or e=1, and then the remediation fails. Rollback removes the
+    file, but a locked configuration stays until the restart. /etc/audit is
+    only accessible to root, so without these privileges the result is
+    NOT_OK:needs-root.

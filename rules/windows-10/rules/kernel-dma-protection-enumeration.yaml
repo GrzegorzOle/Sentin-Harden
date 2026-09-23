@@ -1,0 +1,176 @@
+id: win10-kernel-dma-protection-enumeration
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Kernel DMA Protection
+  title:
+    pl: Blokada urządzeń zewnętrznych sięgających wprost do pamięci
+    en: External devices reaching straight into memory blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Część gniazd rozszerzeń pozwala urządzeniu czytać i zapisywać pamięć maszyny
+    bezpośrednio, bez pośrednictwa procesora. Jest to zrobione dla szybkości, a
+    skutkiem ubocznym jest to, że urządzenie podłączone do takiego gniazda sięga
+    do pamięci, w której leżą klucze szyfrowania i zawartość otwartych sesji.
+
+    Atak tą drogą nie wymaga hasła ani zalogowania. Wymaga wyłącznie chwili
+    fizycznego dostępu do maszyny, która stoi włączona lub uśpiona — czyli tego,
+    co zdarza się w hotelu, w sali konferencyjnej i przy biurku podczas przerwy.
+
+    Zasada nakazuje blokować urządzenia sięgające do pamięci, dopóki maszyna nie
+    zostanie odblokowana przez użytkownika.
+  en: |
+    Some expansion sockets let a device read and write the machine s memory
+    directly, with no processor in between. It is done for speed, and the side
+    effect is that a device plugged into such a socket reaches into memory holding
+    encryption keys and the contents of open sessions.
+
+    An attack by that road calls for no password and no signing in. It calls only
+    for a moment of physical access to a machine standing switched on or asleep -
+    that is, for what happens in a hotel, in a meeting room and at a desk during a
+    break.
+
+    The rule directs that devices reaching into memory be blocked until the
+    machine has been unlocked by its user.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo trafia w sprzęt podłączany przez gniazda
+    rozszerzeń: stacje dokujące, karty sieciowe, zewnętrzne karty graficzne,
+    macierze dyskowe. Na maszynie zablokowanej takie urządzenie nie zostanie
+    uruchomione i wygląda to na niedziałające gniazdo.
+
+    Typowym objawem jest stacja dokująca, która ożywa dopiero po zalogowaniu:
+    monitory pozostają czarne na ekranie logowania, a sieć przewodowa nie działa,
+    dopóki nikt się nie zaloguje. Warto to przekazać razem z wdrożeniem, bo
+    inaczej pierwsze zgłoszenie brzmi jak awaria sprzętu.
+
+    Punkt działa tylko tam, gdzie sprzęt i oprogramowanie układowe ten mechanizm
+    znają. Na maszynie bez takiej obsługi ustawienie leży bez skutku.
+  en: |
+    The change calls for a review, because it strikes at hardware plugged into
+    expansion sockets - docking stations, network cards, external graphics cards,
+    disk arrays. On a locked machine such a device is not started, and it looks
+    like a socket that does not work.
+
+    The typical symptom is a docking station that comes to life only after signing
+    in - the monitors stay black on the sign-in screen and the wired network does
+    not work until somebody signs in. That is worth passing on along with the
+    rollout, since otherwise the first ticket sounds like a hardware fault.
+
+    The item works only where the hardware and the firmware know this mechanism.
+    On a machine with no such support the setting sits without effect.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - removable-media
+  what_breaks:
+    pl:
+      - Urządzenia podłączone przez gniazda rozszerzeń nie uruchomią się, dopóki maszyna nie zostanie odblokowana
+      - Stacja dokująca ożyje dopiero po zalogowaniu, więc monitory i sieć przewodowa nie działają na ekranie logowania
+      - Zewnętrzne karty graficzne, karty sieciowe i macierze dyskowe pozostaną nieaktywne na maszynie zablokowanej
+      - Na sprzęcie nieznającym tego mechanizmu ustawienie leży bez skutku, a raport i tak zgłosi punkt jako spełniony
+      - Urządzenia podłączane przez zwykłe gniazda, klawiatura, mysz i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Devices plugged into expansion sockets do not start until the machine has been unlocked
+      - A docking station comes to life only after signing in, so the monitors and wired network do not work on the sign-in screen
+      - External graphics cards, network cards and disk arrays stay inactive on a locked machine
+      - On hardware that does not know this mechanism the setting sits without effect, and the report still shows the item as met
+      - Devices plugged into ordinary sockets, the keyboard, mouse and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska dokowane, od których oczekuje się obrazu i sieci przed zalogowaniem
+      - Maszyny z zewnętrzną kartą graficzną albo macierzą dyskową wymaganą przy starcie
+      - Środowiska, w których sprzęt podłączany przez gniazda rozszerzeń obsługuje się bez logowania
+    en:
+      - Docked stations, expected to give a picture and a network before signing in
+      - Machines with an external graphics card or disk array needed at start-up
+      - Environments where hardware plugged into expansion sockets is operated without signing in
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Kernel DMA Protection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DeviceEnumerationPolicy'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Kernel DMA Protection'
+    $name = 'DeviceEnumerationPolicy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Kernel DMA Protection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DeviceEnumerationPolicy' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/hardware-security/kernel-dma-protection-for-thunderbolt
+
+notes:
+  pl: |
+    Nazwa wpisu mówi o wyliczaniu urządzeń, a wartość zero oznacza tu wariant
+    najostrzejszy: urządzenie nie zostanie uruchomione, dopóki maszyna jest
+    zablokowana. Mechanizm wymaga obsługi po stronie sprzętu i oprogramowania
+    układowego — na maszynie bez takiej obsługi wpis nie zmienia niczego, choć
+    raport zgłosi punkt jako spełniony.
+  en: |
+    The name of the entry speaks of enumerating devices, and a value of zero here
+    means the strictest variant - a device is not started while the machine is
+    locked. The mechanism calls for support from the hardware and the firmware -
+    on a machine without it the entry alters nothing, though the report shows the
+    item as met.

@@ -1,0 +1,152 @@
+id: win10-removable-media-format-eject-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Formatowanie i wysuwanie nośników wymiennych zastrzeżone dla administratorów
+    en: Formatting and ejecting removable media reserved for administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Formatowanie nośnika i wysunięcie go na poziomie urządzenia to czynności
+    sięgające do sprzętu z pominięciem systemu plików. Rozszerzenie kręgu osób,
+    które mogą je wykonać, otwiera dostęp do całej zawartości nośnika, a nie tylko
+    do plików, które system pokazuje.
+
+    Punkt ma niską kategorię ryzyka, bo dotyczy maszyny, przy której ktoś już
+    siedzi zalogowany. Jego wartość leży w porządku: skoro nośnik może zawierać
+    dane, których system nie wyświetla, to sięganie do niego poniżej systemu
+    plików nie powinno być czynnością zwykłego użytkownika.
+
+    Zastrzeżenie tego dla administratorów zawęża krąg osób mogących sięgnąć do
+    nośnika z pominięciem warstwy, na której działa kontrola dostępu.
+  en: |
+    Formatting a medium and ejecting it at the device level are acts reaching for
+    the hardware past the file system. Widening the circle of people who may
+    perform them opens access to the whole content of the medium rather than to
+    the files the system shows.
+
+    The item is of low risk, since it concerns a machine somebody is already
+    sitting at, signed in. Its value lies in good order - if a medium may hold
+    data the system does not display, then reaching for it below the file system
+    should not be the act of an ordinary user.
+
+    Reserving that for administrators narrows the circle of people who can reach a
+    medium past the layer access control works on.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo trafia w czynność wykonywaną w niektórych
+    zawodach codziennie: przygotowywanie nośników, kasowanie kart pamięci,
+    obsługa sprzętu pomiarowego zapisującego na własnym nośniku.
+
+    W zwykłym biurze skutek jest żaden — formatowanie nośnika przez system plików
+    działa jak wcześniej i to ono jest drogą używaną na co dzień. Warto to
+    odróżnić, bo inaczej zasada brzmi groźniej, niż działa.
+  en: |
+    The change calls for a review, because it strikes at an act performed daily in
+    some trades - preparing media, wiping memory cards, handling measuring
+    hardware that records onto a medium of its own.
+
+    In an ordinary office the effect is none - formatting a medium through the
+    file system works as before and that is the route used day to day. That is
+    worth telling apart, since otherwise the rule sounds graver than it acts.
+
+implementation_consequences:
+  impact_areas:
+    - removable-media
+  what_breaks:
+    pl:
+      - Formatowanie nośnika na poziomie urządzenia przestanie być możliwe bez uprawnień administratora
+      - Wysunięcie nośnika na poziomie urządzenia będzie wymagało podniesienia uprawnień
+      - Stanowiska przygotowujące nośniki hurtowo będą wymagały konta z uprawnieniami albo przeniesienia tej pracy
+      - Kopiowanie plików, odczyt nośnika, formatowanie przez system plików i praca użytkownika pozostają bez zmian
+    en:
+      - Formatting a medium at the device level stops being possible without administrator privileges
+      - Ejecting a medium at the device level calls for raised privileges
+      - Stations preparing media in bulk need an account with privileges or that work moved elsewhere
+      - Copying files, reading a medium, formatting through the file system and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska przygotowujące nośniki hurtowo, gdzie formatowanie na poziomie urządzenia jest treścią pracy
+      - Laboratoria obsługujące sprzęt pomiarowy zapisujący na własnym nośniku wymiennym
+    en:
+      - Stations preparing media in bulk, where formatting at the device level is the substance of the work
+      - Laboratories handling measuring hardware that records onto a removable medium of its own
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is kept as text, not a number, so it is compared as text.
+      # Reading it numerically would turn an absent value into a zero and report
+      # a machine with no setting at all as satisfying the item.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      $name = 'AllocateDASD'
+      $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+      if ($null -eq $current) { 'MISSING' } else { ([string]$current).Trim() }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'AllocateDASD'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The value is text, not a number, despite looking like one - written as a
+    # number it leaves an entry the system quietly passes over.
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+      -Name 'AllocateDASD' -Value '0' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value ([string]$b.value) -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/devices-allowed-to-format-and-eject-removable-media
+
+notes:
+  pl: |
+    Wartość jest tekstowa mimo wyglądu liczby i porównuje się ją jako tekst.
+    Odczytanie jej liczbowo zamieniłoby brak wpisu w zero i zgłosiłoby maszynę bez
+    ustawienia jako spełniającą punkt — stąd osobny stan dla braku wpisu.
+  en: |
+    The value is text despite looking like a number and is compared as text.
+    Reading it numerically would turn a missing entry into a zero and report a
+    machine with no setting at all as satisfying the item - hence a state of its
+    own for a missing entry.

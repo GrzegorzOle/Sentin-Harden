@@ -1,0 +1,157 @@
+id: win10-driver-additional-software-report-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Installation
+  title:
+    pl: Zgłaszanie prośby sterownika o dodatkowe oprogramowanie wyłączone
+    en: Reporting a driver s request for additional software switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sterownik zainstalowany poprawnie potrafi poprosić o doinstalowanie
+    oprogramowania towarzyszącego: panelu sterowania urządzeniem, narzędzia
+    konfiguracyjnego, aplikacji producenta. Prośba idzie na zewnątrz razem z
+    identyfikatorami sprzętu.
+
+    Jest to ta sama informacja co przy braku sterownika, wysyłana z drugiego
+    powodu, i dokładnie tak samo opisuje maszynę. Różnica polega na tym, że tu
+    urządzenie już działa — więc wysłanie prośby nie służy uruchomieniu sprzętu,
+    tylko dołożeniu do niego oprogramowania.
+
+    Wyłączenie tej drogi zostawia decyzję o dodatkowym oprogramowaniu tam, gdzie
+    podejmuje się ją świadomie.
+  en: |
+    A driver installed correctly can ask for accompanying software to be added - a
+    control panel for the device, a configuration tool, the maker s application.
+    The request goes outwards along with the hardware identifiers.
+
+    It is the same information as with a missing driver, sent for a second reason,
+    and describes the machine in exactly the same way. The difference is that here
+    the device already works - so sending the request serves not to get the
+    hardware running but to add software to it.
+
+    Switching that road off leaves the decision about additional software where it
+    is taken deliberately.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic i nie jest widoczna w pracy. Nie wymaga przerwy i
+    cofa się natychmiast.
+
+    Skutkiem jest brak podpowiedzi o dodatkowym oprogramowaniu przy instalowaniu
+    urządzenia. Na stanowisku roboczym jest to raczej zaleta niż strata: panel
+    producenta instaluje się świadomie, a nie przy okazji podłączenia sprzętu.
+  en: |
+    The change costs nothing and is invisible in daily work. It calls for no
+    interruption and reverses at once.
+
+    Its consequence is that no suggestion of additional software appears while a
+    device is being installed. On a workstation that is an advantage rather than a
+    loss - the maker s panel is installed deliberately rather than in passing
+    while hardware is plugged in.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Przy instalowaniu urządzenia nie pojawi się podpowiedź o dodatkowym oprogramowaniu producenta
+      - Panele sterowania urządzeniami i narzędzia konfiguracyjne trzeba będzie zainstalować osobno
+      - Sprzęt wymagający narzędzia producenta do pełnej obsługi zadziała w zakresie podstawowym, dopóki narzędzia nie ma
+      - Sam sterownik, działanie urządzenia, drukowanie i praca użytkownika pozostają bez zmian
+    en:
+      - No suggestion of the maker s additional software appears while a device is installed
+      - Device control panels and configuration tools have to be installed separately
+      - Hardware needing the maker s tool for full operation works at a basic level until that tool is there
+      - The driver itself, the working of the device, printing and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których sprzęt wymaga narzędzia producenta doinstalowanego tą właśnie drogą
+      - Maszyny obsługiwane przez osoby bez uprawnień do instalowania oprogramowania z własnego źródła
+    en:
+      - Stations where the hardware needs the maker s tool added by this very route
+      - Machines operated by people with no right to install software from a source of their own
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableSendRequestAdditionalSoftwareToWER'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    $name = 'DisableSendRequestAdditionalSoftwareToWER'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableSendRequestAdditionalSoftwareToWER' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/drivers/install/device-installation-overview
+
+notes:
+  pl: |
+    Punkt ocenia się razem ze zgłaszaniem braku sterownika — oba wpisy leżą w tej
+    samej gałęzi ustawień instalacji urządzeń i zamykają tę samą drogę wychodzącą
+    z maszyny, otwieraną w dwóch różnych momentach.
+  en: |
+    The item is judged together with reporting a missing driver - both entries lie
+    in the same branch of device installation settings and shut the same road
+    leading out of the machine, opened at two different moments.

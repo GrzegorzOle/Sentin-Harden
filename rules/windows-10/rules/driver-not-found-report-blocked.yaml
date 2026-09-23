@@ -1,0 +1,161 @@
+id: win10-driver-not-found-report-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Installation
+  title:
+    pl: Zgłaszanie braku sterownika do producenta wyłączone
+    en: Reporting a missing driver to the maker switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy podłączone urządzenie nie ma sterownika, system wysyła do producenta
+    systemu zgłoszenie z jego identyfikatorami. Zgłoszenie jest pomyślane jako
+    prośba o wskazanie sterownika i takie właśnie jest.
+
+    Wartość tego punktu nie leży w ochronie przed atakiem, tylko w tym, co
+    zgłoszenie mówi o maszynie. Identyfikator sprzętu jest opisem konfiguracji:
+    model urządzenia pomiarowego, klucz licencyjny, czytnik, sprzęt laboratoryjny.
+    Zestaw takich zgłoszeń z całej organizacji rysuje obraz tego, czym się ona
+    posługuje.
+
+    Wyłączenie zgłaszania zostawia tę informację na maszynie. Sterownik i tak
+    instaluje się lokalnie albo z katalogu wskazanego przez administratora.
+  en: |
+    When a device plugged in has no driver, the system sends the maker of the
+    system a report holding its identifiers. The report is meant as a request for
+    a driver to be pointed at, and that is what it is.
+
+    The value of this item lies not in protection against an attack but in what
+    the report says about the machine. A hardware identifier is a description of
+    the configuration - the model of a measuring instrument, a licence key, a
+    reader, laboratory hardware. A set of such reports from across an organisation
+    draws a picture of what it works with.
+
+    Switching reporting off leaves that information on the machine. The driver is
+    installed locally anyway, or from a folder pointed at by an administrator.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic w codziennej pracy. Nie wymaga przerwy, nie jest
+    widoczna i cofa się natychmiast.
+
+    Jedynym skutkiem jest to, że system przestaje sam szukać sterownika u
+    producenta dla urządzeń, których nie zna. Na maszynie w organizacji sterowniki
+    i tak pochodzą z przygotowanego katalogu, a nie z tej drogi — warto to jednak
+    wiedzieć, zanim ktoś podłączy nietypowe urządzenie i zdziwi się brakiem
+    podpowiedzi.
+  en: |
+    The change costs nothing in daily work. It calls for no interruption, is
+    invisible and reverses at once.
+
+    Its one consequence is that the system stops looking for a driver at the maker
+    for devices it does not know. On a machine in an organisation drivers come
+    from a prepared folder anyway rather than from this route - but it is worth
+    knowing before somebody plugs in an unusual device and wonders at the missing
+    suggestion.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - System przestanie szukać sterownika u producenta dla urządzeń, których nie rozpoznaje
+      - Użytkownik podłączający nietypowe urządzenie nie dostanie podpowiedzi, skąd wziąć sterownik
+      - Instalowanie sterowników z przygotowanego katalogu, z nośnika producenta i przez aktualizacje działa bez zmian
+      - Rozpoznane urządzenia, klawiatura, mysz, drukarki i praca użytkownika pozostają bez zmian
+    en:
+      - The system stops looking for a driver at the maker for devices it does not recognise
+      - A user plugging in an unusual device gets no suggestion of where to find a driver
+      - Installing drivers from a prepared folder, from the maker s medium and through updates works unchanged
+      - Recognised devices, the keyboard, mouse, printers and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska bez przygotowanego katalogu sterowników, gdzie ta droga jest jedynym sposobem znalezienia sterownika
+      - Maszyny obsługiwane przez osoby bez uprawnień do instalowania sterowników z własnego źródła
+    en:
+      - Stations with no prepared driver folder, where this route is the only way of finding a driver
+      - Machines operated by people with no right to install drivers from a source of their own
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableSendGenericDriverNotFoundToWER'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    $name = 'DisableSendGenericDriverNotFoundToWER'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableSendGenericDriverNotFoundToWER' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/drivers/install/device-installation-overview
+
+notes:
+  pl: |
+    Punkt ocenia się razem ze zgłaszaniem prośby sterownika o dodatkowe
+    oprogramowanie — oba opisują tę samą drogę wychodzącą z maszyny przy obsłudze
+    urządzeń, różnią się tylko momentem, w którym się otwiera.
+  en: |
+    The item is judged together with reporting a driver s request for additional
+    software - both describe the same road leading out of the machine while
+    devices are handled, differing only in the moment it opens.

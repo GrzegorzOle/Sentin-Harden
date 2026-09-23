@@ -1,0 +1,159 @@
+id: win10-pnp-remote-access-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Device Installation
+  title:
+    pl: Zdalny dostęp do interfejsu instalacji urządzeń wyłączony
+    en: Remote access to the device installation interface switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Interfejs instalacji urządzeń wykonuje czynność o najwyższym znaczeniu: ładuje
+    do systemu kod działający z uprawnieniami jądra. Dopuszczenie do niego przez
+    sieć oznacza, że ta czynność da się wywołać z drugiej maszyny.
+
+    Skutek jest nieproporcjonalny do wyglądu ustawienia. Zdalne zainstalowanie
+    sterownika to nie zmiana konfiguracji, tylko wprowadzenie kodu poniżej
+    wszystkiego, co działa w systemie — łącznie z ochroną, która miałaby to
+    zauważyć.
+
+    Wyłączenie dostępu zdalnego sprawia, że sterownik instaluje się wyłącznie na
+    maszynie, przy której ktoś jest.
+  en: |
+    The device installation interface performs an act of the highest consequence -
+    it loads code running with kernel privileges into the system. Admitting access
+    to it over the network means that act can be raised from another machine.
+
+    The consequence is out of proportion to the look of the setting. Installing a
+    driver remotely is not a change of configuration but the introduction of code
+    below everything running in the system - the protection that ought to notice
+    it included.
+
+    Switching remote access off means a driver is installed only on a machine
+    somebody is at.
+
+disruption_description:
+  pl: |
+    Na stanowisku roboczym mechanizm nie jest używany i wyłączenie nie kosztuje
+    nic. Nie wymaga przerwy, nie jest widoczne w pracy i cofa się natychmiast.
+
+    Sprawdzić trzeba wyłącznie środowiska, w których sterowniki rozprowadza się
+    zdalnie starszym narzędziem sięgającym właśnie tą drogą. Współczesne
+    narzędzia zarządzania korzystają z własnego agenta i tego interfejsu nie
+    potrzebują, więc rozpoznanie sprowadza się do pytania, czym instaluje się
+    sterowniki w organizacji.
+  en: |
+    On a workstation the mechanism is not used and switching it off costs nothing.
+    It calls for no interruption, is invisible in daily work and reverses at once.
+
+    Only environments where drivers are distributed remotely by an older tool
+    reaching exactly this way need a look. Modern management tooling uses an agent
+    of its own and has no need of this interface, so recognising the case comes
+    down to asking what drivers are installed with in the organisation.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - remote-management
+  what_breaks:
+    pl:
+      - Zdalne instalowanie sterowników starszym narzędziem sięgającym tą drogą przestanie działać
+      - Narzędzia inwentaryzacji odpytujące ten interfejs przez sieć przestaną zbierać dane o urządzeniach
+      - Zdalna diagnostyka sprzętu prowadzona tym interfejsem będzie wymagała dostępu do maszyny na miejscu
+      - Instalowanie sterowników na miejscu, aktualizacje systemu, agenci zarządzania i praca użytkownika pozostają bez zmian
+    en:
+      - Installing drivers remotely with an older tool reaching this way stops working
+      - Inventory tooling polling this interface over the network stops collecting data about devices
+      - Remote hardware diagnostics run through this interface call for access to the machine on site
+      - Installing drivers on site, system updates, management agents and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska rozprowadzające sterowniki starszym narzędziem, które sięga do tego interfejsu przez sieć
+      - Maszyny bez obsługi na miejscu, gdzie instalacja sterownika możliwa jest wyłącznie zdalnie
+    en:
+      - Environments distributing drivers with an older tool reaching this interface over the network
+      - Machines with no staff on site, where installing a driver is possible only remotely
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowRemoteRPC'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    $name = 'AllowRemoteRPC'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Settings'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowRemoteRPC' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/drivers/install/device-installation-overview
+
+notes:
+  pl: |
+    Nazwa wpisu mówi o zdalnym wywoływaniu procedur w ogóle, ale ustawienie dotyczy
+    wyłącznie interfejsu instalacji urządzeń — pozostałe usługi sięgające przez
+    sieć mają własne ustawienia i ten wpis ich nie dotyczy.
+  en: |
+    The name of the entry speaks of remote procedure calls in general, but the
+    setting covers the device installation interface alone - the other services
+    reached over the network have settings of their own and this entry does not
+    touch them.

@@ -1,0 +1,229 @@
+id: win10-modify-object-label-none
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Modyfikowanie etykiety obiektu nieprzyznane nikomu
+    en: The changing of an object label granted to nobody
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie odbiera wszystkim prawo do zmiany etykiety obiektu.
+
+    Etykieta jest poziomem zaufania przypisanym plikowi, procesowi albo
+    kluczowi rejestru. System używa jej jako drugiej, niezależnej warstwy
+    ponad zwykłymi uprawnieniami: proces o niższym poziomie nie zapisze
+    do obiektu o wyższym, choćby uprawnienia na to pozwalały.
+
+    Na tym opiera się izolacja przeglądarek i programów otwierających
+    pliki z sieci. Uruchamiane są z poziomem obniżonym właśnie po to, żeby
+    przejęcie takiego programu nie dawało napastnikowi zapisu do reszty
+    systemu.
+
+    Prawo opisane tu pozwala ten poziom podnieść. Konto, które je ma, może
+    zdjąć obniżenie z własnego procesu i wyjść z izolacji, do której
+    został zamknięty. Jest to obejście mechanizmu, a nie jego użycie —
+    i dlatego nie przyznaje się go nikomu.
+
+    Odnotowuję, że domyślnie wykaz jest pusty. Zapisanie go pustym
+    utrwala ten stan jako decyzję.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: wyjście
+    z izolacji, w której system trzyma programy otwierające treści z sieci.
+  en: |
+    The setting takes from everybody the right of changing an object's label.
+
+    A label is the level of trust set upon a file, a process or a key of the register. The system uses it as a
+    second layer, standing apart above the ordinary rights: a process of a lower level will not write to an object
+    of a higher, though the rights should allow it.
+
+    Upon that rests the setting apart of browsers and of programs that open files from the network. They are run
+    at a lowered level for just this, that the taking of such a program should not give an attacker the writing to
+    the rest of the system.
+
+    The right set out here lets that level be raised. An account holding it may take the lowering off a process of
+    its own and come out of the setting apart it was shut into. It is a going round of the mechanism and no use of
+    it - and for that it is granted to nobody.
+
+    I set down that the list stands empty by default. The writing of it empty sets that state down as a decision.
+
+    What an attacker gains while the item goes unmet: a coming out of the setting apart in which the system holds
+    programs that open content from the network.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Wykaz jest pusty na każdej maszynie utrzymywanej normalnie i nie ma
+    czego odbierać. Żaden program użytkowy nie zmienia etykiet obiektów,
+    bo mechanizm ten nie jest przeznaczony do użycia z zewnątrz.
+
+    Odnotowuję, że wpis w tym wykazie byłby sam w sobie sygnałem wartym
+    zbadania. Nie ma powodu, dla którego miałby się tam znaleźć.
+
+    Skutek pojawia się przy następnym zalogowaniu.
+
+    Czego to nie psuje: pracy przeglądarek, otwierania plików z sieci,
+    logowania, dostępu do plików, drukowania.
+  en: |
+    The class is "no disruption".
+
+    The list stands empty upon every machine kept in the ordinary way and there is nothing to take away. No
+    program of use changes the labels of objects, that mechanism not being meant for a using from without.
+
+    I set down that an entry in this list would itself be a sign worth looking into. There is no ground upon which
+    it should be there.
+
+    The consequence shows at the next signing in.
+
+    What this does not break: the work of browsers, the opening of files from the network, logging on, the way to
+    files, or printing.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konto, któremu prawo nadano ręcznie, straci możliwość podnoszenia etykiety obiektów
+      - Wykaz jest pusty na każdej maszynie utrzymywanej normalnie, więc zmiana jest tam zapisem stanu
+      - Wpis w tym wykazie byłby sam w sobie sygnałem wartym zbadania
+      - Skutek pojawia się przy następnym zalogowaniu, a sesja trwająca zachowuje uprawnienia
+      - Praca przeglądarek, otwieranie plików z sieci, logowanie, dostęp do plików i drukowanie pozostają bez zmian
+    en:
+      - An account granted the right by hand will lose the raising of the labels of objects
+      - The list stands empty upon every machine kept in the ordinary way, so there the change is a setting down of a state
+      - An entry in this list would itself be a sign worth looking into
+      - The consequence shows at the next signing in, and a session at work keeps its rights
+      - The work of browsers, the opening of files from the network, logging on, the way to files and printing stay unchanged
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie pracuje oprogramowanie zarządzające poziomami zaufania obiektów i wymaga tego prawa
+    en:
+      - Upon the machine works software that rules the levels of trust of objects and calls for this right
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own message
+        # goes to the error stream, so the report can tell a missing privilege from
+        # a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeRelabelPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeRelabelPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeRelabelPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The right goes to nobody at all, so the line is written empty. An empty line
+    # is the setting; leaving the line out would keep whatever stood there before.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeRelabelPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeRelabelPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/modify-an-object-label
+
+notes:
+  pl: |
+    Reguła dotyczy warstwy, o której mało kto pamięta, a która działa
+    przez cały czas. Warto, żeby aplikacja wyjaśniła, czym etykieta
+    różni się od uprawnienia: uprawnienie mówi, kto może, etykieta mówi,
+    na ile wolno ufać temu, kto właśnie prosi.
+
+    Argument wart postawienia wprost dotyczy przeglądarek. Program
+    otwierający treści z sieci jest uruchamiany z poziomem obniżonym
+    i to jest główny powód, dla którego jego przejęcie nie kończy się
+    natychmiast przejęciem maszyny. Prawo do zmiany etykiety znosi ten
+    warunek jednym wywołaniem.
+
+    Odnotowuję, że punkt kosztuje jeden wpis i nic nie psuje. Wartością
+    jest utrwalenie stanu zastanego: maszyna, na której zasada została
+    zapisana pusta, wytrzyma czyjąś późniejszą zmianę bez cichego powrotu
+    do wartości domyślnej.
+  en: |
+    The rule touches a layer few call to mind and which works all the while. It is well that the application set
+    out wherein a label differs from a right: a right says who may, a label says how far the one now asking is to
+    be trusted.
+
+    The argument worth putting outright touches browsers. A program that opens content from the network is run at
+    a lowered level, and that is the chief ground upon which the taking of it does not end at once in the taking
+    of the machine. The right of changing a label undoes that condition with one call.
+
+    I set down that the item costs one entry and breaks nothing. The worth lies in the setting down of what was
+    found: a machine upon which the policy was written empty will bear somebody's later change without a quiet
+    return to the default value.

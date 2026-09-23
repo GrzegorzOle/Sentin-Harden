@@ -1,0 +1,208 @@
+id: win2016-app-shared-local-data-disabled
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > App Package Deployment
+  title:
+    pl: Wspólny katalog danych aplikacji dla wszystkich użytkowników wyłączony
+    en: A shared folder of application data for every user switched off
+  level: 2
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie wyłącza wspólny katalog danych, z którego aplikacje
+    pakowane mogą korzystać niezależnie od konta.
+
+    Rozdzielenie danych między konta jest podstawą założenia, na którym
+    stoi cała reszta: że jeden użytkownik nie czyta rzeczy drugiego.
+    Wspólny katalog to założenie znosi w obie strony naraz.
+
+    Kierunek pierwszy jest oczywisty: każda sesja czyta to, co zapisała
+    inna. Kierunek drugi bywa pomijany, a jest gorszy: każda sesja może
+    tam także zapisać, a aplikacja bierze stamtąd to, co znajdzie, nie
+    pytając, kto to położył.
+
+    Znaczy to, że konto o małych uprawnieniach potrafi podłożyć dane,
+    które przeczyta aplikacja działająca na koncie o uprawnieniach
+    większych. Nie jest to obejście żadnego mechanizmu — katalog jest
+    wspólny z założenia i działa dokładnie tak, jak zaprojektowano.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: miejsce,
+    w którym konto o małych uprawnieniach podkłada dane czytane przez
+    aplikację działającą z uprawnieniami większymi.
+  en: |
+    The setting switches off the shared folder of data that packaged applications may use whatever the account.
+
+    The parting of data between accounts is the ground of the supposition the whole rest stands on: that one user
+    does not read another's things. A shared folder undoes that supposition both ways at once.
+
+    The first direction is plain: every session reads what another wrote. The second is at times passed over, and
+    is the worse: every session may also write there, and an application takes from there what it finds, without
+    asking who laid it in.
+
+    That means an account with small rights can lay in data that will be read by an application working on an
+    account with greater ones. It is no getting round of any mechanism - the folder is shared by design and works
+    exactly as it was made to.
+
+    What an attacker gains while the item goes unmet: a place in which an account with small rights lays in data
+    read by an application working with greater rights.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Aplikacje pakowane przestają korzystać z katalogu wspólnego i pracują
+    na własnych danych w obrębie konta. Na serwerze aplikacji pakowanych
+    jest niewiele, a takich, które z katalogu wspólnego korzystają,
+    praktycznie nie ma.
+
+    Rzecz warta odnotowania: dane leżące w katalogu wspólnym nie są przez
+    zmianę usuwane. Zostają na dysku i trzeba je usunąć osobno, jeśli
+    o to chodzi.
+
+    Nie ma znanych regresji.
+
+    Czego to nie psuje: aplikacji pakowanych jako takich, ich danych
+    w obrębie konta, profili użytkownika, ról serwera, usług.
+
+    Nie wymaga restartu ani zatrzymania usługi.
+  en: |
+    The class is "no disruption".
+
+    Packaged applications cease to use the shared folder and work on their own data within the account. On a
+    server there are few packaged applications, and of those that use the shared folder there are in practice
+    none.
+
+    Worth noting: the data lying in the shared folder are not removed by the change. They stay on the disk and have
+    to be removed separately, if that is what is wanted.
+
+    There are no known regressions.
+
+    What this does not break: packaged applications as such, their data within the account, users' profiles, the
+    server's roles, or services.
+
+    Calls for no restart and no stopping of a service.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Aplikacja pakowana korzystająca z katalogu wspólnego przestaje widzieć dane zapisane przez inne konto
+      - Dane leżące w katalogu wspólnym nie są usuwane i trzeba je usunąć osobno
+      - Aplikacje pakowane i ich dane w obrębie konta pozostają bez zmian
+      - Profile użytkownika, role serwera i usługi systemowe pozostają bez zmian
+    en:
+      - A packaged application using the shared folder ceases to see data written by another account
+      - The data lying in the shared folder are not removed and have to be removed separately
+      - Packaged applications and their data within the account stay unchanged
+      - Users' profiles, the server roles and system services stay unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Aplikacja pakowana używana na tej maszynie przekazuje dane między kontami przez katalog wspólny
+    en:
+      - A packaged application used on this machine passes data between accounts through the shared folder
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry's name is affirmative, so the desired state is written with a
+      # zero, as at the item before.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\AppModel\StateManager'
+      $name = 'AllowSharedLocalAppData'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { ([string]$item.$name).Trim() }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\AppModel\StateManager'
+    $name = 'AllowSharedLocalAppData'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Zero is correct here as well: the entry's name is affirmative. Data
+    # already lying in the shared folder are not removed by the change.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\AppModel\StateManager'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowSharedLocalAppData' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      # Only the value is removed. The key holds unrelated settings and stays.
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/msix/desktop/desktop-to-uwp-behind-the-scenes
+
+notes:
+  pl: |
+    Punkt jest trzeci w bloku i stoi obok poprzedniego: tamten dotyczy
+    miejsca instalacji, ten — miejsca przechowywania danych.
+
+    Argument wart postawienia wprost dotyczy kierunku zapisu. Łatwo opisać
+    katalog wspólny jako miejsce, z którego cudze dane da się przeczytać,
+    i na tym poprzestać. Kierunek odwrotny jest groźniejszy: konto
+    o małych uprawnieniach podkłada dane, które przeczyta aplikacja
+    działająca z uprawnieniami większymi.
+
+    Zdanie warte zachowania, bo powtarza się w innych regułach: nie jest
+    to obejście mechanizmu. Katalog działa dokładnie tak, jak
+    zaprojektowano, a kłopotem jest samo założenie projektowe.
+
+    Pułapka w odczycie jest ta sama co przy poprzednim punkcie — nazwa
+    wartości jest twierdząca, więc stanowi pożądanemu odpowiada zero. Obie
+    reguły warto pokazywać razem także z tego powodu.
+  en: |
+    The item is the third in the block and stands beside the one before: that concerns the place of installation,
+    this the place where data are kept.
+
+    The argument worth setting down outright concerns the direction of the writing. It is easy to describe a shared
+    folder as a place from which somebody else's data can be read, and to stop there. The reverse direction is the
+    more dangerous: an account with small rights lays in data that will be read by an application working with
+    greater rights.
+
+    A sentence worth keeping, repeating itself as it does in other rules: it is no getting round of a mechanism. The
+    folder works exactly as it was made to, and the trouble is the very supposition it was made on.
+
+    The trap in the reading is the same as at the item before - the value's name is affirmative, so the wanted state
+    answers to a zero. Both rules are worth showing together for that reason as well.

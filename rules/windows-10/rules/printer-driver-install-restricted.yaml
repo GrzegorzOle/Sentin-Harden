@@ -1,0 +1,170 @@
+id: win10-printer-driver-install-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Instalowanie sterowników drukarek zastrzeżone dla administratorów
+    en: Installing printer drivers reserved for administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obok mechanizmu pobierania sterownika z serwera wydruku istnieje starsza,
+    osobna droga: dodanie sterownika wprost na maszynie, przez okno dodawania
+    drukarki albo przez pakiet instalacyjny. Ta zasada wymaga do niej uprawnień
+    administratora.
+
+    Różnica wobec zastrzeżenia dotyczącego serwerów wydruku polega na źródle.
+    Tamta zasada pilnuje kodu przychodzącego z sieci, ta — kodu wnoszonego
+    lokalnie, czyli z pamięci przenośnej, z pobranego pakietu producenta albo
+    z udziału plikowego. Obie prowadzą do tego samego skutku, jeśli pozostaną
+    otwarte.
+
+    Zdejmowane ryzyko jest identyczne: sterownik drukarki to kod o wysokich
+    uprawnieniach, a jego instalacja przez zwykłe konto jest podniesieniem
+    uprawnień na życzenie.
+  en: |
+    Beside the mechanism that fetches a driver from a print server there is an
+    older, separate road - adding a driver directly on the machine, through the
+    add-printer window or from an installation package. This rule requires
+    administrative rights for it.
+
+    The difference from the print-server restriction is the source. That rule
+    watches code arriving from the network, this one watches code brought in
+    locally, from removable storage, from a vendor package pulled down, or from a
+    file share. Both lead to the same place if left open.
+
+    The risk taken away is identical - a printer driver is code with high
+    privilege, and installing it from an ordinary account is privilege escalation
+    on request.
+
+disruption_description:
+  pl: |
+    W praktyce dotyka to osób, które same instalują drukarki ze sterownika
+    producenta: sprzęt kupiony do oddziału, drukarka etykiet, urządzenie
+    przyniesione przez dział techniczny. Po zmianie każde takie wdrożenie wymaga
+    administratora.
+
+    Ustawienie leży w gałęzi usług wydruku, a nie w zasadach, więc bywa już
+    ustawione fabrycznie i wtedy zmiana nie robi żadnej różnicy. Warto sprawdzić
+    stan przed wdrożeniem, żeby nie planować okna serwisowego dla ustawienia,
+    które i tak obowiązuje.
+  en: |
+    In practice this touches people who install printers from a vendor driver
+    themselves - hardware bought for a branch, a label printer, a device brought
+    in by the technical team. After the change every such rollout calls for an
+    administrator.
+
+    The setting sits in the print services branch rather than among policies, so
+    it is often already set out of the box, and then the change makes no
+    difference at all. It is worth checking the state beforehand, so as not to
+    plan a maintenance window for a setting that already holds.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Instalacja sterownika z pakietu producenta przez zwykłego użytkownika zakończy się odmową zamiast dodania drukarki
+      - Drukarki podłączane kablem, które dotąd instalowały się same przy pierwszym podłączeniu, będą wymagały udziału administratora
+      - Narzędzia producenta wdrażające sterownik razem z oprogramowaniem urządzenia zatrzymają się na etapie sterownika
+      - Drukowanie, kolejki już istniejące, zmiana ustawień drukarki i wydruk do pliku pozostają dostępne dla wszystkich jak wcześniej
+    en:
+      - Installing a driver from a vendor package as an ordinary user ends in a refusal instead of a printer being added
+      - Printers attached by cable that used to install themselves on first connection now call for an administrator
+      - Vendor tools that deploy a driver together with the device software stop at the driver stage
+      - Printing, queues already in place, changing printer settings and printing to file stay open to everybody as before
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska techniczne i laboratoryjne, gdzie podłączanie nowych urządzeń jest treścią pracy, a nie zdarzeniem wyjątkowym
+      - Oddziały bez administratora na miejscu, gdzie każda nowa drukarka oznacza czekanie na wsparcie
+      - Maszyny obsługujące drukarki etykiet i urządzenia specjalistyczne, których sterowniki wymienia się częściej niż zwykłe
+    en:
+      - Technical and laboratory stations, where attaching new devices is the substance of the work rather than a rare event
+      - Branches with no administrator on site, where every new printer means waiting for support
+      - Machines running label printers and specialist devices, whose drivers are replaced more often than ordinary ones
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AddPrinterDrivers'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers'
+    $name = 'AddPrinterDrivers'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AddPrinterDrivers' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/devices-prevent-users-from-installing-printer-drivers
+
+notes:
+  pl: |
+    Wartość leży w gałęzi usług wydruku, poza obszarem zasad grupy, więc jej
+    obecność nie oznacza, że ktokolwiek ją świadomie ustawił. Zasada uzupełnia
+    zastrzeżenie instalacji z serwera wydruku; tamta zamyka drogę sieciową, ta
+    lokalną.
+  en: |
+    The value sits in the print services branch, outside the group policy area, so
+    its presence does not mean anybody set it deliberately. The rule complements
+    the print-server restriction - that one closes the network road, this one the
+    local road.

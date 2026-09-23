@@ -1,0 +1,160 @@
+id: win10-point-and-print-warning-on-update
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers > Point and Print Restrictions
+  title:
+    pl: Ostrzeżenie przy aktualizacji sterownika drukarki sieciowej
+    en: Warning when updating a network printer driver
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Serwer wydruku może podmienić sterownik już po tym, jak drukarka została
+    dodana. Maszyna pobiera wtedy nową wersję i instaluje ją w miejsce
+    poprzedniej — a jest to ten sam kod systemowy co przy pierwszej instalacji,
+    tylko przychodzi później i ciszej.
+
+    Ta droga jest wygodniejsza dla napastnika niż instalacja pierwotna, bo nie
+    wymaga skłonienia nikogo do dodania drukarki. Wystarczy przejąć serwer wydruku,
+    z którego maszyny już korzystają, i poczekać, aż same sięgną po aktualizację.
+
+    Zasada przywraca pytanie także w tym momencie. Podmiana sterownika przestaje
+    być zdarzeniem, o którym nikt się nie dowiaduje.
+  en: |
+    A print server can swap the driver out after the printer has been added. The
+    machine then fetches the new version and installs it over the old one - the
+    same system code as at first installation, only arriving later and more
+    quietly.
+
+    This road suits an attacker better than the original install, because nobody
+    has to be talked into adding a printer. Take over a print server the machines
+    already use and wait for them to reach for an update on their own.
+
+    The rule restores the prompt at this moment as well. Swapping a driver stops
+    being an event nobody learns about.
+
+disruption_description:
+  pl: |
+    Aktualizacje sterowników drukarek zdarzają się rzadko, więc okno pojawia się
+    rzadziej niż przy instalacji. Za to pojawia się w gorszym momencie — zwykle
+    wtedy, gdy ktoś chce po prostu wydrukować dokument i nie spodziewa się
+    żadnego pytania.
+
+    Tam, gdzie sterowniki są rozsyłane centralnie, maszyny w ogóle nie sięgają po
+    aktualizacje z serwera wydruku i zmiana pozostaje zapisem bez skutku
+    praktycznego.
+  en: |
+    Printer driver updates happen rarely, so the prompt appears less often than at
+    install. It does appear at a worse moment, though - usually when somebody
+    simply wants to print a document and expects no question at all.
+
+    Where drivers are distributed centrally the machines never reach for updates
+    from the print server, and the change stays a written entry with no practical
+    effect.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Podmiana sterownika po stronie serwera wydruku będzie wymagała potwierdzenia na każdej maszynie osobno
+      - Wydruk zatrzyma się do czasu odpowiedzi na okno, co przy dokumencie wysłanym i zostawionym wygląda jak zawieszona kolejka
+      - Na koncie bez uprawnień administratora aktualizacja zakończy się prośbą o cudze poświadczenia i najczęściej nie dojdzie do skutku
+      - Drukowanie na sterowniku dotychczasowym, kolejki lokalne i drukarki rozesłane centralnie działają jak wcześniej
+    en:
+      - A driver swapped on the print server calls for confirmation on each machine separately
+      - The printout waits until the prompt is answered, which on a document sent and left behind looks like a stuck queue
+      - On an account without administrative rights the update ends asking for somebody else s credentials and usually does not go through
+      - Printing on the existing driver, local queues and centrally distributed printers all work as before
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których sterowniki drukarek aktualizuje się właśnie z serwera wydruku i robi się to często
+      - Stanowiska bez obsługi, gdzie okno zatrzyma kolejkę na czas nieokreślony
+      - Maszyny drukujące na urządzeniach produkcyjnych, gdzie zatrzymanie wydruku ma skutek poza informatyką
+    en:
+      - Environments where printer drivers are updated from the print server itself and that happens often
+      - Unattended stations, where a prompt holds the queue for an indefinite time
+      - Machines printing on production devices, where a halted printout has consequences beyond IT
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'UpdatePromptSettings'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    $name = 'UpdatePromptSettings'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'UpdatePromptSettings' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/point-and-print-default-behavior-change
+
+notes:
+  pl: |
+    Zero oznacza tu pytanie przy aktualizacji, a wartość niezerowa — jej brak.
+    Zasada jest drugą połową ostrzeżenia przy instalacji i wdrożenie tylko jednej
+    zostawia drogę otwartą w drugim momencie tego samego mechanizmu.
+  en: |
+    Zero here stands for a prompt at update and a non-zero value for its absence.
+    The rule is the second half of the warning at install, and deploying only one
+    leaves the road open at the other moment of the same mechanism.

@@ -1,0 +1,163 @@
+id: win10-spooler-remote-rpc-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Zdalny punkt końcowy bufora wydruku wyłączony
+    en: Remote endpoint of the print spooler disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bufor wydruku wystawia na sieć punkt, przez który inne maszyny mogą wydawać
+    mu polecenia: dodać sterownik, utworzyć kolejkę, wskazać plik do skopiowania.
+    Na stacji roboczej nikt tego nie potrzebuje — drukuje ona do drukarek, nie
+    przyjmuje wydruków od innych.
+
+    Wystawiony punkt jest natomiast jedną z najczęściej wykorzystywanych
+    powierzchni w całym systemie. Kolejne luki w tej samej usłudze pojawiały się
+    przez lata, a wszystkie miały wspólny warunek wstępny: możliwość odezwania się
+    do bufora wydruku przez sieć.
+
+    Wyłączenie zdejmuje ten warunek raz dla wszystkich takich luk, także tych
+    jeszcze nieopisanych. To jest rzadki przypadek zmiany, która zamyka nie jedną
+    podatność, lecz drogę do całej ich rodziny.
+  en: |
+    The print spooler exposes an endpoint on the network through which other
+    machines can give it orders - add a driver, create a queue, name a file to
+    copy. On a workstation nobody needs this; the machine prints to printers, it
+    does not accept printouts from others.
+
+    That exposed endpoint is, however, one of the most exploited surfaces in the
+    whole system. Flaw after flaw in this same service has surfaced over the
+    years, and all of them shared one precondition - being able to speak to the
+    print spooler over the network.
+
+    Switching it off removes that precondition once for every such flaw, including
+    those not yet described. It is a rare case of a change that closes not a
+    single weakness but the road to a whole family of them.
+
+disruption_description:
+  pl: |
+    Stacja robocza niczego przez ten punkt nie obsługuje, więc jego wyłączenie jest
+    niewidoczne w pracy. Drukowanie do drukarek sieciowych i lokalnych przebiega
+    drogą wychodzącą, której zmiana nie dotyczy.
+
+    Rzecz wygląda inaczej wyłącznie tam, gdzie maszyna sama udostępnia drukarkę
+    innym. To na stacji roboczej konfiguracja nietypowa i łatwa do stwierdzenia —
+    jeśli nikt nie drukuje przez tę maszynę, nie ma czego stracić.
+  en: |
+    A workstation serves nothing through this endpoint, so switching it off is
+    invisible in daily work. Printing to network and local printers goes out along
+    an outbound path the change does not touch.
+
+    Things look different only where the machine shares a printer with others.
+    On a workstation that is an unusual arrangement and an easy one to establish -
+    if nobody prints through this machine, there is nothing to lose.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Drukarka udostępniona z tej maszyny przestanie być dostępna dla innych komputerów w sieci
+      - Narzędzia zarządzania wydrukiem odpytujące bufor zdalnie przestaną odczytywać z niej stan kolejek
+      - Skrypty tworzące kolejki na tej maszynie z innego komputera zakończą się błędem połączenia
+      - Drukowanie z tej maszyny, dodawanie drukarek, kolejki lokalne i sterowniki pozostają bez zmian
+    en:
+      - A printer shared from this machine stops being reachable by other computers on the network
+      - Print management tools that query the spooler from afar stop reading queue state from it
+      - Scripts that create queues on this machine from another computer end with a connection error
+      - Printing from this machine, adding printers, local queues and drivers are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny udostępniające drukarkę innym stanowiskom, bo to jest dokładnie ta funkcja, którą ustawienie wyłącza
+      - Stanowiska pełniące rolę małego serwera wydruku w oddziale, nawet jeśli formalnie są stacją roboczą
+      - Środowiska z centralnym nadzorem nad kolejkami, który odpytuje bufor wydruku zdalnie
+    en:
+      - Machines that share a printer with other desks, since that is exactly the function the setting switches off
+      - Stations acting as a small branch print server, even where they are formally workstations
+      - Environments with central oversight of queues that polls the print spooler remotely
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'RegisterSpoolerRemoteRpcEndPoint'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    $name = 'RegisterSpoolerRemoteRpcEndPoint'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RegisterSpoolerRemoteRpcEndPoint' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/manage-print-spooler-service
+
+notes:
+  pl: |
+    Oczekiwaną wartością jest dwójka, a nie jedynka — ustawienie ma trzy stany,
+    a dwójka oznacza wyłączenie punktu zdalnego. Zmiana zaczyna obowiązywać po
+    ponownym uruchomieniu usługi bufora wydruku.
+  en: |
+    The expected value is two rather than one - the setting has three states and
+    two stands for the remote endpoint being off. The change takes effect once the
+    print spooler service is restarted.

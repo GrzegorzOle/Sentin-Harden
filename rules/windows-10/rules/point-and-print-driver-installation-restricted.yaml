@@ -1,0 +1,171 @@
+id: win10-point-and-print-driver-installation-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Instalacja sterowników drukarek zastrzeżona dla administratorów
+    en: Printer driver installation restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podłączenie drukarki sieciowej potrafi zainstalować sterownik przysłany przez
+    serwer wydruku. Sterownik to kod działający w jądrze albo w usłudze
+    systemowej, a instaluje go mechanizm, który historycznie nie wymagał od
+    użytkownika żadnych uprawnień.
+
+    Stąd wzięła się cała rodzina ataków na bufor wydruku: wystarczy wskazać
+    maszynie własny serwer wydruku i pozwolić jej pobrać z niego sterownik, żeby
+    zwykłe konto uzyskało wykonanie kodu z najwyższymi uprawnieniami. Nie trzeba
+    przy tym łamać hasła ani wykorzystywać luki w kodzie — droga jest częścią
+    projektu.
+
+    Ta zasada zamyka ją w sposób ostateczny: sterownik z serwera wydruku instaluje
+    wyłącznie administrator. To jest najważniejszy pojedynczy punkt w całej
+    rodzinie drukowania.
+  en: |
+    Connecting a network printer can install a driver sent over by the print
+    server. A driver is code running in the kernel or in a system service, and it
+    is installed by a mechanism that historically asked the user for no privileges
+    at all.
+
+    That is where the whole family of print spooler attacks came from. Point the
+    machine at a print server of your own, let it fetch a driver, and an ordinary
+    account gains code execution at the highest privilege. No password has to be
+    broken and no flaw in the code exploited - the road is part of the design.
+
+    This rule closes it for good; a driver from a print server is installed by an
+    administrator alone. It is the single most important item in the whole
+    printing family.
+
+disruption_description:
+  pl: |
+    Cena jest realna i widać ją od pierwszego dnia. W miejscu, gdzie ludzie sami
+    dodają sobie drukarki — sale konferencyjne, gościnne stanowiska, biura
+    oddziałowe — każde nowe urządzenie wymaga teraz udziału administratora.
+
+    Skala zależy wprost od tego, czy sterowniki są rozsyłane centralnie. Tam, gdzie
+    maszyny dostają je z zarządzania, zmiana jest prawie niewidoczna, bo sterownik
+    i tak jest już na miejscu. Tam, gdzie każdy dodaje drukarkę sam, zmiana
+    przenosi tę pracę na dział wsparcia i trzeba ją tam najpierw zmieścić.
+  en: |
+    The price is real and shows from the first day. Where people add printers for
+    themselves - meeting rooms, guest desks, branch offices - every new device now
+    calls for an administrator.
+
+    How large it feels depends directly on whether drivers are pushed centrally.
+    Where machines receive them from management the change is nearly invisible,
+    because the driver is already in place. Where everybody adds a printer for
+    themselves it moves that work onto the support desk, and room has to be made
+    there first.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Użytkownik bez uprawnień administratora nie doda drukarki sieciowej, której sterownika nie ma jeszcze na maszynie
+      - Drukarki w salach konferencyjnych i na stanowiskach gościnnych przestaną instalować się samoczynnie przy pierwszym użyciu
+      - Skrypty logowania mapujące drukarki zadziałają tylko dla sterowników już obecnych; dla nowych zakończą się błędem uprawnień
+      - Zmiana sterownika po stronie serwera wydruku nie zostanie pobrana samoczynnie i wymaga udziału administratora na każdej maszynie
+      - Drukowanie na drukarkach już zainstalowanych, kolejki lokalne, drukowanie do pliku i same wydruki działają bez zmian
+    en:
+      - A user without administrative rights cannot add a network printer whose driver is not already on the machine
+      - Printers in meeting rooms and at guest desks stop installing themselves on first use
+      - Logon scripts that map printers work only for drivers already present; for new ones they end with a rights error
+      - A driver changed on the print server is not fetched by itself and calls for an administrator on every machine
+      - Printing on printers already installed, local queues, printing to file and the printouts themselves are unaffected
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których użytkownicy rutynowo dodają sobie drukarki, dopóki sterowniki nie są rozsyłane centralnie
+      - Stanowiska mobilne drukujące u klientów i w oddziałach, gdzie za każdym razem pojawia się inne urządzenie
+      - Maszyny obsługiwane bez obecnego na miejscu wsparcia, gdzie udział administratora oznacza wielodniowe czekanie na wydruk
+    en:
+      - Environments where users routinely add printers for themselves, until drivers are distributed centrally
+      - Mobile stations printing at customer sites and in branches, where a different device turns up each time
+      - Machines served without support on site, where involving an administrator means waiting days to print
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'RestrictDriverInstallationToAdministrators'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    $name = 'RestrictDriverInstallationToAdministrators'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RestrictDriverInstallationToAdministrators' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/point-and-print-default-behavior-change
+
+notes:
+  pl: |
+    Zasada dotyczy pobierania sterownika z serwera wydruku, nie instalacji
+    z pakietu przygotowanego przez administratora — ta pozostaje możliwa. Razem
+    z ostrzeżeniami przy instalacji i aktualizacji tworzy komplet: te drugie
+    przywracają pytanie, ta zamyka drogę niezależnie od odpowiedzi na nie.
+  en: |
+    The rule covers fetching a driver from a print server, not installation from a
+    package prepared by an administrator, which remains possible. Together with
+    the warnings on install and on update it forms a set - those two restore the
+    question, this one closes the road regardless of how the question is answered.

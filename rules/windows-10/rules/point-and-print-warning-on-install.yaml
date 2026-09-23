@@ -1,0 +1,164 @@
+id: win10-point-and-print-warning-on-install
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers > Point and Print Restrictions
+  title:
+    pl: Ostrzeżenie przy instalacji sterownika drukarki sieciowej
+    en: Warning when installing a network printer driver
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Instalacja sterownika z serwera wydruku może przebiegać po cichu albo
+    z pytaniem o zgodę i podniesieniem uprawnień. Ustawienie, które to rozstrzyga,
+    bywa przestawiane na cichą instalację dla wygody, zwykle wtedy, gdy ktoś chciał
+    pozbyć się zgłoszeń o drukarkach.
+
+    Skutek jest taki, że maszyna przyjmuje kod sterownika z dowolnego serwera
+    wydruku, do którego zostanie skierowana, i nikt się o tym nie dowiaduje. Ta
+    zasada przywraca ostrzeżenie, więc instalacja przestaje odbywać się bez wiedzy
+    człowieka siedzącego przy maszynie.
+
+    Samo okno nie jest zabezpieczeniem mocnym — okna klika się odruchowo. Jest
+    natomiast warunkiem koniecznym: bez niego nie ma nawet momentu, w którym
+    ktokolwiek mógłby zauważyć, że instaluje się sterownik.
+  en: |
+    Installing a driver from a print server can run silently or with a prompt for
+    consent and elevation. The setting that decides this is often flipped to the
+    silent path for convenience, usually by somebody wanting printer tickets to
+    stop arriving.
+
+    The upshot is that the machine takes driver code from any print server it is
+    pointed at, and nobody learns of it. This rule restores the warning, so the
+    install stops happening without the knowledge of the person at the machine.
+
+    The window alone is not a strong guard - windows get clicked through by
+    reflex. It is, however, a necessary condition; without it there is not even a
+    moment at which anybody could notice a driver being installed.
+
+disruption_description:
+  pl: |
+    Zmiana bywa odczuwalna dokładnie tam, gdzie ktoś ją wcześniej wyłączył. Wracają
+    okna z pytaniem przy pierwszym połączeniu z nową drukarką, a wraz z nimi
+    zgłoszenia od użytkowników, którzy przestali je widywać.
+
+    Jeśli wdrożono już zastrzeżenie instalacji sterowników dla administratorów, to
+    ostrzeżenie zmienia niewiele — droga jest zamknięta wcześniej. Osobny sens ma
+    tam, gdzie tamta zasada została świadomie odpuszczona.
+  en: |
+    The change is felt exactly where somebody switched it off earlier. Prompts
+    come back on first connection to a new printer, and with them tickets from
+    users who had stopped seeing them.
+
+    Where installation has already been reserved for administrators this warning
+    changes little; the road is closed earlier. Its own value lies where that rule
+    was deliberately set aside.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Przy pierwszym połączeniu z drukarką sieciową pojawi się okno z pytaniem, którego użytkownicy mogli już nie pamiętać
+      - Instalacja sterownika wymaga podniesienia uprawnień, więc na koncie bez nich zakończy się prośbą o poświadczenia administratora
+      - Automatyczne mapowanie drukarek w skrypcie logowania zatrzyma się na oknie z pytaniem i nie dokończy się bez udziału człowieka
+      - Drukowanie na już zainstalowanych drukarkach, kolejki lokalne i sterowniki rozesłane centralnie pozostają bez zmian
+    en:
+      - On first connection to a network printer a prompt appears that users may no longer remember
+      - Installing a driver calls for elevation, so on an account without it the attempt ends asking for administrator credentials
+      - Automatic printer mapping in a logon script stops at the prompt and does not finish without a person present
+      - Printing on printers already installed, local queues and centrally distributed drivers are all unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska bez obsługi przy maszynie, gdzie okno z pytaniem zatrzyma proces i nikt go nie zamknie
+      - Środowiska z mapowaniem drukarek w skrypcie logowania, dopóki sterowniki nie zostaną rozesłane wcześniej
+      - Maszyny w salach obsługi klienta, gdzie okno z prośbą o poświadczenia administratora pojawia się przy osobie postronnej
+    en:
+      - Unattended stations, where a prompt halts the process and nobody is there to answer it
+      - Environments that map printers in a logon script, until drivers have been distributed in advance
+      - Machines in customer-facing rooms, where a prompt for administrator credentials appears in front of an outsider
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoWarningNoElevationOnInstall'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    $name = 'NoWarningNoElevationOnInstall'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoWarningNoElevationOnInstall' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/point-and-print-default-behavior-change
+
+notes:
+  pl: |
+    Oczekiwaną wartością jest zero, bo nazwa opisuje brak ostrzeżenia: jedynka
+    oznacza instalację cichą, zero — z pytaniem. Zasada o ostrzeżeniu przy
+    aktualizacji dotyczy tej samej ścieżki w drugim momencie i obie ocenia się
+    razem.
+  en: |
+    The expected value is zero, because the name describes the absence of a
+    warning - one stands for a silent install, zero for one with a prompt. The
+    rule on warning at update covers the same path at a second moment and the two
+    are judged together.

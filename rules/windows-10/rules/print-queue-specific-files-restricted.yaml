@@ -1,0 +1,165 @@
+id: win10-print-queue-specific-files-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Pliki właściwe dla kolejki wydruku ograniczone do katalogu sterowników
+    en: Queue-specific files restricted to the driver folder
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wraz z kolejką wydruku serwer może przesłać pliki dodatkowe, opisane jako
+    właściwe dla tej kolejki. Bez ograniczenia maszyna przyjmuje je i zapisuje
+    tam, gdzie wskaże nadawca — a to znaczy, że serwer wydruku może umieścić
+    dowolny plik w dowolnym miejscu na dysku.
+
+    Wykorzystanie jest proste: plik trafia w miejsce, z którego system albo inny
+    program sam go załaduje, i kod wykonuje się bez żadnej instalacji. Mechanizm
+    nie był do tego przeznaczony, ale nie wymaga też niczego ponad to, co daje
+    zwykłe połączenie z drukarką.
+
+    Ta zasada zawęża przyjmowanie takich plików do katalogu sterowników i
+    wyłącznie do plików podpisanych przez system. Droga zapisu w dowolne miejsce
+    znika.
+  en: |
+    Along with a print queue the server may send additional files described as
+    specific to that queue. With no restriction the machine takes them and writes
+    them wherever the sender names - which means a print server can place any file
+    anywhere on the disk.
+
+    The use is straightforward. The file lands somewhere the system or another
+    program loads from by itself, and the code runs with no installation at all.
+    The mechanism was not meant for this, but it asks for nothing beyond what an
+    ordinary printer connection already grants.
+
+    This rule narrows the acceptance of such files to the driver folder and to
+    files signed by the system alone. The write-anywhere road disappears.
+
+disruption_description:
+  pl: |
+    Pliki właściwe dla kolejki są rzadkością w dzisiejszych sterownikach. Zdarzają
+    się w rozwiązaniach starszych i w oprogramowaniu producentów urządzeń
+    specjalistycznych, gdzie razem ze sterownikiem przychodzi dodatkowy moduł.
+
+    W typowym biurze zmiana nie ma widocznego skutku. Tam, gdzie takie pliki
+    faktycznie są używane, objawi się brakiem dodatkowej funkcji drukarki, a nie
+    niemożnością drukowania — i to jest dokładnie ta różnica, którą warto sprawdzić
+    przed wdrożeniem.
+  en: |
+    Queue-specific files are a rarity in today s drivers. They turn up in older
+    solutions and in software from makers of specialist devices, where an extra
+    module arrives alongside the driver.
+
+    In a typical office the change has no visible effect. Where such files really
+    are in use it shows up as a missing extra printer function rather than an
+    inability to print - and that is exactly the distinction worth checking before
+    rollout.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Dodatkowe moduły przysyłane razem z kolejką wydruku nie zostaną przyjęte, więc funkcje oparte na nich przestaną być dostępne
+      - Starsze rozwiązania producentów urządzeń, które tą drogą dostarczają własne pliki pomocnicze, stracą część możliwości
+      - Rozliczanie wydruków i znakowanie dokumentów oparte na module dosyłanym z kolejką może przestać działać na tej maszynie
+      - Samo drukowanie, instalacja sterowników zwykłą drogą, kolejki lokalne i ustawienia drukarek pozostają bez zmian
+    en:
+      - Extra modules sent along with a print queue are refused, so functions built on them stop being available
+      - Older vendor solutions that deliver their own helper files this way lose part of their capability
+      - Print accounting and document marking based on a module shipped with the queue may stop working on this machine
+      - Printing itself, installing drivers the ordinary way, local queues and printer settings are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny korzystające z rozwiązania do rozliczania wydruków, które dostarcza swoje pliki razem z kolejką
+      - Stanowiska obsługujące urządzenia specjalistyczne, gdzie moduł producenta przychodzi tą samą drogą co kolejka
+      - Środowiska, w których nie sprawdzono jeszcze, czy używane drukarki przysyłają pliki dodatkowe
+    en:
+      - Machines using a print accounting solution that delivers its files together with the queue
+      - Stations running specialist devices, where a vendor module arrives by the same road as the queue
+      - Environments where it has not yet been checked whether the printers in use send additional files
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'CopyFilesPolicy'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    $name = 'CopyFilesPolicy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'CopyFilesPolicy' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/manage-print-spooler-service
+
+notes:
+  pl: |
+    Jedynka oznacza przyjmowanie wyłącznie plików podpisanych przez system
+    i wyłącznie do katalogu sterowników. Zmiana zaczyna obowiązywać po ponownym
+    uruchomieniu usługi bufora wydruku, tak samo jak wyłączenie zdalnego punktu
+    końcowego.
+  en: |
+    One stands for accepting only files signed by the system and only into the
+    driver folder. The change takes effect once the print spooler service is
+    restarted, exactly as with switching off the remote endpoint.

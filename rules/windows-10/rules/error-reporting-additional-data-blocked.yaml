@@ -1,0 +1,156 @@
+id: win10-error-reporting-additional-data-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Error Reporting
+  title:
+    pl: Dosyłanie danych uzupełniających do raportu o błędzie zablokowane
+    en: Sending further data to a fault report blocked
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Po wysłaniu raportu o błędzie druga strona potrafi poprosić o materiał
+    uzupełniający: dodatkowy zrzut pamięci, pliki wskazane przez aplikację,
+    fragmenty dziennika. Maszyna dosyła to samoczynnie, bez pytania użytkownika o
+    zgodę przy każdej takiej prośbie.
+
+    Jest to droga, przez którą z maszyny wychodzi materiał wybierany po fakcie
+    przez kogoś z zewnątrz. Zakres nie jest znany z góry, więc nie da się go
+    ocenić ani ograniczyć przed wysłaniem — decyzja o tym, co jest potrzebne,
+    zapada po tamtej stronie.
+
+    Zablokowanie kończy rozmowę na samym raporcie o błędzie.
+  en: |
+    After a fault report is sent, the other side can ask for further material - an
+    extra memory dump, files named by the application, fragments of a log. The
+    machine sends those by itself, without asking the user for consent at each
+    such request.
+
+    It is a road by which material chosen after the fact by somebody outside
+    leaves the machine. The scope is not known in advance, so it can be neither
+    judged nor limited before sending - the decision about what is needed is taken
+    on that side.
+
+    Blocking it ends the conversation at the fault report itself.
+
+disruption_description:
+  pl: |
+    Podstawowy raport o błędzie działa dalej, więc mechanizm zgłaszania awarii
+    pozostaje czynny. Zmiana dotyczy wyłącznie tego, co maszyna dosyła na
+    późniejszą prośbę.
+
+    Na stanowiskach zwykłych jest niewidoczna. Sprawdzić trzeba środowiska
+    wytwórcze, w których dosyłanie materiału jest częścią współpracy z dostawcą
+    oprogramowania przy trudnej do odtworzenia awarii.
+  en: |
+    The basic fault report still works, so the crash reporting mechanism stays
+    live. The change touches only what the machine sends on a later request.
+
+    On ordinary stations it is invisible. Development environments need checking,
+    where sending further material is part of working with a software supplier on
+    a fault that is hard to reproduce.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Dosyłanie materiału uzupełniającego na prośbę drugiej strony przestanie działać
+      - Diagnoza awarii trudnych do odtworzenia po stronie dostawcy oprogramowania stanie się trudniejsza
+      - Zgłoszenia serwisowe oczekujące dodatkowych plików wymagają przekazania ich ręcznie
+      - Podstawowy raport o błędzie, dzienniki zdarzeń, zrzuty zapisywane lokalnie i praca aplikacji pozostają bez zmian
+    en:
+      - Sending further material at the other side s request stops working
+      - Diagnosing faults that are hard to reproduce becomes harder on the software supplier s side
+      - Service reports expecting extra files call for handing them over by hand
+      - The basic fault report, event logs, dumps written locally and the working of applications are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska wytwórcze współpracujące z dostawcą oprogramowania przy awariach trudnych do odtworzenia
+      - Stanowiska testowe, na których dosyłanie materiału jest częścią ustalonego procesu zgłaszania błędów
+    en:
+      - Development environments working with a software supplier on faults that are hard to reproduce
+      - Test stations where sending further material is part of a settled fault reporting process
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DontSendAdditionalData'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting'
+    $name = 'DontSendAdditionalData'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DontSendAdditionalData' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/wer/windows-error-reporting
+
+notes:
+  pl: |
+    Ustawienie dotyczy materiału dosyłanego po raporcie, a nie samego raportu —
+    ten wychodzi dalej. Punkt ocenia się razem z ograniczeniem zbierania zrzutów
+    pamięci, bo obie drogi wynoszą tę samą zawartość, tylko w innym momencie.
+  en: |
+    The setting covers material sent after the report rather than the report
+    itself, which still goes out. The item is judged together with limiting the
+    collection of memory dumps, since both roads carry out the same content, only
+    at a different moment.

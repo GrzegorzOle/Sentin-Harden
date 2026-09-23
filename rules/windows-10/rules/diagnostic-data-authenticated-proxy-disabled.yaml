@@ -1,0 +1,161 @@
+id: win10-diagnostic-data-authenticated-proxy-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Uwierzytelnianie usługi diagnostycznej na pośredniku zablokowane
+    en: Authentication of the diagnostic service at a proxy blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usługa diagnostyczna wysyłająca dane na zewnątrz może uwierzytelnić się na
+    pośredniku sieciowym poświadczeniami zalogowanego użytkownika. Robi to po to,
+    żeby przejść przez pośrednika wymagającego logowania, i robi to w tle.
+
+    Skutek jest podwójny. Po pierwsze, poświadczenia użytkownika są używane przez
+    składnik systemowy do czynności, o której ten użytkownik nie wie. Po drugie,
+    ruch diagnostyczny przestaje być odróżnialny od ruchu człowieka — w dzienniku
+    pośrednika wygląda jak zwykłe przeglądanie, więc nie sposób go ani zauważyć,
+    ani zablokować.
+
+    Zablokowanie uwierzytelniania zostawia ruch diagnostyczny widocznym i
+    odcinalnym na brzegu sieci.
+  en: |
+    The diagnostic service sending data outside may authenticate at a network
+    proxy with the credentials of the signed-in user. It does so in order to pass
+    a proxy that demands a sign-in, and it does so in the background.
+
+    The consequence is twofold. First, a user s credentials are used by a system
+    component for an act that user knows nothing about. Second, diagnostic traffic
+    stops being distinguishable from a person s - in the proxy log it looks like
+    ordinary browsing, so it can be neither noticed nor blocked.
+
+    Blocking the authentication leaves diagnostic traffic visible and severable at
+    the network edge.
+
+disruption_description:
+  pl: |
+    W sieci bez pośrednika wymagającego logowania zmiana jest niewidoczna. Tam,
+    gdzie taki pośrednik stoi, usługa diagnostyczna przestanie przez niego
+    przechodzić — i to jest zwykle skutek pożądany, a nie usterka.
+
+    Warto to jednak nazwać wprost, bo w narzędziach nadzoru pojawią się nieudane
+    połączenia wychodzące. Administrator, który o zmianie nie wie, będzie ich
+    szukał jako objawu awarii sieci.
+  en: |
+    On a network with no proxy demanding a sign-in the change is invisible. Where
+    such a proxy stands, the diagnostic service stops passing through it - and
+    that is usually the desired outcome rather than a fault.
+
+    It is worth naming plainly all the same, because failed outgoing connections
+    appear in monitoring tools. An administrator who does not know about the
+    change will hunt them as a sign of a network fault.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - network-and-firewall
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Usługa diagnostyczna przestanie przechodzić przez pośrednika wymagającego logowania, więc dane nie opuszczą sieci tą drogą
+      - W narzędziach nadzoru pojawią się nieudane połączenia wychodzące, mylone z objawem awarii sieci
+      - Narzędzia zarządzania flotą oparte na danych diagnostycznych przestaną je dostawać w sieciach z takim pośrednikiem
+      - Przeglądanie stron przez użytkownika, uwierzytelnianie na pośredniku dla aplikacji, dostęp do zasobów i praca sieciowa pozostają bez zmian
+    en:
+      - The diagnostic service stops passing a proxy that demands a sign-in, so the data do not leave the network that way
+      - Failed outgoing connections appear in monitoring tools and get mistaken for a network fault
+      - Fleet management tools built on diagnostic data stop receiving them on networks with such a proxy
+      - Browsing by the user, authentication at the proxy for applications, access to resources and network work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których dane diagnostyczne są świadomie zbierane i muszą przejść przez pośrednika wymagającego logowania
+      - Sieci, gdzie zablokowany ruch diagnostyczny wywoła lawinę zgłoszeń, dopóki administratorzy nie zostaną uprzedzeni
+    en:
+      - Environments where diagnostic data are deliberately gathered and have to pass a proxy demanding a sign-in
+      - Networks where blocked diagnostic traffic sets off a wave of tickets, until the administrators have been warned
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # One here means the service may not authenticate at the proxy.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableEnterpriseAuthProxy'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'DisableEnterpriseAuthProxy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableEnterpriseAuthProxy' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/configure-windows-diagnostic-data-in-your-organization
+
+notes:
+  pl: |
+    Nazwa wpisu jest przecząca, a spełnieniem punktu jest jedynka — uwierzytelnianie
+    zablokowane. Ustawienie nie zatrzymuje samej diagnostyki, tylko odbiera jej
+    drogę przez pośrednika; zakres wysyłanych danych ogranicza osobna reguła.
+  en: |
+    The entry name is phrased in the negative, and the item is met by one -
+    authentication blocked. The setting does not stop the diagnostics themselves,
+    it takes away their road through the proxy; the scope of the data sent is
+    limited by a separate rule.

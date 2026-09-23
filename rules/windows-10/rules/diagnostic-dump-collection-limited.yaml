@@ -1,0 +1,164 @@
+id: win10-diagnostic-dump-collection-limited
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Zbieranie zrzutów pamięci ograniczone
+    en: Collection of memory dumps limited
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zrzut pamięci powstający po awarii programu zawiera to, co ten program miał
+    akurat w pamięci. W praktyce znaczy to treść otwartego dokumentu, zawartość
+    pól formularza, klucze sesji, a bardzo często hasło wpisane chwilę wcześniej
+    i jeszcze nie wyczyszczone.
+
+    Wysłanie takiego zrzutu na zewnątrz jest przekazaniem fragmentu pamięci
+    roboczej maszyny stronie trzeciej. Nikt tej decyzji świadomie nie podejmuje:
+    awaria zdarza się sama, a zrzut wychodzi w ramach mechanizmu diagnostycznego,
+    o którym użytkownik nie myśli.
+
+    Stąd wysoka kategoria ryzyka — to jedyny punkt w tym bloku, który potrafi
+    wynieść poświadczenia, a nie tylko obraz pracy.
+  en: |
+    A memory dump made after a program crashes holds whatever that program had in
+    memory at the time. In practice that means the contents of an open document,
+    the contents of form fields, session keys, and very often a password typed a
+    moment earlier and not yet cleared.
+
+    Sending such a dump outside hands a fragment of the machine s working memory
+    to a third party. Nobody takes that decision knowingly - the crash happens by
+    itself, and the dump leaves as part of a diagnostic mechanism the user never
+    thinks about.
+
+    Hence the high risk rating - it is the only item in this block able to carry
+    out credentials rather than merely a picture of the work.
+
+disruption_description:
+  pl: |
+    Ograniczenie dotyczy zrzutów wysyłanych na zewnątrz, a nie zapisywanych
+    lokalnie. Analiza awarii prowadzona przez własny dział informatyczny działa
+    dalej, bo pliki zostają na maszynie.
+
+    Traci na tym wsparcie prowadzone przez dostawcę oprogramowania: zgłoszenie
+    awarii przestaje nieść ze sobą materiał, na którym tamta strona pracuje. Gdzie
+    takie zgłoszenia są częścią umowy serwisowej, trzeba ustalić drogę
+    przekazywania zrzutów świadomie, po obejrzeniu ich zawartości.
+  en: |
+    The limit covers dumps sent outside rather than those written locally. Crash
+    analysis carried out by the organisation s own IT department works on, since
+    the files stay on the machine.
+
+    What loses out is support run by a software supplier - a fault report stops
+    carrying the material that side works on. Where such reports are part of a
+    service contract, a route for handing dumps over has to be agreed
+    deliberately, after looking at what is in them.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - logging-and-audit
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Zgłoszenia awarii kierowane do dostawcy oprogramowania przestaną nieść zrzut pamięci, więc diagnoza po tamtej stronie bywa niemożliwa
+      - Analiza awaryjności prowadzona zdalnie przez stronę trzecią straci materiał źródłowy
+      - Narzędzia zbierające zrzuty do własnej analizy z chmury dostawcy zwrócą puste wyniki
+      - Zrzuty zapisywane lokalnie, dzienniki zdarzeń, zgłaszanie błędów przez użytkownika i praca aplikacji pozostają bez zmian
+    en:
+      - Fault reports directed to a software supplier stop carrying a memory dump, so diagnosis on that side is sometimes impossible
+      - Failure analysis run remotely by a third party loses its source material
+      - Tools gathering dumps for analysis in a supplier s cloud return empty results
+      - Dumps written locally, event logs, reporting a fault by hand and the working of applications are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których diagnoza awarii przez dostawcę oprogramowania jest częścią umowy serwisowej
+      - Stanowiska testowe przekazujące zrzuty do analizy zewnętrznej jako element procesu wytwarzania
+    en:
+      - Environments where crash diagnosis by a software supplier is part of a service contract
+      - Test stations passing dumps to outside analysis as part of a development process
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'LimitDumpCollection'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'LimitDumpCollection'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'LimitDumpCollection' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/configure-windows-diagnostic-data-in-your-organization
+
+notes:
+  pl: |
+    Ustawienie dotyczy zrzutów opuszczających maszynę, a nie ich powstawania —
+    pliki lokalne zapisują się dalej i warto pamiętać, że one też zawierają
+    zawartość pamięci. Punkt ocenia się razem z ograniczeniem zbierania dzienników
+    diagnostycznych.
+  en: |
+    The setting covers dumps leaving the machine rather than their creation -
+    local files are still written, and it is worth remembering that they hold the
+    contents of memory as well. The item is judged together with limiting
+    diagnostic log collection.

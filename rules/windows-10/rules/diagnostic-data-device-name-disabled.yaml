@@ -1,0 +1,161 @@
+id: win10-diagnostic-data-device-name-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Wysyłanie nazwy maszyny w danych diagnostycznych wyłączone
+    en: Sending of the machine name in diagnostic data disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dane diagnostyczne bez nazwy maszyny są zbiorem zdarzeń. Z nazwą stają się
+    zapisem przypisanym do konkretnego sprzętu, a przez to do konkretnej osoby,
+    bo nazwy maszyn w organizacjach niosą zwykle dział, lokalizację albo inicjały
+    użytkownika.
+
+    Różnica jest większa, niż się wydaje. Sam strumień zdarzeń jest anonimowy i
+    zbiorczy; strumień z nazwami pozwala odtworzyć, kto czego używa, kiedy pracuje
+    i gdzie się znajduje. To już nie jest diagnostyka, tylko spis floty
+    przekazywany na zewnątrz.
+
+    Wyłączenie zostawia dane bez tego powiązania.
+  en: |
+    Diagnostic data without a machine name are a collection of events. With the
+    name they become a record tied to particular hardware, and through it to a
+    particular person, since machine names in organisations usually carry a
+    department, a location or a user s initials.
+
+    The difference is greater than it seems. The event stream alone is anonymous
+    and aggregate; a stream with names lets one reconstruct who uses what, when
+    they work and where they are. That is no longer diagnostics but a fleet
+    inventory handed outside.
+
+    Switching it off leaves the data without that link.
+
+disruption_description:
+  pl: |
+    Zmiana odbiera możliwość powiązania zdarzenia z maszyną po stronie odbiorcy.
+    Tam, gdzie z danych diagnostycznych korzysta narzędzie zarządzania flotą,
+    raport przestaje wskazywać konkretne stanowiska i staje się zestawieniem
+    zbiorczym.
+
+    To jest ta sama decyzja co przy poziomie danych diagnostycznych, tylko węższa.
+    Organizacja bez takiego narzędzia nie traci nic; organizacja, która po nazwach
+    maszyn odnajduje sprzęt do naprawy, musi ustalić inną drogę.
+  en: |
+    The change removes the ability to link an event to a machine on the receiving
+    side. Where a fleet management tool uses diagnostic data, its report stops
+    pointing at particular stations and becomes an aggregate summary.
+
+    It is the same decision as with the diagnostic data level, only narrower. An
+    organisation without such a tool loses nothing; one that finds hardware to
+    repair by machine name has to agree another route.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Raporty narzędzi zarządzania flotą przestaną wskazywać konkretne maszyny i staną się zestawieniem zbiorczym
+      - Odnalezienie stanowiska zgłaszającego powtarzającą się awarię stanie się trudniejsze
+      - Zgłoszenia serwisowe oparte na nazwie maszyny widocznej po stronie dostawcy wymagają innej drogi identyfikacji
+      - Same dane diagnostyczne, aktualizacje, dostęp do zasobów i praca użytkownika pozostają bez zmian
+    en:
+      - Reports from fleet management tools stop pointing at particular machines and become an aggregate summary
+      - Finding the station reporting a recurring fault becomes harder
+      - Service reports resting on a machine name visible to the supplier need another way of identification
+      - The diagnostic data themselves, updates, access to resources and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Organizacje odnajdujące sprzęt do naprawy po nazwie maszyny widocznej w danych diagnostycznych
+      - Środowiska z narzędziem zarządzania flotą, którego raporty opierają się na identyfikacji pojedynczych stanowisk
+    en:
+      - Organisations that find hardware to repair by the machine name visible in diagnostic data
+      - Environments with a fleet management tool whose reports rest on identifying single stations
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value carries an older name than the policy does.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowDeviceNameInTelemetry'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'AllowDeviceNameInTelemetry'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowDeviceNameInTelemetry' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/configure-windows-diagnostic-data-in-your-organization
+
+notes:
+  pl: |
+    Nazwa wpisu w rejestrze pochodzi ze starszego nazewnictwa mechanizmu i nie
+    przypomina nazwy zasady w edytorze. Ustawienie dotyczy nazwy maszyny, a nie
+    pozostałych danych — te ogranicza osobna reguła o poziomie danych
+    diagnostycznych.
+  en: |
+    The registry entry name comes from the mechanism s older naming and bears no
+    resemblance to the policy name in the editor. The setting covers the machine
+    name rather than the remaining data, which a separate rule about the
+    diagnostic data level limits.

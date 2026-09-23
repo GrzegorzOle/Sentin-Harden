@@ -1,0 +1,160 @@
+id: win10-diagnostic-log-collection-limited
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Zbieranie dzienników diagnostycznych ograniczone
+    en: Collection of diagnostic logs limited
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obok danych diagnostycznych maszyna potrafi wysyłać całe dzienniki: zapisy
+    zdarzeń systemowych, ślady działania składników, wyniki pracy narzędzi
+    diagnostycznych. Jest to materiał bogatszy niż sam strumień telemetryczny,
+    bo zawiera nazwy, ścieżki, konta i adresy zapisane wprost.
+
+    Dla kogoś, kto chce poznać wnętrze organizacji, taki dziennik jest opisem
+    budowy sieci i sposobu pracy maszyny. Nie trzeba niczego łamać — wystarczy
+    mieć dostęp do miejsca, w którym te dzienniki lądują.
+
+    Ograniczenie zostawia dzienniki na maszynie, gdzie i tak są do dyspozycji
+    tego, kto ma się nimi zajmować.
+  en: |
+    Alongside diagnostic data the machine can send whole logs - records of system
+    events, traces of components at work, the output of diagnostic tools. That is
+    richer material than the telemetry stream itself, since it holds names, paths,
+    accounts and addresses written out plainly.
+
+    To somebody wanting to learn the inside of an organisation such a log is a
+    description of how the network is built and how the machine works. Nothing
+    needs breaking - it is enough to reach the place those logs land in.
+
+    Limiting it keeps the logs on the machine, where they are available anyway to
+    whoever is meant to deal with them.
+
+disruption_description:
+  pl: |
+    Zmiana nie dotyka dzienników zdarzeń ani zbierania ich przez własne narzędzia
+    nadzoru — te działają dalej, bo idą inną drogą. Ogranicza wyłącznie
+    wysyłanie dzienników w ramach mechanizmu diagnostycznego.
+
+    Odczują ją procesy wsparcia prowadzone zdalnie, w których druga strona
+    pobiera dzienniki samodzielnie zamiast prosić o nie. Tam trzeba ustalić inną
+    drogę przekazania — zwykle wystarczy eksport wykonany świadomie przez
+    administratora.
+  en: |
+    The change touches neither event logs nor their gathering by the
+    organisation s own monitoring tools - those carry on, since they travel
+    another road. It limits only the sending of logs as part of the diagnostic
+    mechanism.
+
+    What feels it are remote support processes in which the other side collects
+    logs itself rather than asking for them. There another route for handing them
+    over has to be agreed - usually an export made deliberately by an
+    administrator is enough.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Dzienniki diagnostyczne przestaną być wysyłane na zewnątrz wraz z pozostałymi danymi
+      - Wsparcie zdalne pobierające dzienniki samodzielnie będzie musiało poprosić o eksport wykonany na miejscu
+      - Narzędzia analizujące dzienniki po stronie dostawcy zwrócą niepełny obraz
+      - Dzienniki zdarzeń na maszynie, własne narzędzia nadzoru, rejestrowanie zdarzeń i praca aplikacji pozostają bez zmian
+    en:
+      - Diagnostic logs stop being sent outside along with the remaining data
+      - Remote support that collects logs itself has to ask for an export made on site
+      - Tools analysing logs on the supplier side return an incomplete picture
+      - Event logs on the machine, the organisation s own monitoring tools, event recording and the working of applications are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska ze wsparciem zdalnym pobierającym dzienniki tą drogą, dopóki nie zostanie ustalona inna
+      - Stanowiska objęte umową serwisową, w której analiza dzienników po stronie dostawcy jest świadczeniem
+    en:
+      - Environments with remote support collecting logs this way, until another route is agreed
+      - Stations under a service contract where log analysis on the supplier side is one of the services
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'LimitDiagnosticLogCollection'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'LimitDiagnosticLogCollection'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'LimitDiagnosticLogCollection' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/configure-windows-diagnostic-data-in-your-organization
+
+notes:
+  pl: |
+    Ograniczenie dotyczy mechanizmu diagnostycznego, a nie dzienników zdarzeń
+    systemu — te pozostają dostępne na miejscu i zbierane przez własne narzędzia
+    nadzoru. Punkt idzie w parze z ograniczeniem zbierania zrzutów pamięci.
+  en: |
+    The limit covers the diagnostic mechanism rather than the system event logs -
+    those stay available on site and are gathered by the organisation s own
+    monitoring tools. The item pairs with limiting the collection of memory dumps.

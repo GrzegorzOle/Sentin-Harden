@@ -1,0 +1,167 @@
+id: win10-diagnostic-data-level-limited
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Zakres wysyłanych danych diagnostycznych ograniczony
+    en: Scope of diagnostic data sent limited
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dane diagnostyczne nie są jednym strumieniem, tylko kilkoma poziomami
+    szczegółowości. Na poziomie wyższym maszyna wysyła nazwy uruchamianych
+    programów, sposób korzystania z nich, fragmenty treści wpisywanych w pola
+    oraz informacje o błędach razem z kontekstem, w którym wystąpiły.
+
+    Dla organizacji znaczy to, że obraz jej pracy — jakie oprogramowanie jest
+    używane, jakie wersje, jakie zwyczaje mają ludzie — opuszcza ją w sposób
+    ciągły i nieuzgodniony. Sam w sobie nie jest to włamanie, ale jest to wiedza,
+    której napastnik potrzebowałby tygodni, żeby zebrać.
+
+    Ten punkt ogranicza strumień do poziomu, na którym wychodzą dane niezbędne do
+    działania aktualizacji, a nie obraz codziennej pracy.
+  en: |
+    Diagnostic data are not one stream but several levels of detail. At a higher
+    level the machine sends the names of the programs started, how they are used,
+    fragments of what is typed into fields, and information about faults together
+    with the context in which they arose.
+
+    For an organisation that means a picture of its work - what software is used,
+    which versions, what habits people have - leaves it continuously and without
+    agreement. That is no break-in in itself, but it is knowledge an attacker
+    would need weeks to gather.
+
+    This item limits the stream to a level at which what leaves is the data
+    updates need to work, rather than a picture of daily work.
+
+disruption_description:
+  pl: |
+    Ograniczenie strumienia odcina część narzędzi zarządzania flotą, które z tych
+    danych korzystają — zestawienia zgodności aplikacji, raporty o gotowości do
+    aktualizacji, analiza awaryjności sprzętu. Tam, gdzie takie narzędzie jest
+    używane, zmiana pozbawia je źródła.
+
+    To jest właśnie rzecz do sprawdzenia przed wdrożeniem. Organizacja bez takiego
+    narzędzia nie traci nic. Organizacja, która na nim stoi, musi najpierw
+    zdecydować, co jest warte więcej: raport o flocie czy ograniczenie strumienia
+    wychodzącego.
+  en: |
+    Limiting the stream cuts off some fleet management tools that live on those
+    data - application compatibility summaries, update readiness reports, hardware
+    failure analysis. Where such a tool is in use, the change deprives it of its
+    source.
+
+    That is exactly the thing to check before the rollout. An organisation without
+    such a tool loses nothing. One that rests on it has first to decide which is
+    worth more - the fleet report or the limiting of the outgoing stream.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - updates-and-servicing
+    - remote-management
+  what_breaks:
+    pl:
+      - Narzędzia zarządzania flotą oparte na danych diagnostycznych przestaną dostawać informacje i ich raporty opustoszeją
+      - Zestawienia zgodności aplikacji z nadchodzącymi wersjami systemu przestaną być dostępne
+      - Analiza awaryjności sprzętu prowadzona po stronie dostawcy straci podstawę
+      - Zgłaszanie błędów przez użytkownika pozostaje możliwe, ale bez kontekstu zbieranego samoczynnie
+      - Instalowanie aktualizacji, sterowniki, dostęp do zasobów i praca użytkownika pozostają bez zmian
+    en:
+      - Fleet management tools built on diagnostic data stop receiving information and their reports empty out
+      - Application compatibility summaries against coming versions of the system stop being available
+      - Hardware failure analysis run on the supplier side loses its basis
+      - Reporting a fault by hand stays possible, but without the context gathered automatically
+      - Installing updates, drivers, access to resources and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Organizacje korzystające z narzędzi zarządzania flotą zasilanych tymi danymi, dopóki nie zdecydują, co jest warte więcej
+      - Środowiska, w których analiza awaryjności sprzętu po stronie dostawcy jest częścią umowy serwisowej
+    en:
+      - Organisations using fleet management tools fed by these data, until they decide which is worth more
+      - Environments where hardware failure analysis on the supplier side is part of a service contract
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowTelemetry'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(0|1)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'AllowTelemetry'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowTelemetry' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/configure-windows-diagnostic-data-in-your-organization
+
+notes:
+  pl: |
+    Porównanie dopuszcza dwa poziomy, nie jeden — wariant zerowy jest dostępny
+    wyłącznie w wydaniach dla przedsiębiorstw, a na pozostałych najniższym
+    osiągalnym jest jedynka. Sprawdzenie zgłasza wartość zastaną, więc raport
+    mówi, który poziom obowiązuje.
+  en: |
+    The comparison admits two levels rather than one - the zero variant is
+    available only in enterprise editions, and on the rest the lowest reachable is
+    one. The check reports the value found, so the report says which level is in
+    force.

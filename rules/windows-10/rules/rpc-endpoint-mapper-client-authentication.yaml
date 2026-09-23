@@ -1,0 +1,164 @@
+id: win10-rpc-endpoint-mapper-client-authentication
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Remote Procedure Call
+  title:
+    pl: Uwierzytelnianie klienta wobec mapera punktów końcowych wymagane
+    en: Client authentication towards the endpoint mapper required
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zanim klient połączy się z usługą, pyta maper punktów końcowych, pod jakim
+    adresem ta usługa nasłuchuje. Pytanie to bywa zadawane i odpowiadane bez
+    żadnego uwierzytelnienia, po obu stronach.
+
+    Stąd bierze się prosty atak: podstawić własną odpowiedź i skierować klienta
+    tam, gdzie się chce. Klient łączy się do wskazanego miejsca, przedstawia się
+    i oddaje poświadczenia stronie, która nie jest tym, za kogo się podaje.
+    Wszystko przebiega zgodnie z protokołem.
+
+    Wymaganie uwierzytelnienia na tym etapie sprawia, że rozmowa z maperem sama
+    w sobie wymaga tożsamości, więc podstawienie odpowiedzi przestaje wystarczać.
+  en: |
+    Before a client connects to a service it asks the endpoint mapper at which
+    address that service listens. The question tends to be asked and answered
+    without any authentication, on either side.
+
+    Hence a simple attack - substitute an answer of one s own and steer the client
+    wherever one likes. The client connects to the named place, identifies itself
+    and hands its credentials to a party that is not what it claims to be.
+    Everything proceeds according to the protocol.
+
+    Requiring authentication at this stage means the conversation with the mapper
+    itself demands an identity, so substituting an answer stops being enough.
+
+disruption_description:
+  pl: |
+    Zmiana jest węższa niż ograniczenie nieuwierzytelnionych klientów, ale
+    zachowuje się podobnie: klienci, którzy nie potrafią się uwierzytelnić na tym
+    etapie, przestają odnajdywać usługi.
+
+    W sieci domenowej dotyczy to niewielu przypadków, bo maszyny mają tożsamość i
+    potrafią jej użyć. Poza domeną bywa inaczej — tam starsze klienty i narzędzia
+    pracujące na koncie lokalnym mogą stracić możliwość połączenia. To jest rzecz
+    do sprawdzenia przed wdrożeniem, a nie po.
+  en: |
+    The change is narrower than restricting unauthenticated clients but behaves
+    similarly - clients unable to authenticate at this stage stop finding
+    services.
+
+    On a domain network that touches few cases, since the machines have an
+    identity and can use it. Outside a domain it is different - there older
+    clients and tools working under a local account may lose the ability to
+    connect. That is a thing to check before the rollout rather than after.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - legacy-authentication
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Klienci niepotrafiący uwierzytelnić się wobec mapera przestaną odnajdywać usługi na tej maszynie
+      - Maszyny spoza domeny i narzędzia pracujące na koncie lokalnym mogą stracić możliwość połączenia
+      - Starsze aplikacje pytające o punkt końcowy bez tożsamości zgłoszą błąd odnalezienia usługi
+      - Zmiana obowiązuje po ponownym uruchomieniu, a jej wycofanie również wymaga restartu
+      - Połączenia uwierzytelnione, logowanie domenowe, udziały plikowe i praca użytkownika pozostają bez zmian
+    en:
+      - Clients unable to authenticate towards the mapper stop finding services on this machine
+      - Machines outside the domain and tools working under a local account may lose the ability to connect
+      - Older applications asking for an endpoint without an identity report a service lookup error
+      - The change takes effect after a restart, and undoing it calls for a restart as well
+      - Authenticated connections, domain sign-in, file shares and user work are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska poza domeną, gdzie klienci nie mają tożsamości możliwej do przedstawienia na tym etapie
+      - Maszyny obsługujące starsze aplikacje pytające o punkt końcowy bez uwierzytelnienia
+    en:
+      - Environments outside a domain, where clients have no identity to present at this stage
+      - Machines serving older applications that ask for an endpoint without authenticating
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The key spells the last element as Rpc, not RPC as in the printing rules.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableAuthEpResolution'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
+    $name = 'EnableAuthEpResolution'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableAuthEpResolution' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/rpc/the-endpoint-mapper
+
+notes:
+  pl: |
+    Klucz zapisuje ostatni człon inaczej niż reguły dotyczące drukowania. Punkt
+    dotyczy etapu odnajdywania usługi, a nie samego połączenia z nią — ten drugi
+    rozstrzyga reguła o nieuwierzytelnionych klientach i oba wdraża się razem.
+  en: |
+    The key spells its last element differently from the printing rules. The item
+    covers the stage of finding a service rather than the connection to it - the
+    latter is settled by the rule on unauthenticated clients, and the two are
+    deployed together.

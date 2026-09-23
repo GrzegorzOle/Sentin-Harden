@@ -1,0 +1,176 @@
+id: win10-remote-sam-calls-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Zdalne odpytywanie bazy kont ograniczone do administratorów
+    en: Remote querying of the account database limited to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Baza kont maszyny daje się odpytać przez sieć: kto ma tu konto, kto należy do
+    grupy administratorów, jakie są identyfikatory. Domyślnie potrafi to zrobić
+    każdy uwierzytelniony użytkownik, a na części konfiguracji nawet ktoś bez
+    konta.
+
+    Dla napastnika jest to pierwszy krok w każdym rozpoznaniu i wykonuje się go
+    w kilka sekund, jednym narzędziem, bez śladu przypominającego atak. Wynikiem
+    jest lista celów uszeregowana według uprawnień: wiadomo, na które konto warto
+    polować i które maszyny mają wspólnego administratora lokalnego.
+
+    Ograniczenie odpytywania do administratorów zamyka to rozpoznanie. Napastnik
+    musi zacząć od zgadywania zamiast od gotowej listy.
+  en: |
+    The account database of a machine can be queried over the network - who has an
+    account here, who belongs to the administrators group, what the identifiers
+    are. By default any authenticated user can do it, and on some configurations
+    even somebody with no account at all.
+
+    To an attacker that is the first step of every reconnaissance, done in seconds
+    with one tool and leaving no trace resembling an attack. What comes out is a
+    list of targets ordered by privilege - it is clear which account is worth
+    hunting and which machines share a local administrator.
+
+    Limiting the query to administrators closes that reconnaissance. The attacker
+    has to start from guessing rather than from a ready list.
+
+disruption_description:
+  pl: |
+    Odpytywanie bazy kont bywa używane przez narzędzia działające prawidłowo:
+    spisy inwentarzowe, systemy zarządzania tożsamością, oprogramowanie
+    rozliczeniowe. Po zmianie takie narzędzie musi działać na koncie
+    administratora albo przestanie zwracać wyniki.
+
+    To jest jedyna rzecz do sprawdzenia przed wdrożeniem i zwykle daje się ją
+    ustalić w jeden dzień: wystarczy wiedzieć, jakie narzędzia w ogóle odpytują
+    maszyny. Poza nimi zmiana jest zupełnie niewidoczna, bo zwykły użytkownik nie
+    odpytuje bazy kont nigdy.
+  en: |
+    Querying the account database is also used by tools working properly -
+    inventory listings, identity management systems, licensing software. After the
+    change such a tool has to run under an administrator account or it stops
+    returning results.
+
+    That is the only thing to check before the rollout, and it can usually be
+    settled in a day - it is enough to know which tools query the machines at all.
+    Beyond them the change is wholly invisible, since an ordinary user never
+    queries the account database.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Narzędzia inwentaryzacyjne odpytujące bazę kont z konta bez uprawnień administratora przestaną zwracać wyniki
+      - Systemy zarządzania tożsamością pobierające wykaz kont lokalnych zgłoszą odmowę dostępu
+      - Skrypty wypisujące członków grup lokalnych zdalnie wymagają uruchomienia na koncie administratora
+      - Logowanie użytkowników, dostęp do udziałów, drukowanie i praca sieciowa pozostają bez zmian
+    en:
+      - Inventory tools querying the account database from an account without administrative rights stop returning results
+      - Identity management systems fetching the list of local accounts report access denied
+      - Scripts listing the members of local groups remotely have to run under an administrator account
+      - User sign-in, access to shares, printing and network work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska z narzędziami inwentaryzacyjnymi działającymi na koncie bez uprawnień administratora, dopóki nie zostaną przestawione
+      - Maszyny objęte systemem zarządzania tożsamością, który pobiera wykaz kont lokalnych tą drogą
+    en:
+      - Environments with inventory tools running under an account without administrative rights, until they are reconfigured
+      - Machines covered by an identity management system fetching the list of local accounts this way
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is a security descriptor in text form, not a number. It is
+      # compared after stripping spaces and case, because the same permission can
+      # be written in more than one way.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+      $name = 'RestrictRemoteSAM'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value -or [string]$value -eq '') { 'MISSING' }
+        else {
+          $normalised = ([string]$value -replace '\s', '').ToUpperInvariant()
+          if ($normalised -eq 'O:BAG:BAD:(A;;RC;;;BA)') { 'ADMINS_ONLY' }
+          else { 'OTHER ' + $value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'ADMINS_ONLY'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $name = 'RestrictRemoteSAM'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RestrictRemoteSAM' -Value 'O:BAG:BAD:(A;;RC;;;BA)' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-restrict-clients-allowed-to-make-remote-sam-calls
+
+notes:
+  pl: |
+    Wartość jest opisem uprawnień w postaci tekstowej, a nie liczbą — to samo
+    uprawnienie da się zapisać na kilka sposobów, więc sprawdzenie porównuje je po
+    usunięciu spacji i ujednoliceniu wielkości liter. Wartość inną niż oczekiwana
+    raport pokazuje w całości, żeby było widać, komu dostęp faktycznie przyznano.
+  en: |
+    The value is a permission description in text form rather than a number - the
+    same permission can be written in several ways, so the check compares it after
+    stripping spaces and unifying letter case. A value other than the expected one
+    is shown whole in the report, so that it is visible who was actually granted
+    access.

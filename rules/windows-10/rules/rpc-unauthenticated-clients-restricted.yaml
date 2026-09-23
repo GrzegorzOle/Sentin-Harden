@@ -1,0 +1,177 @@
+id: win10-rpc-unauthenticated-clients-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Remote Procedure Call
+  title:
+    pl: Nieuwierzytelnieni klienci zdalnych wywołań ograniczeni
+    en: Unauthenticated remote procedure call clients restricted
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zdalne wywołania procedur są szyną, po której rozmawiają ze sobą składniki
+    systemu i usługi w sieci. Część z nich przyjmuje połączenia od klientów, którzy
+    w ogóle się nie przedstawili — i właśnie te połączenia bywają początkiem
+    poważnych włamań, bo pozwalają rozmawiać z usługą bez żadnego konta.
+
+    Ograniczenie wymaga, żeby klient się uwierzytelnił, zanim usługa zacznie go
+    słuchać. Napastnik w sieci lokalnej traci możliwość zaczepienia o usługę
+    wprost; musi najpierw zdobyć jakiekolwiek poświadczenia, a to jest zupełnie
+    inny poziom trudności.
+
+    Jest to jedna z niewielu zmian, które zamykają całą klasę ataków naraz,
+    zamiast łatać pojedynczy błąd.
+  en: |
+    Remote procedure calls are the rail along which system components and network
+    services talk to one another. Some of them accept connections from clients who
+    never identified themselves at all - and those connections tend to be the
+    start of serious break-ins, since they allow a conversation with a service
+    without any account.
+
+    The restriction demands that the client authenticate before the service starts
+    listening. An attacker on the local network loses the ability to latch onto a
+    service directly; they must first obtain some credentials at all, and that is
+    a wholly different level of difficulty.
+
+    It is one of the few changes that close a whole class of attacks at once
+    rather than patching a single fault.
+
+disruption_description:
+  pl: |
+    To jest zmiana o szerokim zasięgu i dlatego wymaga świadomego wdrożenia.
+    Uderza we wszystko, co rozmawia z maszyną bez uwierzytelnienia — a takich
+    rzeczy jest w starszych sieciach więcej, niż się wydaje.
+
+    Pierwszą ofiarą bywa drukowanie: część klientów zgłasza się do usługi wydruku
+    bez konta i po zmianie przestaje widzieć drukarki. Dalej idą narzędzia
+    zarządzające, agenci oprogramowania inwentaryzacyjnego i starsze aplikacje
+    korzystające z tej szyny wprost.
+
+    Kolejność wdrożenia jest tu ważniejsza niż gdziekolwiek indziej: maszyny
+    próbne, obserwacja przez kilka dni, potem reszta. Skutek ujawnia się dopiero
+    po ponownym uruchomieniu, a jego wycofanie także wymaga restartu.
+  en: |
+    This is a change of wide reach and hence calls for a planned rollout. It
+    strikes at everything that talks to the machine without authenticating - and
+    there is more of that in older networks than one expects.
+
+    Printing tends to be the first casualty - some clients approach the print
+    service with no account and after the change stop seeing printers. Then come
+    management tools, inventory software agents and older applications using this
+    rail directly.
+
+    The order of the rollout matters here more than anywhere else - trial
+    machines, several days of watching, then the rest. The effect appears only
+    after a restart, and undoing it calls for a restart as well.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - printing
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Klienci łączący się z usługami maszyny bez uwierzytelnienia zostaną odrzuceni, co najczęściej widać na drukowaniu
+      - Starsze aplikacje korzystające z tej szyny wprost mogą przestać się łączyć i zgłaszać błąd odmowy
+      - Agenci oprogramowania inwentaryzacyjnego działający bez konta stracą łączność z maszyną
+      - Zmiana obowiązuje po ponownym uruchomieniu, a jej wycofanie również wymaga restartu
+      - Połączenia uwierzytelnione, logowanie, udziały plikowe i praca użytkownika pozostają bez zmian
+    en:
+      - Clients connecting to the machine s services without authenticating are refused, which shows first in printing
+      - Older applications using this rail directly may stop connecting and report a refusal
+      - Inventory software agents working with no account lose contact with the machine
+      - The change takes effect after a restart, and undoing it calls for a restart as well
+      - Authenticated connections, signing in, file shares and user work are all unchanged
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Sieci ze starszymi klientami drukowania zgłaszającymi się bez konta, dopóki nie zostaną przestawione
+      - Środowiska z agentami oprogramowania inwentaryzacyjnego działającymi bez uwierzytelnienia
+      - Maszyny obsługujące aplikacje korzystające z tej szyny wprost, zanim ich zachowanie zostanie sprawdzone
+    en:
+      - Networks with older print clients approaching without an account, until they are reconfigured
+      - Environments with inventory software agents working without authentication
+      - Machines serving applications that use this rail directly, before their behaviour has been checked
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'RestrictRemoteClients'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
+    $name = 'RestrictRemoteClients'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Rpc'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RestrictRemoteClients' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/rpc/rpc-security-best-practices
+
+notes:
+  pl: |
+    Klucz zapisuje ostatni człon inaczej niż reguły dotyczące drukowania, więc
+    ścieżki nie da się przepisać z pamięci. Ustawienie obejmuje wywołania
+    przychodzące, a nie wychodzące. Punkt ocenia się razem z wymaganiem
+    uwierzytelnienia wobec mapera punktów końcowych.
+  en: |
+    The key spells its last element differently from the printing rules, so the
+    path cannot be written out from memory. The setting covers incoming calls
+    rather than outgoing ones. The item is judged together with requiring
+    authentication towards the endpoint mapper.

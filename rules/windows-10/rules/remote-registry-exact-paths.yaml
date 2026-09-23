@@ -1,0 +1,192 @@
+id: win10-remote-registry-exact-paths
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Lista gałęzi rejestru dostępnych zdalnie ograniczona do trzech pozycji
+    en: The list of registry keys reachable remotely limited to three entries
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Rejestr maszyny da się czytać przez sieć, ale nie w całości — dostępne są
+    wyłącznie gałęzie wypisane na dwóch listach. Ta lista obejmuje pojedyncze
+    klucze, bez ich zawartości, i służy narzędziom pytającym o wersję systemu
+    albo o rodzaj wydania.
+
+    Wartość tego punktu nie leży w samej liście, tylko w tym, że jest ona krótka
+    i znana. Każda dodana do niej pozycja jest kawałkiem rejestru czytelnym z
+    sieci, a rejestr zawiera nazwy kont usług, ścieżki instalacji, konfiguracje
+    oprogramowania i wszystko, co ktokolwiek tam zapisał.
+
+    Sprawdzenie porównuje listę z zestawem wzorcowym i zgłasza każde odstępstwo
+    razem z zawartością, żeby było widać, co dołożono.
+  en: |
+    The registry of a machine can be read over the network, but not whole - only
+    the keys written on two lists are reachable. This list covers single keys,
+    without their contents, and serves tools asking about the system version or
+    the kind of edition.
+
+    The value of this item lies not in the list itself but in the fact that it is
+    short and known. Every entry added to it is a piece of registry readable from
+    the network, and the registry holds service account names, installation paths,
+    software configurations and whatever anybody wrote there.
+
+    The check compares the list against a reference set and reports every
+    departure together with its contents, so that it is visible what was added.
+
+disruption_description:
+  pl: |
+    Skrócenie listy odcina narzędzia, które czytały zdalnie coś spoza niej.
+    Najczęściej są to systemy nadzoru i spisy inwentarzowe starszej konstrukcji,
+    pytające wprost o gałęzie rejestru zamiast korzystać z interfejsów
+    przewidzianych do tego celu.
+
+    Takie narzędzie po zmianie zgłasza odmowę dostępu, a nie błąd — więc łatwo
+    ustalić, czego brakuje. Warto jednak zebrać tę wiedzę przed wdrożeniem,
+    zamiast dowiadywać się jej ze zgłoszeń.
+  en: |
+    Shortening the list cuts off tools that read something outside it remotely.
+    Most often those are monitoring systems and inventory listings of older
+    construction, asking for registry keys directly instead of using the
+    interfaces meant for the purpose.
+
+    After the change such a tool reports access denied rather than an error, so
+    what is missing is easy to establish. That knowledge is worth gathering before
+    the rollout, though, rather than learning it from tickets.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Narzędzia czytające zdalnie gałęzie rejestru spoza listy zgłoszą odmowę dostępu
+      - Starsze systemy nadzoru i spisy inwentarzowe pytające wprost o rejestr stracą część odczytów
+      - Zmiana wymaga ponownego uruchomienia usługi zdalnego rejestru, żeby zaczęła obowiązywać
+      - Dostęp do rejestru na miejscu, logowanie, udziały plikowe i drukowanie pozostają bez zmian
+    en:
+      - Tools reading registry keys outside the list remotely report access denied
+      - Older monitoring systems and inventory listings asking for the registry directly lose some of their readings
+      - The change calls for a restart of the remote registry service before it takes effect
+      - Access to the registry on site, signing in, file shares and printing are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska ze starszymi systemami nadzoru czytającymi rejestr zdalnie, dopóki nie zostanie ustalone, czego potrzebują
+      - Maszyny objęte spisem inwentarzowym pytającym wprost o gałęzie spoza listy wzorcowej
+    en:
+      - Environments with older monitoring systems reading the registry remotely, until it is settled what they need
+      - Machines covered by an inventory listing that asks directly for keys outside the reference list
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The list is compared as a set, without regard to order or letter case,
+      # because neither carries meaning here. A list that differs is reported
+      # together with its contents rather than as a bare failure.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedExactPaths'
+      $name = 'Machine'
+      $expected = @(
+        'System\CurrentControlSet\Control\ProductOptions',
+        'System\CurrentControlSet\Control\Server Applications',
+        'SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+      )
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = @($item.$name | Where-Object { $null -ne $_ -and $_ -ne '' })
+        $left = ($value | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join '|'
+        $right = ($expected | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join '|'
+        if ($left -eq $right) { 'EXACT_MATCH' }
+        elseif ($value.Count -eq 0) { 'EMPTY' }
+        else { 'OTHER ' + ($value -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'EXACT_MATCH'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedExactPaths'
+    $name = 'Machine'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = @($current)
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedExactPaths'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    $value = @(
+      'System\CurrentControlSet\Control\ProductOptions',
+      'System\CurrentControlSet\Control\Server Applications',
+      'SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    )
+    Set-ItemProperty -Path $path -Name 'Machine' -Value $value -Type MultiString
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value @($b.value) -Type MultiString
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-remotely-accessible-registry-paths
+
+notes:
+  pl: |
+    Lista jest porównywana jako zbiór, bez oglądania się na kolejność i wielkość
+    liter, bo żadna z tych rzeczy nie niesie tu znaczenia. Pozycje spoza wzorca
+    raport wypisuje w całości. Druga reguła opisuje listę obejmującą gałęzie wraz
+    z zawartością i obie ocenia się razem.
+
+    Sama gałąź jest zamknięta dla kont bez uprawnień administratora, więc
+    sprawdzenie wykonane bez podniesienia uprawnień kończy się stanem błędu
+    odczytu, a nie niezgodnością. Jest to zachowanie zamierzone: niemożność
+    sprawdzenia nigdy nie jest zgłaszana jako niespełnienie punktu.
+  en: |
+    The list is compared as a set, without regard to order or letter case, since
+    neither carries meaning here. Entries outside the reference set are written
+    out whole in the report. A second rule covers the list of keys together with
+    their contents, and the two are judged together.
+
+    The key itself is closed to accounts without administrative rights, so a check
+    run without elevation ends in a read error state rather than in
+    non-compliance. That is intended - an inability to check is never reported as
+    the item being unmet.

@@ -1,0 +1,185 @@
+id: win10-hardened-unc-paths
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Network Provider
+  title:
+    pl: Utwardzone ścieżki UNC dla udziałów zasad grupy
+    en: Hardened UNC paths for group policy shares
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna w domenie pobiera zasady i skrypty logowania z dwóch udziałów na
+    kontrolerze domeny. Robi to przy każdym starcie i przy każdym logowaniu, a
+    pobrane skrypty uruchamia z wysokimi uprawnieniami.
+
+    Dopóki połączenie z tymi udziałami nie jest uwierzytelnione obustronnie,
+    napastnik w sieci lokalnej może podstawić się pod kontroler domeny i podać
+    własne zasady oraz własne skrypty. Maszyna wykona je, bo wyglądają jak
+    pochodzące z właściwego źródła. Jest to droga do przejęcia wszystkich stacji
+    w sieci naraz, a nie pojedynczej maszyny.
+
+    Utwardzenie wymaga, żeby druga strona udowodniła, kim jest, i żeby zawartość
+    nie dała się po drodze zmienić.
+  en: |
+    A machine in a domain fetches policies and logon scripts from two shares on a
+    domain controller. It does so at every start and every sign-in, and runs the
+    fetched scripts with high privileges.
+
+    As long as the connection to those shares is not mutually authenticated, an
+    attacker on the local network can pose as the domain controller and supply
+    policies and scripts of their own. The machine runs them, because they look as
+    if they came from the proper source. That is a road to taking over every
+    station on the network at once rather than a single machine.
+
+    Hardening demands that the other side prove who it is and that the content
+    cannot be altered along the way.
+
+disruption_description:
+  pl: |
+    Na maszynie w zdrowej domenie zmiana jest niewidoczna — kontroler domeny
+    potrafi się uwierzytelnić i podpisać ruch. Problem pojawia się tam, gdzie coś
+    w tej drodze jest nietypowe.
+
+    Typowe przypadki to kontroler osiągalny wyłącznie przez rozwiązanie pośrednie,
+    klient rozwiązujący nazwę kontrolera inaczej niż przez mechanizmy domenowe
+    oraz stanowiska łączące się przez tunel z opóźnieniem. Tam maszyna może
+    odmówić pobrania zasad, a użytkownik zobaczy logowanie bez zastosowanych
+    zasad albo z błędem.
+
+    Poza domeną ustawienie nie ma do czego się odnieść i jest bezkosztowe.
+  en: |
+    On a machine in a healthy domain the change is invisible - the domain
+    controller can authenticate and sign the traffic. Trouble arises where
+    something along that road is unusual.
+
+    The typical cases are a controller reachable only through an intermediate
+    arrangement, a client resolving the controller s name by something other than
+    the domain mechanisms, and stations connecting over a high-latency tunnel.
+    There the machine may refuse to fetch the policies, and the user sees a
+    sign-in with no policies applied, or an error.
+
+    Outside a domain the setting has nothing to apply to and costs nothing.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-authentication
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Maszyna odmówi pobrania zasad i skryptów logowania, jeżeli druga strona nie uwierzytelni się obustronnie
+      - Stanowiska łączące się z kontrolerem domeny przez rozwiązanie pośrednie mogą stracić zasady grupy
+      - Skrypty logowania pobierane z udziału niespełniającego wymagań przestaną się uruchamiać
+      - Użytkownik może zobaczyć logowanie bez zastosowanych zasad, co bywa zgłaszane jako usterka profilu
+      - Udziały plikowe spoza tych dwóch, drukowanie, dostęp do zasobów i praca po zalogowaniu pozostają bez zmian
+    en:
+      - The machine refuses to fetch policies and logon scripts if the other side does not authenticate mutually
+      - Stations reaching the domain controller through an intermediate arrangement may lose their group policies
+      - Logon scripts fetched from a share that fails the requirements stop running
+      - The user may see a sign-in with no policies applied, which gets reported as a profile fault
+      - File shares other than those two, printing, access to resources and work after signing in are unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których kontroler domeny jest osiągalny wyłącznie przez rozwiązanie pośrednie
+      - Stanowiska rozwiązujące nazwę kontrolera inaczej niż przez mechanizmy domenowe
+      - Maszyny poza domeną, gdzie ustawienie nie ma do czego się odnieść
+    en:
+      - Environments where the domain controller is reachable only through an intermediate arrangement
+      - Stations resolving the controller s name by something other than the domain mechanisms
+      - Machines outside a domain, where the setting has nothing to apply to
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $missing = @()
+        foreach ($share in @('\\*\NETLOGON', '\\*\SYSVOL')) {
+          $value = $item.$share
+          if ($null -eq $value -or
+              $value -notmatch 'RequireMutualAuthentication\s*=\s*1' -or
+              $value -notmatch 'RequireIntegrity\s*=\s*1') {
+            $missing += $share
+          }
+        }
+        if ($missing.Count -eq 0) { 'HARDENED' } else { 'INCOMPLETE' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'HARDENED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path        = $path
+      netlogon    = $item.'\\*\NETLOGON'
+      sysvol      = $item.'\\*\SYSVOL'
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    $value = 'RequireMutualAuthentication=1, RequireIntegrity=1'
+    Set-ItemProperty -Path $path -Name '\\*\NETLOGON' -Value $value -Type String
+    Set-ItemProperty -Path $path -Name '\\*\SYSVOL' -Value $value -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($pair in @(@('\\*\NETLOGON', $b.netlogon), @('\\*\SYSVOL', $b.sysvol))) {
+      if ($null -eq $pair[1]) {
+        Remove-ItemProperty -Path $b.path -Name $pair[0] -ErrorAction SilentlyContinue
+      } else {
+        Set-ItemProperty -Path $b.path -Name $pair[0] -Value $pair[1] -Type String
+      }
+    }
+    if (-not $b.key_existed) {
+      # The key is removed only where the change made it and nothing else has
+      # since been written into it.
+      $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+      if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+        Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/group-policy/ms15-011-ms15-014-hardening-group-policy
+
+notes:
+  pl: |
+    Sprawdzenie wymaga obu warunków naraz — uwierzytelnienia obustronnego i
+    ochrony zawartości przed zmianą — dla obu udziałów. Ustawienie jednego z nich
+    albo jednego udziału daje stan niepełny i sprawdzenie zgłasza go osobno od
+    braku wpisu.
+  en: |
+    The check demands both conditions at once - mutual authentication and
+    protection of the content against alteration - for both shares. Setting one of
+    them, or one share, leaves an incomplete state, and the check reports that
+    apart from a missing entry.

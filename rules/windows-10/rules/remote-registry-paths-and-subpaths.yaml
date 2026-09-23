@@ -1,0 +1,201 @@
+id: win10-remote-registry-paths-and-subpaths
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Lista gałęzi rejestru dostępnych zdalnie wraz z zawartością
+    en: The list of registry keys reachable remotely together with their contents
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Druga lista różni się od pierwszej zasięgiem: obejmuje wskazane gałęzie wraz
+    ze wszystkim, co pod nimi leży. Jedna pozycja może więc udostępnić z sieci
+    całe poddrzewo, a nie pojedynczy klucz.
+
+    Dlatego właśnie ta lista jest ważniejsza z dwóch, choć obie mają tę samą
+    kategorię ryzyka. Dopisanie do niej gałęzi wygodnej dla jakiegoś narzędzia
+    bywa decyzją na pięć minut, a skutkiem jest trwały, czytelny z sieci wgląd w
+    konfigurację, o którym po roku nikt nie pamięta.
+
+    Zestaw wzorcowy obejmuje gałęzie potrzebne do pracy drukowania, dzienników
+    zdarzeń i liczników wydajności — czyli tego, co faktycznie bywa odpytywane
+    zdalnie.
+  en: |
+    The second list differs from the first in reach - it covers the named keys
+    together with everything lying beneath them. One entry may therefore expose a
+    whole subtree to the network rather than a single key.
+
+    That is exactly why this list is the more important of the two, though both
+    carry the same risk rating. Adding to it a key convenient for some tool tends
+    to be a five-minute decision, and its consequence is lasting, network-readable
+    insight into the configuration that nobody remembers a year later.
+
+    The reference set covers the keys needed by printing, event logs and
+    performance counters - that is, what really does get queried remotely.
+
+disruption_description:
+  pl: |
+    Skutki pokrywają się z pierwszą listą i spadają na te same narzędzia. Różnica
+    polega na tym, że tu odcięcie bywa dotkliwsze: narzędzie czytające całe
+    poddrzewo traci po zmianie nie jeden odczyt, tylko wszystko, co pod nim leżało.
+
+    Zestaw wzorcowy zawiera pozycje potrzebne drukowaniu i dziennikom zdarzeń,
+    więc typowe narzędzia nadzoru działają dalej. Sprawdzić trzeba wyłącznie te,
+    które pytają o gałęzie własne albo o konfigurację aplikacji.
+  en: |
+    The effects match the first list and land on the same tools. The difference is
+    that the cut tends to hurt more here - a tool reading a whole subtree loses
+    after the change not one reading but everything that lay beneath it.
+
+    The reference set holds the entries printing and event logs need, so typical
+    monitoring tools carry on. Only those asking for keys of their own or for
+    application configuration need checking.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Narzędzia czytające zdalnie poddrzewa rejestru spoza listy stracą wszystkie odczyty z tych gałęzi naraz
+      - Oprogramowanie nadzoru pytające o konfigurację aplikacji przez rejestr zgłosi odmowę dostępu
+      - Zmiana wymaga ponownego uruchomienia usługi zdalnego rejestru, żeby zaczęła obowiązywać
+      - Drukowanie, dzienniki zdarzeń, liczniki wydajności i praca na miejscu pozostają bez zmian
+    en:
+      - Tools reading registry subtrees outside the list remotely lose every reading from those keys at once
+      - Monitoring software asking for application configuration through the registry reports access denied
+      - The change calls for a restart of the remote registry service before it takes effect
+      - Printing, event logs, performance counters and work on site are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska z oprogramowaniem nadzoru czytającym konfigurację aplikacji wprost z rejestru przez sieć
+      - Maszyny, na których rozszerzenie listy było świadomą decyzją i nie zostało jeszcze zastąpione inną drogą
+    en:
+      - Environments with monitoring software reading application configuration straight from the registry over the network
+      - Machines where extending the list was a deliberate decision and has not yet been replaced by another route
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The list is compared as a set, without regard to order or letter case,
+      # because neither carries meaning here. A list that differs is reported
+      # together with its contents rather than as a bare failure.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedPaths'
+      $name = 'Machine'
+      $expected = @(
+        'System\CurrentControlSet\Control\Print\Printers',
+        'System\CurrentControlSet\Services\Eventlog',
+        'Software\Microsoft\OLAP Server',
+        'Software\Microsoft\Windows NT\CurrentVersion\Print',
+        'Software\Microsoft\Windows NT\CurrentVersion\Windows',
+        'System\CurrentControlSet\Control\ContentIndex',
+        'System\CurrentControlSet\Control\Terminal Server',
+        'System\CurrentControlSet\Control\Terminal Server\UserConfig',
+        'System\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration',
+        'Software\Microsoft\Windows NT\CurrentVersion\Perflib',
+        'System\CurrentControlSet\Services\SysmonLog'
+      )
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = @($item.$name | Where-Object { $null -ne $_ -and $_ -ne '' })
+        $left = ($value | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join '|'
+        $right = ($expected | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join '|'
+        if ($left -eq $right) { 'EXACT_MATCH' }
+        elseif ($value.Count -eq 0) { 'EMPTY' }
+        else { 'OTHER ' + ($value -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'EXACT_MATCH'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedPaths'
+    $name = 'Machine'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = @($current)
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedPaths'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    $value = @(
+      'System\CurrentControlSet\Control\Print\Printers',
+      'System\CurrentControlSet\Services\Eventlog',
+      'Software\Microsoft\OLAP Server',
+      'Software\Microsoft\Windows NT\CurrentVersion\Print',
+      'Software\Microsoft\Windows NT\CurrentVersion\Windows',
+      'System\CurrentControlSet\Control\ContentIndex',
+      'System\CurrentControlSet\Control\Terminal Server',
+      'System\CurrentControlSet\Control\Terminal Server\UserConfig',
+      'System\CurrentControlSet\Control\Terminal Server\DefaultUserConfiguration',
+      'Software\Microsoft\Windows NT\CurrentVersion\Perflib',
+      'System\CurrentControlSet\Services\SysmonLog'
+    )
+    Set-ItemProperty -Path $path -Name 'Machine' -Value $value -Type MultiString
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value @($b.value) -Type MultiString
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-remotely-accessible-registry-paths-and-sub-paths
+
+notes:
+  pl: |
+    Lista porównywana jest jako zbiór, tak samo jak lista gałęzi pojedynczych.
+    Różnica między obiema regułami leży w zasięgu, nie w sposobie sprawdzenia —
+    ta obejmuje gałęzie wraz z zawartością, tamta wyłącznie wskazane klucze.
+
+    Gałąź jest zamknięta dla kont bez uprawnień administratora, więc sprawdzenie
+    wykonane bez podniesienia uprawnień kończy się stanem błędu odczytu, a nie
+    niezgodnością.
+  en: |
+    The list is compared as a set, exactly as the list of single keys is. The
+    difference between the two rules lies in reach rather than in the way of
+    checking - this one covers keys together with their contents, the other the
+    named keys alone.
+
+    The key is closed to accounts without administrative rights, so a check run
+    without elevation ends in a read error state rather than in non-compliance.

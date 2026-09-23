@@ -1,0 +1,214 @@
+id: fedora44-aide-installed
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.1.1
+  section: Logging and Auditing > Configure Integrity Checking
+  title:
+    pl: AIDE jest zainstalowany
+    en: Ensure AIDE is installed
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    AIDE zapisuje w bazie sumy kontrolne, prawa i właścicieli plików
+    systemowych, a potem porównuje z nią bieżący stan. Pozwala to zauważyć
+    podmienione programy, zmienione pliki konfiguracyjne i inne ślady
+    włamania, które nie widać w zwykłej pracy.
+
+    Punkt wymaga zainstalowania pakietu aide. Bez bazy AIDE nie ma z czym
+    porównywać, więc naprawa od razu ją też tworzy.
+  en: |
+    AIDE records the checksums, permissions and owners of system files in a
+    database and then compares the current state with it. This makes it
+    possible to notice replaced programs, changed configuration files and
+    other traces of an intrusion that are not visible in normal work.
+
+    The item requires the aide package to be installed. Without a database
+    AIDE has nothing to compare with, so the remediation also creates it
+    right away.
+
+disruption_description:
+  pl: |
+    Budowanie bazy czyta cały system plików i na zwykłym komputerze trwa
+    kilka minut, z niskim priorytetem procesora i dysku. Baza opisuje stan
+    z chwili jej utworzenia, więc po każdej aktualizacji pakietów sprawdzenie
+    AIDE zgłasza zmienione pliki, dopóki administrator nie przejrzy wyniku
+    i nie zaktualizuje bazy.
+  en: |
+    Building the database reads the whole file system and takes a few minutes
+    on a normal computer, with low processor and disk priority. The database
+    describes the state from the moment it was created, so after every
+    package update the AIDE check reports changed files until an
+    administrator reviews the result and updates the database.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Po aktualizacjach pakietów trzeba przejrzeć raport AIDE i zaktualizować bazę (aide --update, a potem zamiana aide.db.new.gz na aide.db.gz)
+    en:
+      - After package updates the AIDE report has to be reviewed and the database updated (aide --update, then replacing aide.db.gz with aide.db.new.gz)
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Komputer, na którym nikt nie będzie przeglądał raportów AIDE; wtedy baza tylko zajmuje miejsce
+    en:
+      - A computer where nobody will review AIDE reports; then the database only takes up space
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    export LC_ALL=C
+    db=/var/lib/aide/aide.db.gz
+    new=/var/lib/aide/aide.db.new.gz
+    unit=sentin-harden-aide-init
+    db_state() {
+      if [ ! -r /var/lib/aide ] || [ ! -x /var/lib/aide ]; then echo unknown
+      elif [ -e "$db" ]; then echo present
+      elif systemctl is-active --quiet "$unit.service" 2>/dev/null; then echo building
+      else echo missing; fi
+    }
+    if rpm -q --quiet aide; then echo "INSTALLED:$(rpm -q aide | head -n 1),database=$(db_state)"; else echo NOT_INSTALLED; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    db=/var/lib/aide/aide.db.gz
+    new=/var/lib/aide/aide.db.new.gz
+    unit=sentin-harden-aide-init
+    db_state() {
+      if [ ! -r /var/lib/aide ] || [ ! -x /var/lib/aide ]; then echo unknown
+      elif [ -e "$db" ]; then echo present
+      elif systemctl is-active --quiet "$unit.service" 2>/dev/null; then echo building
+      else echo missing; fi
+    }
+      {
+        echo format=aide-1
+        if rpm -q --quiet aide; then echo installed=1; else echo installed=0; fi
+        if [ -e "$db" ]; then echo database=1; else echo database=0; fi
+        if [ -e "$new" ]; then echo newdb=1; else echo newdb=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aide-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    db=/var/lib/aide/aide.db.gz
+    new=/var/lib/aide/aide.db.new.gz
+    unit=sentin-harden-aide-init
+    db_state() {
+      if [ ! -r /var/lib/aide ] || [ ! -x /var/lib/aide ]; then echo unknown
+      elif [ -e "$db" ]; then echo present
+      elif systemctl is-active --quiet "$unit.service" 2>/dev/null; then echo building
+      else echo missing; fi
+    }
+      if ! rpm -q --quiet aide; then
+        dnf -y -q install aide
+        rpm -q --quiet aide || { echo "aide is still not installed" >&2; exit 1; }
+        echo "Installed aide"
+      fi
+      if [ -e "$db" ]; then echo "The AIDE database already exists"; exit 0; fi
+      if systemctl is-active --quiet "$unit.service"; then echo "The AIDE database is already being built ($unit.service)"; exit 0; fi
+      systemctl reset-failed "$unit.service" >/dev/null 2>&1 || true
+      a=$(command -v aide)
+      systemd-run --quiet --unit="$unit" --description="Sentin-Harden: build the AIDE database" \
+        -p Nice=19 -p IOSchedulingClass=idle \
+        /bin/sh -c "$a --init >/dev/null 2>&1; [ -s $new ] && [ ! -e $db ] && mv -f $new $db"
+      echo "Started building the AIDE database in the background ($unit.service); it takes a few minutes"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aide-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    db=/var/lib/aide/aide.db.gz
+    new=/var/lib/aide/aide.db.new.gz
+    unit=sentin-harden-aide-init
+    db_state() {
+      if [ ! -r /var/lib/aide ] || [ ! -x /var/lib/aide ]; then echo unknown
+      elif [ -e "$db" ]; then echo present
+      elif systemctl is-active --quiet "$unit.service" 2>/dev/null; then echo building
+      else echo missing; fi
+    }
+      inst=$(sed -n 's/^installed=//p' "$b"); dbx=$(sed -n 's/^database=//p' "$b"); nx=$(sed -n 's/^newdb=//p' "$b")
+      case "$inst$dbx$nx" in [01][01][01]) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      systemctl stop "$unit.service" >/dev/null 2>&1 || true
+      systemctl reset-failed "$unit.service" >/dev/null 2>&1 || true
+      if [ "$dbx" = 0 ] && [ -e "$db" ]; then rm -f "$db"; echo "Removed the AIDE database created after the backup"; fi
+      if [ "$nx" = 0 ] && [ -e "$new" ]; then rm -f "$new"; fi
+      if [ "$inst" = 0 ] && rpm -q --quiet aide; then
+        if rpm -e --test aide >/dev/null 2>&1; then
+          dnf -y -q remove --no-autoremove aide; echo "Removed aide again"
+        else
+          echo "Kept aide: other installed packages need it now"
+        fi
+      fi
+      echo "Rollback finished"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://aide.github.io/doc/
+  - https://man.archlinux.org/man/aide.conf.5.en
+  - https://dnf5.readthedocs.io/en/latest/commands/install.8.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html
+
+notes:
+  pl: |
+    Wynik podaje wersję pakietu i stan bazy /var/lib/aide/aide.db.gz:
+    present (jest), building (jest budowana), missing (brak) albo unknown
+    (bez uprawnień roota katalogu bazy nie da się odczytać). Tak jak w CIS,
+    o zgodności decyduje tylko pakiet.
+
+    Naprawa instaluje aide i, jeśli bazy nie ma, uruchamia w tle jednostkę
+    sentin-harden-aide-init, która wykonuje aide --init i przenosi nową bazę
+    na miejsce aide.db.gz. Baza powstaje w tle, bo jej budowa trwa dłużej,
+    niż może działać jedno polecenie naprawy. Wycofanie zatrzymuje tę
+    jednostkę, usuwa bazę, jeśli nie było jej przed naprawą, i odinstalowuje
+    aide, jeśli to naprawa go zainstalowała, a żaden inny pakiet go nie
+    potrzebuje.
+  en: |
+    The result gives the package version and the state of the database
+    /var/lib/aide/aide.db.gz: present, building, missing or unknown (without
+    root privileges the database directory cannot be read). As in CIS, only
+    the package decides compliance.
+
+    The remediation installs aide and, if there is no database, starts the
+    sentin-harden-aide-init unit in the background, which runs aide --init
+    and moves the new database to aide.db.gz. The database is built in the
+    background because building it takes longer than a single remediation
+    command may run. Rollback stops this unit, removes the database if there
+    was none before the remediation, and removes aide if the remediation
+    installed it and no other package needs it.

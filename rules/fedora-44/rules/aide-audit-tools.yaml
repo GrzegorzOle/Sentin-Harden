@@ -1,0 +1,276 @@
+id: fedora44-aide-audit-tools
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.1.3
+  section: Logging and Auditing > Configure Integrity Checking
+  title:
+    pl: AIDE chroni integralność narzędzi audytu
+    en: Ensure cryptographic mechanisms are used to protect the integrity of audit tools
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Narzędzia audytu, takie jak auditctl, ausearch i aureport, decydują o tym,
+    co system zapisuje i co pokazuje administratorowi. Podmieniona wersja
+    może ukrywać ślady włamania, więc zmiana tych plików musi być widoczna.
+
+    Punkt wymaga, żeby AIDE sprawdzał narzędzia audytu z atrybutami p, i, n,
+    u, g, s, b, acl, xattrs i sha512, czyli prawami, i-węzłem, liczbą
+    dowiązań, właścicielem, grupą, rozmiarem, liczbą bloków, listami ACL,
+    atrybutami rozszerzonymi i skrótem SHA-512.
+  en: |
+    The audit tools, such as auditctl, ausearch and aureport, decide what the
+    system records and what it shows to the administrator. A replaced version
+    can hide traces of an intrusion, so a change to these files has to be
+    visible.
+
+    The item requires AIDE to check the audit tools with the p, i, n, u, g,
+    s, b, acl, xattrs and sha512 attributes, that is the permissions, inode,
+    link count, owner, group, size, block count, ACLs, extended attributes
+    and the SHA-512 hash.
+
+disruption_description:
+  pl: |
+    Użytkownicy tego nie zauważą: naprawa dopisuje tylko reguły do
+    /etc/aide.conf. Administrator zobaczy w najbliższym raporcie AIDE
+    narzędzia audytu jako zmienione, bo baza nie ma jeszcze nowych
+    atrybutów.
+  en: |
+    Users will not notice it: the remediation only adds rules to
+    /etc/aide.conf. The administrator will see the audit tools as changed in
+    the next AIDE report, because the database does not have the new
+    attributes yet.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Najbliższy raport AIDE zgłasza narzędzia audytu jako zmienione, dopóki baza nie zostanie zaktualizowana
+    en:
+      - The next AIDE report shows the audit tools as changed until the database is updated
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    conf=/etc/aide.conf
+    mark='# Sentin-Harden: fedora44-aide-audit-tools'
+    endmark='# Sentin-Harden: end of fedora44-aide-audit-tools'
+    attrs='p+i+n+u+g+s+b+acl+xattrs+sha512'
+    # tools: real paths of the audit tools that exist
+    tools() {
+      local t
+      for t in auditctl auditd ausearch aureport autrace augenrules; do
+        if [ -e "/sbin/$t" ]; then readlink -f "/sbin/$t"; fi
+      done
+    }
+    # missing PATH: attributes of this item that the rule matching PATH lacks
+    missing() {
+      local r a x m=""
+      r=$(aide -c "$conf" --path-check "f:$1" 2>/dev/null | sed -n "s/^\[x\].* rule: '\([^']*\)'.*/\1/p" | head -n 1)
+      a=$(printf '%s\n' "$r" | awk '{ print $NF }')
+      for x in p i n u g s b acl xattrs sha512; do
+        case "+$a+" in *"+$x+"*) ;; *) m="$m${m:+/}$x" ;; esac
+      done
+      echo "$m"
+    }
+    evaluate() {
+      local p m bad=""
+      command -v aide >/dev/null 2>&1 || { echo "NOT_OK:aide-not-installed"; return; }
+      [ -r "$conf" ] || { echo "NOT_OK:needs-root"; return; }
+      for p in $(tools); do
+        m=$(missing "$p")
+        [ -z "$m" ] || bad="$bad${bad:+,}$p=$m"
+      done
+      if [ -z "$bad" ]; then echo "OK:$(tools | paste -sd, -)"; else echo "NOT_OK:$bad"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      echo format=aidetools-1 > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aidetools-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    conf=/etc/aide.conf
+    mark='# Sentin-Harden: fedora44-aide-audit-tools'
+    endmark='# Sentin-Harden: end of fedora44-aide-audit-tools'
+    attrs='p+i+n+u+g+s+b+acl+xattrs+sha512'
+    # tools: real paths of the audit tools that exist
+    tools() {
+      local t
+      for t in auditctl auditd ausearch aureport autrace augenrules; do
+        if [ -e "/sbin/$t" ]; then readlink -f "/sbin/$t"; fi
+      done
+    }
+    # missing PATH: attributes of this item that the rule matching PATH lacks
+    missing() {
+      local r a x m=""
+      r=$(aide -c "$conf" --path-check "f:$1" 2>/dev/null | sed -n "s/^\[x\].* rule: '\([^']*\)'.*/\1/p" | head -n 1)
+      a=$(printf '%s\n' "$r" | awk '{ print $NF }')
+      for x in p i n u g s b acl xattrs sha512; do
+        case "+$a+" in *"+$x+"*) ;; *) m="$m${m:+/}$x" ;; esac
+      done
+      echo "$m"
+    }
+    evaluate() {
+      local p m bad=""
+      command -v aide >/dev/null 2>&1 || { echo "NOT_OK:aide-not-installed"; return; }
+      [ -r "$conf" ] || { echo "NOT_OK:needs-root"; return; }
+      for p in $(tools); do
+        m=$(missing "$p")
+        [ -z "$m" ] || bad="$bad${bad:+,}$p=$m"
+      done
+      if [ -z "$bad" ]; then echo "OK:$(tools | paste -sd, -)"; else echo "NOT_OK:$bad"; fi
+    }
+    strip_block() {
+      awk -v m="$mark" -v e="$endmark" '$0 == m { skip = 1; next } skip && $0 == e { skip = 0; next } !skip { print }' "$1"
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item, nothing to change"; exit 0 ;;
+        *aide-not-installed*) echo "aide is not installed; apply item 6.1.1 first" >&2; exit 1 ;;
+        *needs-root*) echo "Cannot read $conf; run as root" >&2; exit 1 ;;
+      esac
+      old=$(mktemp /etc/.sentin-harden-old.XXXXXX)
+      t=$(mktemp /etc/.sentin-harden.XXXXXX)
+      trap 'rm -f "$old" "$t"' EXIT
+      cat "$conf" > "$old"
+      {
+        strip_block "$conf"
+        echo "$mark"
+        for p in $(tools); do printf '%s$ %s\n' "$p" "$attrs"; done
+        echo "$endmark"
+      } > "$t"
+      chmod --reference="$conf" "$t"; chown --reference="$conf" "$t"; mv -f "$t" "$conf"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$conf"; fi
+      if ! aide -c "$conf" --config-check >/dev/null 2>&1; then
+        cat "$old" > "$conf"; echo "aide --config-check failed; restored $conf" >&2; exit 1
+      fi
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Added rules for $(tools | paste -sd' ' -) to $conf" ;;
+        *) cat "$old" > "$conf"; echo "The item is not met after the change ($r); restored $conf" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aidetools-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    conf=/etc/aide.conf
+    mark='# Sentin-Harden: fedora44-aide-audit-tools'
+    endmark='# Sentin-Harden: end of fedora44-aide-audit-tools'
+    attrs='p+i+n+u+g+s+b+acl+xattrs+sha512'
+    # tools: real paths of the audit tools that exist
+    tools() {
+      local t
+      for t in auditctl auditd ausearch aureport autrace augenrules; do
+        if [ -e "/sbin/$t" ]; then readlink -f "/sbin/$t"; fi
+      done
+    }
+    # missing PATH: attributes of this item that the rule matching PATH lacks
+    missing() {
+      local r a x m=""
+      r=$(aide -c "$conf" --path-check "f:$1" 2>/dev/null | sed -n "s/^\[x\].* rule: '\([^']*\)'.*/\1/p" | head -n 1)
+      a=$(printf '%s\n' "$r" | awk '{ print $NF }')
+      for x in p i n u g s b acl xattrs sha512; do
+        case "+$a+" in *"+$x+"*) ;; *) m="$m${m:+/}$x" ;; esac
+      done
+      echo "$m"
+    }
+    evaluate() {
+      local p m bad=""
+      command -v aide >/dev/null 2>&1 || { echo "NOT_OK:aide-not-installed"; return; }
+      [ -r "$conf" ] || { echo "NOT_OK:needs-root"; return; }
+      for p in $(tools); do
+        m=$(missing "$p")
+        [ -z "$m" ] || bad="$bad${bad:+,}$p=$m"
+      done
+      if [ -z "$bad" ]; then echo "OK:$(tools | paste -sd, -)"; else echo "NOT_OK:$bad"; fi
+    }
+    strip_block() {
+      awk -v m="$mark" -v e="$endmark" '$0 == m { skip = 1; next } skip && $0 == e { skip = 0; next } !skip { print }' "$1"
+    }
+      if [ ! -f "$conf" ] || ! grep -qxF "$mark" "$conf"; then echo "No rules of this rule in $conf, nothing to remove"; exit 0; fi
+      t=$(mktemp /etc/.sentin-harden.XXXXXX)
+      trap 'rm -f "$t"' EXIT
+      strip_block "$conf" > "$t"
+      chmod --reference="$conf" "$t"; chown --reference="$conf" "$t"; mv -f "$t" "$conf"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$conf"; fi
+      echo "Removed the rules of this rule from $conf"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man.archlinux.org/man/aide.conf.5.en
+  - https://aide.github.io/doc/
+
+notes:
+  pl: |
+    Sprawdzenie pyta AIDE (aide --path-check), która reguła naprawdę obejmuje
+    każde z narzędzi auditctl, auditd, ausearch, aureport, autrace
+    i augenrules, jeśli istnieje, i czy ma ona wymagane atrybuty. Na Fedorze
+    /sbin jest dowiązaniem do /usr/bin, więc reguła dla ścieżki
+    /sbin/auditctl, jak w przykładzie CIS, niczego nie obejmuje; reguła
+    /usr NORMAL z domyślnego pliku nie ma atrybutu b. Wynik NOT_OK podaje
+    narzędzia i brakujące atrybuty. Plik /etc/aide.conf jest czytelny tylko
+    dla roota, więc bez tych uprawnień wynik to NOT_OK z dopiskiem
+    needs-root.
+
+    Naprawa dopisuje na końcu /etc/aide.conf blok reguł dla prawdziwych
+    ścieżek narzędzi między znacznikami Sentin-Harden i sprawdza plik
+    poleceniem aide --config-check. Wymaga zainstalowanego aide (punkt
+    6.1.1). Istniejąca baza nie ma nowych atrybutów, więc najbliższe
+    sprawdzenie może zgłosić narzędzia audytu jako zmienione; po przejrzeniu
+    wyniku trzeba zaktualizować bazę. Wycofanie usuwa blok.
+  en: |
+    The check asks AIDE (aide --path-check) which rule really covers each of
+    the auditctl, auditd, ausearch, aureport, autrace and augenrules tools,
+    if it exists, and whether that rule has the required attributes. On
+    Fedora /sbin is a link to /usr/bin, so a rule for the /sbin/auditctl
+    path, as in the CIS example, covers nothing; the /usr NORMAL rule from
+    the default file lacks the b attribute. The NOT_OK result gives the tools
+    and the missing attributes. /etc/aide.conf can only be read by root, so
+    without these privileges the result is NOT_OK with a needs-root note.
+
+    The remediation adds a block of rules for the real paths of the tools at
+    the end of /etc/aide.conf between Sentin-Harden marks and checks the
+    file with aide --config-check. It needs aide to be installed (item
+    6.1.1). An existing database lacks the new attributes, so the next check
+    may report the audit tools as changed; after reviewing the result the
+    database has to be updated. Rollback removes the block.

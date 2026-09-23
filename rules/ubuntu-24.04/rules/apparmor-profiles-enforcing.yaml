@@ -1,0 +1,133 @@
+id: ubuntu2404-apparmor-profiles-enforcing
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.3.1.4
+  section: Initial Setup > Mandatory Access Control > Configure AppArmor
+  title:
+    pl: Wszystkie profile AppArmor są w trybie enforce
+    en: Ensure all AppArmor Profiles are enforcing
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Profil w trybie complain niczego nie blokuje, a tylko zapisuje
+    w dzienniku, co program zrobił poza profilem. Służy do dopasowania
+    profilu przed włączeniem; zostawiony na stałe daje fałszywe poczucie
+    ochrony, bo usługa przejęta przez atakującego ma wszystkie swoje zwykłe
+    uprawnienia.
+
+    Punkt jest ostrzejszą wersją punktu 1.3.1.3: żaden profil nie może być
+    w trybie complain, żaden proces nie może działać w tym trybie i żaden nie
+    może działać bez ograniczeń mimo istniejącego profilu. Na domyślnej
+    instalacji Ubuntu Server punkt jest spełniony.
+  en: |
+    A profile in complain mode blocks nothing and only records in the log what
+    the program did outside the profile. It is meant for tuning a profile
+    before turning it on; left in place for good it gives a false sense of
+    protection, because a service taken over by an attacker has all its usual
+    privileges.
+
+    The item is a stricter version of item 1.3.1.3: no profile may be in
+    complain mode, no process may run in that mode and none may run unconfined
+    despite an existing profile. A default Ubuntu Server installation meets the
+    item.
+
+disruption_description:
+  pl: |
+    Klasa wymaga zaplanowanego wdrożenia, bo profil przełączony z complain na
+    enforce od razu zaczyna blokować działania, które dotąd tylko trafiały do
+    dziennika. Przed przełączeniem trzeba przejrzeć wpisy ALLOWED dla tego
+    profilu w dzienniku jądra i uzupełnić profil. Reguła tylko sprawdza stan.
+  en: |
+    The class needs a planned rollout because a profile switched from complain
+    to enforce at once starts blocking actions that so far only went to the
+    log. Before switching, review the ALLOWED entries for that profile in the
+    kernel log and extend the profile. The rule only checks the state.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Usługa, której profil był w trybie complain, dostaje odmowy dostępu do plików i operacji spoza profilu, np. do danych w niestandardowym katalogu
+      - Usługa uruchomiona przed załadowaniem swojego profilu po ponownym uruchomieniu dostaje odmowy dostępu, których wcześniej nie było
+    en:
+      - A service whose profile was in complain mode gets access denials to files and operations outside the profile, for example to data in a non-standard directory
+      - A service started before its profile was loaded gets access denials it did not get before after a restart
+  interruption: service-restart
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v aa-status >/dev/null 2>&1; then echo NOT_INSTALLED; exit 0; fi
+    out=$(aa-status 2>/dev/null) && rc=0 || rc=$?
+    case "$rc" in
+      0) ;;
+      1) echo NOT_ENABLED; exit 0 ;;
+      2) echo NO_PROFILES; exit 0 ;;
+      *) echo CHECK_ERROR; exit 0 ;;
+    esac
+    n=$(printf '%s\n' "$out" | sed -n 's/^\([0-9]\{1,\}\) profiles are loaded\.$/\1/p')
+    if [ -z "$n" ]; then echo CHECK_ERROR; exit 0; fi
+    if [ "$n" = 0 ]; then echo NO_PROFILES; exit 0; fi
+    ok=""; bad=""
+    while read -r c m; do
+      [ "$c" -gt 0 ] || continue
+      case "$m" in enforce|kill|unconfined) ok="$ok,$m=$c" ;; *) bad="$bad,$m=$c" ;; esac
+    done < <(printf '%s\n' "$out" | sed -n 's/^\([0-9]\{1,\}\) profiles are in \([a-z-]\{1,\}\) mode\.$/\1 \2/p')
+    u=$(printf '%s\n' "$out" | sed -n 's/^\([0-9]\{1,\}\) processes are unconfined but have a profile defined\.$/\1/p')
+    while read -r c m; do
+      [ "$c" -gt 0 ] || continue
+      case "$m" in enforce|kill|unconfined) ;; *) bad="$bad,processes-$m=$c" ;; esac
+    done < <(printf '%s\n' "$out" | sed -n 's/^\([0-9]\{1,\}\) processes are in \([a-z-]\{1,\}\) mode\.$/\1 \2/p')
+    [ "${u:-0}" = 0 ] || bad="$bad,unconfined-processes=$u"
+    if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:loaded=$n$ok"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://documentation.ubuntu.com/server/how-to/security/apparmor/
+  - https://manpages.ubuntu.com/manpages/noble/man8/aa-status.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/aa-enforce.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man5/apparmor.d.5.html
+
+notes:
+  pl: |
+    Profile z flagą unconfined, które Ubuntu 24.04 dostarcza np. dla
+    przeglądarek, niczego nie ograniczają i nie są profilami w trybie
+    complain, więc sprawdzenie traktuje je jako dozwolone, podobnie jak tryb
+    kill. Wynik NOT_OK wymienia tryby i liczby, które nie spełniają punktu.
+
+    Reguła nie ma naprawy. Profil przełącza się poleceniem aa-enforce z pakietu
+    apparmor-utils, podając plik profilu z /etc/apparmor.d. Nie należy
+    uruchamiać go dla wszystkich plików naraz: usunąłby flagę unconfined
+    z profili przeglądarek i zablokował je. Znaczenie wyników NOT_ENABLED
+    i NO_PROFILES jest takie samo jak w punkcie 1.3.1.3. Sprawdzenie wymaga
+    uprawnień roota.
+  en: |
+    The profiles with the unconfined flag that Ubuntu 24.04 ships, for
+    browsers for example, confine nothing and are not profiles in complain
+    mode, so the check treats them as allowed, like the kill mode. The NOT_OK
+    result lists the modes and counts that do not meet the item.
+
+    The rule has no remediation. A profile is switched with the aa-enforce
+    command from the apparmor-utils package, given the profile file from
+    /etc/apparmor.d. Do not run it for all files at once: it would remove the
+    unconfined flag from the browser profiles and block them. The NOT_ENABLED
+    and NO_PROFILES results mean the same as in item 1.3.1.3. The check needs
+    root privileges.

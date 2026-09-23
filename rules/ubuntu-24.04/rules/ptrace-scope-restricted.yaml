@@ -1,0 +1,189 @@
+id: ubuntu2404-ptrace-scope-restricted
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.5.2
+  section: Initial Setup > Configure Additional Process Hardening
+  title:
+    pl: Dołączanie do procesów przez ptrace jest ograniczone
+    en: Ensure ptrace_scope is restricted
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wywołanie ptrace pozwala jednemu procesowi czytać i zmieniać pamięć
+    innego; korzystają z niego debuggery i strace. Bez ograniczeń każdy proces
+    może dołączyć do każdego procesu tego samego użytkownika, więc złośliwy
+    kod uruchomiony z konta może odczytać z pamięci np. klucze agenta SSH albo
+    dane uwierzytelniające innych programów.
+
+    Moduł Yama ogranicza to parametrem kernel.yama.ptrace_scope: 1 pozwala
+    dołączyć tylko do własnych procesów potomnych, 2 tylko procesom
+    z uprawnieniem CAP_SYS_PTRACE, 3 nikomu. Punkt wymaga wartości 1, 2 lub 3.
+    Ubuntu ustawia 1 w /etc/sysctl.d/10-ptrace.conf, więc domyślna instalacja
+    spełnia punkt.
+  en: |
+    The ptrace call lets one process read and change the memory of another;
+    debuggers and strace use it. Without restrictions every process can attach
+    to every process of the same user, so malicious code run from an account
+    can read from memory, for example, the keys of an SSH agent or the
+    credentials of other programs.
+
+    The Yama module restricts this with the kernel.yama.ptrace_scope parameter:
+    1 allows attaching only to one's own child processes, 2 only for processes
+    with the CAP_SYS_PTRACE capability, 3 for nobody. The item requires value 1,
+    2 or 3. Ubuntu sets 1 in /etc/sysctl.d/10-ptrace.conf, so a default
+    installation meets the item.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo naprawa ma znaczenie tylko tam, gdzie ktoś
+    celowo obniżył wartość do 0, zwykle dla debugowania działających procesów.
+    Po zmianie gdb -p i strace -p wymagają sudo. Naprawa ustawia 1, czyli
+    wartość domyślną Ubuntu. Zmiana działa od razu, bez restartu.
+  en: |
+    The class needs review because the remediation matters only where someone
+    lowered the value to 0 on purpose, usually to debug running processes.
+    After the change gdb -p and strace -p need sudo. The remediation sets 1,
+    the Ubuntu default. The change takes effect at once, without a restart.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Polecenia gdb -p i strace -p nie mogą dołączyć do działającego procesu użytkownika bez sudo
+      - Narzędzia diagnostyczne i profilery, które dołączają do działającego procesu tego samego użytkownika, dostają odmowę dostępu
+    en:
+      - The gdb -p and strace -p commands cannot attach to a running user process without sudo
+      - Diagnostic tools and profilers that attach to a running process of the same user get an access denial
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwer, na którym zespół regularnie debuguje działające procesy bez uprawnień roota
+    en:
+      - A server where the team regularly debugs running processes without root privileges
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    k=kernel.yama.ptrace_scope
+    p=/proc/sys/kernel/yama/ptrace_scope
+    if [ ! -r "$p" ] || [ ! -x /usr/lib/systemd/systemd-sysctl ]; then echo CHECK_ERROR; exit 0; fi
+    r=$(tr -s ' \t' ' ' < "$p")
+    c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+    ok() { printf '%s\n' "$1" | grep -qxE "$2"; }
+    if ok "$r" '[123]' && ok "$c" '[123]'; then echo "OK:$r"; else echo "NOT_OK:runtime=$r,config=${c:-none}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      k=kernel.yama.ptrace_scope
+      f=/etc/sysctl.d/sentin-harden-ptrace-scope.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo "runtime=$(cat /proc/sys/kernel/yama/ptrace_scope)"
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      k=kernel.yama.ptrace_scope
+      f=/etc/sysctl.d/sentin-harden-ptrace-scope.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      printf '%s\n' '# Sentin-Harden: ubuntu2404-ptrace-scope-restricted' "$k = 1" > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      sysctl -q -w "$k=1"
+      c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ "$c" != "1" ]; then
+        echo "Another sysctl.d file sets $k after $f; the next start will set $c" >&2; exit 1
+      fi
+      echo "Set $k = 1 now and in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      k=kernel.yama.ptrace_scope
+      f=/etc/sysctl.d/sentin-harden-ptrace-scope.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      existed=$(sed -n 's/^existed=//p' "$b" | head -n 1)
+      rt=$(sed -n 's/^runtime=//p' "$b" | head -n 1)
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      [ -n "$rt" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
+      sysctl -q -w "$k=$rt"
+      echo "Restored $k = $rt and the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/admin-guide/LSM/Yama.html
+  - https://wiki.ubuntu.com/SecurityTeam/Roadmap/KernelHardening#ptrace
+  - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
+
+notes:
+  pl: |
+    Sprawdzenie porównuje wartość bieżącą z wartością, którą ustawi następny
+    start według systemd-sysctl --cat-config; wynik NOT_OK podaje obie.
+    Zmiana samego 10-ptrace.conf też liczy się jako naprawa, ale ten plik
+    należy do pakietu procps i przy jego aktualizacji dpkg pyta o zmienione
+    pliki konfiguracyjne.
+
+    Naprawa zapisuje ustawienie w /etc/sysctl.d/sentin-harden-ptrace-scope.conf,
+    które sortuje się po 10-ptrace.conf i 99-sysctl.conf, więc je nadpisuje.
+    Wycofanie przywraca poprzednią zawartość pliku i wartość bieżącą. Wartości
+    3 nie da się obniżyć bez restartu, więc naprawa jej nie ustawia.
+  en: |
+    The check compares the current value with the value the next start will
+    set according to systemd-sysctl --cat-config; the NOT_OK result gives both.
+    Editing 10-ptrace.conf itself also counts as a fix, but that file belongs
+    to the procps package and dpkg asks about changed configuration files when
+    it is upgraded.
+
+    The remediation writes the setting to
+    /etc/sysctl.d/sentin-harden-ptrace-scope.conf, which sorts after
+    10-ptrace.conf and 99-sysctl.conf and so overrides them. Rollback restores
+    the previous file content and the current value. Value 3 cannot be lowered
+    without a restart, so the remediation does not set it.

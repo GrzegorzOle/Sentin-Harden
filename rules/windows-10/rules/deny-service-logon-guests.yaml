@@ -1,0 +1,242 @@
+id: win10-deny-service-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania jako usługa dla grupy Goście
+    en: Denial of service sign-in for the Guests group
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie odmawia grupie Goście prawa do uruchamiania usług.
+
+    Usługa różni się od zwykłego programu jedną cechą rozstrzygającą:
+    działa bez zalogowanego użytkownika i startuje sama wraz z maszyną.
+    Konto, pod którym usługa działa, nie musi nigdy niczego kliknąć —
+    wystarczy, że raz zostało wskazane.
+
+    Jest to sposób na przetrwanie restartu, i właśnie dlatego napastnicy
+    po nie sięgają. Program uruchomiony w sesji ginie razem z sesją;
+    usługa wraca sama po każdym ponownym uruchomieniu maszyny, bez
+    niczyjego udziału.
+
+    Odmowa tego prawa grupie Goście zamyka wariant, w którym konto
+    pomyślane do dostępu tymczasowego zyskuje trwałą obecność na maszynie.
+
+    Odnotowuję, że reguła nie broni przed uruchomieniem usługi w ogóle —
+    do tego trzeba uprawnień administracyjnych. Broni przed wskazaniem
+    konta gościa jako konta, pod którym usługa ma działać.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: konto,
+    którym da się uruchomić usługę wracającą po każdym restarcie.
+  en: |
+    The setting denies the Guests group the right of running services.
+
+    A service differs from an ordinary program by one settling mark: it works with nobody signed in and starts of
+    itself together with the machine. The account a service works under need never click anything - it is enough
+    that it was named once.
+
+    It is a way of outliving a restart, and for that very reason attackers reach for it. A program started in a
+    session dies with the session; a service comes back of itself after every starting of the machine again, with
+    nobody's doing.
+
+    The denial of this right to the Guests group shuts the variant in which an account thought out for a passing
+    way in wins a lasting presence upon the machine.
+
+    I set down that the rule does not guard against the running of a service at all - administrative rights are
+    needed for that. It guards against the naming of the guest account as the one a service is to work under.
+
+    What an attacker gains while the item goes unmet: an account by which a service may be run that comes back
+    after every restart.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Grupa Goście jest pusta, a żadna usługa systemowa ani żaden znany
+    program nie działa pod kontem gościa. Odmowa dotyczy zbioru bez
+    członków.
+
+    Odnotowuję, że wpis konta gościa w tym wykazie byłby sam w sobie
+    sygnałem wartym zbadania. Nie jest to ustawienie, które ktokolwiek
+    wprowadza z powodów użytkowych.
+
+    Skutek ewentualnej zmiany pojawia się przy następnym uruchomieniu
+    usługi, a nie natychmiast. Usługa już działająca pracuje dalej.
+
+    Czego to nie psuje: usług systemowych, usług aplikacyjnych pod kontami
+    wskazanymi, logowania, dostępu do plików, drukowania.
+  en: |
+    The class is "no disruption".
+
+    The Guests group stands empty, and no service of the system nor any known program works under the guest
+    account. The denial touches a set with no members.
+
+    I set down that an entry of the guest account in this list would itself be a sign worth looking into. It is
+    not a setting anybody brings in for grounds of use.
+
+    The consequence of any change shows at the next running of a service, and not at once. A service already at
+    work works on.
+
+    What this does not break: the system's services, services of applications under named accounts, logging on,
+    the way to files, or printing.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Usługa wskazująca konto gościa jako konto robocze nie wystartuje po zmianie
+      - Żadna usługa systemowa ani znany program tak nie działa, więc przypadek jest teoretyczny
+      - Wpis konta gościa w tym wykazie byłby sam w sobie sygnałem wartym zbadania
+      - Skutek pojawia się przy następnym uruchomieniu usługi, a usługa już działająca pracuje dalej
+      - Usługi systemowe, usługi aplikacyjne pod kontami wskazanymi, logowanie i drukowanie pozostają bez zmian
+    en:
+      - A service naming the guest account as its working account will not start after the change
+      - No service of the system nor any known program works so, and the case is therefore a theoretical one
+      - An entry of the guest account in this list would itself be a sign worth looking into
+      - The consequence shows at the next running of a service, and a service already at work works on
+      - The system s services, services of applications under named accounts, logging on and printing stay unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie stoi usługa wskazująca konto gościa jako konto robocze i nie ma dla niej zastępstwa
+    en:
+      - Upon the machine stands a service naming the guest account as its working account and nothing takes its place
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own message
+        # goes to the error stream, so the report can tell a missing privilege from
+        # a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyServiceLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'S-1-5-32-546'
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyServiceLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyServiceLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyServiceLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    # The right is replaced wholesale, so whoever is already denied has to be
+    # carried over - otherwise the change would quietly grant somebody access.
+    foreach ($sid in @('*S-1-5-32-546')) {
+      if (-not ($members -contains $sid)) { $members += $sid }
+    }
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyServiceLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyServiceLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-as-a-service
+
+notes:
+  pl: |
+    Reguła domyka grupę odmów od strony trwałości. Cztery pozostałe
+    dotyczą wejścia; ta dotyczy zostania — a to jest inne pytanie,
+    zadane osobno i słusznie.
+
+    Argument wart zachowania dotyczy tego, czym usługa różni się od
+    programu. Napastnik, który uruchomił program, ma maszynę do
+    najbliższego restartu. Napastnik, który założył usługę, ma ją na
+    stałe — i właśnie ta różnica przesądza o tym, czy incydent kończy się
+    na jednym dniu, czy ciągnie miesiącami.
+
+    Odnotowuję, że przypadek jest tu teoretyczny, i warto, żeby aplikacja
+    to powiedziała. Konto gościa jako konto usługi nie występuje
+    w normalnej eksploatacji, więc reguła jest tania i domyka wykaz.
+    Wpis w tym miejscu byłby natomiast sygnałem wartym osobnego
+    sprawdzenia, a nie tylko poprawienia.
+  en: |
+    The rule closes the group of denials upon the side of lastingness. The other four touch the coming in; this
+    touches the staying - and that is another question, asked apart and rightly.
+
+    The argument worth keeping touches how a service differs from a program. An attacker who has started a program
+    has the machine until the next restart. An attacker who has set up a service has it for good - and it is just
+    that difference that settles whether an incident ends within a day or drags on for months.
+
+    I set down that the case is here a theoretical one, and it is well that the application say so. The guest
+    account as a service's account is not met with in ordinary running, so the rule is cheap and closes the list.
+    An entry in that place would on the other hand be a sign worth a looking into apart, and not a mere mending.

@@ -1,0 +1,240 @@
+id: win10-deny-batch-logon-guests
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Odmowa logowania w trybie wsadowym dla grupy Goście
+    en: Denial of batch sign-in for the Guests group
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie odmawia grupie Goście prawa do logowania w trybie wsadowym.
+
+    Tryb wsadowy to sposób, w jaki system uruchamia zadania zaplanowane.
+    Konto, które ma to prawo, może zostać wskazane jako konto robocze
+    zadania — a zadanie uruchomi się samo, o wyznaczonej porze albo po
+    zdarzeniu, bez niczyjej obecności.
+
+    Jest to drugi obok usługi sposób na trwałą obecność, i w pewnym
+    sensie wygodniejszy dla napastnika. Zadanie zaplanowane jest mniej
+    rzucające się w oczy niż usługa, bywa pomijane przy przeglądzie
+    maszyny, a wyzwalacz można związać ze zdarzeniem, które zdarza się
+    rzadko.
+
+    Odmowa tego prawa grupie Goście zamyka wariant, w którym konto
+    tymczasowe zyskuje harmonogram.
+
+    Odnotowuję, że reguła nie broni przed zakładaniem zadań w ogóle.
+    Broni przed użyciem konta gościa jako konta, pod którym zadanie ma
+    się wykonywać.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: konto,
+    któremu można przypisać zadanie wracające o wyznaczonej porze.
+  en: |
+    The setting denies the Guests group the right of signing in as a batch job.
+
+    The batch manner is the way the system runs planned tasks. An account holding that right may be named as a
+    task's working account - and the task will run of itself, at a set hour or upon an event, with nobody present.
+
+    It is, beside the service, the second way to a lasting presence, and in a sense the handier for an attacker. A
+    planned task catches the eye less than a service does, is at times passed over at a looking through of a
+    machine, and its trigger may be tied to an event that comes about seldom.
+
+    The denial of this right to the Guests group shuts the variant in which a passing account wins a timetable.
+
+    I set down that the rule does not guard against the making of tasks at all. It guards against the use of the
+    guest account as the one a task is to be done under.
+
+    What an attacker gains while the item goes unmet: an account to which a task may be set that comes back at a
+    set hour.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Grupa Goście jest pusta, a zadania zaplanowane działają pod kontami
+    systemowymi albo pod kontami użytkowników, którzy je założyli. Odmowa
+    dotyczy zbioru bez członków.
+
+    Odnotowuję, że wpis konta gościa w tym wykazie nie ma zastosowania
+    użytkowego i sam w sobie byłby sygnałem wartym zbadania.
+
+    Skutek ewentualnej zmiany pojawia się przy następnym uruchomieniu
+    zadania. Zadanie wykonywane w tej chwili kończy się normalnie.
+
+    Czego to nie psuje: zadań zaplanowanych pod kontami systemowymi
+    i użytkowników, usług, logowania, dostępu do plików, drukowania.
+  en: |
+    The class is "no disruption".
+
+    The Guests group stands empty, and planned tasks work under the system's accounts or under the accounts of
+    those who made them. The denial touches a set with no members.
+
+    I set down that an entry of the guest account in this list has no use and would itself be a sign worth looking
+    into.
+
+    The consequence of any change shows at the next running of a task. A task being done at that hour ends in the
+    ordinary way.
+
+    What this does not break: planned tasks under the system's and users' accounts, services, logging on, the way
+    to files, or printing.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Zadanie zaplanowane wskazujące konto gościa jako konto robocze przestanie się uruchamiać
+      - Zadania pod kontami systemowymi i kontami użytkowników działają dalej bez zmian
+      - Wpis konta gościa w tym wykazie nie ma zastosowania użytkowego i byłby sygnałem wartym zbadania
+      - Skutek pojawia się przy następnym uruchomieniu, a zadanie wykonywane w tej chwili kończy się normalnie
+      - Usługi, logowanie, dostęp do plików, wydajność i drukowanie pozostają bez zmian
+    en:
+      - A planned task naming the guest account as its working account will cease to run
+      - Tasks under the system s and users accounts work on unchanged
+      - An entry of the guest account in this list has no use and would be a sign worth looking into
+      - The consequence shows at the next running, and a task being done at that hour ends in the ordinary way
+      - Services, logging on, the way to files, speed and printing stay unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie działa zadanie zaplanowane wskazujące konto gościa i nie ma dla niego zastępstwa
+    en:
+      - Upon the machine works a planned task naming the guest account and nothing takes its place
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own message
+        # goes to the error stream, so the report can tell a missing privilege from
+        # a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeDenyBatchLogonRight\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'S-1-5-32-546'
+  comparison: contains
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeDenyBatchLogonRight\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeDenyBatchLogonRight'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $export = Join-Path $env:TEMP ('sentin-read-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $members = @()
+    if ($text -match '(?m)^SeDenyBatchLogonRight\s*=\s*(.*)$') {
+      $members = @($Matches[1].Trim() -split ',' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
+    }
+    # The right is replaced wholesale, so whoever is already denied has to be
+    # carried over - otherwise the change would quietly grant somebody access.
+    foreach ($sid in @('*S-1-5-32-546')) {
+      if (-not ($members -contains $sid)) { $members += $sid }
+    }
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyBatchLogonRight = ' + ($members -join ',')),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeDenyBatchLogonRight = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/deny-log-on-as-a-batch-job
+
+notes:
+  pl: |
+    Reguła jest bliźniacza wobec odmowy logowania jako usługa i warto,
+    żeby aplikacja pokazała je razem. Obie zamykają drogę do trwałej
+    obecności, a różnią się wyłącznie mechanizmem, który tę trwałość
+    zapewnia.
+
+    Argument wart postawienia wprost dotyczy tego, że zadanie zaplanowane
+    jest mniej widoczne od usługi. Przegląd maszyny po incydencie prawie
+    zawsze obejmuje wykaz usług; wykaz zadań bywa pomijany, a zadanie
+    związane z rzadkim zdarzeniem nie ujawnia się przez tygodnie. Punkt
+    ten domyka tę samą drogę w miejscu, gdzie szuka się rzadziej.
+
+    Odnotowuję, że przypadek jest teoretyczny, tak samo jak przy usłudze,
+    i koszt wdrożenia jest zerowy. Reguła wnosi domknięcie wykazu, a nie
+    ochronę przed czymś, co dzieje się dzisiaj.
+  en: |
+    The rule is twin to the denial of signing in as a service, and it is well that the application show them
+    together. Both shut a road to a lasting presence, and they differ only in the mechanism by which that lasting
+    is had.
+
+    The argument worth putting outright touches this, that a planned task shows less than a service does. A
+    looking through of a machine after an incident almost always takes in the list of services; the list of tasks
+    is at times passed over, and a task tied to a seldom event does not show itself for weeks. This item closes
+    that same road in the place that is searched the less often.
+
+    I set down that the case is a theoretical one, as with the service, and that the cost of the rollout is
+    nought. The rule brings a closing of the list and not a guarding against something that happens today.

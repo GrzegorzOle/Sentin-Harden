@@ -1,0 +1,204 @@
+id: iis-unlisted-file-extensions-blocked
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Request Filtering and Other Restriction Modules
+  title:
+    pl: Rozszerzenia plików spoza listy odrzucane
+    en: File extensions outside the list refused
+  level: 2
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Serwer może obsługiwać każde rozszerzenie pliku, o które ktoś poprosi, albo
+    wyłącznie te, które ktoś wypisał. Wariant domyślny jest ten pierwszy.
+
+    Różnica ujawnia się przy plikach, których nikt nie zamierzał wystawiać. Kopia
+    zapasowa pliku konfiguracyjnego, plik z hasłem do bazy zostawiony przy
+    wdrożeniu, archiwum źródeł, notatka z danymi dostępowymi — wszystko to leży w
+    katalogu zawartości i wszystko to serwer odda, bo nie ma powodu odmawiać.
+    Odgadnięcie nazwy bywa proste, bo kopie zapasowe tworzy się według schematu.
+
+    Lista dopuszczonych rozszerzeń odwraca domyślne rozstrzygnięcie: odmawia się
+    wszystkiego, czego wprost nie wskazano.
+  en: |
+    The server may serve every file extension it is asked for, or only those
+    somebody has listed. The default is the first.
+
+    The difference shows with files nobody meant to expose. A backup of a
+    configuration file, a file holding a database password left over from a
+    deployment, an archive of sources, a note with access details - all of them lie
+    in the content folder and all of them the server hands over, since it has no
+    reason to refuse. Guessing the name is often easy, since backups are made to a
+    pattern.
+
+    A list of permitted extensions reverses the default ruling - everything not
+    expressly named is refused.
+
+disruption_description:
+  pl: |
+    To jest zmiana wymagająca świadomego wdrożenia, bo wyłącza wszystko, czego nie
+    wypisano — łącznie z tym, o czym nikt nie pamiętał. Wdrożona bez przygotowanej
+    listy odcina zasób natychmiast.
+
+    Przygotowanie polega na spisaniu rozszerzeń faktycznie używanych: strony,
+    skrypty, arkusze stylów, obrazy, czcionki, pliki pobierane przez użytkowników.
+    Lista musi obejmować także rozszerzenia używane rzadko, bo to one odezwą się
+    najpóźniej i najgłośniej.
+
+    Objawem braku pozycji na liście jest błąd dostępu do pojedynczego pliku przy
+    działającej reszcie zasobu. Warto wdrażać to najpierw na maszynie kontrolnej i
+    przejrzeć dziennik żądań nieudanych, zanim zmiana obejmie serwer produkcyjny.
+  en: |
+    This is a change calling for a planned rollout, since it shuts out everything
+    not listed - including what nobody remembered. Rolled out without a prepared
+    list, it cuts the resource off at once.
+
+    The preparation consists in writing down the extensions really in use - pages,
+    scripts, style sheets, images, fonts, files users download. The list has to
+    cover rarely used extensions too, since those are the ones that speak up
+    latest and loudest.
+
+    The symptom of a missing entry is an access error on a single file while the
+    rest of the resource works. It is best rolled out on a control machine first,
+    with the failed request log reviewed, before the change reaches a production
+    server.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - legacy-applications
+    - file-sharing
+  what_breaks:
+    pl:
+      - Pliki o rozszerzeniach spoza listy przestaną być wydawane, łącznie z tymi używanymi rzadko
+      - Zasób wdrożony bez przygotowanej listy przestanie działać natychmiast
+      - Objawem jest błąd dostępu do pojedynczego pliku przy działającej reszcie zasobu
+      - Pliki do pobrania przez użytkowników przestaną być dostępne, jeżeli ich rozszerzeń nie wypisano
+      - Strony i skrypty o rozszerzeniach wypisanych na liście, uwierzytelnianie i uprawnienia pozostają bez zmian
+    en:
+      - Files with extensions outside the list stop being served, including rarely used ones
+      - A resource rolled out without a prepared list stops working at once
+      - The symptom is an access error on a single file while the rest of the resource works
+      - Files for users to download stop being available unless their extensions have been listed
+      - Pages and scripts with extensions on the list, authentication and permissions are all unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwery, na których nie spisano rozszerzeń faktycznie używanych przez zasoby
+      - Zasoby wydające pliki o rozszerzeniach zmieniających się wraz z zawartością wprowadzaną przez użytkowników
+      - Środowiska bez maszyny kontrolnej, na której dałoby się sprawdzić listę przed wdrożeniem
+    en:
+      - Servers where the extensions really used by the resources have not been written down
+      - Resources serving files whose extensions change with content entered by users
+      - Environments with no control machine on which the list could be checked before the rollout
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/security/requestFiltering/fileExtensions' -Name 'allowUnlisted' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([string]$value -eq 'True') { 'TRUE' }
+          elseif ([string]$value -eq 'False') { 'FALSE' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'FALSE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering/fileExtensions' -Name 'allowUnlisted' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/security/requestFiltering/fileExtensions'
+      name    = 'allowUnlisted'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering/fileExtensions' -Name 'allowUnlisted' -Value $false
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/security/requestfiltering/fileextensions/
+
+notes:
+  pl: |
+    Zasada odwraca rozstrzygnięcie domyślne i sama nie tworzy listy dopuszczonych
+    rozszerzeń — listę przygotowuje się osobno, przed wdrożeniem. Punkt jest
+    poziomu drugiego i bez przygotowanej listy nie nadaje się do zastosowania.
+  en: |
+    The rule reverses the default ruling and does not itself create the list of
+    permitted extensions - the list is prepared apart, before the rollout. The
+    item is of the second level and without a prepared list is not fit to apply.

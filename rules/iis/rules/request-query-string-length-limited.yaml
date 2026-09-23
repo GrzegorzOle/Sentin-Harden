@@ -1,0 +1,198 @@
+id: iis-request-query-string-length-limited
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Request Filtering and Other Restriction Modules
+  title:
+    pl: Długość ciągu zapytania ograniczona
+    en: The length of the query string limited
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ciąg zapytania to część adresu za znakiem pytajnika, w której przekazuje się
+    parametry. Jest to miejsce, w którym dane wprowadzone przez odwiedzającego
+    najkrótszą drogą docierają do aplikacji.
+
+    Dlatego właśnie tędy idzie większość prób wstrzyknięcia. Zapytanie do bazy
+    dopisane do parametru, skrypt podstawiony w miejsce wartości, długi ciąg
+    mający przepełnić bufor — wszystko to wymaga miejsca, a ograniczenie długości
+    to miejsce odbiera. Nie zastępuje sprawdzania danych w aplikacji, ale odcina
+    warianty najbardziej rozbudowane.
+
+    Limit ustawiony rozsądnie odrzuca takie żądanie na wejściu.
+  en: |
+    The query string is the part of the address after the question mark, in which
+    parameters are passed. It is the place where data entered by a visitor reaches
+    the application by the shortest road.
+
+    That is exactly why most injection attempts go this way. A database query
+    appended to a parameter, a script put in place of a value, a long string meant
+    to overflow a buffer - all of them need room, and a length limit takes the room
+    away. It does not stand in for checking the data in the application, but it
+    cuts off the most elaborate variants.
+
+    A sensibly set limit refuses such a request at the door.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo część aplikacji przekazuje w zapytaniu dane
+    obszerne: zakodowany stan strony, listę zaznaczonych pozycji, filtr raportu.
+    Takie żądanie potrafi przekroczyć limit przy zwykłej pracy.
+
+    Objawem jest odrzucenie żądania przed aplikacją, więc wygląda to na jej
+    awarię. Najczęściej dotyka jednego ekranu — tego z najdłuższym formularzem —
+    a reszta zasobu działa, co utrudnia rozpoznanie.
+
+    Przed zmianą warto sprawdzić w dzienniku, jak długie zapytania faktycznie się
+    pojawiają. Właściwą naprawą dla aplikacji przekraczającej limit jest przejście
+    na przekazywanie danych w treści żądania, a nie podnoszenie limitu.
+  en: |
+    The change calls for a review, since some applications pass bulky data in the
+    query - an encoded page state, a list of selected items, a report filter. Such
+    a request can exceed the limit in ordinary work.
+
+    The symptom is a request refused ahead of the application, so it looks like a
+    fault in it. It most often touches a single screen - the one with the longest
+    form - while the rest of the resource works, which makes finding the cause
+    harder.
+
+    Before the change it is worth checking in the log how long the queries that
+    really occur are. The proper repair for an application exceeding the limit is
+    moving to passing data in the request body rather than raising the limit.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Żądania z ciągiem zapytania dłuższym niż limit zostaną odrzucone, zanim aplikacja je zobaczy
+      - Ekrany z rozbudowanym formularzem albo z zakodowanym stanem strony mogą przestać działać
+      - Objaw dotyka zwykle jednego ekranu, a reszta zasobu działa, co utrudnia rozpoznanie
+      - Odrzucenie nie trafia do dzienników aplikacji, więc rozpoznanie wymaga dziennika żądań nieudanych
+      - Zwykłe formularze, przesyłanie plików, uwierzytelnianie i zawartość stron pozostają bez zmian
+    en:
+      - Requests with a query string longer than the limit are refused before the application sees them
+      - Screens with a large form or an encoded page state may stop working
+      - The symptom usually touches a single screen while the rest of the resource works, which makes finding the cause harder
+      - The refusal does not reach the application logs, so finding the cause calls for the failed request log
+      - Ordinary forms, file uploads, authentication and page contents are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zasoby z aplikacją przekazującą zakodowany stan strony w ciągu zapytania
+      - Ekrany raportowe przekazujące rozbudowany filtr jako parametry adresu
+    en:
+      - Resources with an application passing an encoded page state in the query string
+      - Report screens passing an elaborate filter as address parameters
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/security/requestFiltering/requestLimits' -Name 'maxQueryString' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([int64]$value -le 2048) { 'WITHIN_LIMIT' }
+          else { 'OVER_LIMIT ' + [int64]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'WITHIN_LIMIT'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering/requestLimits' -Name 'maxQueryString' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/security/requestFiltering/requestLimits'
+      name    = 'maxQueryString'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering/requestLimits' -Name 'maxQueryString' -Value 2048
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/security/requestfiltering/requestlimits/
+
+notes:
+  pl: |
+    Limit dotyczy samego ciągu zapytania, osobno od limitu długości całego adresu.
+    Wartość zastana powyżej limitu zgłaszana jest wraz z liczbą. Oba limity ocenia
+    się razem, bo żądanie musi zmieścić się w obu naraz.
+  en: |
+    The limit covers the query string alone, separately from the limit on the
+    length of the whole address. A value found above the limit is reported
+    together with its number. Both limits are judged together, since a request has
+    to fit within the two at once.

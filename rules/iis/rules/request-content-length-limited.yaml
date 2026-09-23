@@ -1,0 +1,200 @@
+id: iis-request-content-length-limited
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Request Filtering and Other Restriction Modules
+  title:
+    pl: Wielkość treści przyjmowanej w żądaniu ograniczona
+    en: The size of the body accepted in a request limited
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Treść żądania to dane przesyłane przez odwiedzającego: zawartość formularza,
+    przesyłany plik, dokument wysyłany przez interfejs programowy. Bez
+    ograniczenia serwer przyjmie dane dowolnej wielkości.
+
+    Brak limitu jest gotową drogą do wyczerpania zasobów. Kilka równoległych
+    połączeń przesyłających strumień bez końca zapełnia dysk tymczasowy albo
+    pamięć, a serwer przestaje odpowiadać na żądania zwykłe. Nie potrzeba do tego
+    ani luki, ani uwierzytelnienia — wystarczy wysyłać.
+
+    Ograniczenie wielkości sprawia, że koszt obsługi żądania ma górną granicę
+    znaną z góry.
+  en: |
+    The body of a request is the data a visitor sends - the contents of a form, an
+    uploaded file, a document sent through a programming interface. Without a
+    limit the server accepts data of any size.
+
+    A missing limit is a ready road to exhausting the resources. A few parallel
+    connections sending an endless stream fill the temporary disk or the memory,
+    and the server stops answering ordinary requests. Neither a flaw nor
+    authentication is needed for this - sending is enough.
+
+    Limiting the size means the cost of serving a request has an upper bound known
+    in advance.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo uderza wprost w przesyłanie plików. Zasób
+    przyjmujący skany, nagrania albo kopie zapasowe może pracować na plikach
+    większych niż limit.
+
+    Objawem jest błąd przy przesyłaniu, zwykle po przesłaniu całości — użytkownik
+    czeka, a potem dostaje odmowę. Jest to szczególnie mylące, bo wygląda na
+    problem z siecią albo z plikiem.
+
+    Limit dobiera się do największego pliku, który zasób ma faktycznie przyjmować,
+    a nie do wartości przyjętej bez sprawdzenia. Tam, gdzie przesyła się pliki
+    duże, właściwą drogą jest podniesienie limitu dla tego jednego zasobu, a nie
+    zniesienie go na całym serwerze.
+  en: |
+    The change calls for a review, since it strikes straight at file uploads. A
+    resource taking in scans, recordings or backups may work with files larger
+    than the limit.
+
+    The symptom is an error during the upload, usually after the whole file has
+    been sent - the user waits and then receives a refusal. It is especially
+    misleading, since it looks like a problem with the network or with the file.
+
+    The limit is fitted to the largest file the resource really has to take in
+    rather than to a value taken without checking. Where large files are sent, the
+    proper road is raising the limit for that one resource rather than lifting it
+    across the whole server.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - legacy-applications
+    - file-sharing
+  what_breaks:
+    pl:
+      - Przesyłanie plików większych niż limit zakończy się odmową, zwykle po przesłaniu całości
+      - Interfejsy programowe przyjmujące obszerne dokumenty mogą przestać działać
+      - Objaw wygląda na problem z siecią albo z plikiem, choć przyczyną jest limit na serwerze
+      - Zasoby przyjmujące skany i nagrania wymagają osobnego limitu na swoim poziomie
+      - Zwykłe formularze, pobieranie plików, uwierzytelnianie i zawartość stron pozostają bez zmian
+    en:
+      - Uploading files larger than the limit ends in a refusal, usually after the whole file has been sent
+      - Programming interfaces taking in bulky documents may stop working
+      - The symptom looks like a problem with the network or the file, though the cause is a limit on the server
+      - Resources taking in scans and recordings call for a limit of their own at their own level
+      - Ordinary forms, file downloads, authentication and page contents are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zasoby przyjmujące skany, nagrania albo kopie zapasowe większe niż limit
+      - Interfejsy programowe wymieniające obszerne dokumenty w treści żądania
+    en:
+      - Resources taking in scans, recordings or backups larger than the limit
+      - Programming interfaces exchanging bulky documents in the request body
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/security/requestFiltering/requestLimits' -Name 'maxAllowedContentLength' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([int64]$value -le 30000000) { 'WITHIN_LIMIT' }
+          else { 'OVER_LIMIT ' + [int64]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'WITHIN_LIMIT'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering/requestLimits' -Name 'maxAllowedContentLength' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/security/requestFiltering/requestLimits'
+      name    = 'maxAllowedContentLength'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering/requestLimits' -Name 'maxAllowedContentLength' -Value 30000000
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/security/requestfiltering/requestlimits/
+
+notes:
+  pl: |
+    Wartość liczona jest w bajtach. Zastane ustawienie powyżej limitu zgłaszane
+    jest wraz z liczbą, żeby było widać, jak duże żądanie serwer dziś przyjmuje.
+    Wyjątek dla zasobu przesyłającego pliki duże ustawia się na jego poziomie.
+  en: |
+    The value is counted in bytes. A setting found above the limit is reported
+    together with its number, so that it is visible how large a request the server
+    accepts today. An exception for a resource handling large files is set at its
+    own level.

@@ -1,0 +1,165 @@
+id: win10-voice-activation-above-lock-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > App Privacy
+  title:
+    pl: Uruchamianie aplikacji głosem przy zablokowanym ekranie zabronione
+    en: Activating applications by voice on a locked screen forbidden
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zablokowany ekran ma oznaczać jedno: bez podania poświadczeń maszyna nic nie
+    robi. Uruchamianie aplikacji głosem przebija tę granicę, bo polecenie przyjmuje
+    się bez logowania — wystarczy być w zasięgu mikrofonu.
+
+    Skutkiem jest urządzenie, które wykonuje polecenia każdego, kto stoi obok.
+    Zakres zależy od zainstalowanych aplikacji, ale zwykle obejmuje odczytanie
+    powiadomień, kalendarza albo wysłanie wiadomości z konta zalogowanej osoby.
+    Maszyna pozostaje zablokowana, a mimo to odpowiada.
+
+    Zamknięcie tej drogi przywraca zablokowanemu ekranowi znaczenie, które ma mieć.
+  en: |
+    A locked screen is meant to say one thing - without credentials the machine
+    does nothing. Activating applications by voice breaks through that line, since
+    the command is accepted without signing in - being within range of the
+    microphone is enough.
+
+    The consequence is a device carrying out the commands of anybody standing
+    beside it. The scope depends on the applications installed, but it usually
+    covers reading out notifications, the calendar, or sending a message from the
+    signed-in person s account. The machine stays locked and answers all the same.
+
+    Shutting that road gives the locked screen back the meaning it is meant to
+    carry.
+
+disruption_description:
+  pl: |
+    Zmiana nie wymaga przerwy i cofa się natychmiast. Na stanowisku biurowym jest
+    zwykle niezauważalna, bo i tak nikt nie mówi do zablokowanego ekranu.
+
+    Koszt pojawia się tam, gdzie głos jest drogą obsługi maszyny: stanowiska
+    dostępności, urządzenia w warsztacie obsługiwane bez rąk, sprzęt w samochodzie
+    służbowym. Tam zmiana wymaga ustalenia innej drogi, a nie samego wyłączenia.
+
+    Po zmianie polecenie głosowe zadziała dopiero po zalogowaniu. Sam mechanizm
+    rozpoznawania mowy działa dalej bez zmian.
+  en: |
+    The change calls for no interruption and reverses at once. On an office station
+    it usually goes unnoticed, since nobody speaks to a locked screen anyway.
+
+    The cost appears where voice is the road to working the machine - accessibility
+    stations, workshop devices worked hands-free, hardware in a company vehicle.
+    There the change calls for another road to be settled rather than for a switch
+    to be thrown.
+
+    After the change a voice command works only once somebody has signed in. The
+    speech recognition mechanism itself carries on unchanged.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Polecenia głosowe wydane przy zablokowanym ekranie przestaną być wykonywane
+      - Obsługa maszyny bez rąk będzie wymagała wcześniejszego zalogowania
+      - Stanowiska dostępności oparte na głosie stracą drogę obsługi sprzed zalogowania
+      - Rozpoznawanie mowy po zalogowaniu, dyktowanie, powiadomienia i praca użytkownika pozostają bez zmian
+    en:
+      - Voice commands given at a locked screen stop being carried out
+      - Working the machine hands-free calls for signing in first
+      - Accessibility stations built on voice lose their road to working the machine before sign-in
+      - Speech recognition after signing in, dictation, notifications and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska dostępności, na których głos jest jedyną drogą obsługi maszyny przed zalogowaniem
+      - Urządzenia obsługiwane bez rąk w warsztacie albo w pojeździe służbowym
+    en:
+      - Accessibility stations where voice is the only road to working the machine before sign-in
+      - Devices worked hands-free in a workshop or in a company vehicle
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The setting is a choice out of three. Two means the machine settles the
+    # matter and refuses; zero leaves it to the user and one forces it open,
+    # so both are reported with their own value.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'LetAppsActivateWithVoiceAboveLock'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy'
+    $name = 'LetAppsActivateWithVoiceAboveLock'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'LetAppsActivateWithVoiceAboveLock' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-privacy
+
+notes:
+  pl: |
+    Ustawienie jest wyborem z trzech możliwości. Dwa oznacza, że rozstrzyga maszyna
+    i odmawia; zero zostawia decyzję użytkownikowi, a jeden wymusza otwarcie —
+    oba zgłaszane są z własną wartością, żeby było widać, który wariant zastano.
+  en: |
+    The setting is a choice out of three. Two means the machine settles the matter
+    and refuses; zero leaves the decision to the user and one forces it open - both
+    are reported with their own value, so that it is clear which variant was found.

@@ -1,0 +1,165 @@
+id: win10-ink-workspace-above-lock-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Ink Workspace
+  title:
+    pl: Obszar roboczy pisma odręcznego niedostępny z ekranu blokady
+    en: Ink workspace unavailable from the lock screen
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obszar roboczy pisma odręcznego daje dostęp do notatnika i narzędzia do
+    zrzutów ekranu. W wariancie najszerszym otwiera się go z ekranu blokady, bez
+    podania hasła.
+
+    Znaczy to, że osoba przy maszynie może pisać notatki i robić zrzuty ekranu na
+    cudzym urządzeniu, nie logując się na nie. Notatki zapisują się w profilu
+    zalogowanej osoby, a zrzut ekranu obejmuje to, co widać — łącznie z
+    powiadomieniami wyświetlanymi na zablokowanym ekranie.
+
+    Ograniczenie dostępu do stanu po zalogowaniu przywraca zwykłą regułę: na
+    maszynie działa ten, kto się na niej przedstawił.
+  en: |
+    The handwriting workspace gives access to a notepad and a screen capture tool.
+    In the widest variant it opens from the lock screen, with no password given.
+
+    This means a person at the machine can write notes and take screen captures on
+    somebody else s device without signing in to it. The notes save into the
+    signed-in person s profile, and a capture covers what is visible - including
+    the notifications shown on a locked screen.
+
+    Limiting the access to the state after sign-in restores the ordinary rule -
+    the machine is worked by whoever has identified themselves on it.
+
+disruption_description:
+  pl: |
+    Zmiana nie wymaga przerwy i cofa się natychmiast. Na maszynie bez pióra i bez
+    ekranu dotykowego jest niewidoczna, bo obszaru roboczego i tak nikt nie otwiera.
+
+    Na tablecie i na laptopie z piórem skutek widać: przycisk pióra przy
+    zablokowanym ekranie przestaje otwierać notatnik. Osoby przyzwyczajone do
+    zapisania czegoś w biegu zgłoszą to jako utratę funkcji — i będą miały rację,
+    bo to jest właśnie ten koszt.
+
+    Po zalogowaniu obszar roboczy działa jak wcześniej, więc zmiana przesuwa
+    granicę, a nie odbiera narzędzia.
+  en: |
+    The change calls for no interruption and reverses at once. On a machine with no
+    pen and no touch screen it is invisible, since nobody opens the workspace
+    anyway.
+
+    On a tablet and on a laptop with a pen the effect is visible - the pen button
+    at a locked screen stops opening the notepad. People used to jotting something
+    down on the move report it as a lost function, and they are right, since that
+    is precisely the cost.
+
+    After signing in the workspace works as before, so the change moves a line
+    rather than taking a tool away.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Otwarcie notatnika pisma odręcznego przyciskiem pióra przy zablokowanym ekranie przestanie być możliwe
+      - Narzędzie do zrzutów ekranu z obszaru roboczego przestanie być dostępne przed zalogowaniem
+      - Osoby zapisujące notatki w biegu na tablecie zgłoszą to jako utratę funkcji
+      - Obszar roboczy po zalogowaniu, pisanie piórem w aplikacjach, ekran dotykowy i praca użytkownika pozostają bez zmian
+    en:
+      - Opening the handwriting notepad with the pen button at a locked screen stops being possible
+      - The screen capture tool from the workspace stops being available before signing in
+      - People jotting notes on the move on a tablet report it as a lost function
+      - The workspace after signing in, writing with a pen in applications, the touch screen and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Tablety i laptopy z piórem, na których notatka zapisywana przed zalogowaniem jest częścią sposobu pracy
+      - Stanowiska dostępności korzystające z obszaru roboczego jako drogi obsługi sprzed zalogowania
+    en:
+      - Tablets and laptops with a pen, where a note taken before signing in is part of the way of working
+      - Accessibility stations using the workspace as a road to working the machine before sign-in
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsInkWorkspace'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowWindowsInkWorkspace'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[01]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsInkWorkspace'
+    $name = 'AllowWindowsInkWorkspace'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsInkWorkspace'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowWindowsInkWorkspace' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-windowsinkworkspace
+
+notes:
+  pl: |
+    Sprawdzenie dopuszcza dwie wartości: całkowite wyłączenie obszaru roboczego i
+    jego udostępnienie dopiero po zalogowaniu. Odrzucany jest wyłącznie wariant
+    otwierający go z ekranu blokady. Naprawa ustawia wariant łagodniejszy, czyli
+    zostawia narzędzie dostępne po zalogowaniu.
+  en: |
+    The check admits two values - switching the workspace off altogether, and
+    opening it only after signing in. Only the variant opening it from the lock
+    screen is rejected. The remediation sets the milder variant, that is, it leaves
+    the tool available after sign-in.

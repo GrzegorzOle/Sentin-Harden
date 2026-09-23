@@ -1,0 +1,159 @@
+id: win10-linguistic-data-collection-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Text Input
+  title:
+    pl: Zbieranie materiału językowego z pisania i pisma odręcznego wyłączone
+    en: Collection of language material from typing and handwriting switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Osobno od dopasowywania podpowiedzi maszyna zbiera próbki materiału językowego
+    i odsyła je producentowi, żeby ulepszać rozpoznawanie pisma i mowy dla
+    wszystkich. Zbiór ten opuszcza maszynę.
+
+    Na tym polega różnica wobec personalizacji: tam materiał zostaje na miejscu,
+    tutaj wychodzi na zewnątrz. Próbka pisma odręcznego albo fragment wpisanego
+    tekstu może zawierać nazwę wewnętrzną, numer sprawy albo treść, której
+    organizacja nie wypuszcza poza swoją sieć.
+
+    Wyłączenie zbierania zatrzymuje ten strumień. Rozpoznawanie pisma i mowy
+    działa dalej — przestaje jedynie odsyłać materiał.
+  en: |
+    Separately from fitting suggestions, the machine gathers samples of language
+    material and sends them back to the maker, to improve the recognition of
+    handwriting and speech for everybody. That collection leaves the machine.
+
+    Therein lies the difference from personalisation - there the material stays
+    put, here it goes outside. A sample of handwriting or a fragment of typed text
+    may hold an internal name, a case number or content the organisation does not
+    let out of its network.
+
+    Switching the collection off stops that stream. Recognition of handwriting and
+    speech carries on working - it merely stops sending material back.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje niczego w pracy. Rozpoznawanie pisma i mowy działa dalej,
+    podpowiedzi zostają, nie ma przerwy ani restartu, a cofnięcie jest
+    natychmiastowe.
+
+    Traci na tym wyłącznie udział maszyny w ulepszaniu mechanizmu rozpoznawania po
+    stronie producenta. Jest to wkład bezzwrotny i niewidoczny dla użytkownika,
+    więc rezygnacja z niego nie zmienia niczego na stanowisku.
+  en: |
+    The change costs nothing in daily work. Recognition of handwriting and speech
+    carries on, the suggestions stay, there is no interruption and no restart, and
+    reversing it is immediate.
+
+    The only loss is the machine s share in improving the recognition mechanism at
+    the maker s end. That is a contribution given without return and invisible to
+    the user, so giving it up alters nothing at the station.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - user-interface
+  what_breaks:
+    pl:
+      - Maszyna przestanie odsyłać próbki pisma odręcznego i wpisanego tekstu do producenta
+      - Udział tego stanowiska w ulepszaniu rozpoznawania pisma i mowy po stronie producenta ustanie
+      - Rozpoznawanie pisma, dyktowanie, podpowiadanie słów i praca użytkownika pozostają bez zmian
+    en:
+      - The machine stops sending samples of handwriting and typed text back to the maker
+      - This station s share in improving handwriting and speech recognition at the maker s end ends
+      - Handwriting recognition, dictation, word suggestion and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska uczestniczące w programie testowym producenta, w którym odsyłanie próbek jest warunkiem udziału
+    en:
+      - Environments taking part in a maker s test programme, where sending samples is a condition of joining
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # This key sits outside the Policies\Microsoft branch - the path is
+    # shorter than in most rules and it is easy to mistype.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\TextInput'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowLinguisticDataCollection'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\TextInput'
+    $name = 'AllowLinguisticDataCollection'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # This key sits outside the Policies\Microsoft branch - the path is
+        # shorter than in most rules and it is easy to mistype.
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\TextInput'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowLinguisticDataCollection' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/manage-connections-from-windows-operating-system-components-to-microsoft-services
+
+notes:
+  pl: |
+    Klucz leży poza gałęzią zasad producenta — ścieżka jest krótsza niż w
+    większości reguł i łatwo ją pomylić. Zasada dotyczy odsyłania materiału na
+    zewnątrz, a nie gromadzenia go na maszynie; tę drugą stronę opisuje punkt o
+    personalizacji wprowadzania.
+  en: |
+    The key lies outside the maker s policy branch - the path is shorter than in
+    most rules and easy to mistype. The rule concerns sending material outside
+    rather than gathering it on the machine; that other side is covered by the
+    item on input personalisation.

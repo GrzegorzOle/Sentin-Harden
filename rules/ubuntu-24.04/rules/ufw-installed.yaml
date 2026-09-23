@@ -1,0 +1,199 @@
+id: ubuntu2404-ufw-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.2.1
+  section: Host Based Firewall > Configure UncomplicatedFirewall
+  title:
+    pl: Pakiet ufw jest zainstalowany
+    en: Ensure ufw is installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    ufw to zapora Ubuntu, która z prostych poleceń, np. ufw allow 22/tcp,
+    buduje reguły filtra pakietów jądra. Punkty 4.2 dotyczą serwerów, na
+    których zapora jest zarządzana przez ufw.
+
+    Punkt wymaga zainstalowanego pakietu ufw. Ubuntu Server instaluje go
+    domyślnie, ale ufw jest wyłączony, dopóki się go nie włączy.
+  en: |
+    ufw is the Ubuntu firewall, which builds the rules of the kernel packet
+    filter from simple commands such as ufw allow 22/tcp. The items in 4.2
+    concern servers whose firewall is managed through ufw.
+
+    The item requires the ufw package to be installed. Ubuntu Server
+    installs it by default, but ufw is turned off until someone turns it on.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: sama instalacja ufw niczego nie filtruje, bo ufw
+    zostaje wyłączony.
+  en: |
+    Nobody will notice: installing ufw filters nothing, because ufw stays
+    turned off.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in nftables|iptables|multiple:nftables,iptables) echo NOT_APPLICABLE; exit 0 ;; esac
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    have=""; miss=""
+    for p in ufw; do
+      if [ "$(st "$p")" = installed ]; then have="$have,$p=$(dpkg-query -W -f='${Version}' "$p")"
+      else miss="$miss,$p"; fi
+    done
+    if [ -n "$miss" ]; then echo "NOT_INSTALLED:${miss#,}"; else echo "INSTALLED:${have#,}"; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      {
+        echo format=dpkg-on-1
+        for p in ufw; do s=$(st "$p"); echo "$p ${s:-not-installed}"; done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    m=$(fwmode)
+    case "$m" in nftables|iptables|multiple:nftables,iptables) echo "Another firewall utility is in use ($m); ufw is not installed next to it (see item 4.1.1)" >&2; exit 1 ;; esac
+    if [ "$(dpkg-query -W -f='${db:Status-Status}' ufw 2>/dev/null)" != installed ]; then
+      rm=$(LC_ALL=C apt-get -s install ufw 2>/dev/null | awk '$1 == "Remv" { print $2 }' | tr '\n' ' ')
+      if [ -n "$rm" ]; then echo "Installing ufw would remove: $rm; nothing changed" >&2; exit 1; fi
+    fi
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      miss=""
+      for p in ufw; do [ "$(st "$p")" = installed ] || miss="$miss $p"; done
+      if [ -z "$miss" ]; then echo "Already installed: ufw"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      o="-y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $miss; then apt-get update -qq; apt-get install $o $miss; fi
+      for p in $miss; do [ "$(st "$p")" = installed ] || { echo "$p is still not installed" >&2; exit 1; }; done
+      echo "Installed:$miss"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | cut -d' ' -f1 | tr '\n' ' ')" = "ufw " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""; purge=""
+      while read -r p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != installed ] && [ "$(st "$p")" = installed ] || continue
+        rm="$rm $p"
+        # A package that was not there at all loses its configuration files too.
+        [ "$s" != not-installed ] || purge="$purge $p"
+      done < <(tail -n +2 "$b")
+      if [ -z "$rm" ]; then echo "Nothing to restore"; exit 0; fi
+      # Packages installed since then may need them; then they stay.
+      if ! dpkg -r --dry-run $rm >/dev/null 2>&1; then
+        echo "Kept$rm: other installed packages need them now"; exit 0
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get remove -y -qq $rm
+      if [ -n "$purge" ]; then dpkg --purge $purge >/dev/null; fi
+      echo "Removed again:$rm"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
+
+notes:
+  pl: |
+    Gdy w użyciu jest nftables albo iptables-persistent, sprawdzenie zwraca
+    NOT_APPLICABLE, bo ten przypadek ocenia punkt 4.1.1 i punkty 4.3 i 4.4,
+    a naprawa odmawia. Wynik NOT_INSTALLED wymienia brakujący pakiet,
+    a INSTALLED podaje jego wersję. Pakiet usunięty bez --purge nie liczy
+    się jako zainstalowany.
+
+    Naprawa instaluje ufw przez apt-get, a gdy apt usunąłby przy tym inne
+    pakiety, np. iptables-persistent, z którym ufw się wyklucza, odmawia
+    i niczego nie zmienia. ufw zostaje wyłączony; włącza go punkt 4.2.3.
+    Wycofanie usuwa ufw, jeśli go nie było, chyba że zależą od niego
+    pakiety zainstalowane później.
+  en: |
+    When nftables or iptables-persistent is in use, the check returns
+    NOT_APPLICABLE, because item 4.1.1 and the items in 4.3 and 4.4 assess
+    that case, and the remediation refuses. The NOT_INSTALLED result names
+    the missing package, and INSTALLED gives its version. A package removed
+    without --purge does not count as installed.
+
+    The remediation installs ufw with apt-get, and when apt would also
+    remove other packages, for example iptables-persistent, which ufw
+    excludes, it refuses and changes nothing. ufw stays turned off; item
+    4.2.3 turns it on. Rollback removes ufw if it was not there, unless
+    packages installed later depend on it.

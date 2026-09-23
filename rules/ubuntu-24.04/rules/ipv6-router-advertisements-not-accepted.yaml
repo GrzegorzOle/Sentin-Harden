@@ -1,0 +1,424 @@
+id: ubuntu2404-ipv6-router-advertisements-not-accepted
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 3.3.11
+  section: Network > Configure Network Kernel Parameters
+  title:
+    pl: Ogłoszenia routerów IPv6 nie są przyjmowane
+    en: Ensure ipv6 router advertisements are not accepted
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Routery IPv6 rozsyłają ogłoszenia, z których komputery biorą adres,
+    bramę domyślną i trasy. Każdy komputer w tej samej sieci może wysłać
+    fałszywe ogłoszenie i podać siebie jako bramę, a wtedy przejmuje ruch
+    IPv6 innych komputerów.
+
+    Punkt wymaga wartości 0 parametrów net.ipv6.conf.all.accept_ra
+    i net.ipv6.conf.default.accept_ra, przy której jądro nie przetwarza
+    ogłoszeń. Jądro domyślnie ma 1, a Ubuntu tego nie zmienia.
+  en: |
+    IPv6 routers send advertisements from which computers take their
+    address, default gateway and routes. Any computer in the same network
+    can send a fake advertisement naming itself as the gateway, and then it
+    takes over the IPv6 traffic of other computers.
+
+    The item requires the value 0 for net.ipv6.conf.all.accept_ra and
+    net.ipv6.conf.default.accept_ra, with which the kernel does not process
+    advertisements. The kernel default is 1, and Ubuntu does not change it.
+
+disruption_description:
+  pl: |
+    Na Ubuntu Server sieć konfiguruje netplan przez systemd-networkd, a na
+    wersji z pulpitem NetworkManager. Oba same obsługują ogłoszenia routerów
+    i na swoich interfejsach i tak wyłączają ich obsługę w jądrze, więc
+    adresy IPv6 działają bez zmian. Zmianę odczuje tylko interfejs, któremu
+    adres IPv6 nadaje samo jądro, bez systemd-networkd i NetworkManagera:
+    traci adres z ogłoszeń i bramę IPv6.
+  en: |
+    On Ubuntu Server the network is configured by netplan through
+    systemd-networkd, and on the desktop version by NetworkManager. Both
+    handle router advertisements themselves and turn off their handling in
+    the kernel on their interfaces anyway, so IPv6 addresses keep working.
+    Only an interface that gets its IPv6 address from the kernel itself,
+    without systemd-networkd and NetworkManager, notices the change: it
+    loses the address from advertisements and the IPv6 gateway.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Interfejsy konfigurowane przez samo jądro, bez systemd-networkd i NetworkManagera, nie dostają adresu IPv6 ani bramy z ogłoszeń routera
+    en:
+      - Interfaces configured by the kernel itself, without systemd-networkd and NetworkManager, get no IPv6 address or gateway from router advertisements
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Sieć IPv6 komputera konfiguruje samo jądro na podstawie ogłoszeń routera, bez systemd-networkd i NetworkManagera
+    en:
+      - The computer's IPv6 network is configured by the kernel itself from router advertisements, without systemd-networkd and NetworkManager
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    ufwpath() { sed -n 's/^[[:space:]]*IPT_SYSCTL=//p' /etc/default/ufw 2>/dev/null | tail -n 1 | tr -d "\"'"; }
+    ufwconf() { u=$(ufwpath); if [ -n "$u" ] && [ -s "$u" ]; then cat "$u"; fi; }
+    if [ ! -x /usr/lib/systemd/systemd-sysctl ] || [ ! -d /proc/sys/net/ipv4 ]; then echo CHECK_ERROR; exit 0; fi
+    ok=""; bad=""
+    while read -r k want dflt; do
+      p=/proc/sys/$(printf '%s' "$k" | tr . /)
+      n=${k#net.}
+      if [ ! -r "$p" ]; then
+        case "$k" in net.ipv6.*) if [ ! -d /proc/sys/net/ipv6 ]; then ok="$ok,$n=no-ipv6"; continue; fi ;; esac
+        echo CHECK_ERROR; exit 0
+      fi
+      r=$(tr -s ' \t' ' ' < "$p")
+      c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ -z "$c" ] && [ "$dflt" = 1 ]; then c=default; fi
+      uf=$(ufwconf | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ "$r" = "$want" ] && { [ "$c" = "$want" ] || [ "$c" = default ]; } && { [ -z "$uf" ] || [ "$uf" = "$want" ]; }; then ok="$ok,$n=$r"
+      else bad="$bad;$n:runtime=$r,config=${c:-none}${uf:+,ufw=$uf}"; fi
+    done <<'EOF'
+    net.ipv6.conf.all.accept_ra 0 0
+    net.ipv6.conf.default.accept_ra 0 0
+    EOF
+    # Interfaces with their own value, for information only: the item checks all and default.
+    ifs=""
+    for spec in net/ipv6/conf:accept_ra:0; do
+      d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
+      for p in /proc/sys/$d/*/$q; do
+        [ -r "$p" ] || continue
+        i=${p#/proc/sys/$d/}; i=${i%/$q}
+        case "$i" in all|default|lo) continue ;; esac
+        v=$(cat "$p")
+        [ "$v" = "$want" ] || ifs="$ifs,${d#net/}/$i/$q=$v"
+      done
+    done
+    [ -z "$ifs" ] || ifs=";interfaces:${ifs#,}"
+    if [ -n "$bad" ]; then echo "NOT_OK:${bad#;}$ifs"; else echo "OK:${ok#,}$ifs"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+    ufwpath() { sed -n 's/^[[:space:]]*IPT_SYSCTL=//p' /etc/default/ufw 2>/dev/null | tail -n 1 | tr -d "\"'"; }
+    ufwconf() { u=$(ufwpath); if [ -n "$u" ] && [ -s "$u" ]; then cat "$u"; fi; }
+      f=/etc/sysctl.d/sentin-harden-accept-ra.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sysctl-ub-1
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        for k in net.ipv6.conf.all.accept_ra net.ipv6.conf.default.accept_ra ; do
+          p=/proc/sys/$(printf '%s' "$k" | tr . /)
+          if [ -r "$p" ]; then echo "rt $k $(tr -s ' \t' ' ' < "$p")"; fi
+        done
+        # Interface values are stored as paths, because interface names may contain dots.
+        for spec in net/ipv6/conf:accept_ra:0; do
+          d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
+          for p in /proc/sys/$d/*/$q; do
+            [ -r "$p" ] || continue
+            case "$p" in */all/$q|*/default/$q) continue ;; esac
+            echo "if ${p#/proc/sys/} $(cat "$p")"
+          done
+        done
+        # Values the ufw sysctl file sets now, put back by the rollback.
+        for k in net.ipv6.conf.all.accept_ra net.ipv6.conf.default.accept_ra; do
+          c=$(ufwconf | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+          if [ -n "$c" ]; then echo "uf $k $c"; fi
+        done
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+    ufwpath() { sed -n 's/^[[:space:]]*IPT_SYSCTL=//p' /etc/default/ufw 2>/dev/null | tail -n 1 | tr -d "\"'"; }
+    ufwconf() { u=$(ufwpath); if [ -n "$u" ] && [ -s "$u" ]; then cat "$u"; fi; }
+    # Sets every active line of key $2 in the ufw file $1 to $3; other lines stay as they are.
+    ufwset() {
+      awk -v k="$2" -v w="$3" '
+        /^[ \t]*[#;]/ || !/=/ { print; next }
+        { l = $0; i = index(l, "="); n = substr(l, 1, i - 1); r = substr(l, i + 1); v = r
+          gsub(/^[ \t]+|[ \t]+$/, "", n); sub(/^-/, "", n); gsub("/", ".", n); gsub(/^[ \t]+|[ \t]+$/, "", v)
+          if (n == k && v != w) { match(r, /^[ \t]*/); print substr(l, 1, i + RLENGTH) w; next }
+          print }' "$1" > "$1.sentin-harden.tmp"
+      if cmp -s "$1" "$1.sentin-harden.tmp"; then rm -f "$1.sentin-harden.tmp"; return 0; fi
+      cat "$1.sentin-harden.tmp" > "$1"; rm -f "$1.sentin-harden.tmp"
+    }
+      f=/etc/sysctl.d/sentin-harden-accept-ra.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      command -v sysctl >/dev/null 2>&1 || { echo "sysctl is not installed" >&2; exit 1; }
+      # Writing some keys makes the kernel reset others; those keep their value.
+      keep=""
+      for k in ; do
+        p=/proc/sys/$(printf '%s' "$k" | tr . /)
+        if [ -r "$p" ]; then keep="$keep $k=$(cat "$p")"; fi
+      done
+      printf '%s\n' '# Sentin-Harden: ubuntu2404-ipv6-router-advertisements-not-accepted' '-net.ipv6.conf.all.accept_ra = 0' '-net.ipv6.conf.default.accept_ra = 0' '-net.ipv6.conf.*.accept_ra = 0' > "$f"
+      chmod 0644 "$f"
+      # ufw applies its own file after the others each time it starts.
+      u=$(ufwpath)
+      if [ -n "$u" ] && [ -f "$u" ]; then
+        for kv in net.ipv6.conf.all.accept_ra=0 net.ipv6.conf.default.accept_ra=0; do ufwset "$u" "${kv%%=*}" "${kv#*=}"; done
+      fi
+      for kv in net.ipv6.conf.all.accept_ra=0 net.ipv6.conf.default.accept_ra=0; do
+        k=${kv%%=*}
+        [ -e "/proc/sys/$(printf '%s' "$k" | tr . /)" ] || { echo "Skipped $k: IPv6 is disabled"; continue; }
+        sysctl -q -w "$kv"
+      done
+      for kv in $keep; do sysctl -q -w "$kv"; done
+      # The file covers interfaces added later; the existing ones are set here.
+      for spec in net/ipv6/conf:accept_ra:0; do
+        d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
+        for p in /proc/sys/$d/*/$q; do
+          [ -e "$p" ] || continue
+          case "$p" in */all/$q|*/default/$q) continue ;; esac
+          # An interface can disappear meanwhile, e.g. a container's veth.
+          printf '%s\n' "$want" 2>/dev/null > "$p" || [ ! -e "$p" ] || { echo "Cannot write $p" >&2; exit 1; }
+        done
+      done
+      late=""
+      for kv in net.ipv6.conf.all.accept_ra=0 net.ipv6.conf.default.accept_ra=0; do
+        k=${kv%%=*}
+        c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+        [ "$c" = "${kv#*=}" ] || late="$late $k=$c"
+        uf=$(ufwconf | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+        [ -z "$uf" ] || [ "$uf" = "${kv#*=}" ] || late="$late $k=$uf(ufw)"
+      done
+      if [ -n "$late" ]; then
+        echo "Another sysctl.d file is applied after $f and the next start will set:$late" >&2; exit 1
+      fi
+      echo "Set net.ipv6.conf.all.accept_ra=0 net.ipv6.conf.default.accept_ra=0 now and in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+    ufwpath() { sed -n 's/^[[:space:]]*IPT_SYSCTL=//p' /etc/default/ufw 2>/dev/null | tail -n 1 | tr -d "\"'"; }
+    ufwconf() { u=$(ufwpath); if [ -n "$u" ] && [ -s "$u" ]; then cat "$u"; fi; }
+    # Sets every active line of key $2 in the ufw file $1 to $3; other lines stay as they are.
+    ufwset() {
+      awk -v k="$2" -v w="$3" '
+        /^[ \t]*[#;]/ || !/=/ { print; next }
+        { l = $0; i = index(l, "="); n = substr(l, 1, i - 1); r = substr(l, i + 1); v = r
+          gsub(/^[ \t]+|[ \t]+$/, "", n); sub(/^-/, "", n); gsub("/", ".", n); gsub(/^[ \t]+|[ \t]+$/, "", v)
+          if (n == k && v != w) { match(r, /^[ \t]*/); print substr(l, 1, i + RLENGTH) w; next }
+          print }' "$1" > "$1.sentin-harden.tmp"
+      if cmp -s "$1" "$1.sentin-harden.tmp"; then rm -f "$1.sentin-harden.tmp"; return 0; fi
+      cat "$1.sentin-harden.tmp" > "$1"; rm -f "$1.sentin-harden.tmp"
+    }
+      f=/etc/sysctl.d/sentin-harden-accept-ra.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sysctl-ub-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      grep -qx -- --- "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      rts=$(sed -n '3,/^---$/p' "$b" | sed '$d')
+      while read -r t k v; do
+        [ -n "$t$k$v" ] || continue
+        bad=0
+        case "$v" in ""|*[!0-9-]*) bad=1 ;; esac
+        case "$t" in
+          rt|uf) case " net.ipv6.conf.all.accept_ra net.ipv6.conf.default.accept_ra  " in *" $k "*) ;; *) bad=1 ;; esac ;;
+          if)
+            known=0
+            for spec in net/ipv6/conf:accept_ra:0; do
+              d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
+              case "$k" in "$d"/*/"$q") ;; *) continue ;; esac
+              i=${k#"$d"/}; i=${i%/"$q"}
+              case "$i" in ""|*/*|.|..|all|default) ;; *) known=1 ;; esac
+            done
+            [ "$known" = 1 ] || bad=1 ;;
+          *) bad=1 ;;
+        esac
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$rts"
+      if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
+      u=$(ufwpath)
+      if [ -n "$u" ] && [ -f "$u" ]; then
+        while read -r t k v; do
+          [ "$t" = uf ] || continue
+          ufwset "$u" "$k" "$v"
+        done <<< "$rts"
+      fi
+      # The kept keys go after the others, because writing those can reset them.
+      while read -r t k v; do
+        [ "$t" = rt ] || continue
+        case "  " in *" $k "*) continue ;; esac
+        sysctl -q -w "$k=$v"
+      done <<< "$rts"
+      while read -r t k v; do
+        [ "$t" = rt ] || continue
+        case "  " in *" $k "*) sysctl -q -w "$k=$v" ;; esac
+      done <<< "$rts"
+      # Interfaces removed since the backup are skipped.
+      while read -r t k v; do
+        [ "$t" = if ] || continue
+        if [ -e "/proc/sys/$k" ]; then printf '%s\n' "$v" > "/proc/sys/$k"; fi
+      done <<< "$rts"
+      echo "Restored the previous values and the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/networking/ip-sysctl.html
+  - https://manpages.ubuntu.com/manpages/noble/man5/sysctl.d.5.html
+  - https://manpages.ubuntu.com/manpages/noble/man5/systemd.network.5.html
+  - https://netplan.readthedocs.io/en/stable/netplan-yaml/
+
+notes:
+  pl: |
+    Sprawdzenie porównuje dla każdego parametru wartość bieżącą z /proc/sys
+    z wartością, którą ustawi następny start. Tę drugą wyznacza
+    systemd-sysctl --cat-config, które wypisuje pliki z /usr/lib/sysctl.d,
+    /run/sysctl.d i /etc/sysctl.d (także /etc/sysctl.conf przez dowiązanie
+    99-sysctl.conf) w kolejności stosowania; liczy się ostatnie przypisanie.
+    Brak wpisu oznacza wartość jądra 1,
+    więc punkt wymaga jawnego ustawienia. Parametry są spełnione, gdy IPv6
+    wyłączono przy starcie jądra. Osobno sprawdzany jest plik zapory ufw wskazany w IPT_SYSCTL
+    w /etc/default/ufw, zwykle /etc/ufw/sysctl.conf: parametr może w nim
+    nie występować, a jeśli występuje, musi mieć wymaganą wartość. Wynik
+    NOT_OK podaje wartości każdego parametru, który nie spełnia punktu,
+    a wartość z pliku ufw jako ufw=.
+
+    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-accept-ra.conf
+    i od razu je stosuje. Nazwa bez numeru na początku sortuje się po
+    99-sysctl.conf, więc ustawienia wygrywają z pozostałymi plikami; jeśli
+    mimo to inny plik nadpisuje wartość, naprawa kończy się błędem.
+    Wycofanie przywraca poprzednią zawartość pliku i poprzednie wartości
+    bieżące.
+
+    Zapora ufw przy każdym uruchomieniu, także przy starcie systemu,
+    stosuje swój plik poleceniem sysctl -p, więc jego wartości wygrywają
+    z sysctl.d. Dlatego naprawa zmienia w nim wartości tych parametrów,
+    które są tam ustawione inaczej, a wycofanie przywraca poprzednie. Plik
+    jest sprawdzany także przy wyłączonej zaporze, bo zadziała po jej
+    włączeniu, którego wymaga rozdział 4.
+
+    Jądro sprawdza
+    tylko ustawienie interfejsu, na którym przyszło ogłoszenie, a wartości
+    all nie bierze pod uwagę. Wartość default trafia tylko do interfejsów, którym nikt nie
+    ustawił wartości osobno, a interfejs utworzony po wcześniejszym zapisie
+    default dostaje jej kopię i nie śledzi dalszych zmian. Dlatego naprawa
+    ustawia też wszystkie istniejące interfejsy, a w pliku dopisuje linię
+    z gwiazdką, którą udev stosuje do interfejsów dodawanych później, np.
+    przy podłączeniu karty sieciowej albo starcie kontenera. Sprawdzenie
+    ocenia, tak jak punkt, tylko all i default; interfejsy z inną wartością
+    wypisuje po średniku jako informację. Wycofanie przywraca też poprzednie
+    wartości interfejsów, które nadal istnieją.
+
+    Punkt dotyczy tylko obsługi ogłoszeń w jądrze. systemd-networkd
+    (ustawienie IPv6AcceptRA, w netplan accept-ra) i NetworkManager odbierają
+    ogłoszenia same i nadal ustawiają z nich adres i bramę, więc na ich
+    interfejsach reguła niczego nie zmienia i nie chroni przed fałszywymi
+    ogłoszeniami. Tę ochronę daje dopiero accept-ra: false w netplan przy
+    statycznej konfiguracji IPv6 albo ochrona RA Guard w przełącznikach
+    sieci.
+  en: |
+    For each parameter, the check compares the current value from /proc/sys
+    with the value the next start will set. The latter comes from
+    systemd-sysctl --cat-config, which prints the files from
+    /usr/lib/sysctl.d, /run/sysctl.d and /etc/sysctl.d (/etc/sysctl.conf
+    included, through the 99-sysctl.conf link) in the order they are
+    applied; the last assignment counts. No entry means the kernel value 1, so the
+    item needs an explicit setting. The parameters are met when IPv6 was
+    turned off at kernel start. The ufw firewall file
+    named by IPT_SYSCTL in /etc/default/ufw, usually /etc/ufw/sysctl.conf,
+    is checked separately: the parameter may be absent there, and if it is
+    present it must have the required value. The NOT_OK result gives the
+    values of every parameter that does not meet the item, the one from the
+    ufw file as ufw=.
+
+    The remediation writes the settings to
+    /etc/sysctl.d/sentin-harden-accept-ra.conf and applies them at once. A name
+    without a leading number sorts after 99-sysctl.conf, so the settings win
+    over the other files; if another file still overrides a value, the
+    remediation ends with an error. Rollback restores the previous file
+    content and the previous current values.
+
+    Each time the ufw firewall starts, also at system start, it applies its
+    file with sysctl -p, so its values win over sysctl.d. So the remediation
+    changes the values of those parameters that are set differently there,
+    and rollback restores the previous ones. The file is checked also while
+    the firewall is off, because it takes effect once the firewall is turned
+    on, which chapter 4 requires.
+
+    The kernel checks
+    only the setting of the interface on which the advertisement came, and
+    does not take the all value into account. The default value reaches only interfaces whose value nobody set
+    separately, and an interface created after an earlier write of default
+    gets a copy of it and does not follow later changes. So the remediation
+    also sets all existing interfaces and adds a line with an asterisk to
+    the file, which udev applies to interfaces added later, for example when
+    a network card is plugged in or a container starts. Like the item, the
+    check assesses only all and default; interfaces with another value are
+    listed after a semicolon for information. Rollback also restores the
+    previous values of interfaces that still exist.
+
+    The item concerns only the handling of advertisements in the kernel.
+    systemd-networkd (the IPv6AcceptRA setting, accept-ra in netplan) and
+    NetworkManager receive advertisements themselves and still set the
+    address and gateway from them, so on their interfaces the rule changes
+    nothing and does not protect against fake advertisements. That
+    protection comes only from accept-ra: false in netplan with a static
+    IPv6 configuration or from RA Guard in the network switches.

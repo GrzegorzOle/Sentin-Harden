@@ -1,0 +1,203 @@
+id: win2016-downloaded-maps-manager-service-disabled
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: System Services
+  title:
+    pl: Usługa zarządzania pobranymi mapami wyłączona
+    en: The service managing downloaded maps disabled
+  level: 2
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usługa pobiera dane map z usługi zewnętrznej, przechowuje je na dysku
+    i utrzymuje ich aktualność.
+
+    Na serwerze nie ma aplikacji, która by z tych danych korzystała.
+    Usługa jest tam, bo pochodzi ze wspólnego jądra, a jej praca sprowadza
+    się do okresowego sięgania na zewnątrz po dane, o które nikt nie prosił.
+
+    Dwie rzeczy warto przy tym odnotować, obie drobne. Pierwsza to ruch
+    wychodzący: maszyna nawiązuje połączenia do usługi zewnętrznej według
+    własnego harmonogramu, a w nadzorze ruchu wygląda to jak aktywność bez
+    przyczyny. Wyjaśnianie takiej aktywności kosztuje czas, a nie wnosi nic.
+
+    Druga to miejsce na dysku i zadania aktualizacyjne, które temu
+    towarzyszą. Na maszynie, na której pilnuje się wolnego miejsca, dane
+    rosnące bez powodu są kłopotem drobnym, ale niepotrzebnym.
+
+    Kategoria niska opisuje to uczciwie. Nie ma tu zagrożenia — jest
+    składnik pracujący bez celu.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: praktycznie
+    nic; punkt zdejmuje pracę wykonywaną bez celu, a nie drogę ataku.
+  en: |
+    The service fetches map data from an outside service, keeps it on disk and keeps it
+    current.
+
+    On a server there is no application that would use that data. The service is there
+    because it comes from a shared kernel, and its work amounts to reaching outward from
+    time to time for data nobody asked for.
+
+    Two things are worth noting, both small. The first is outgoing traffic: the machine
+    makes connections to an outside service by a schedule of its own, and in the monitoring
+    of traffic that looks like activity without a cause. Explaining such activity costs
+    time and brings nothing.
+
+    The second is disk space and the updating tasks that go with it. On a machine where
+    free space is watched, data growing for no reason is a small trouble but a needless
+    one.
+
+    The low category describes that honestly. There is here no threat - there is a component
+    working to no end.
+
+    What an attacker gains while the item goes unmet: practically nothing; the item takes
+    away work done to no end rather than a road of attack.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Nic na serwerze z map nie korzysta. Nie ma aplikacji pytającej o dane
+    map i nie ma nikogo, kto by je otwierał.
+
+    Pobrane dane pozostają na dysku po wyłączeniu usługi. Reguła zatrzymuje
+    pobieranie, nie sprząta tego, co już jest — i warto to powiedzieć, bo
+    kto liczy na odzyskanie miejsca, nie odzyska go tym punktem.
+
+    Nie ma znanych regresji.
+
+    Czego to nie psuje: usług, sieci, aktualizacji systemu, udziałów,
+    uwierzytelniania.
+
+    Wymaga zatrzymania usługi; poza tym natychmiast odwracalne.
+  en: |
+    The class is "no disruption".
+
+    Nothing on a server uses maps. There is no application asking after map data and nobody
+    to open it.
+
+    The data already fetched stays on disk after the service is switched off. The rule stops
+    the fetching, it does not tidy what is there already - and that is worth saying, since
+    whoever counts on space being won back will not win it back by this item.
+
+    There are no known regressions.
+
+    What this does not break: services, the network, system updates, shares, or
+    authentication.
+
+    Calls for the service to be stopped; otherwise undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Nic na serwerze z danych map nie korzysta, więc wyłączenie nie odbiera żadnej funkcji
+      - Dane pobrane wcześniej pozostają na dysku - reguła zatrzymuje pobieranie, a nie sprząta tego, co już jest
+      - Połączenia wychodzące do usługi zewnętrznej ustają, więc znika aktywność, którą w nadzorze trudno wyjaśnić
+      - Usługi, sieć, aktualizacje systemu i udziały pozostają bez zmian
+    en:
+      - Nothing on a server uses map data, so switching it off takes away no feature
+      - Data fetched earlier stays on disk - the rule stops the fetching, it does not tidy what is there already
+      - Outgoing connections to the outside service cease, so activity hard to explain in the monitoring goes away
+      - Services, the network, system updates and shares stay unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie pracuje aplikacja branżowa korzystająca z lokalnych danych map
+    en:
+      - A line-of-business application using local map data works on the machine
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\MapsBroker'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'NOT_APPLICABLE' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).Start
+        if ($null -eq $value) { 'CHECK_ERROR' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '4'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\MapsBroker'
+    $current = (Get-ItemProperty -Path $path -Name 'Start' -ErrorAction SilentlyContinue).Start
+    [pscustomobject]@{
+      path    = $path
+      name    = 'Start'
+      value   = $current
+      existed = ($null -ne $current)
+      running = ((Get-Service -Name 'MapsBroker' -ErrorAction SilentlyContinue).Status -eq 'Running')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Map data is fetched from outside and kept on disk. A server has no use for
+    # either half of that.
+    Stop-Service -Name 'MapsBroker' -Force -ErrorAction SilentlyContinue
+    Set-Service -Name 'MapsBroker' -StartupType Disabled
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    if ($b.running) { Start-Service -Name 'MapsBroker' -ErrorAction SilentlyContinue }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/manage-windows-11-endpoints
+
+notes:
+  pl: |
+    Punkt jest w całym zestawie jednym z najlżejszych i warto go tak
+    przedstawiać, zamiast szukać dla niego uzasadnienia mocniejszego, niż
+    ma. Zysk polega na tym, że maszyna przestaje wykonywać pracę, której
+    nikt nie zamówił, i przestaje wychodzić na zewnątrz bez powodu.
+
+    Uwaga o danych pozostających na dysku jest warta zachowania, bo dotyczy
+    częstego nieporozumienia. Reguła wyłączająca usługę nigdy nie sprząta
+    po niej — i dotyczy to nie tylko tego punktu, ale całego bloku. Jeżeli
+    aplikacja ma o czymś przypominać przy podsumowaniu wdrożenia, to
+    właśnie o tym.
+
+    Ruch wychodzący bez przyczyny warto podnieść jako argument osobny,
+    bo mówi do innego odbiorcy niż reszta opisu. Dla kogoś, kto prowadzi
+    nadzór ruchu, mniej niewyjaśnionych połączeń to wartość sama w sobie,
+    niezależna od bezpieczeństwa maszyny.
+  en: |
+    The item is one of the lightest in the whole set and is worth presenting so, rather than
+    seeking for it a warrant stronger than it has. The gain is that the machine stops doing
+    work nobody ordered and stops going outward for no reason.
+
+    The note about data staying on disk is worth keeping, touching as it does a frequent
+    misunderstanding. A rule switching a service off never tidies after it - and that holds
+    not only for this item but for the whole block. If the application is to remind of
+    anything at the rollout's summing up, it is of that.
+
+    Outgoing traffic with no cause is worth raising as an argument of its own, speaking as
+    it does to another listener than the rest of the description. To somebody keeping watch
+    over traffic, fewer unexplained connections is a worth in itself, independent of the
+    machine's security.

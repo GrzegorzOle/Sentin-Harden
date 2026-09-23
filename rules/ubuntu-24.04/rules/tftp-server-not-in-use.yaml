@@ -1,0 +1,265 @@
+id: ubuntu2404-tftp-server-not-in-use
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.1.16
+  section: Services > Configure Server Services
+  title:
+    pl: Serwer TFTP nie jest używany
+    en: Ensure tftp server services are not in use
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    TFTP przesyła pliki bez logowania i bez szyfrowania. Każdy, kto dotrze
+    do portu 69/udp, może pobrać pliki z katalogu serwera, a przy włączonym
+    zapisie także je podmienić. Serwer przydaje się głównie do rozruchu
+    komputerów przez sieć (PXE) i do wgrywania oprogramowania urządzeń
+    sieciowych.
+
+    Punkt wymaga, żeby serwer TFTP nie był zainstalowany albo żeby jego
+    usługi nie były włączone ani uruchomione. Na Ubuntu serwer domyślnie nie
+    jest zainstalowany, a po instalacji przez apt od razu działa.
+  en: |
+    TFTP transfers files without sign-in and without encryption. Anyone who
+    reaches port 69/udp can download files from the server folder and, when
+    writing is allowed, replace them. The server is mainly useful for
+    booting computers over the network (PXE) and for loading firmware onto
+    network devices.
+
+    The item requires that a TFTP server is not installed or that its
+    services are neither enabled nor running. On Ubuntu the server is not
+    installed by default, and after installation through apt it runs right
+    away.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli serwer TFTP nie był używany. W przeciwnym
+    razie komputery uruchamiane przez sieć z tego serwera i urządzenia
+    pobierające z niego konfigurację lub oprogramowanie przestaną działać.
+  en: |
+    Nobody will notice if the TFTP server was not in use. Otherwise
+    computers booting over the network from this server, and devices that
+    fetch their configuration or firmware from it, stop working.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - boot-and-firmware
+  what_breaks:
+    pl:
+      - Rozruch przez sieć (PXE) z tego serwera nie działa
+      - Urządzenia sieciowe nie pobierają z tego komputera konfiguracji ani oprogramowania przez TFTP
+    en:
+      - Network boot (PXE) from this server does not work
+      - Network devices cannot fetch configuration or firmware from this computer over TFTP
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || ! command -v dpkg-query >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      inst=""
+      for p in tftpd-hpa atftpd; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
+      bad=""
+      for u in tftpd-hpa.service atftpd.socket atftpd.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        a=$(systemctl is-active "$u" 2>/dev/null) || true
+        case "$a" in
+          active|activating|reloading) ;;
+          *)
+            [ -n "$inst" ] || continue
+            case "$e" in enabled|enabled-runtime|linked|linked-runtime) ;; *) continue ;; esac ;;
+        esac
+        bad="$bad,$u=${e:-none}/${a:-unknown}"
+      done
+      if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+      elif [ -z "$inst" ]; then echo NOT_INSTALLED
+      else echo "NOT_IN_USE:${inst#,}"; fi
+    }
+    state
+  expected: '^(NOT_INSTALLED$|NOT_IN_USE:)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=units-1
+        for u in tftpd-hpa.service atftpd.socket atftpd.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "$u ${e:--} ${a:--}"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        inst=""
+        for p in tftpd-hpa atftpd; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
+        bad=""
+        for u in tftpd-hpa.service atftpd.socket atftpd.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          case "$a" in
+            active|activating|reloading) ;;
+            *)
+              [ -n "$inst" ] || continue
+              case "$e" in enabled|enabled-runtime|linked|linked-runtime) ;; *) continue ;; esac ;;
+          esac
+          bad="$bad,$u=${e:-none}/${a:-unknown}"
+        done
+        if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+        elif [ -z "$inst" ]; then echo NOT_INSTALLED
+        else echo "NOT_IN_USE:${inst#,}"; fi
+      }
+      m=""
+      for u in tftpd-hpa.service atftpd.socket atftpd.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        case "$e" in ""|not-found) continue ;; esac
+        l=/etc/systemd/system/$u
+        if { [ -e "$l" ] || [ -L "$l" ]; } && [ "$(readlink "$l")" != /dev/null ]; then
+          echo "$l is a unit file or link of its own, not masking $u" >&2; exit 1
+        fi
+        m="$m $u"
+      done
+      if [ -z "$m" ]; then
+        s=$(state)
+        case "$s" in IN_USE:*) echo "Running without a unit file, stop the processes by hand ($s)" >&2; exit 1 ;; esac
+        echo "None of the units is installed, nothing to change"; exit 0
+      fi
+      systemctl mask --now $m
+      s=$(state)
+      case "$s" in IN_USE:*) echo "The units are still in use ($s)" >&2; exit 1 ;; esac
+      echo "Stopped and masked:$m ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      [ -n "$lines" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r u e a x; do
+        case " tftpd-hpa.service atftpd.socket atftpd.service " in *" $u "*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      start=""
+      while read -r u e a; do
+        case "$e" in
+          -|not-found|masked) continue ;;
+          masked-runtime) systemctl unmask "$u"; systemctl mask --runtime "$u"; continue ;;
+        esac
+        systemctl unmask "$u"
+        case "$e" in
+          enabled) systemctl enable "$u" ;;
+          enabled-runtime) systemctl enable --runtime "$u" ;;
+          linked|linked-runtime) echo "Could not link $u again; link its unit file by hand" >&2 ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$lines"
+      if [ -n "$start" ]; then systemctl start $start; fi
+      echo "Restored the previous state of the units"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/in.tftpd.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/atftpd.8.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd-sysv-generator.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Punkt jest spełniony, gdy pakiet nie jest zainstalowany albo gdy żadna
+    z jednostek tftpd-hpa.service, atftpd.socket, atftpd.service nie jest włączona ani uruchomiona. Wynik IN_USE
+    wymienia jednostki w użyciu razem ze stanem z systemctl is-enabled
+    i is-active, a NOT_IN_USE pakiety, które są zainstalowane, ale nie
+    działają. Pakiet usunięty bez --purge, z pozostawionymi plikami
+    konfiguracyjnymi, liczy się jako niezainstalowany. Gdy żaden z pakietów
+    nie jest zainstalowany, wynik IN_USE daje tylko jednostka, która nadal
+    działa.
+
+    Naprawa nie usuwa pakietów, bo mogą od nich zależeć inne programy.
+    Zatrzymuje i maskuje jednostki poleceniem systemctl mask --now, więc nie
+    da się ich uruchomić ręcznie, przez gniazdo ani jako zależność.
+    Aktualizacja pakietu przez apt nie zdejmuje maski. Kopia zapisuje stan
+    każdej jednostki, a wycofanie zdejmuje maskę, włącza jednostki, które
+    były włączone, i uruchamia te, które działały. Jednostki zamaskowane
+    wcześniej zostają zamaskowane. Naprawa odmawia, gdy w /etc/systemd/system
+    leży własny plik jednostki o tej samej nazwie.
+
+    Jeśli usługa ma zniknąć całkiem, można usunąć pakiet przez apt purge po
+    sprawdzeniu, co jeszcze zostałoby usunięte.
+
+    Sprawdzam dwa serwery TFTP z repozytoriów Ubuntu: tftpd-hpa i atftpd
+    razem z jego gniazdem. Serwery uruchamiane przez inetd nie mają własnej
+    jednostki i ten punkt ich nie obejmuje.
+
+    tftpd-hpa uruchamia się na Ubuntu skryptem z /etc/init.d, z którego systemd
+    sam tworzy jednostkę tftpd-hpa.service. Systemctl uznaje ją za włączoną, gdy
+    dowiązania w /etc/rc*.d dołączają skrypt do startu systemu. Maska
+    w /etc/systemd/system przykrywa jednostkę utworzoną ze skryptu, a dowiązań
+    w /etc/rc*.d naprawa nie zmienia, więc po wycofaniu usługa znów startuje
+    razem z systemem.
+  en: |
+    The item is met when the package is not installed or when none of the
+    tftpd-hpa.service, atftpd.socket, atftpd.service units is enabled or running. The IN_USE result lists the units in
+    use with their state from systemctl is-enabled and is-active, and
+    NOT_IN_USE lists the packages that are installed but not running. A
+    package removed without --purge, with its configuration files left,
+    counts as not installed. When none of the packages is installed, only a
+    unit that is still running gives the IN_USE result.
+
+    The remediation does not remove packages, because other programs may
+    depend on them. It stops and masks the units with systemctl mask --now,
+    so they cannot be started by hand, through a socket or as a dependency.
+    A package upgrade through apt does not remove the mask. The backup
+    records the state of every unit, and rollback removes the mask, enables
+    the units that were enabled and starts the ones that were running. Units
+    that were masked before stay masked. The remediation refuses when
+    /etc/systemd/system holds a unit file of its own with the same name.
+
+    If the service should be gone completely, the package can be removed with
+    apt purge after checking what else would be removed.
+
+    I check two TFTP servers from the Ubuntu repositories: tftpd-hpa, and
+    atftpd together with its socket. Servers started through inetd have no
+    unit of their own and this item does not cover them.
+
+    On Ubuntu tftpd-hpa is started by a script in /etc/init.d, from which
+    systemd creates the tftpd-hpa.service unit itself. Systemctl treats it as enabled
+    when the links in /etc/rc*.d add the script to system startup. A mask in
+    /etc/systemd/system covers the unit created from the script, and the
+    remediation does not change the links in /etc/rc*.d, so after rollback
+    the service starts with the system again.

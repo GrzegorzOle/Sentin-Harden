@@ -1,0 +1,231 @@
+id: win10-create-pagefile-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Tworzenie pliku stronicowania zastrzeżone dla administratorów
+    en: The making of a file of paging reserved to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie zastrzega prawo tworzenia i zmiany pliku stronicowania dla
+    administratorów lokalnych.
+
+    Plik stronicowania jest miejscem, do którego system przenosi
+    fragmenty pamięci nieużywane w danej chwili. Trafia tam zawartość
+    pamięci programów — w tym rzeczy, które nigdy nie miały znaleźć się na
+    dysku: fragmenty haseł, kluczy i danych odczytanych z sieci.
+
+    Prawo to pozwala rozmiar i położenie tego pliku zmienić. Konto, które
+    je ma, może wymusić stronicowanie na dysk wybrany przez siebie albo
+    zwiększyć plik tak, żeby zawierał więcej materiału do przejrzenia.
+    Może też zapełnić dysk systemowy i zatrzymać maszynę.
+
+    Odnotowuję, że sama zawartość pliku stronicowania nie jest przez ten
+    punkt chroniona. Odczytanie go wymaga osobnych uprawnień i jest
+    przedmiotem innej zasady. Ten punkt rozstrzyga wyłącznie o tym, kto
+    decyduje, gdzie i jak duży ten plik będzie.
+
+    Sprawdzenie przyjmuje wykaz węższy niż wymagany.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: wpływ na
+    to, ile pamięci trafia na dysk i na który dysk.
+  en: |
+    The setting reserves the right of making and changing the file of paging to the local administrators.
+
+    The file of paging is the place to which the system carries over pieces of memory unused at the hour. Thither
+    goes the content of programs' memory - among it things that were never to come to rest upon a disk: pieces of
+    passwords, of keys and of data read from the network.
+
+    That right lets the size and the place of that file be changed. An account holding it may force the paging to
+    a disk of its own choosing or make the file greater, that it may hold more matter to be gone through. It may
+    also fill the system's disk and halt the machine.
+
+    I set down that the content of the file of paging is not by this item guarded. The reading of it calls for
+    rights apart and is the matter of another policy. This item settles solely who decides where that file will be
+    and how great.
+
+    The check takes a list narrower than the one called for.
+
+    What an attacker gains while the item goes unmet: a hold upon how much memory goes to a disk and to which
+    disk.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Domyślny wykaz zawiera samych administratorów i na maszynie
+    utrzymywanej normalnie zmiana jest zapisem stanu. Zmiana pliku
+    stronicowania nie należy do czynności wykonywanych przez zwykłego
+    użytkownika.
+
+    Odnotowuję, że zawężenie wykazu nie zmienia samego pliku ani jego
+    rozmiaru. Ustawienie już obowiązujące pozostaje takie, jakie było.
+
+    Skutek pojawia się przy następnym zalogowaniu konta tracącego prawo.
+
+    Czego to nie psuje: działania pliku stronicowania, wydajności
+    maszyny, logowania, pracy z plikami, drukowania.
+  en: |
+    The class is "no disruption".
+
+    The default list holds the administrators alone, and upon a machine kept in the ordinary way the change is a
+    setting down of a state. The changing of the file of paging is no doing of an ordinary user's.
+
+    I set down that the narrowing of the list changes neither the file itself nor its size. A setting already
+    holding good stays as it was.
+
+    The consequence shows at the next signing in of an account that loses the right.
+
+    What this does not break: the working of the file of paging, the machine's speed, logging on, work with files,
+    or printing.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konto serwisowe strojące rozmiar pliku stronicowania straci możliwość jego zmiany
+      - Sam plik i jego rozmiar pozostają takie, jakie były, bo zawężenie wykazu ich nie dotyka
+      - Domyślny wykaz zawiera samych administratorów, więc na większości maszyn zmiana jest zapisem stanu
+      - Skutek pojawia się przy następnym zalogowaniu konta tracącego prawo
+      - Działanie pliku stronicowania, wydajność maszyny, logowanie, praca z plikami i drukowanie pozostają bez zmian
+    en:
+      - A service account tuning the size of the file of paging will lose the changing of it
+      - The file itself and its size stay as they were, the narrowing of the list not touching them
+      - The default list holds the administrators alone, so upon most machines the change is a setting down of a state
+      - The consequence shows at the next signing in of an account that loses the right
+      - The working of the file of paging, the machine s speed, logging on, work with files and printing stay unchanged
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Konto serwisowe stroi rozmiar pliku stronicowania w ramach zarządzania wydajnością maszyny
+    en:
+      - A service account tunes the size of the file of paging as part of the ruling of the machine s speed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own message
+        # goes to the error stream, so the report can tell a missing privilege from
+        # a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreatePagefilePrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreatePagefilePrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreatePagefilePrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The right is left to the local administrators alone. A list narrower than that
+    # meets the item too, and the check takes an empty one as meeting it.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreatePagefilePrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreatePagefilePrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-a-pagefile
+
+notes:
+  pl: |
+    Reguła bywa uznawana za czysto porządkową i warto, żeby aplikacja
+    wyjaśniła, gdzie leży jej wartość. Nie chodzi o wydajność, tylko
+    o to, że plik stronicowania jest jedynym miejscem na dysku, w którym
+    zawartość pamięci programów pojawia się bez ich wiedzy i zgody.
+
+    Argument wart postawienia wprost dotyczy rozdzielenia dwóch rzeczy.
+    Ten punkt nie broni zawartości pliku — broni prawa do decydowania,
+    gdzie ten plik leży i jak jest duży. Odczytanie go jest osobnym
+    zagadnieniem i osobną zasadą, a sklejanie tych dwóch spraw prowadzi
+    do złudzenia, że jedna zasada załatwia obie.
+
+    Odnotowuję skutek dotyczący dostępności, bo jest tu drugorzędny, ale
+    realny. Konto z tym prawem może ustawić plik tak, żeby zajął cały dysk
+    systemowy — i maszyna przestanie odpowiadać, zanim ktokolwiek zdąży
+    zauważyć przyczynę.
+  en: |
+    The rule is at times taken for one of mere tidiness, and it is well that the application set out where its
+    worth lies. What is at stake is no matter of speed but this, that the file of paging is the one place upon a
+    disk where the content of programs' memory shows without their knowing or leave.
+
+    The argument worth putting outright touches the parting of two things. This item does not guard the file's
+    content - it guards the right of deciding where that file lies and how great it is. The reading of it is a
+    matter apart and a policy apart, and the gluing of those two together leads to the fancy that one policy
+    settles both.
+
+    I set down the consequence touching availability, that being here of the second rank but real. An account with
+    this right may set the file so that it takes the whole of the system's disk - and the machine will cease to
+    answer before anybody has time to mark the cause.

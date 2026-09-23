@@ -1,0 +1,233 @@
+id: win10-increase-quota-restricted
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Zmiana przydziału pamięci procesu ograniczona do administratorów i kont usługowych
+    en: The changing of a process quota of memory bounded to administrators and service accounts
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie ogranicza prawo zmiany przydziału pamięci procesu do
+    administratorów i dwóch kont usługowych.
+
+    Przydział pamięci jest granicą, powyżej której proces nie może sięgnąć
+    po pamięć roboczą. Mechanizm ten służy do tego, żeby jeden program nie
+    wypchnął z pamięci wszystkich pozostałych.
+
+    Prawo opisane tu pozwala tę granicę przesunąć — także cudzemu
+    procesowi. Konto, które je ma, może zwiększyć przydział własnemu
+    programowi albo zmniejszyć go programowi obcemu, do granicy, przy
+    której ten przestaje nadążać.
+
+    Zagrożenie dotyczy dostępności, a nie dostępu do danych. Zmniejszenie
+    przydziału usłudze odpowiedzialnej za dzienniki albo za ochronę przed
+    złośliwym kodem nie wyłącza jej, ale sprawia, że przestaje nadążać —
+    a to bywa wygodniejsze dla napastnika niż wyłączenie, bo nie wywołuje
+    żadnego alarmu.
+
+    Odnotowuję, że dwa konta usługowe pozostają w wykazie z konieczności.
+    Bez nich część usług systemowych przestałaby zarządzać własną pamięcią.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: cichy
+    sposób na spowolnienie wybranej usługi bez jej zatrzymywania.
+  en: |
+    The setting bounds the right of changing a process's quota of memory to the administrators and to two service
+    accounts.
+
+    A quota of memory is the bound above which a process may not reach for working memory. That mechanism serves
+    so that one program shall not push all the rest out of memory.
+
+    The right set out here lets that bound be shifted - and another's process too. An account holding it may raise
+    the quota of a program of its own or lower that of a stranger's, to the bound at which it ceases to keep up.
+
+    The danger touches availability and no way into data. The lowering of the quota of the service answering for
+    the journals or for the guarding against harmful code does not switch it off, but brings it about that it
+    ceases to keep up - and that is at times handier for an attacker than a switching off, raising as it does no
+    alarm.
+
+    I set down that the two service accounts stay in the list of necessity. Without them a part of the system's
+    services would cease to rule their own memory.
+
+    What an attacker gains while the item goes unmet: a quiet way of slowing a chosen service without halting it.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Domyślny wykaz odpowiada już wymaganiu i na maszynie utrzymywanej
+    normalnie zmiana jest zapisem stanu.
+
+    Odnotowuję, że usunięcie z wykazu kont usługowych byłoby błędem.
+    Usługi systemowe zarządzają własną pamięcią przez ten sam mechanizm,
+    więc wykaz zawężony do samych administratorów nie jest tu
+    utwardzeniem, tylko awarią.
+
+    Skutek pojawia się przy następnym zalogowaniu konta tracącego prawo.
+
+    Czego to nie psuje: pracy programów użytkowych, wydajności maszyny,
+    logowania, dostępu do plików, drukowania.
+  en: |
+    The class is "no disruption".
+
+    The default list already answers the requirement, and upon a machine kept in the ordinary way the change is a
+    setting down of a state.
+
+    I set down that the taking of the service accounts out of the list would be a fault. The system's services
+    rule their own memory through that same mechanism, so a list narrowed to the administrators alone is here no
+    hardening but a failure.
+
+    The consequence shows at the next signing in of an account that loses the right.
+
+    What this does not break: the work of programs of use, the machine's speed, logging on, the way to files, or
+    printing.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konto spoza wymaganego zbioru straci możliwość zmiany przydziału pamięci procesom
+      - Usunięcie z wykazu kont usługowych zatrzymałoby zarządzanie pamięcią przez usługi systemowe
+      - Domyślny wykaz odpowiada już wymaganiu, więc na większości maszyn zmiana jest zapisem stanu
+      - Skutek pojawia się przy następnym zalogowaniu konta tracącego prawo
+      - Praca programów użytkowych, wydajność maszyny, logowanie, dostęp do plików i drukowanie pozostają bez zmian
+    en:
+      - An account outside the called-for set will lose the changing of processes quotas of memory
+      - The taking of the service accounts out of the list would hold the ruling of memory by the system s services
+      - The default list already answers the requirement, so upon most machines the change is a setting down of a state
+      - The consequence shows at the next signing in of an account that loses the right
+      - The work of programs of use, the machine s speed, logging on, the way to files and printing stay unchanged
+  interruption: logoff
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na maszynie pracuje oprogramowanie zarządzające przydziałami pamięci pod własnym kontem usługowym
+    en:
+      - Upon the machine works software that rules quotas of memory under a service account of its own
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own message
+        # goes to the error stream, so the report can tell a missing privilege from
+        # a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeIncreaseQuotaPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-19,S-1-5-20,S-1-5-32-544|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeIncreaseQuotaPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeIncreaseQuotaPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The right is left to the administrators and to the two service accounts. That
+    # is the set a working system takes.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeIncreaseQuotaPrivilege = *S-1-5-32-544,*S-1-5-19,*S-1-5-20',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeIncreaseQuotaPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/adjust-memory-quotas-for-a-process
+
+notes:
+  pl: |
+    Reguła należy do tej samej rodziny co punkt o blokowaniu stron
+    w pamięci i warto, żeby aplikacja pokazała je razem. Obie dotyczą
+    dostępności, a nie poufności, i obie na stanowisku roboczym nic nie
+    kosztują.
+
+    Argument wart postawienia wprost dotyczy tego, że spowolnienie bywa
+    groźniejsze od zatrzymania. Usługa zatrzymana rzuca się w oczy
+    i wywołuje alarm. Usługa, która ledwo nadąża, wygląda na maszynę
+    obciążoną — a napastnik zyskuje tyle samo, nie ściągając na siebie
+    uwagi. Dotyczy to zwłaszcza dzienników zdarzeń i ochrony przed
+    złośliwym kodem.
+
+    Odnotowuję, że wykaz wymagany zawiera konta usługowe i nie jest to
+    ustępstwo. Zawężenie go do samych administratorów zatrzymałoby część
+    usług systemowych, więc ostrzejsze nie znaczy tu lepsze.
+  en: |
+    The rule belongs to the same family as the item about the locking of pages in memory, and it is well that the
+    application show them together. Both touch availability and not secrecy, and both cost nothing upon a working
+    station.
+
+    The argument worth putting outright touches this, that a slowing is at times graver than a halting. A service
+    halted catches the eye and raises an alarm. A service that barely keeps up looks like a machine under load -
+    and the attacker gains as much without drawing notice upon themselves. That holds above all of the journals of
+    events and of the guarding against harmful code.
+
+    I set down that the called-for list holds the service accounts and that this is no yielding. The narrowing of
+    it to the administrators alone would hold a part of the system's services, so the stricter does not here mean
+    the better.

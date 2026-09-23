@@ -1,0 +1,219 @@
+id: fedora44-journal-remote-not-listening
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.2.2.1.4
+  section: Logging and Auditing > System Logging > Configure journald > Configure systemd-journal-remote
+  title:
+    pl: journald nie przyjmuje dzienników z innych komputerów
+    en: Ensure journald is not configured to receive logs from a remote client
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    systemd-journal-remote przyjmuje przez sieć dzienniki wysyłane przez inne
+    komputery. Na stacji roboczej to niepotrzebnie otwarty port, a obce
+    dzienniki zajmują miejsce na dysku i mogą zawierać spreparowane wpisy.
+
+    Punkt wymaga, żeby gniazdo i usługa systemd-journal-remote nie były
+    włączone ani uruchomione. Zbieraniem dzienników powinien zajmować się
+    osobny serwer.
+  en: |
+    systemd-journal-remote receives over the network the logs that other
+    computers send. On a workstation it is a needlessly open port, and
+    foreign logs take up disk space and may contain forged entries.
+
+    The item requires the systemd-journal-remote socket and service not to
+    be enabled or running. Collecting logs should be the job of a separate
+    server.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu tylko wtedy, gdy ten komputer zbiera dzienniki
+    z innych maszyn: po naprawie przestają one docierać. Na zwykłej stacji
+    roboczej pakiet nie jest zainstalowany i nikt tego nie zauważy.
+  en: |
+    The class needs review only when this computer collects logs from other
+    machines: after the remediation they stop arriving. On a normal
+    workstation the package is not installed and nobody will notice.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Inne komputery nie mogą wysyłać dzienników do tego komputera przez systemd-journal-upload
+    en:
+      - Other computers cannot send logs to this computer with systemd-journal-upload
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Komputer, który jest centralnym serwerem dzienników dla innych maszyn
+    en:
+      - A computer that is the central log server for other machines
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    in_use() { case "$(systemctl is-enabled "$1.service" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active --quiet "$1.service" 2>/dev/null; }
+    if in_use rsyslog || in_use syslog-ng; then echo NOT_APPLICABLE; exit 0; fi
+    if ! command -v systemctl >/dev/null 2>&1 || ! command -v rpm >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      bad=""
+      for u in systemd-journal-remote.socket systemd-journal-remote.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        a=$(systemctl is-active "$u" 2>/dev/null) || true
+        case "$e" in
+          enabled|enabled-runtime|linked|linked-runtime) ;;
+          *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+        esac
+        bad="$bad,$u=${e:-none}/${a:-unknown}"
+      done
+      inst=""
+      for p in systemd-journal-remote; do if rpm -q --quiet "$p"; then inst="$inst,$p"; fi; done
+      if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+      elif [ -z "$inst" ]; then echo NOT_INSTALLED
+      else echo "NOT_IN_USE:${inst#,}"; fi
+    }
+    state
+  expected: '^(NOT_INSTALLED$|NOT_IN_USE:)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=units-1
+        for u in systemd-journal-remote.socket systemd-journal-remote.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "$u ${e:--} ${a:--}"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      in_use() { case "$(systemctl is-enabled "$1.service" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active --quiet "$1.service" 2>/dev/null; }
+      if in_use rsyslog || in_use syslog-ng; then
+        echo "rsyslog or syslog-ng keeps the logs, so this item does not apply; nothing to change"; exit 0
+      fi
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        bad=""
+        for u in systemd-journal-remote.socket systemd-journal-remote.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          case "$e" in
+            enabled|enabled-runtime|linked|linked-runtime) ;;
+            *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+          esac
+          bad="$bad,$u=${e:-none}/${a:-unknown}"
+        done
+        inst=""
+        for p in systemd-journal-remote; do if rpm -q --quiet "$p"; then inst="$inst,$p"; fi; done
+        if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+        elif [ -z "$inst" ]; then echo NOT_INSTALLED
+        else echo "NOT_IN_USE:${inst#,}"; fi
+      }
+      m=""
+      for u in systemd-journal-remote.socket systemd-journal-remote.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        case "$e" in ""|not-found) continue ;; esac
+        l=/etc/systemd/system/$u
+        if { [ -e "$l" ] || [ -L "$l" ]; } && [ "$(readlink "$l")" != /dev/null ]; then
+          echo "$l is a unit file or link of its own, not masking $u" >&2; exit 1
+        fi
+        m="$m $u"
+      done
+      if [ -z "$m" ]; then echo "None of the units is installed, nothing to change"; exit 0; fi
+      systemctl mask --now $m
+      s=$(state)
+      case "$s" in IN_USE:*) echo "The units are still in use ($s)" >&2; exit 1 ;; esac
+      echo "Stopped and masked:$m ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      [ -n "$lines" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r u e a x; do
+        case " systemd-journal-remote.socket systemd-journal-remote.service " in *" $u "*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      start=""
+      while read -r u e a; do
+        case "$e" in
+          -|not-found|masked) continue ;;
+          masked-runtime) systemctl unmask "$u"; systemctl mask --runtime "$u"; continue ;;
+        esac
+        systemctl unmask "$u"
+        case "$e" in
+          enabled) systemctl enable "$u" ;;
+          enabled-runtime) systemctl enable --runtime "$u" ;;
+          linked|linked-runtime) echo "Could not link $u again; link its unit file by hand" >&2 ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$lines"
+      if [ -n "$start" ]; then systemctl start $start; fi
+      echo "Restored the previous state of the units"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd-journal-remote.service.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Wynik NOT_INSTALLED oznacza brak pakietu systemd-journal-remote,
+    a NOT_IN_USE, że jest zainstalowany, ale żadna z jednostek
+    systemd-journal-remote.socket i systemd-journal-remote.service nie jest
+    włączona ani uruchomiona. Naprawa maskuje obie jednostki, bo pakiet może
+    być potrzebny innym pakietom; wycofanie odmaskowuje je i przywraca
+    poprzedni stan.
+
+    Punkty 6.2.2 dotyczą komputerów, na których dzienniki prowadzi tylko
+    journald. Gdy rsyslog albo syslog-ng jest włączony lub działa, wynik to
+    NOT_APPLICABLE, a naprawa niczego nie zmienia (tak samo rozstrzyga punkt
+    6.2.1.4).
+  en: |
+    The NOT_INSTALLED result means that the systemd-journal-remote package is
+    missing, and NOT_IN_USE that it is installed, but neither of the
+    systemd-journal-remote.socket and systemd-journal-remote.service units is
+    enabled or running. The remediation masks both units, because other
+    packages may need the package; rollback unmasks them and restores the
+    previous state.
+
+    Items 6.2.2 apply to computers where only journald keeps the logs. When
+    rsyslog or syslog-ng is enabled or running, the result is NOT_APPLICABLE
+    and the remediation changes nothing (item 6.2.1.4 decides the same way).

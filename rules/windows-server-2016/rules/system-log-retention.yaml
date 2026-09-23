@@ -1,0 +1,204 @@
+id: win2016-system-log-retention
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > System
+  title:
+    pl: Zachowanie dziennika systemu po zapełnieniu
+    en: Behaviour of the system log once it fills up
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt ustala, że dziennik systemu po zapełnieniu ma nadpisywać najstarsze
+    wpisy, a nie zatrzymywać zapisu.
+
+    Uzasadnienie jest takie samo jak przy dzienniku zabezpieczeń, ale skutek
+    zatrzymania jest tu inny i warto to rozróżnić. Zatrzymany dziennik
+    zabezpieczeń oznacza koniec obserwacji. Zatrzymany dziennik systemu oznacza
+    coś węższego: usługi i sterowniki przestają móc cokolwiek zgłosić, więc
+    kolejna awaria nie zostawi śladu, po którym dałoby się ją rozpoznać.
+
+    Praktyczny skutek widać przy diagnozie. Maszyna zachowuje się nieprawidłowo,
+    administrator sięga do dziennika systemu i zastaje ostatnie wpisy sprzed
+    tygodni — bo dziennik zapełnił się i od tamtej pory nie przyjmuje niczego.
+    Objawy są bieżące, zapis nie.
+
+    Kategoria niska: punkt porządkuje zachowanie dziennika i nie zdejmuje
+    konkretnego ryzyka. Jego wartość jest taka sama jak wartość samego dziennika
+    systemu — pośrednia, ale realna.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: zatrzymanie
+    zapisu zdarzeń systemowych przez zapełnienie dziennika, a przez to ciszę
+    wokół instalowanych usług i wczytywanych sterowników.
+  en: |
+    The item settles that the system log, once full, is to overwrite the oldest
+    entries rather than stop writing.
+
+    The justification is the same as with the security log, but the effect of
+    stopping differs here and the difference is worth drawing. A stopped security
+    log means the end of watching. A stopped system log means something narrower:
+    services and drivers lose the ability to report anything, so the next failure
+    will leave no trace by which it might be recognised.
+
+    The practical effect shows at diagnosis. The machine behaves wrongly, the
+    administrator reaches for the system log and finds the last entries weeks old -
+    because the log filled and has taken nothing since. The symptoms are current,
+    the record is not.
+
+    The category is low: the item tidies the log's behaviour and lifts no particular
+    risk. Its worth is the same as the worth of the system log itself - indirect,
+    but real.
+
+    What an attacker gains while the item goes unmet: the stopping of the record of
+    system events by filling the log, and thereby silence around the services
+    installed and the drivers loaded.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Na maszynie, na której dziennik systemu się nie
+    zapełnia, zmiana nie robi nic.
+
+    Tam, gdzie się zapełnia, zmiana usuwa ostrzeżenie o pełnym dzienniku.
+    Skutek jest taki sam jak przy dzienniku zabezpieczeń: procedura oparta na
+    tym ostrzeżeniu przestaje być wyzwalana i trzeba ją oprzeć na czymś innym.
+
+    Różnica polega na tym, że dziennik systemu rzadko bywa podstawą procedury
+    archiwizacji, więc w praktyce zaskoczenie zdarza się tu rzadziej.
+
+    Czego to nie psuje: zgłaszania zdarzeń przez usługi i sterowniki, odczytu
+    dziennika ani przekazywania zdarzeń poza maszynę.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". On a machine whose system log does not fill, the
+    change does nothing.
+
+    Where it does fill, the change removes the full log warning. The effect is the
+    same as with the security log: a procedure resting on that warning stops being
+    triggered and has to be rested on something else.
+
+    The difference is that the system log is seldom the basis of an archiving
+    procedure, so in practice the surprise happens here less often.
+
+    What this does not break: the reporting of events by services and drivers, the
+    reading of the log, or the forwarding of events off the machine.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — na maszynie, na której dziennik się nie zapełnia, nic się nie zmienia
+      - Przestaje pojawiać się ostrzeżenie o pełnym dzienniku systemu
+      - Najstarsze wpisy są nadpisywane, więc historia dalej wstecz niż pojemność dziennika przepada
+      - Zgłaszanie zdarzeń przez usługi i sterowniki działa bez zmian
+    en:
+      - No regression in the working - on a machine whose log does not fill nothing alters
+      - The full system log warning stops appearing
+      - The oldest entries are overwritten, so history further back than the log's capacity is lost
+      - The reporting of events by services and drivers works unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Procedura archiwizacji dziennika systemu na tej maszynie jest wyzwalana ostrzeżeniem o zapełnieniu i nie ma innego wyzwalacza
+    en:
+      - The system log archiving procedure on this machine is triggered by the full log warning and has no other trigger
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System'
+      $name = 'Retention'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System'
+    $name = 'Retention'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # A stopped log leaves current symptoms with a record weeks old. Losing the
+    # oldest history is the lesser harm.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Retention' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/eventlog/event-logging
+
+notes:
+  pl: |
+    Punkt należy do klasy „zrób przy okazji". Jego wartość ujawnia się przy
+    diagnozie awarii, a nie przy dochodzeniu w sprawie włamania.
+
+    Warto go czytać razem z rozmiarem dziennika systemu. Nadpisywanie ma sens
+    przy pojemności wystarczającej, żeby nadpisywana historia była naprawdę
+    stara.
+
+    Wartość zero oznacza nadpisywanie w miarę potrzeby. Jest to ustawienie,
+    które system stosuje domyślnie, więc reguła zwykle utrwala stan istniejący,
+    zamiast go zmieniać.
+  en: |
+    The item belongs to the "do it in passing" class. Its worth comes out when a
+    failure is being diagnosed, not during an inquiry into a break-in.
+
+    It is worth reading together with the system log's size. Overwriting makes sense
+    at a capacity sufficient for the overwritten history to be truly old.
+
+    A value of zero means overwriting as needed. It is the setting the system
+    applies by default, so the rule usually fixes an existing state rather than
+    altering it.

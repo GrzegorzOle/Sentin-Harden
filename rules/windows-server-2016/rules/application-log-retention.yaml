@@ -1,0 +1,204 @@
+id: win2016-application-log-retention
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > Application
+  title:
+    pl: Zachowanie dziennika aplikacji po zapełnieniu
+    en: Behaviour of the application log once it fills up
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt ustala, że dziennik aplikacji po zapełnieniu ma nadpisywać najstarsze
+    wpisy, a nie zatrzymywać zapisu.
+
+    Ze wszystkich trzech dzienników ten jest najbardziej narażony na
+    zapełnienie, i to jest właśnie powód, dla którego punkt istnieje. Aplikacja
+    zgłaszająca błąd w pętli — a jest to najzwyklejszy tryb awarii
+    oprogramowania — potrafi zapełnić dziennik w minuty. Przy ustawieniu
+    zatrzymującym zapis skutek jest taki, że od tej chwili żadna inna aplikacja
+    na maszynie nie zgłosi już niczego.
+
+    Skutek uboczny jest gorszy od pierwotnej awarii. Jedna wadliwa aplikacja
+    odbiera zdolność raportowania wszystkim pozostałym, a administrator szukający
+    przyczyny innego problemu zastaje dziennik urwany na wpisach sprzed wielu
+    dni.
+
+    Kategoria niska, tak jak przy samym dzienniku aplikacji: punkt nie zdejmuje
+    ryzyka, tylko zapewnia, że źródło kontekstu nie wysycha.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    wyciszenia raportowania aplikacyjnego na całej maszynie przez zapełnienie
+    jednego dziennika.
+  en: |
+    The item settles that the application log, once full, is to overwrite the oldest
+    entries rather than stop writing.
+
+    Of the three logs this one is the most liable to fill, and that is precisely why
+    the item exists. An application reporting an error in a loop - the commonest
+    mode of software failure - can fill the log in minutes. With the setting that
+    stops writing, the effect is that from that moment no other application on the
+    machine will report anything at all.
+
+    The side effect is worse than the original failure. One faulty application takes
+    the ability to report from all the rest, and an administrator hunting the cause
+    of a different problem finds the log broken off at entries many days old.
+
+    The category is low, as with the application log itself: the item lifts no risk,
+    it only ensures the source of context does not dry up.
+
+    What an attacker gains while the item goes unmet: the means of quieting
+    application reporting across the whole machine by filling one log.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Na maszynie, na której dziennik aplikacji się nie
+    zapełnia, zmiana nie robi nic.
+
+    Tam, gdzie się zapełnia, zmiana jest poprawą stanu, a nie ustępstwem:
+    zamiast zatrzymanego raportowania dla wszystkich aplikacji dostajemy
+    raportowanie działające, z utratą najstarszych wpisów.
+
+    Zastrzeżenie jest to samo co przy pozostałych dziennikach — znika
+    ostrzeżenie o zapełnieniu. W przypadku dziennika aplikacji rzadko bywa ono
+    podstawą jakiejkolwiek procedury.
+
+    Czego to nie psuje: zgłaszania zdarzeń przez aplikacje, odczytu dziennika
+    ani przekazywania zdarzeń poza maszynę.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". On a machine whose application log does not fill,
+    the change does nothing.
+
+    Where it does fill, the change is an improvement rather than a concession:
+    instead of stopped reporting for every application we get reporting that works,
+    at the price of the oldest entries.
+
+    The reservation is the same as with the other logs - the full log warning
+    disappears. In the application log's case it is seldom the basis of any
+    procedure.
+
+    What this does not break: the reporting of events by applications, the reading
+    of the log, or the forwarding of events off the machine.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — na maszynie, na której dziennik się nie zapełnia, nic się nie zmienia
+      - Przestaje pojawiać się ostrzeżenie o pełnym dzienniku aplikacji
+      - Najstarsze wpisy są nadpisywane, co przy aplikacji zgłaszającej błąd w pętli dzieje się szybko
+      - Zgłaszanie zdarzeń przez aplikacje i odczyt dziennika działają bez zmian
+    en:
+      - No regression in the working - on a machine whose log does not fill nothing alters
+      - The full application log warning stops appearing
+      - The oldest entries are overwritten, which with an application reporting an error in a loop happens fast
+      - The reporting of events by applications and the reading of the log work unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Procedura archiwizacji dziennika aplikacji na tej maszynie jest wyzwalana ostrzeżeniem o zapełnieniu i nie ma innego wyzwalacza
+    en:
+      - The application log archiving procedure on this machine is triggered by the full log warning and has no other trigger
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application'
+      $name = 'Retention'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application'
+    $name = 'Retention'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # One application looping on an error must not take the ability to report from
+    # every other one on the machine.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Retention' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/eventlog/event-logging
+
+notes:
+  pl: |
+    Spośród trzech reguł o zachowaniu dzienników ta ma najniższą wagę
+    bezpieczeństwa i najwyższą wagę eksploatacyjną. Dziennik aplikacji zapełnia
+    się najczęściej i najszybciej, więc to tutaj ustawienie zatrzymujące zapis
+    najczęściej doprowadza do faktycznej ciszy.
+
+    Wartość zero oznacza nadpisywanie w miarę potrzeby i jest stanem domyślnym
+    systemu. Reguła zwykle utrwala stan istniejący.
+
+    W raporcie punkt powinien stać nisko. Wdraża się go przy okazji, razem
+    z dwoma pozostałymi.
+  en: |
+    Of the three rules on log behaviour this carries the lowest weight for security
+    and the highest for operations. The application log fills oftenest and fastest,
+    so it is here that the setting stopping writing most often leads to actual
+    silence.
+
+    A value of zero means overwriting as needed and is the system's default state.
+    The rule usually fixes an existing state.
+
+    In the report the item should stand low. It goes in in passing, together with
+    the other two.

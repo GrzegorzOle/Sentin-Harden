@@ -1,0 +1,190 @@
+id: win2016-setup-log-retention
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Event Log Service > Setup
+  title:
+    pl: Zachowanie dziennika instalacji po zapełnieniu
+    en: Behaviour of the setup log once it fills up
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt ustala, że dziennik instalacji po zapełnieniu ma nadpisywać
+    najstarsze wpisy, a nie zatrzymywać zapisu.
+
+    Jest to najmniej doniosły z czterech punktów o zachowaniu dzienników
+    i warto to powiedzieć wprost, zamiast podnosić jego wagę dla symetrii.
+    Dziennik instalacji zapełnia się rzadko, więc ustawienie zatrzymujące zapis
+    w praktyce rzadko kiedy zadziała.
+
+    Kiedy jednak zadziała, skutek jest nieoczywisty: przestają być zapisywane
+    zdarzenia z instalowania aktualizacji. Maszyna dalej się aktualizuje, tylko
+    zapis o tym nie powstaje — a to jest dokładnie ten zapis, który w razie
+    pytania o stan poprawek ma rozstrzygać.
+
+    Kategoria niska i taka ma pozostać. Punkt jest porządkowy.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: brak zapisu
+    o instalowanych aktualizacjach, a przez to niepewność co do tego, które
+    luki były w danym momencie otwarte.
+  en: |
+    The item settles that the setup log, once full, is to overwrite the oldest
+    entries rather than stop writing.
+
+    It is the least weighty of the four items on log behaviour, and that is worth
+    saying outright rather than raising its weight for symmetry's sake. The setup
+    log fills seldom, so the setting that stops writing will in practice seldom
+    come into play.
+
+    When it does, though, the effect is unobvious: events from the installing of
+    updates cease to be written. The machine goes on updating, only no record of it
+    arises - and that is exactly the record meant to settle any question about the
+    state of the fixes.
+
+    The category is low and so it should stay. The item is housekeeping.
+
+    What an attacker gains while the item goes unmet: no record of the updates
+    installed, and thereby uncertainty as to which holes were open at a given
+    moment.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Na maszynie, na której dziennik instalacji się
+    nie zapełnia — czyli na większości — zmiana nie robi nic.
+
+    Zastrzeżenie o ostrzeżeniu z pełnego dziennika obowiązuje formalnie,
+    ale w praktyce nikt nie buduje procedury na ostrzeżeniu z dziennika, który
+    zapełnia się raz na lata.
+
+    Czego to nie psuje: instalowania ról i aktualizacji, odczytu dziennika ani
+    przekazywania zdarzeń poza maszynę.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". On a machine whose setup log does not fill - which
+    is to say on most - the change does nothing.
+
+    The reservation about the full log warning holds formally, but in practice
+    nobody builds a procedure on a warning from a log that fills once in years.
+
+    What this does not break: the installing of roles and updates, the reading of
+    the log, or the forwarding of events off the machine.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — na większości maszyn dziennik instalacji się nie zapełnia i zmiana nie robi nic
+      - Przestaje pojawiać się ostrzeżenie o pełnym dzienniku instalacji, choć rzadko kiedy ktokolwiek je widział
+      - Najstarsze wpisy są nadpisywane, więc historia sprzed postawienia maszyny może przepaść
+      - Instalowanie ról i aktualizacji przebiega bez zmian
+    en:
+      - No regression in the working - on most machines the setup log does not fill and the change does nothing
+      - The full setup log warning stops appearing, though hardly anybody ever saw it
+      - The oldest entries are overwritten, so history from before the machine was stood up may be lost
+      - The installing of roles and updates proceeds unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przeciwwskazań — dziennik instalacji zapełnia się na tyle rzadko, że zmiana zwykle nie ma skutku
+    en:
+      - No known contraindication - the setup log fills seldom enough that the change usually has no effect
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup'
+      $name = 'Retention'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup'
+    $name = 'Retention'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Rarely triggered, but when it is, the record of installed updates stops -
+    # and that record is what settles which holes were open when.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Retention' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/eventlog/event-logging
+
+notes:
+  pl: |
+    Punkt zamyka czwórkę reguł o zachowaniu dzienników i jest w niej najlżejszy.
+    Utrzymujemy go dla spójności zestawu, a nie dlatego, że coś zdejmuje.
+
+    W raporcie powinien stać na samym końcu listy roboczej. Odpuszczenie go
+    jest decyzją bez konsekwencji — i jest to jeden z nielicznych punktów,
+    o których da się tak powiedzieć.
+
+    Wartość zero oznacza nadpisywanie w miarę potrzeby i jest stanem domyślnym
+    systemu.
+  en: |
+    The item closes the set of four rules on log behaviour and is the lightest among
+    them. It is kept for the set's consistency rather than because it lifts
+    anything.
+
+    In the report it should stand at the very end of the working list. Letting it go
+    is a decision without consequence - and it is one of the few items of which that
+    can be said.
+
+    A value of zero means overwriting as needed and is the system's default state.

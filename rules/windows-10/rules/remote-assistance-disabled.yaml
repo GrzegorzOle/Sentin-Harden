@@ -1,0 +1,172 @@
+id: win10-remote-assistance-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Remote Assistance
+  title:
+    pl: Pomoc zdalna wyłączona
+    en: Remote Assistance disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pomoc zdalna to osobny od pulpitu zdalnego mechanizm, w którym użytkownik
+    zaprasza kogoś do wglądu we własną sesję, a zapraszany może też przejąć
+    klawiaturę i mysz. Cała kontrola nad tym, kogo się zaprasza, spoczywa na
+    użytkowniku siedzącym przy maszynie.
+
+    I tu leży problem: zaproszenie jest plikiem albo ciągiem znaków, który da się
+    przekazać dalej, a namówienie kogoś na wydanie zaproszenia jest klasycznym
+    i skutecznym chwytem podszywania się pod pomoc techniczną. Ta zasada zamyka
+    mechanizm w całości, zamiast liczyć na czujność człowieka pod telefonem.
+
+    Po zmianie nie da się wystawić zaproszenia ani go przyjąć. Atakujący traci
+    drogę wejścia, która nie wymaga ani hasła, ani luki — wystarczyła rozmowa.
+  en: |
+    Remote Assistance is a mechanism separate from remote desktop, in which a user
+    invites somebody to look into their own session, and the invited party may
+    also take over the keyboard and mouse. All control over who gets invited rests
+    with the user sitting at the machine.
+
+    That is where the trouble lies. An invitation is a file or a string of
+    characters that can be passed along, and talking somebody into issuing one is
+    the classic and effective trick of posing as technical support. This rule
+    shuts the mechanism whole rather than relying on the alertness of a person on
+    the phone.
+
+    After the change no invitation can be issued or accepted. An attacker loses a
+    way in that needs neither a password nor a flaw - a conversation was enough.
+
+disruption_description:
+  pl: |
+    Waga tej zmiany zależy wprost od tego, czy pomoc zdalna jest u kogoś narzędziem
+    wsparcia. Tam, gdzie dział informatyczny prowadzi zgłoszenia właśnie tak,
+    wyłączenie odcina mu roboczą drogę do użytkownika i trzeba najpierw postawić
+    zamiennik.
+
+    Tam, gdzie wsparcie idzie przez pulpit zdalny albo przez narzędzie własne,
+    zmiana jest niewidoczna — mechanizm i tak leży nieużywany, a jego wyłączenie
+    zdejmuje ryzyko bez żadnego kosztu.
+  en: |
+    How heavy this change is depends directly on whether Remote Assistance is
+    somebody s support tool. Where the IT desk handles tickets exactly that way,
+    switching it off cuts their working route to the user and a replacement has to
+    stand first.
+
+    Where support goes over remote desktop or through a tool of its own, the
+    change is invisible - the mechanism lies unused anyway, and switching it off
+    lifts the risk at no cost at all.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - remote-management
+    - user-interface
+  what_breaks:
+    pl:
+      - Wsparcie prowadzone przez zaproszenia do pomocy zdalnej przestanie działać w obie strony — użytkownik nie wystawi zaproszenia, a pomagający go nie przyjmie
+      - Zaproszenia już wystawione i jeszcze ważne stają się bezużyteczne z chwilą zmiany
+      - Przycisk zapraszania w oknie pomocy będzie prowadził do komunikatu o zablokowaniu przez zasady, co część użytkowników zgłosi jako awarię
+      - Narzędzia wsparcia oparte właśnie na tym mechanizmie, a nie na własnym połączeniu, stracą możliwość podłączenia się do sesji użytkownika
+      - Pulpit zdalny, logowanie lokalne, udostępnianie plików i drukowanie działają jak wcześniej — to osobny mechanizm
+    en:
+      - Support run through assistance invitations stops working both ways - the user cannot issue an invitation and the helper cannot accept one
+      - Invitations already issued and still valid become useless the moment the change is made
+      - The invite button in the help window leads to a message about policy blocking it, which some users will report as a fault
+      - Support tools built on this very mechanism, rather than on a connection of their own, lose the ability to join a user s session
+      - Remote desktop, local sign-in, file sharing and printing work as before - this is a separate mechanism
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Organizacje, w których zgłoszenia serwisowe obsługuje się właśnie pomocą zdalną, dopóki nie ma działającego zamiennika
+      - Stanowiska szkoleniowe i warsztatowe, gdzie wgląd w cudzy ekran jest treścią pracy, a nie wyjątkiem
+      - Maszyny obsługiwane przez narzędzie wsparcia, które pod spodem korzysta z tego mechanizmu — warto to sprawdzić, zanim się go zamknie
+    en:
+      - Organisations where service tickets are handled by Remote Assistance itself, until a working replacement is in place
+      - Training and workshop stations, where looking into somebody else s screen is the substance of the work rather than an exception
+      - Machines served by a support tool that uses this mechanism underneath - worth checking before it is shut
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'fAllowToGetHelp'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+    $name = 'fAllowToGetHelp'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'fAllowToGetHelp' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access
+
+notes:
+  pl: |
+    Wartość leży poza gałęzią zasad, wprost w ustawieniach hosta. Klucz istnieje
+    na każdej maszynie, ale sama wartość bywa w nim nieobecna i wtedy obowiązuje
+    domyślne zachowanie systemu — sprawdzenie zgłasza to jako MISSING, czyli
+    niespełnienie, a nie błąd odczytu. Zasada o pomocy oferowanej bez prośby
+    użytkownika dotyczy drugiej połowy tego mechanizmu i obie ocenia się razem.
+  en: |
+    The value lies outside the policy branch, directly among the host settings.
+    The key exists on every machine, but the value itself is often absent from
+    it, and then the default behaviour of the system holds - the check reports
+    that as MISSING, meaning unmet rather than unreadable. The rule on assistance
+    offered without the user asking covers the other half of this mechanism and
+    the two are judged together.

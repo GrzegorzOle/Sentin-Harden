@@ -1,0 +1,180 @@
+id: win10-rdp-idle-session-limit
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Session Time Limits
+  title:
+    pl: Bezczynna sesja pulpitu zdalnego kończona po kwadransie
+    en: An idle remote desktop session ended after a quarter of an hour
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sesja bezczynna to sesja połączona, w której nikt od dłuższego czasu nie
+    dotknął klawiatury ani myszy. Połączenie stoi, okno jest otwarte, konto
+    zalogowane — i tak samo otwarte dla każdego, kto w tym czasie siądzie przy
+    maszynie klienckiej albo przejmie ją zdalnie.
+
+    Ta zasada zamyka taką sesję po kwadransie bezczynności. Różnica wobec limitu
+    sesji rozłączonej jest istotna: tamten dotyczy sesji porzuconej, ten dotyczy
+    sesji, która wygląda na czynną, bo okno jest przecież otwarte. Właśnie ta druga
+    jest wygodniejsza dla kogoś postronnego, bo nie wymaga nawet logowania.
+
+    Zdejmowane ryzyko jest proste do opisania: przejęcie gotowego, zalogowanego
+    stanowiska bez łamania hasła i bez śladu w dziennikach logowania.
+  en: |
+    An idle session is a connected one in which nobody has touched the keyboard or
+    the mouse for a good while. The connection stands, the window is open, the
+    account is signed in - and just as open to whoever sits down at the client
+    machine in the meantime or takes it over from afar.
+
+    This rule closes such a session after a quarter of an hour of idleness. The
+    difference from the disconnected-session limit matters. That one covers an
+    abandoned session, this one covers a session that looks busy because the
+    window is, after all, open. The second is the more convenient of the two for
+    an outsider, because it does not even call for signing in.
+
+    The risk taken away is easy to state - taking over a ready, signed-in desk
+    without breaking a password and without a trace in the sign-in log.
+
+disruption_description:
+  pl: |
+    Kwadrans to mało dla kogoś, kto zostawia sesję włączoną na tle innej pracy.
+    Użytkownik wróci do okna i zastanie je zamknięte, choć niczego nie robił, żeby
+    je zamknąć. To wygląda jak awaria, dopóki nie wie, że taka jest zasada.
+
+    Osobną sprawą są sesje używane do nadzoru: podgląd wykresu, konsola z logiem,
+    okno monitoringu. One z definicji nie przyjmują wejścia z klawiatury i system
+    policzy je jako bezczynne, choć człowiek na nie patrzy. Tego przypadku nie da
+    się rozwiązać ustawieniem — trzeba go wyłowić i objąć wyjątkiem.
+  en: |
+    A quarter of an hour is little for somebody who leaves a session up alongside
+    other work. The user comes back to the window and finds it closed, though they
+    did nothing to close it. That looks like a fault until they know the rule.
+
+    Sessions used for watching are a case of their own - a chart on display, a
+    console with a running log, a monitoring window. By their nature they take no
+    keyboard input, and the system counts them as idle while a person is looking
+    straight at them. No setting solves that; the case has to be found and covered
+    by an exception.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Sesje służące do podglądu będą zamykane w trakcie patrzenia — konsola z logiem, wykres i okno monitoringu nie przyjmują wejścia, więc liczą się jako bezczynne
+      - Skrypty czekające w sesji na wynik długiej operacji zostaną przerwane razem z nią, o ile w tym czasie nikt nie ruszy klawiatury
+      - Praca przeplatana, w której sesja zdalna stoi z boku i wraca się do niej co pół godziny, wymaga logowania za każdym razem
+      - Programy trzymające połączenie do bazy albo do usługi wewnątrz sesji stracą je przy zamknięciu i zgłoszą to jako błąd sieci
+      - Sama zawartość sesji i sposób pracy w niej nie zmieniają się — pliki, drukowanie, schowek i uprawnienia działają jak wcześniej
+    en:
+      - Sessions kept for watching will close while somebody is watching - a log console, a chart and a monitoring window take no input, so they count as idle
+      - Scripts waiting inside a session for a long operation to finish are cut off with it, unless somebody touches the keyboard in the meantime
+      - Interleaved work, where the remote session sits aside and is returned to every half hour, calls for signing in each time
+      - Programs holding a connection to a database or a service inside the session lose it when the session closes and report it as a network fault
+      - The contents of the session and the way of working in it do not change - files, printing, the clipboard and permissions behave as before
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska dyżurne i ściany monitoringu, na których sesja zdalna ma stać otwarta i pokazywać obraz bez udziału człowieka
+      - Maszyny, gdzie sesja zdalna jest miejscem uruchamiania długich zadań bez nadzoru — kwadrans wystarczy, żeby zabić większość z nich
+      - Konfiguracje z własnym wygaszaczem albo blokadą ekranu ustawioną krócej — dwa mechanizmy liczą ten sam czas i wynik bywa mylący
+      - Maszyny bez włączonego pulpitu zdalnego, gdzie ustawienie zostaje zapisem bez skutku
+    en:
+      - Duty desks and monitoring walls, where a remote session is meant to stand open and show a picture with no person involved
+      - Machines where a remote session is the place long unattended jobs are started - a quarter of an hour is enough to kill most of them
+      - Setups with their own screen saver or lock set to a shorter time; two mechanisms then count the same span and the outcome can mislead
+      - Machines with remote desktop switched off, where the setting stays a written entry with no effect
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Zero has a meaning of its own here - it is the absence of a limit, not
+      # the shortest one. Reported apart, so a report cannot read it as a very
+      # strict setting.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+      $name = 'MaxIdleTime'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'MISSING' }
+        elseif ([int]$value -eq 0) { 'NO_LIMIT' }
+        elseif ([int]$value -le 900000) { 'WITHIN_LIMIT' }
+        else { 'OVER_LIMIT ' + $value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'WITHIN_LIMIT'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    $name = 'MaxIdleTime'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'MaxIdleTime' -Value 900000 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/rds-session-time-limits
+
+notes:
+  pl: |
+    Kwadrans to 900000 milisekund. Tak jak przy limicie sesji rozłączonej, zero
+    oznacza brak limitu i sprawdzenie zgłasza je jako NO_LIMIT. Obie zasady
+    działają razem: ta kończy sesję czynną, ale pozostawioną, tamta kończy sesję
+    już rozłączoną. Wdrożenie tylko jednej zostawia drogę otwartą z drugiej strony.
+  en: |
+    A quarter of an hour is 900000 milliseconds. As with the disconnected-session
+    limit, zero stands for no limit and the check reports it as NO_LIMIT. The two
+    rules work as a pair - this one ends a live but deserted session, the other
+    ends one already disconnected. Deploying only one leaves the road open from
+    the other side.

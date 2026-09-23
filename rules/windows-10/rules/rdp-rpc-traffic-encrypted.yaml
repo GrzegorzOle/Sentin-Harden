@@ -1,0 +1,163 @@
+id: win10-rdp-rpc-traffic-encrypted
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Security
+  title:
+    pl: Kanał zarządzania pulpitem zdalnym zawsze szyfrowany
+    en: The remote desktop management channel always encrypted
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obok samego obrazu sesji pulpit zdalny prowadzi drugi kanał — zdalne wywołania
+    służące zarządzaniu: wyliczanie sesji, ich rozłączanie, wysyłanie komunikatów,
+    odczyt ustawień hosta. Domyślnie kanał ten przyjmuje połączenia bez szyfrowania,
+    gdy tak zażyczy sobie klient.
+
+    Ta zasada usuwa wybór: wywołania zarządzające są przyjmowane wyłącznie
+    szyfrowane. Kto podsłuchuje sieć, przestaje widzieć, kto jest zalogowany, na
+    jakiej maszynie i pod jaką nazwą sesji, a przede wszystkim przestaje móc
+    wtrącić się do tej rozmowy i wydać polecenia w cudzym imieniu.
+
+    Bez tego ustawienia kanał zarządzania jest słabszym ogniwem niż sama sesja —
+    obraz idzie zaszyfrowany, a sterowanie nim otwartym tekstem.
+  en: |
+    Alongside the picture of the session, remote desktop runs a second channel -
+    remote calls used for management, which list sessions, disconnect them, send
+    messages and read host settings. By default that channel accepts unencrypted
+    connections whenever a client asks for one.
+
+    This rule removes the choice. Management calls are accepted only encrypted.
+    Anybody listening on the network stops seeing who is signed in, on which
+    machine and under what session name, and above all stops being able to step
+    into that exchange and issue commands in somebody else s name.
+
+    Without this setting the management channel is the weaker link of the two -
+    the picture travels encrypted while the control over it travels in the open.
+
+disruption_description:
+  pl: |
+    Szyfrowanie tego kanału jest obsługiwane przez wszystkie współczesne klienty
+    i narzędzia zarządzania, więc włączenie go zwykle nie jest odczuwalne. Zmiana
+    dotyczy warstwy, do której użytkownik nie ma bezpośredniego dostępu.
+
+    Wyjątkiem są stare narzędzia zarządzania sesjami, pisane wtedy, gdy kanał
+    otwarty był normą. One po tej zmianie zgłoszą błąd połączenia, i to jest
+    jedyny scenariusz, który warto sprawdzić przed wdrożeniem.
+  en: |
+    Encryption of this channel is supported by every current client and management
+    tool, so switching it on is usually not felt at all. The change touches a
+    layer the user has no direct contact with.
+
+    The exception is old session-management tooling, written when an open channel
+    was the norm. After this change it reports a connection failure, and that is
+    the one scenario worth checking before rollout.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - encryption-and-tls
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Stare narzędzia do zarządzania sesjami, które nie umieją szyfrować wywołań, zgłoszą błąd połączenia zamiast listy sesji
+      - Skrypty wyliczające albo rozłączające sesje przez dawne wywołania przestaną działać, jeśli korzystają z biblioteki sprzed obsługi szyfrowania
+      - Połączenia przez pośrednika, który rozpakowuje ruch po drodze, zostaną odrzucone — to jest dokładnie to, czemu zasada ma zapobiec
+      - Samo łączenie się z pulpitem zdalnym, obraz sesji, dźwięk i przekierowania pozostają bez zmian
+    en:
+      - Old session-management tools that cannot encrypt their calls report a connection failure instead of a list of sessions
+      - Scripts that list or disconnect sessions through legacy calls stop working if they use a library from before encryption was supported
+      - Connections through a middlebox that unwraps the traffic on the way are refused, which is precisely what the rule is meant to prevent
+      - Connecting to the remote desktop itself, the session picture, sound and redirections are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny obsługiwane przez narzędzie zarządzające sprzed obsługi szyfrowanych wywołań, dopóki nie zostanie ono wymienione
+      - Środowiska, w których ruch zarządzający przechodzi przez urządzenie pośredniczące wymagające wglądu w jego treść
+      - Maszyny bez włączonego pulpitu zdalnego, gdzie kanał zarządzania nie jest używany
+    en:
+      - Machines served by a management tool from before encrypted calls were supported, until that tool is replaced
+      - Environments where management traffic passes through a middlebox that needs to see its contents
+      - Machines with remote desktop switched off, where the management channel is not used at all
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'fEncryptRPCTraffic'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    $name = 'fEncryptRPCTraffic'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'fEncryptRPCTraffic' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/rds-rdsh-security
+
+notes:
+  pl: |
+    Ustawienie dotyczy kanału zarządzającego, nie poziomu szyfrowania samej sesji —
+    ten opisuje osobna zasada o poziomie szyfrowania połączenia. Obie dotyczą tego
+    samego połączenia od innej strony i dopiero razem zamykają je w całości.
+  en: |
+    The setting covers the management channel, not the encryption level of the
+    session itself; that one is described by the separate rule on connection
+    encryption level. Both concern the same connection from different sides and
+    only together do they close it whole.

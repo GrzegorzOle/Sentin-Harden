@@ -1,0 +1,164 @@
+id: win10-remote-assistance-unsolicited-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Remote Assistance
+  title:
+    pl: Pomoc zdalna oferowana bez prośby użytkownika zablokowana
+    en: Remote assistance offered without the user asking blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pomoc zdalna ma drugi tryb, w którym nie czeka na zaproszenie: wskazana z góry
+    osoba może sama zgłosić się do maszyny i zaproponować wgląd w sesję.
+    Użytkownik wciąż potwierdza połączenie, ale to już nie on je rozpoczyna i nie
+    on wybiera, kto puka.
+
+    Ta zasada zamyka ten tryb. Znaczenie ma tu nie sam wgląd, lecz to, kto trzyma
+    inicjatywę. Kiedy pukanie może przyjść z zewnątrz, jedynym zabezpieczeniem
+    zostaje okno z pytaniem, a okno z pytaniem klika się odruchowo — zwłaszcza gdy
+    pytający przedstawi się jako obsługa informatyczna.
+
+    Po zmianie próba zgłoszenia się do maszyny bez wcześniejszego zaproszenia jest
+    odrzucana, zanim ktokolwiek zobaczy jakiekolwiek pytanie.
+  en: |
+    Remote Assistance has a second mode that waits for no invitation. A party
+    named in advance may approach the machine on their own and offer to look into
+    the session. The user still confirms the connection, but it is no longer they
+    who start it or choose who knocks.
+
+    This rule shuts that mode. What matters here is not the looking itself but who
+    holds the initiative. Once the knock can come from outside, the only guard
+    left is a window with a question, and a window with a question gets clicked
+    through by reflex, especially when the party asking introduces themselves as
+    the IT desk.
+
+    After the change an approach to the machine without a prior invitation is
+    refused before anybody sees any question at all.
+
+disruption_description:
+  pl: |
+    Tryb bez zaproszenia jest domyślnie nieczynny i wymaga osobnego wskazania,
+    komu wolno się zgłaszać. Tam, gdzie nikt tego nie skonfigurował, zmiana
+    zapisuje stan, który i tak obowiązuje, i nie odbiera nikomu niczego.
+
+    Tam, gdzie tryb jest używany, jest on zwykle jedyną drogą wsparcia dla
+    użytkownika, który sam nie potrafi wystawić zaproszenia — i to jest rzecz,
+    którą trzeba zastąpić świadomie, a nie odkryć po fakcie.
+  en: |
+    The uninvited mode is off by default and needs a separate list of who may
+    approach. Where nobody has set that up, the change writes down a state that
+    already holds and takes nothing from anybody.
+
+    Where the mode is in use, it is usually the only route of support for a user
+    who cannot issue an invitation on their own - and that is something to replace
+    deliberately rather than discover after the fact.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+    - remote-management
+  what_breaks:
+    pl:
+      - Wsparcie zgłaszające się do maszyny z własnej inicjatywy przestanie się łączyć; zostaje droga przez zaproszenie wystawione przez użytkownika
+      - Użytkownicy, którzy nie potrafią wystawić zaproszenia, stracą jedyną dostępną im formę pomocy, jeśli nie ma zamiennika
+      - Skrypty i narzędzia działu wsparcia uruchamiające połączenie do wskazanej maszyny zgłoszą odmowę zamiast okna z pytaniem
+      - Pomoc zdalna na zaproszenie, pulpit zdalny i pozostałe sposoby łączenia się z maszyną pozostają nietknięte
+    en:
+      - Support that approaches a machine on its own initiative stops connecting; the route through a user-issued invitation remains
+      - Users unable to issue an invitation lose the only form of help open to them, unless a replacement exists
+      - Support-desk scripts and tools that open a connection to a named machine report a refusal instead of showing a question window
+      - Invited assistance, remote desktop and every other way of reaching the machine are untouched
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których wsparcie łączy się właśnie tak, bo użytkownicy nie radzą sobie z wystawieniem zaproszenia
+      - Stanowiska o ograniczonej obsłudze, gdzie przy maszynie nie ma nikogo, kto mógłby zaproszenie wystawić
+      - Maszyny obsługiwane przez narzędzie wsparcia, które pod spodem korzysta z tego właśnie trybu
+    en:
+      - Environments where support connects this very way, because users cannot manage issuing an invitation
+      - Lightly attended stations, where there is nobody at the machine to issue an invitation at all
+      - Machines served by a support tool that uses this exact mode underneath
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'fAllowUnsolicited'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    $name = 'fAllowUnsolicited'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'fAllowUnsolicited' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/remote-desktop-services-overview
+
+notes:
+  pl: |
+    Sama wartość nie wystarcza do otwarcia trybu — potrzebny jest jeszcze wykaz
+    osób uprawnionych do zgłaszania się. Wpisanie zera zamyka jednak drogę
+    niezależnie od tego wykazu i dlatego to ono jest sprawdzane. Zasada o całkowitym
+    wyłączeniu pomocy zdalnej idzie dalej; ta dotyczy wyłącznie trybu bez zaproszenia.
+  en: |
+    The value alone does not open the mode - a list of parties allowed to approach
+    is needed as well. Writing zero closes the road regardless of that list, which
+    is why it is the value checked. The rule that disables Remote Assistance
+    entirely goes further; this one covers the uninvited mode alone.

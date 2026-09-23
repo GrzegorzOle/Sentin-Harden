@@ -1,0 +1,162 @@
+id: win10-rdp-temp-folders-per-session
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Temporary Folders
+  title:
+    pl: Osobny folder tymczasowy dla każdej sesji zdalnej
+    en: A separate temporary folder for each remote session
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Programy odkładają do folderu tymczasowego więcej, niż sugeruje nazwa: podglądy
+    dokumentów, rozpakowane załączniki, pliki pośrednie drukowania, czasem bilety
+    i żetony dostępu. Gdy wszystkie sesje zdalne na maszynie dzielą jeden taki
+    folder, to, co odłożyła jedna sesja, leży w zasięgu następnej.
+
+    Ta zasada daje każdej sesji własny katalog tymczasowy. Zawartość pozostaje
+    związana z sesją, która ją wytworzyła, i znika wraz z nią, zamiast czekać na
+    kolejnego użytkownika tej samej maszyny.
+
+    Atakującemu odbiera to prosty sposób zbierania cudzych danych bez włamywania
+    się gdziekolwiek — wystarczyło zalogować się zdalnie i przejrzeć wspólny
+    katalog po kimś, kto pracował wcześniej.
+  en: |
+    Programs put more into the temporary folder than the name suggests - document
+    previews, unpacked attachments, spooled print files, sometimes tickets and
+    access tokens. Where every remote session on a machine shares one such folder,
+    whatever one session left behind lies within reach of the next.
+
+    This rule gives each session a temporary directory of its own. What is written
+    there stays tied to the session that made it and goes when that session goes,
+    instead of waiting for the next user of the same machine.
+
+    It takes from an attacker a plain way of gathering other people s data without
+    breaking into anything - sign in from afar and look through the shared folder
+    after whoever worked there earlier.
+
+disruption_description:
+  pl: |
+    Zmiana jest niewidoczna w pracy. Programy pytają system o ścieżkę folderu
+    tymczasowego i dostają ją tak samo jak wcześniej, tyle że wskazuje gdzie
+    indziej. Nikt nie wpisuje tej ścieżki z pamięci.
+
+    Jedyne, co zmienia się naprawdę, to założenie, że plik zostawiony w folderze
+    tymczasowym da się odnaleźć w następnej sesji. To założenie i tak nie miało
+    oparcia — folder tymczasowy nigdy nie był miejscem do przechowywania.
+  en: |
+    The change is invisible in daily work. Programs ask the system for the path of
+    the temporary folder and get it exactly as before, only pointing somewhere
+    else. Nobody types that path from memory.
+
+    The one thing that truly changes is the assumption that a file left in the
+    temporary folder can be found again in the next session. That assumption never
+    had ground under it - a temporary folder was never a place to keep things.
+
+implementation_consequences:
+  impact_areas:
+    - remote-desktop
+  what_breaks:
+    pl:
+      - Narzędzia szukające plików po stałej ścieżce folderu tymczasowego przestaną je znajdować; dotyczy to skryptów pisanych na skróty, nie programów pytających system
+      - Plik odłożony w folderze tymczasowym w jednej sesji nie będzie widoczny w następnej, więc przenoszenie danych tędy przestanie działać
+      - Miejsce na dysku bywa zajmowane w kilku katalogach naraz zamiast w jednym, co na maszynie z wieloma sesjami widać w raportach zajętości
+      - Sposób pracy z sesją zdalną, dostęp do plików użytkownika, drukowanie i schowek zostają bez zmian
+    en:
+      - Tools looking for files at a fixed temporary path stop finding them; this hits scripts written the short way, not programs that ask the system
+      - A file left in the temporary folder in one session is not visible in the next, so carrying data across that way stops working
+      - Disk space is taken in several directories at once rather than one, which shows up in usage reports on a machine with many sessions
+      - The way a remote session is used, access to user files, printing and the clipboard all stay as they were
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny z programem, który świadomie wymienia dane między sesjami przez folder tymczasowy — rozwiązanie złe, ale spotykane i trzeba je najpierw przepisać
+      - Konfiguracje, w których katalog tymczasowy leży na udziale sieciowym o ograniczonej liczbie podkatalogów
+      - Maszyny bez włączonego pulpitu zdalnego, gdzie sesji zdalnych po prostu nie ma
+    en:
+      - Machines with a program that deliberately passes data between sessions through the temporary folder - a poor design, but one that exists and has to be rewritten first
+      - Setups where the temporary directory sits on a network share with a limited number of subdirectories
+      - Machines with remote desktop switched off, where there are simply no remote sessions
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'PerSessionTempDir'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    $name = 'PerSessionTempDir'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'PerSessionTempDir' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/remote/remote-desktop-services/rds-rdsh-security
+
+notes:
+  pl: |
+    Osobny katalog na sesję ma sens tylko razem z jego kasowaniem przy wyjściu —
+    inaczej zamiast jednego wspólnego składu cudzych plików powstaje wiele
+    mniejszych. Ta zasada i zasada o kasowaniu folderów tymczasowych po sesji
+    tworzą całość i ocenia się je razem.
+  en: |
+    A separate directory per session makes sense only together with deleting it on
+    exit - otherwise one shared store of other people s files turns into many
+    smaller ones. This rule and the rule on deleting temporary folders after a
+    session form one whole and are judged together.

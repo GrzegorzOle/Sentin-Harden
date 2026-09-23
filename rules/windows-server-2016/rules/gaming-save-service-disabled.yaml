@@ -1,0 +1,194 @@
+id: win2016-gaming-save-service-disabled
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: System Services
+  title:
+    pl: Usługa zapisu stanu platformy rozrywkowej wyłączona
+    en: The state-saving service of the entertainment platform disabled
+  level: 2
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt wyłącza usługę przenoszącą zapisany stan platformy rozrywkowej
+    między maszyną a magazynem sieciowym.
+
+    Argument jest ten sam co przy punkcie poprzednim, ale dotyczy innej
+    warstwy. Tamta usługa zajmowała się tożsamością; ta zajmuje się
+    danymi — bierze pliki z maszyny, wysyła je na zewnątrz i przyjmuje
+    z powrotem.
+
+    Składnik wysyłający i przyjmujący pliki, działający w tle i bez
+    niczyjej decyzji, jest na serwerze czymś, czego nie chce się mieć.
+    Nie dlatego, że akurat ten jest podejrzany, tylko dlatego, że każda
+    taka droga musi mieć powód, a ta na serwerze powodu nie ma.
+
+    Wyłączenie jej niczego nie zabiera, bo na maszynie bez platformy
+    rozrywkowej nie ma czego przenosić.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: działający
+    składnik wymieniający pliki z magazynem sieciowym na maszynie, która
+    niczego takiego nie potrzebuje.
+  en: |
+    The item switches off the service carrying the saved state of the entertainment platform between the
+    machine and a network store.
+
+    The argument is the same as at the item before, but it concerns another layer. That service was
+    busied with identity; this one is busied with data - it takes files from the machine, sends them
+    outward and takes them back.
+
+    A component sending and taking in files, working in the background and at nobody's decision, is on a
+    server something one does not wish to have. Not because this one in particular is suspect, but
+    because every such road must have a cause, and this one on a server has none.
+
+    Switching it off takes nothing away, there being nothing to carry on a machine without the
+    entertainment platform.
+
+    What an attacker gains while the item goes unmet: a working component exchanging files with a
+    network store on a machine that needs nothing of the kind.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Na serwerze usługa ta nie ma czego przenosić. Nie korzysta z niej żadna
+    rola ani aplikacja serwerowa.
+
+    Przypadek wart wymienienia jest ten sam co przy punkcie poprzednim:
+    maszyna wydana komuś do pracy jak stanowisko robocze. Tam zapisany stan
+    przestanie się przenosić, a objaw będzie widoczny wyłącznie w samej
+    platformie.
+
+    Nie ma innych znanych regresji.
+
+    Czego to nie psuje: przenoszenia plików użytkownika, profili mobilnych,
+    przekierowanych folderów, udziałów, sieci, aplikacji serwerowych.
+
+    Wymaga zatrzymania usługi; cofnięcie natychmiastowe.
+  en: |
+    The class is "no disruption".
+
+    On a server that service has nothing to carry. No role and no server application uses it.
+
+    The case worth naming is the same as at the item before: a machine handed to somebody for work as a
+    workstation. There the saved state will cease to be carried, and the symptom will show solely within
+    the platform itself.
+
+    There are no other known regressions.
+
+    What this does not break: the carrying of a user's files, roaming profiles, redirected folders,
+    shares, the network, or server applications.
+
+    Calls for a service to be stopped; the undoing is immediate.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Na maszynie używanej jak stanowisko robocze zapisany stan platformy rozrywkowej przestaje się przenosić
+      - Objaw jest widoczny wyłącznie w samej platformie i nie pojawia się w dziennikach systemu
+      - Przenoszenie plików użytkownika, profile mobilne i przekierowane foldery pozostają bez zmian
+      - Udziały, sieć i aplikacje serwerowe pozostają bez zmian
+    en:
+      - On a machine used as a workstation the saved state of the entertainment platform ceases to be carried
+      - The symptom shows solely within the platform itself and does not appear in the system logs
+      - The carrying of a user's files, roaming profiles and redirected folders stay unchanged
+      - Shares, the network and server applications stay unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna jest wydana komuś do pracy jak stanowisko robocze i platforma rozrywkowa jest na niej używana
+    en:
+      - The machine is handed to somebody for work as a workstation and the entertainment platform is used on it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\XblGameSave'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'NOT_APPLICABLE' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).Start
+        if ($null -eq $value) { 'CHECK_ERROR' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '4'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\XblGameSave'
+    $current = (Get-ItemProperty -Path $path -Name 'Start' -ErrorAction SilentlyContinue).Start
+    [pscustomobject]@{
+      path    = $path
+      name    = 'Start'
+      value   = $current
+      existed = ($null -ne $current)
+      running = ((Get-Service -Name 'XblGameSave' -ErrorAction SilentlyContinue).Status -eq 'Running')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The service synchronises saved state outward. On a server it has nothing
+    # to synchronise, so switching it off costs nothing.
+    Stop-Service -Name 'XblGameSave' -Force -ErrorAction SilentlyContinue
+    Set-Service -Name 'XblGameSave' -StartupType Disabled
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    if ($b.running) { Start-Service -Name 'XblGameSave' -ErrorAction SilentlyContinue }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/application-management/svchost-service-refactoring
+
+notes:
+  pl: |
+    Punkt jest drugi z trzech dotyczących tej samej platformy i różni się od
+    pierwszego przedmiotem, nie ciężarem. Tam chodziło o żetony, tu o pliki.
+
+    Warto pokazywać te trzy reguły jako jedną pozycję do rozstrzygnięcia,
+    bo decyzja jest przy nich wspólna: albo maszyna jest serwerem i wtedy
+    wszystkie trzy są bezbolesne, albo ktoś na niej pracuje i wtedy
+    wszystkie trzy trzeba rozważyć razem. Rozbijanie tej decyzji na trzy
+    pytania niczego nie wnosi.
+
+    Odnotowuję, że reguła ma klasę „bez uciążliwości" mimo zatrzymania
+    usługi. Zatrzymanie usługi jest przerwą w rozumieniu pola o przerwie,
+    a nie uciążliwością — usługa, której nikt nie używa, nie przeszkadza
+    przez to, że się zatrzymuje. Jest to rozróżnienie, które warto
+    w interfejsie utrzymać, bo inaczej pole o przerwie zaczyna nieformalnie
+    podnosić klasę.
+  en: |
+    The item is the second of three concerning that same platform and differs from the first in its
+    subject, not its weight. There it was a matter of tokens, here of files.
+
+    It is worth showing those three rules as one entry to be settled, the decision at them being a shared
+    one: either the machine is a server and then all three are painless, or somebody works on it and then
+    all three have to be weighed together. Breaking that decision into three questions brings nothing.
+
+    Worth noting that the rule holds the class "no disruption" despite a service being stopped. The
+    stopping of a service is an interruption in the sense of the field about interruption, and not a
+    disruption - a service nobody uses does not get in the way by stopping. It is a distinction worth
+    keeping in the interface, else the field about interruption begins informally to raise the class.

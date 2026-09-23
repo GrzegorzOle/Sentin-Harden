@@ -1,0 +1,158 @@
+id: win10-clipboard-history-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > OS Policies
+  title:
+    pl: Historia schowka wyłączona
+    en: Clipboard history switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Historia schowka przechowuje kilkadziesiąt ostatnich skopiowanych treści i
+    udostępnia je z listy wywoływanej skrótem. Zwykły schowek trzyma jedną rzecz i
+    zastępuje ją przy następnym kopiowaniu; historia nie zastępuje niczego.
+
+    Różnica jest istotna dla haseł. Hasło skopiowane z menedżera znika ze zwykłego
+    schowka przy następnym kopiowaniu, a w historii zostaje i da się je odczytać
+    później — przez kogoś, kto usiądzie przy maszynie, i przez program działający
+    w sesji użytkownika.
+
+    Wyłączenie historii przywraca schowkowi jego pierwotną własność: pamięta
+    jedną rzecz i tylko do następnego kopiowania.
+  en: |
+    The clipboard history keeps the last few dozen copied items and offers them
+    from a list raised by a shortcut. An ordinary clipboard holds one thing and
+    replaces it at the next copy; the history replaces nothing.
+
+    The difference matters for passwords. A password copied from a manager
+    vanishes from the ordinary clipboard at the next copy, while in the history it
+    stays and can be read later - by somebody sitting down at the machine, and by
+    a program running in the user s session.
+
+    Switching the history off gives the clipboard its original property back - it
+    remembers one thing, and only until the next copy.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo historia bywa używana świadomie i intensywnie
+    przy pracy z tekstem: przepisywaniu danych, składaniu dokumentów, wypełnianiu
+    formularzy. Odebranie jej odczuwalnie spowalnia taką pracę.
+
+    Zwykłe kopiowanie i wklejanie działa bez zmian, co warto przekazać razem ze
+    zmianą. Zgłoszenie brzmi zwykle tak, jakby przestał działać cały schowek,
+    podczas gdy zniknęła wyłącznie lista wcześniejszych pozycji.
+  en: |
+    The change calls for a review, because the history is sometimes used
+    deliberately and heavily in work with text - transcribing data, assembling
+    documents, filling in forms. Taking it away noticeably slows such work.
+
+    Ordinary copying and pasting works unchanged, which is worth passing on along
+    with the change. The ticket usually reads as though the whole clipboard
+    stopped working, while only the list of earlier items has gone.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Lista wcześniej skopiowanych treści przestanie być dostępna ze skrótu klawiszowego
+      - Praca polegająca na przepisywaniu wielu fragmentów naraz spowolni się odczuwalnie
+      - Treści zapisane w historii przed zmianą zostaną usunięte przy jej wdrożeniu
+      - Zwykłe kopiowanie i wklejanie, przenoszenie plików, praca w aplikacjach i dostęp do zasobów pozostają bez zmian
+    en:
+      - The list of previously copied items stops being available from the keyboard shortcut
+      - Work consisting of transcribing many fragments at once slows noticeably
+      - Items kept in the history before the change are removed as it is rolled out
+      - Ordinary copying and pasting, moving files, work in applications and access to resources are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których praca z tekstem opiera się na wielokrotnym kopiowaniu fragmentów
+      - Środowiska tłumaczeniowe i redakcyjne, gdzie historia schowka jest narzędziem pracy
+    en:
+      - Stations where work with text rests on copying fragments many times over
+      - Translation and editorial environments, where the clipboard history is a tool of the trade
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowClipboardHistory'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'AllowClipboardHistory'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowClipboardHistory' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-policies
+
+notes:
+  pl: |
+    Zasada dotyczy historii przechowywanej na maszynie, a nie przenoszenia schowka
+    między urządzeniami — to osobny mechanizm z własnym ustawieniem. Obie zasady
+    ocenia się razem, bo dopiero obie zamykają schowek jako źródło danych.
+  en: |
+    The rule covers the history kept on the machine rather than the carrying of
+    the clipboard between devices - that is a separate mechanism with a setting of
+    its own. The two rules are judged together, since only both of them shut the
+    clipboard as a source of data.

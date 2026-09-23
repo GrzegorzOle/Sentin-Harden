@@ -1,0 +1,156 @@
+id: win10-clipboard-cross-device-sync-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > OS Policies
+  title:
+    pl: Przenoszenie schowka między urządzeniami wyłączone
+    en: Carrying the clipboard between devices disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Schowek przenoszony między urządzeniami wysyła skopiowaną treść na zewnątrz,
+    żeby pojawiła się na drugim sprzęcie zalogowanym tym samym kontem. Wysyłka
+    odbywa się przy każdym kopiowaniu i bez pytania.
+
+    Kopiowanie jest czynnością, przy której nikt nie zastanawia się nad treścią.
+    Przez schowek przechodzą hasła wyciągane z menedżera, klucze, fragmenty umów,
+    dane osobowe. Wszystko to opuszcza maszynę, a użytkownik wykonał wyłącznie
+    skrót klawiszowy, którego używa kilkadziesiąt razy dziennie.
+
+    Wyłączenie przenoszenia sprawia, że skopiowana treść zostaje na maszynie.
+  en: |
+    A clipboard carried between devices sends copied content outwards, so that it
+    appears on the other piece of hardware signed in with the same account. The
+    sending happens at every copy and with no question asked.
+
+    Copying is an act nobody thinks about the content of. Passwords pulled from a
+    manager, keys, fragments of contracts and personal data all pass through the
+    clipboard. All of it leaves the machine, while the user merely used a keyboard
+    shortcut they use dozens of times a day.
+
+    Switching the carrying off means copied content stays on the machine.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo odbiera funkcję używaną świadomie przez osoby
+    pracujące na laptopie i telefonie naraz. Kopiowanie w obrębie maszyny działa
+    jak wcześniej i to jest istotne do przekazania — zgłoszenie brzmi zwykle
+    „przestał działać schowek", choć przestało działać wyłącznie przenoszenie.
+
+    Zamiennikiem dla przenoszenia treści między własnymi urządzeniami jest zasób
+    sieciowy albo poczta, czyli droga, którą organizacja widzi i kontroluje.
+  en: |
+    The change calls for a review, because it takes away a function deliberately
+    used by people working on a laptop and a telephone at once. Copying within the
+    machine works as before and that is worth passing on - the ticket usually
+    reads that the clipboard stopped working, though only the carrying did.
+
+    The replacement for moving content between one s own devices is a network
+    share or mail, that is a route the organisation sees and controls.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Treść skopiowana na maszynie przestanie pojawiać się na telefonie albo drugim komputerze
+      - Osoby pracujące na kilku własnych urządzeniach stracą najszybszą drogę przenoszenia fragmentów tekstu
+      - Zgłoszenia mogą brzmieć jak awaria schowka, choć kopiowanie w obrębie maszyny działa bez zmian
+      - Kopiowanie i wklejanie na maszynie, historia schowka, dostęp do plików i praca użytkownika pozostają bez zmian
+    en:
+      - Content copied on the machine stops appearing on a telephone or a second computer
+      - People working across several of their own devices lose the quickest route for moving fragments of text
+      - Tickets may read like a broken clipboard, though copying within the machine works unchanged
+      - Copying and pasting on the machine, clipboard history, access to files and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których praca polega na przenoszeniu treści między laptopem a telefonem służbowym
+      - Środowiska bez zasobu sieciowego mogącego zastąpić tę drogę
+    en:
+      - Stations where the work consists of moving content between a laptop and a work telephone
+      - Environments with no network share able to replace that route
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowCrossDeviceClipboard'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'AllowCrossDeviceClipboard'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowCrossDeviceClipboard' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-system
+
+notes:
+  pl: |
+    Zasada dotyczy przenoszenia schowka poza maszynę, a nie samego kopiowania ani
+    historii schowka — te są osobnymi mechanizmami i mają własne ustawienia.
+    Punkt ocenia się razem z historią schowka.
+  en: |
+    The rule covers the carrying of the clipboard off the machine rather than
+    copying itself or the clipboard history - those are separate mechanisms with
+    settings of their own. The item is judged together with the clipboard history.

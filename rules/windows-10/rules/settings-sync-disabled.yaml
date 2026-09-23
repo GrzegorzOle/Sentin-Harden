@@ -1,0 +1,180 @@
+id: win10-settings-sync-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Sync your settings
+  title:
+    pl: Synchronizowanie ustawień między maszynami wyłączone
+    en: Synchronising settings between machines switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Synchronizowanie ustawień przenosi profil użytkownika na wszystkie maszyny, na
+    których zaloguje się tym samym kontem. Przenoszone są też rzeczy istotne:
+    zapisane hasła sieci bezprzewodowych i poświadczenia zapamiętane przez system.
+
+    Skutek jest taki, że poświadczenia z maszyny służbowej pojawiają się na sprzęcie
+    prywatnym, a poświadczenia prywatne na służbowym. Granica między jednym a drugim
+    przestaje istnieć, i to bez żadnej decyzji — wystarczyło zalogować się tym samym
+    kontem.
+
+    Wyłączenie synchronizacji utrzymuje profil tam, gdzie został założony.
+  en: |
+    Synchronising settings carries a user s profile onto every machine they sign in
+    to with the same account. Things that matter are carried too - saved wireless
+    network passwords and credentials remembered by the system.
+
+    The consequence is that credentials from a work machine appear on private
+    hardware, and private credentials on the work one. The boundary between the two
+    stops existing, and with no decision at all - signing in with the same account
+    was enough.
+
+    Switching synchronisation off keeps a profile where it was made.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo odbiera wygodę, do której ludzie się
+    przyzwyczaili. Ustawienia, motyw, język i zapisane hasła sieci przestaną
+    pojawiać się same na nowej maszynie — po wdrożeniu trzeba je wprowadzić
+    osobno.
+
+    Dotkliwe jest to przede wszystkim przy wymianie sprzętu. Warto wtedy mieć
+    przygotowany profil rozprowadzany centralnie albo listę ustawień do
+    odtworzenia, bo inaczej każda wymiana laptopa kończy się godziną strojenia
+    stanowiska.
+
+    Osobną decyzją jest to, czy zabrać użytkownikowi możliwość włączenia
+    synchronizacji z powrotem. Sprawdzenie zgłasza te dwie sytuacje osobno,
+    bo wyłączenie pozostawione do decyzji użytkownika jest sugestią, a nie zasadą.
+  en: |
+    The change calls for a review, because it takes away a convenience people have
+    grown used to. Settings, the theme, the language and saved network passwords
+    stop appearing by themselves on a new machine - after the rollout they have to
+    be entered separately.
+
+    It bites above all when hardware is replaced. It is worth having a profile
+    distributed centrally then, or a list of settings to restore, since otherwise
+    every laptop swap ends in an hour of tuning the station.
+
+    Whether to take away the user s ability to switch synchronisation back on is a
+    decision of its own. The check reports those two situations apart, because
+    switching off while leaving it to the user is a suggestion rather than a
+    policy.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Ustawienia, motyw i język przestaną przenosić się same na nową maszynę po zalogowaniu tym samym kontem
+      - Zapisane hasła sieci bezprzewodowych nie pojawią się na kolejnym sprzęcie i trzeba je wprowadzić ręcznie
+      - Wymiana laptopa będzie wymagała odtworzenia ustawień stanowiska osobno
+      - Użytkownik nie włączy synchronizacji z powrotem, jeżeli wdrożono też odebranie mu tego wyboru
+      - Logowanie kontem, dostęp do zasobów, dyski sieciowe i praca po zalogowaniu pozostają bez zmian
+    en:
+      - Settings, the theme and the language stop carrying themselves onto a new machine after signing in with the same account
+      - Saved wireless network passwords do not appear on the next piece of hardware and have to be entered by hand
+      - Replacing a laptop calls for the station s settings to be restored separately
+      - The user cannot switch synchronisation back on, where taking that choice away was rolled out too
+      - Signing in with an account, access to resources, network drives and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska bez profilu rozprowadzanego centralnie, gdzie synchronizacja jest jedynym sposobem odtworzenia stanowiska
+      - Stanowiska używane naprzemiennie przez tę samą osobę na kilku maszynach w ciągu dnia
+    en:
+      - Environments with no centrally distributed profile, where synchronisation is the only way of restoring a station
+      - Stations used in turn by the same person across several machines in a day
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Two values carry this item: the switch itself and the entry taking the
+      # choice away from the user. Switched off but left to the user is reported
+      # apart, because it is a suggestion rather than a policy.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\SettingSync'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $switch = $item.'DisableSettingSync'
+        $override = $item.'DisableSettingSyncUserOverride'
+        if ($null -eq $switch -or $null -eq $override) { 'MISSING' }
+        elseif ([int]$switch -ne 2) { 'NOT_BLOCKED' }
+        elseif ([int]$override -ne 1) { 'USER_CAN_OVERRIDE' }
+        else { 'AS_REQUIRED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\SettingSync'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path             = $path
+      switch           = $item.'DisableSettingSync'
+      switch_existed   = ($null -ne $item.'DisableSettingSync')
+      override         = $item.'DisableSettingSyncUserOverride'
+      override_existed = ($null -ne $item.'DisableSettingSyncUserOverride')
+      key_existed      = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\SettingSync'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableSettingSync' -Value 2 -Type DWord
+    Set-ItemProperty -Path $path -Name 'DisableSettingSyncUserOverride' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.switch_existed) {
+      Set-ItemProperty -Path $b.path -Name 'DisableSettingSync' -Value $b.switch -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'DisableSettingSync' -ErrorAction SilentlyContinue
+    }
+    if ($b.override_existed) {
+      Set-ItemProperty -Path $b.path -Name 'DisableSettingSyncUserOverride' -Value $b.override -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'DisableSettingSyncUserOverride' -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-experience
+
+notes:
+  pl: |
+    Punkt niosą dwie wartości: sam wyłącznik i wpis odbierający wybór
+    użytkownikowi. Wyłączenie pozostawione do decyzji użytkownika sprawdzenie
+    zgłasza osobnym stanem, bo jest to sugestia, a nie zasada. Punkt ocenia się
+    razem z synchronizacją ustawień przeglądarki, która ma osobną parę wartości w
+    tej samej gałęzi.
+  en: |
+    Two values carry this item - the switch itself and the entry taking the choice
+    away from the user. Switching off while leaving it to the user is reported by
+    the check as a state of its own, since that is a suggestion rather than a
+    policy. The item is judged together with the synchronising of browser
+    settings, which has a pair of values of its own in the same branch.

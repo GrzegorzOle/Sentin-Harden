@@ -1,0 +1,155 @@
+id: win10-user-activity-upload-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > OS Policies
+  title:
+    pl: Wysyłanie historii czynności użytkownika wyłączone
+    en: Sending the history of a user s activities switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System prowadzi zapis tego, co użytkownik otwierał: pliki, strony, aplikacje,
+    wraz z czasem. Zapis ten może być wysyłany na zewnątrz, żeby czynność
+    rozpoczętą na jednej maszynie dało się podjąć na drugiej.
+
+    Wysyłana jest historia pracy, czyli nazwy dokumentów, adresy stron i nazwy
+    aplikacji. Nazwa pliku bywa informacją samą w sobie — nazwisko klienta, numer
+    sprawy, nazwa projektu. Zbiór takich zapisów z całej organizacji opisuje, czym
+    ona się zajmuje i z kim.
+
+    Wyłączenie wysyłania zostawia ten zapis na maszynie. Historia nadal działa
+    lokalnie i użytkownik widzi ją jak wcześniej.
+  en: |
+    The system keeps a record of what a user opened - files, pages, applications,
+    along with the time. That record can be sent outwards, so that an activity
+    begun on one machine can be picked up on another.
+
+    What is sent is the history of the work, that is the names of documents,
+    addresses of pages and names of applications. A file name is often information
+    in itself - a client s surname, a case number, a project name. A set of such
+    records from across an organisation describes what it does and with whom.
+
+    Switching the sending off leaves that record on the machine. The history goes
+    on working locally and the user sees it as before.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic w pracy na jednej maszynie i nie jest widoczna. Nie
+    wymaga przerwy i cofa się natychmiast.
+
+    Traci się wyłącznie podejmowanie czynności na drugim urządzeniu. Na maszynie
+    służbowej, zwykle jedynej, jest to funkcja teoretyczna. Historia lokalna
+    działa bez zmian, więc użytkownik nie zauważy ubytku.
+  en: |
+    The change costs nothing in work on a single machine and is not visible. It
+    calls for no interruption and reverses at once.
+
+    All that is lost is picking an activity up on a second device. On a work
+    machine, usually the only one, that is a theoretical function. The local
+    history works unchanged, so the user notices no gap.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - user-interface
+  what_breaks:
+    pl:
+      - Czynność rozpoczęta na jednej maszynie nie da się podjąć na drugiej tą drogą
+      - Historia czynności widoczna na innym urządzeniu przestanie się uzupełniać
+      - Historia lokalna działa bez zmian i użytkownik widzi ją jak wcześniej
+      - Otwieranie plików, przeglądanie stron, uruchamianie aplikacji i praca użytkownika pozostają bez zmian
+    en:
+      - An activity begun on one machine cannot be picked up on another by this route
+      - The activity history visible on another device stops being added to
+      - The local history works unchanged and the user sees it as before
+      - Opening files, browsing pages, starting applications and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których praca rozpoczęta na laptopie jest świadomie kontynuowana na innym urządzeniu
+      - Środowiska korzystające z historii czynności jako wspólnego dziennika pracy między maszynami
+    en:
+      - Stations where work begun on a laptop is deliberately continued on another device
+      - Environments using the activity history as a shared record of work across machines
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'UploadUserActivities'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'UploadUserActivities'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'UploadUserActivities' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-privacy
+
+notes:
+  pl: |
+    Zasada dotyczy wysyłania zapisu, a nie jego prowadzenia — historia lokalna
+    działa dalej i ma własne ustawienie. Punkt ocenia się razem z przenoszeniem
+    pracy między urządzeniami, które korzysta z tego samego zapisu.
+  en: |
+    The rule covers the sending of the record rather than the keeping of it - the
+    local history goes on working and has a setting of its own. The item is judged
+    together with continuing work across devices, which draws on the same record.

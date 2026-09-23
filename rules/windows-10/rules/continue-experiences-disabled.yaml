@@ -1,0 +1,162 @@
+id: win10-continue-experiences-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Group Policy
+  title:
+    pl: Przenoszenie pracy między urządzeniami wyłączone
+    en: Continuing work across devices turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mechanizm przenoszenia pracy utrzymuje ciągłe połączenie maszyny z usługą
+    producenta i z innymi urządzeniami zalogowanymi tym samym kontem. Dzięki temu
+    dokument otwarty na jednym sprzęcie da się podjąć na drugim.
+
+    Z punktu widzenia maszyny jest to stały kanał wychodzący, którym płyną
+    informacje o tym, co się na niej dzieje. Kanał działa niezależnie od tego, czy
+    ktoś z przenoszenia korzysta — wystarczy, że mechanizm jest włączony.
+
+    Wyłączenie zamyka ten kanał i odcina zarazem wykrywanie urządzeń w pobliżu,
+    które korzysta z tej samej drogi.
+  en: |
+    The mechanism for continuing work keeps a standing connection between the
+    machine and the maker s service, and with other devices signed in under the
+    same account. It lets a document opened on one piece of hardware be picked up
+    on another.
+
+    From the machine s point of view it is a permanent outgoing channel carrying
+    information about what is happening on it. The channel works whether or not
+    anybody uses the continuing - the mechanism merely has to be switched on.
+
+    Switching it off shuts that channel and at the same time cuts off the
+    discovery of nearby devices, which uses the same road.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo z tej samej drogi korzysta wykrywanie urządzeń w
+    pobliżu i udostępnianie plików między nimi. Wyłączenie mechanizmu zamyka
+    wszystko naraz, a nie tylko przenoszenie pracy.
+
+    Objawem bywa zniknięcie sprzętu z listy urządzeń w pobliżu i brak możliwości
+    szybkiego przesłania pliku na telefon. Jest to skutek zamierzony, ale trzeba
+    go przewidzieć, bo dla użytkownika wygląda jak zepsuta funkcja, a nie jak
+    świadoma decyzja.
+  en: |
+    The change calls for a review, because the discovery of nearby devices and
+    sharing files between them use the same road. Switching the mechanism off
+    shuts all of it at once, not only the continuing of work.
+
+    The symptom tends to be hardware vanishing from the list of nearby devices and
+    no way of quickly sending a file to a telephone. That is the intended effect,
+    but it has to be foreseen, since to the user it looks like a broken function
+    rather than a deliberate decision.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Podjęcie na drugim urządzeniu pracy rozpoczętej na tej maszynie przestanie być możliwe
+      - Wykrywanie urządzeń w pobliżu i szybkie przesyłanie do nich plików przestanie działać
+      - Sprzęt zniknie z listy urządzeń widocznych dla telefonu zalogowanego tym samym kontem
+      - Użytkownicy zgłoszą to jako zepsutą funkcję udostępniania, choć jest to skutek zamierzony
+      - Dostęp do plików, poczta, dyski sieciowe, drukowanie i praca użytkownika pozostają bez zmian
+    en:
+      - Picking up work begun on this machine on a second device stops being possible
+      - The discovery of nearby devices and quick sending of files to them stops working
+      - The hardware vanishes from the list of devices visible to a telephone signed in under the same account
+      - Users report this as a broken sharing function, though it is the intended effect
+      - Access to files, mail, network drives, printing and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska korzystające z wykrywania urządzeń w pobliżu do przesyłania plików na telefon służbowy
+      - Środowiska, w których praca rozpoczęta na laptopie jest świadomie kontynuowana na innym sprzęcie
+    en:
+      - Stations relying on nearby device discovery to send files to a work telephone
+      - Environments where work begun on a laptop is deliberately continued on other hardware
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableCdp'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'EnableCdp'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableCdp' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-system
+
+notes:
+  pl: |
+    Wyłącznik zamyka całą platformę połączonych urządzeń, a nie samo przenoszenie
+    pracy — razem z nim znika wykrywanie urządzeń w pobliżu. Punkt ocenia się
+    razem z wysyłaniem historii czynności, bo obie funkcje opierają się na tym
+    samym kanale.
+  en: |
+    The switch shuts the whole connected devices platform rather than the
+    continuing of work alone - nearby device discovery goes with it. The item is
+    judged together with the sending of the activity history, since both functions
+    rest on the same channel.

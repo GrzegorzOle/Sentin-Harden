@@ -1,0 +1,159 @@
+id: win10-feedback-notifications-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Prośby o opinię o systemie wyłączone
+    en: Prompts asking for feedback about the system turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System potrafi prosić użytkownika o opinię: pytania o zadowolenie, o
+    działanie funkcji, o ocenę urządzenia. Odpowiedź idzie do producenta razem z
+    kontekstem, w jakim padło pytanie.
+
+    Ryzyko jest niskie i nie dotyczy samego mechanizmu, tylko treści odpowiedzi.
+    Użytkownik opisujący problem wpisuje to, czym akurat się zajmował: nazwę
+    aplikacji wewnętrznej, nazwę serwera, treść komunikatu błędu. Pole opisowe nie
+    odróżnia opinii o systemie od informacji o organizacji.
+
+    Wyłączenie próśb zamyka drogę, przez którą dane wychodzą dobrowolnie i bez
+    przeglądu.
+  en: |
+    The system can ask the user for feedback - questions about satisfaction, about
+    how a feature works, about rating the device. The answer goes to the maker
+    along with the context the question was asked in.
+
+    The risk is low and concerns not the mechanism but the content of the answers.
+    A user describing a problem types whatever they were dealing with - the name
+    of an in-house application, the name of a server, the text of an error
+    message. A free-text field does not tell an opinion about the system from
+    information about the organisation.
+
+    Switching the prompts off shuts a road by which data leaves willingly and
+    without review.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic i na maszynie służbowej bywa przyjmowana z ulgą. Nie
+    wymaga przerwy i cofa się natychmiast.
+
+    Skutkiem jest brak pytań pojawiających się przy pracy. Aplikacja zbierająca
+    opinie pozostaje w systemie i da się ją uruchomić samodzielnie, więc osoba
+    chcąca coś zgłosić nadal może to zrobić — zmienia się to, kto zaczyna rozmowę.
+  en: |
+    The change costs nothing and on a work machine tends to be met with relief. It
+    calls for no interruption and reverses at once.
+
+    The consequence is that no questions appear during work. The feedback
+    application stays in the system and can be started on demand, so somebody
+    wanting to report something still can - what changes is who begins the
+    conversation.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Pytania o opinię o systemie przestaną pojawiać się przy pracy
+      - Prośby o ocenę urządzenia i funkcji znikną z powiadomień systemu
+      - Aplikacja zbierająca opinie pozostaje w systemie i da się ją uruchomić samodzielnie
+      - Zgłaszanie problemów do działu informatycznego, aktualizacje systemu, dane diagnostyczne i praca użytkownika pozostają bez zmian
+    en:
+      - Questions asking for feedback about the system stop appearing during work
+      - Prompts to rate the device and its features vanish from the system notifications
+      - The feedback application stays in the system and can be started on demand
+      - Reporting problems to the IT desk, system updates, diagnostic data and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska biorące udział w programie wczesnych wydań, gdzie opinia jest warunkiem uczestnictwa
+      - Środowiska testowe, w których zgłaszanie uwag producentowi jest treścią pracy
+    en:
+      - Stations taking part in an early release programme, where feedback is a condition of taking part
+      - Test environments, where reporting remarks to the maker is the substance of the work
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DoNotShowFeedbackNotifications'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'DoNotShowFeedbackNotifications'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DoNotShowFeedbackNotifications' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-feedback
+
+notes:
+  pl: |
+    Wpis leży w gałęzi zbierania danych, razem z ustawieniami danych
+    diagnostycznych — to inne miejsce niż porady i treści z chmury, choć skutek
+    dla użytkownika wygląda podobnie. Punkt ocenia się razem z ograniczeniem
+    danych diagnostycznych.
+  en: |
+    The entry lies in the data collection branch, alongside the diagnostic data
+    settings - a different place from the tips and cloud content, though the
+    effect for the user looks similar. The item is judged together with the
+    limiting of diagnostic data.

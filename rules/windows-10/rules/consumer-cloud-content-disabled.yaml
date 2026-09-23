@@ -1,0 +1,158 @@
+id: win10-consumer-cloud-content-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Cloud Content
+  title:
+    pl: Funkcje konsumenckie z chmury wyłączone
+    en: Consumer cloud features disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Funkcje konsumenckie dokładają do systemu treści dobierane zdalnie: propozycje
+    aplikacji, kafelki instalujące oprogramowanie jednym kliknięciem, zachęty
+    wstawiane w menu i na ekranie blokady.
+
+    Z punktu widzenia bezpieczeństwa istotne jest jedno: to jest droga, którą na
+    maszynę trafia oprogramowanie zainstalowane bez decyzji działu informatycznego
+    i bez przejścia przez jakikolwiek przegląd. Instalacja jest jednym kliknięciem,
+    a źródłem jest usługa zdalna dobierająca treść poza wiedzą organizacji.
+
+    Wyłączenie funkcji konsumenckich sprawia, że na maszynie służbowej pojawia się
+    tylko to, co ktoś świadomie na nią wprowadził.
+  en: |
+    Consumer features add to the system content chosen remotely - suggested
+    applications, tiles installing software with one click, prompts placed in the
+    menu and on the lock screen.
+
+    From a security point of view one thing matters - this is a road by which
+    software reaches the machine installed without the IT desk s decision and
+    without passing any review. The installation is one click, and the source is a
+    remote service picking content outside the organisation s knowledge.
+
+    Switching consumer features off means only what somebody deliberately put
+    there appears on a work machine.
+
+disruption_description:
+  pl: |
+    Na stanowisku służbowym zmiana nie kosztuje nic i najczęściej jest przyjmowana
+    z ulgą. Nie wymaga przerwy, nie dotyka zainstalowanego oprogramowania i cofa
+    się natychmiast.
+
+    Skutkiem jest czystsze menu i ekran blokady bez zachęt. Warto przekazać, że
+    zniknięcie kafelków nie jest awarią profilu — bywa tak zgłaszane, bo
+    użytkownik widzi ubytek tam, gdzie wcześniej coś było.
+  en: |
+    On a work station the change costs nothing and is most often met with relief.
+    It calls for no interruption, does not touch installed software and reverses
+    at once.
+
+    The consequence is a cleaner menu and a lock screen without prompts. It is
+    worth passing on that tiles vanishing is not a broken profile - it tends to be
+    reported that way, because the user sees a gap where something used to be.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Propozycje aplikacji i kafelki instalujące oprogramowanie jednym kliknięciem znikną z menu
+      - Ekran blokady przestanie wyświetlać zachęty i treści dobierane zdalnie
+      - Użytkownicy mogą zgłosić zniknięcie kafelków jako uszkodzenie profilu, choć jest to skutek zamierzony
+      - Zainstalowane aplikacje, sklep z oprogramowaniem, aktualizacje systemu i praca użytkownika pozostają bez zmian
+    en:
+      - Suggested applications and tiles installing software with one click vanish from the menu
+      - The lock screen stops showing prompts and remotely chosen content
+      - Users may report the tiles vanishing as a damaged profile, though it is the intended effect
+      - Installed applications, the software store, system updates and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska pokazowe, na których treści dobierane zdalnie są częścią prezentowanego środowiska
+      - Maszyny prywatne używane służbowo, których właściciel korzysta z propozycji aplikacji
+    en:
+      - Demonstration stations, where remotely chosen content is part of the environment being shown
+      - Private machines used for work, whose owner relies on the suggested applications
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableWindowsConsumerFeatures'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
+    $name = 'DisableWindowsConsumerFeatures'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableWindowsConsumerFeatures' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-experience
+
+notes:
+  pl: |
+    Punkt ocenia się razem z zachętami dotyczącymi stanu konta i poradami systemu —
+    wszystkie trzy leżą w tej samej gałęzi treści z chmury i zamykają różne
+    odmiany tego samego strumienia. Wyłączenie jednej nie zamyka pozostałych.
+  en: |
+    The item is judged together with the prompts about the state of an account and
+    the system tips - all three lie in the same cloud content branch and shut
+    different varieties of the same stream. Switching one off does not shut the
+    others.

@@ -1,0 +1,157 @@
+id: win10-advertising-id-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > User Profiles
+  title:
+    pl: Identyfikator reklamowy wyłączony
+    en: The advertising identifier disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Identyfikator reklamowy to stały numer przypisany do profilu użytkownika,
+    udostępniany aplikacjom po to, żeby mogły rozpoznać tę samą osobę między
+    jednym uruchomieniem a drugim.
+
+    Na maszynie służbowej jest to trwały łącznik między aktywnością w różnych
+    aplikacjach a jednym profilem. Sam w sobie nie zawiera nazwiska ani nazwy
+    konta, ale spina w całość dane, które osobno byłyby rozproszone — a spięcie
+    ich jest dokładnie tym, po co się je zbiera.
+
+    Wyłączenie identyfikatora rozrywa ten łącznik. Aplikacje działają dalej,
+    tracąc wyłącznie możliwość rozpoznania profilu po numerze.
+  en: |
+    The advertising identifier is a fixed number attached to a user profile, made
+    available to applications so that they can recognise the same person between
+    one run and the next.
+
+    On a work machine it is a durable link between activity across different
+    applications and one profile. By itself it holds neither a name nor an account
+    name, but it binds into a whole data that would otherwise be scattered - and
+    binding them is exactly what they are gathered for.
+
+    Switching the identifier off breaks that link. Applications go on working,
+    losing only the ability to recognise a profile by number.
+
+disruption_description:
+  pl: |
+    Zmiana nie jest widoczna w pracy i nie dotyka żadnej funkcji, z której
+    użytkownik świadomie korzysta. Nie wymaga przerwy i cofa się natychmiast.
+
+    Aplikacje odpytujące o identyfikator dostaną wartość pustą zamiast błędu, więc
+    nie przestają działać. Jedynym skutkiem bywa mniej trafne dobieranie treści w
+    aplikacjach, które takie treści wyświetlają — na stanowisku służbowym nie jest
+    to strata.
+  en: |
+    The change is invisible in daily work and touches no feature the user
+    deliberately relies on. It calls for no interruption and reverses at once.
+
+    Applications asking for the identifier get an empty value rather than an
+    error, so they do not stop working. The only consequence tends to be less
+    well-aimed content in applications that show such content - on a work station
+    that is no loss.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - user-interface
+  what_breaks:
+    pl:
+      - Aplikacje odpytujące o identyfikator reklamowy dostaną wartość pustą zamiast numeru
+      - Dobieranie treści w aplikacjach wyświetlających reklamy stanie się mniej trafne
+      - Rozpoznanie tego samego profilu między jednym uruchomieniem aplikacji a drugim przestanie być możliwe tą drogą
+      - Zainstalowane aplikacje, sklep z oprogramowaniem, logowanie i praca użytkownika pozostają bez zmian
+    en:
+      - Applications asking for the advertising identifier get an empty value rather than a number
+      - The aiming of content in applications showing advertisements becomes less accurate
+      - Recognising the same profile between one run of an application and the next stops being possible this way
+      - Installed applications, the software store, signing in and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska z aplikacją rozliczaną na podstawie rozpoznania profilu tym identyfikatorem
+      - Maszyny prywatne używane służbowo, których właściciel świadomie korzysta z dobierania treści
+    en:
+      - Stations with an application billed on the basis of recognising a profile by this identifier
+      - Private machines used for work, whose owner deliberately relies on the aiming of content
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisabledByGroupPolicy'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo'
+    $name = 'DisabledByGroupPolicy'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisabledByGroupPolicy' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/manage-connections-from-windows-operating-system-components-to-microsoft-services
+
+notes:
+  pl: |
+    Nazwa wpisu mówi o wyłączeniu przez zasady grupy i wartość jeden oznacza tu
+    identyfikator wyłączony. Aplikacje dostają wartość pustą, a nie błąd, więc
+    zmiana nie objawia się awarią programu.
+  en: |
+    The name of the entry speaks of being disabled by group policy, and a value of
+    one here means the identifier is off. Applications get an empty value rather
+    than an error, so the change does not show up as a program failing.

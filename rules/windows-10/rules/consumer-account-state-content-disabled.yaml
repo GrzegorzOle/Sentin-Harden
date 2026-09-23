@@ -1,0 +1,157 @@
+id: win10-consumer-account-state-content-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Cloud Content
+  title:
+    pl: Zachęty dotyczące stanu konta w chmurze wyłączone
+    en: Prompts about the state of a cloud account turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System potrafi wyświetlać komunikaty o stanie konta u producenta: zachęty do
+    dokończenia konfiguracji, do powiązania konta służbowego z prywatnym, do
+    uzupełnienia danych. Wyglądają jak komunikaty systemowe, bo są komunikatami
+    systemowymi.
+
+    Problemem jest to, czego uczą. Użytkownik przyzwyczajony do tego, że system
+    sam prosi o poświadczenia w wyskakującym oknie, jest użytkownikiem
+    przygotowanym na to samo okno narysowane przez kogoś innego. Odruch został
+    wyćwiczony przez system, a wykorzysta go atakujący.
+
+    Wyłączenie tych zachęt sprawia, że prośba o poświadczenia na maszynie
+    służbowej jest zdarzeniem rzadkim, a przez to zauważalnym.
+  en: |
+    The system can show messages about the state of an account with the maker -
+    prompts to finish setting up, to tie a work account to a private one, to fill
+    in details. They look like system messages because they are system messages.
+
+    The trouble is what they teach. A user used to the system asking for
+    credentials in a pop-up window is a user prepared for the same window drawn by
+    somebody else. The reflex was trained by the system, and an attacker will use
+    it.
+
+    Switching those prompts off makes a request for credentials on a work machine
+    a rare event and therefore a noticeable one.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic w pracy i nie dotyka żadnego zainstalowanego
+    oprogramowania. Nie wymaga przerwy i cofa się natychmiast.
+
+    Skutkiem jest brak komunikatów zachęcających do powiązania kont i
+    dokończenia konfiguracji. Na maszynie służbowej jest to pożądane; na sprzęcie
+    prywatnym używanym służbowo może oznaczać, że właściciel nie zobaczy
+    przypomnienia o sprawach własnego konta.
+  en: |
+    The change costs nothing in daily work and touches no installed software. It
+    calls for no interruption and reverses at once.
+
+    The consequence is that messages encouraging the tying of accounts and the
+    finishing of set-up do not appear. On a work machine that is wanted; on
+    private hardware used for work it may mean the owner does not see a reminder
+    about matters of their own account.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl:
+      - Komunikaty zachęcające do dokończenia konfiguracji konta przestaną się pojawiać
+      - Przypomnienia o powiązaniu konta służbowego z prywatnym znikną z powiadomień systemu
+      - Właściciel sprzętu prywatnego używanego służbowo nie zobaczy przypomnień o sprawach własnego konta
+      - Logowanie kontem, dostęp do zasobów, synchronizacja plików i praca użytkownika pozostają bez zmian
+    en:
+      - Messages encouraging the finishing of account set-up stop appearing
+      - Reminders about tying a work account to a private one vanish from the system notifications
+      - The owner of private hardware used for work does not see reminders about matters of their own account
+      - Signing in with an account, access to resources, file synchronisation and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Sprzęt prywatny używany służbowo, którego właściciel polega na przypomnieniach o stanie konta
+      - Środowiska, w których konfigurację konta kończy sam użytkownik na podstawie tych komunikatów
+    en:
+      - Private hardware used for work, whose owner relies on reminders about the state of the account
+      - Environments where the user finishes setting up the account themselves following those messages
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableConsumerAccountStateContent'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
+    $name = 'DisableConsumerAccountStateContent'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableConsumerAccountStateContent' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-experience
+
+notes:
+  pl: |
+    Punkt ocenia się razem z funkcjami konsumenckimi i poradami systemu — leżą w
+    tej samej gałęzi, ale są osobnymi wpisami i wyłączenie jednego nie zamyka
+    pozostałych.
+  en: |
+    The item is judged together with the consumer features and the system tips -
+    they lie in the same branch but are separate entries, and switching one off
+    does not shut the others.

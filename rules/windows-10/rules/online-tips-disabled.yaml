@@ -1,0 +1,156 @@
+id: win10-online-tips-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Control Panel
+  title:
+    pl: Pobieranie porad z sieci w ustawieniach wyłączone
+    en: Fetching tips from the network in the settings switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Okno ustawień systemu potrafi dociągać opisy i porady z sieci w chwili, gdy
+    użytkownik otwiera daną stronę ustawień. Każde takie otwarcie jest więc
+    połączeniem wychodzącym.
+
+    Znaczenie ma nie sama treść, tylko to, co połączenie mówi o maszynie.
+    Przeglądanie ustawień sieci, zapory albo szyfrowania układa się w obraz tego,
+    czym maszyna jest i czym się ktoś przy niej zajmuje. Jest to informacja o
+    organizacji, oddawana przy czynności, która wygląda na wewnętrzną.
+
+    Wyłączenie pobierania sprawia, że przeglądanie ustawień zostaje na maszynie.
+  en: |
+    The system settings window can pull descriptions and tips from the network at
+    the moment a user opens a given settings page. Every such opening is therefore
+    an outgoing connection.
+
+    What matters is not the content but what the connection says about the
+    machine. Browsing the network, firewall or encryption settings builds into a
+    picture of what the machine is and what somebody at it is doing. That is
+    information about the organisation, handed over during an act that looks
+    internal.
+
+    Switching the fetching off means browsing the settings stays on the machine.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic poza brakiem opisów pomocniczych w oknie ustawień.
+    Nie wymaga przerwy, nie dotyka samych ustawień i cofa się natychmiast.
+
+    Warto wiedzieć, że strony ustawień otwierają się po zmianie szybciej, bo
+    przestają czekać na odpowiedź z sieci. Na maszynie o słabej łączności bywa to
+    różnica odczuwalna i odbierana jako poprawa, a nie jako ubytek.
+  en: |
+    The change costs nothing beyond the absence of helper descriptions in the
+    settings window. It calls for no interruption, does not touch the settings
+    themselves and reverses at once.
+
+    It is worth knowing that after the change settings pages open faster, since
+    they stop waiting for an answer from the network. On a machine with poor
+    connectivity that is sometimes a perceptible difference, taken as an
+    improvement rather than a loss.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Opisy i porady dociągane z sieci przestaną pojawiać się na stronach ustawień
+      - Odsyłacze do dokumentacji w oknie ustawień mogą przestać być widoczne
+      - Strony ustawień będą otwierać się szybciej, bo przestaną czekać na odpowiedź z sieci
+      - Same ustawienia, ich zmiana, pomoc wywoływana samodzielnie i praca użytkownika pozostają bez zmian
+    en:
+      - Descriptions and tips pulled from the network stop appearing on the settings pages
+      - Links to documentation in the settings window may stop being visible
+      - Settings pages open faster, since they stop waiting for an answer from the network
+      - The settings themselves, changing them, help raised on demand and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska obsługiwane przez osoby korzystające z opisów w oknie ustawień jako jedynego źródła pomocy
+      - Środowiska szkoleniowe, w których omawia się ustawienia razem z dociąganymi opisami
+    en:
+      - Stations operated by people relying on the descriptions in the settings window as their only source of help
+      - Training environments, where the settings are discussed along with the pulled descriptions
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowOnlineTips'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    $name = 'AllowOnlineTips'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowOnlineTips' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/manage-connections-from-windows-operating-system-components-to-microsoft-services
+
+notes:
+  pl: |
+    Wpis leży w gałęzi zasad powłoki, a nie w gałęzi treści z chmury — to inne
+    miejsce niż porady i wskazówki systemu, choć oba punkty zamykają podobny
+    strumień. Ocenia się je razem.
+  en: |
+    The entry lies in the shell policy branch rather than the cloud content branch
+    - a different place from the system tips and hints, though both items shut a
+    similar stream. The two are judged together.

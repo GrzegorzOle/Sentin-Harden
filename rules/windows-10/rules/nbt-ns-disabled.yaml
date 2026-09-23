@@ -1,0 +1,169 @@
+id: win10-nbt-ns-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Network > NetBIOS over TCP/IP
+  title:
+    pl: Rozpoznawanie nazw NetBIOS wyłączone na wszystkich kartach
+    en: NetBIOS name resolution disabled on all adapters
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Starszy mechanizm nazw da się wyłączyć nie tylko w zasadach klienta nazw, ale
+    też wprost na kartach sieciowych — i dopiero to zamyka go na maszynie
+    naprawdę. Ustawienie jest przechowywane osobno dla każdej karty, więc maszyna
+    potrafi mieć go wyłączonego na jednej, a włączonego na drugiej.
+
+    Ta rozbieżność jest istotna, bo karty przybywają: sieć przewodowa, bezprzewodowa,
+    tunel, karta wirtualna po instalacji oprogramowania. Każda nowa przynosi
+    domyślne ustawienie, czyli mechanizm włączony, i maszyna po cichu wraca do
+    odpowiadania na rozgłoszenia.
+
+    Sprawdzenie liczy karty i mówi, na ilu mechanizm jeszcze żyje — bo jedna
+    wystarczy, żeby cała praca poszła na marne.
+  en: |
+    The older name mechanism can be switched off not only in the name client
+    policy but directly on the network adapters - and only that truly closes it on
+    the machine. The setting is kept separately for each adapter, so a machine can
+    have it off on one and on on another.
+
+    That discrepancy matters, because adapters keep arriving - wired network,
+    wireless, a tunnel, a virtual adapter after some software is installed. Each
+    new one brings the default setting, which is the mechanism on, and the machine
+    quietly goes back to answering broadcasts.
+
+    The check counts the adapters and says on how many the mechanism is still
+    alive, because one is enough for all the work to come to nothing.
+
+disruption_description:
+  pl: |
+    Skutki pokrywają się z wyłączeniem mechanizmu w zasadach: odwołania po
+    krótkiej nazwie przestają działać, a starsze aplikacje tracą sposób
+    odnajdywania serwera. Różnica polega na zasięgu — tu wyłączenie jest twarde
+    i nie zależy od tego, jak zasady zostaną odczytane.
+
+    Ustawienie zaczyna obowiązywać po ponownym uruchomieniu maszyny, a nowe karty
+    sieciowe trzeba objąć osobno. To jest ta reguła, do której wraca się po każdej
+    zmianie w konfiguracji sieciowej.
+  en: |
+    The effects overlap with switching the mechanism off in policy - references by
+    short name stop working and older applications lose their way of finding a
+    server. The difference is reach; here the switch-off is hard and does not
+    depend on how the policy is read.
+
+    The setting takes effect after the machine restarts, and new adapters have to
+    be covered separately. This is the rule one comes back to after every change
+    in the network configuration.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-authentication
+    - file-sharing
+    - printing
+  what_breaks:
+    pl:
+      - Odwołania do zasobów po krótkiej nazwie przestaną się rozwiązywać na wszystkich kartach, także tych, których nikt nie sprawdzał
+      - Starsze aplikacje odnajdujące serwer rozgłoszeniem zgłoszą jego brak, choć serwer pracuje
+      - Karty sieciowe dodane później, w tym wirtualne i tunelowe, przyjdą z ustawieniem domyślnym i wymagają ponownego objęcia regułą
+      - Zmiana obowiązuje dopiero po ponownym uruchomieniu maszyny, więc między wykonaniem a skutkiem jest okno
+      - Dostęp po pełnej nazwie, po adresie sieciowym i rozwiązywanie nazw przez serwer nazw pozostają bez zmian
+    en:
+      - References to resources by short name stop resolving on every adapter, including the ones nobody checked
+      - Older applications finding a server by broadcast report it as absent, though the server is running
+      - Adapters added later, virtual and tunnel ones among them, arrive with the default setting and have to be covered again
+      - The change takes effect only after the machine restarts, so there is a window between the command and its effect
+      - Access by full name, by network address and name resolution through the name server are unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny z aplikacjami odnajdującymi serwer rozgłoszeniem, dopóki nie zostaną przestawione
+      - Środowiska, w których udziały plikowe są wskazywane krótką nazwą w skryptach i skrótach
+      - Stanowiska bez okna serwisowego, bo zmiana wymaga ponownego uruchomienia maszyny
+      - Maszyny z często zmieniającym się zestawem kart sieciowych, gdzie reguła wymaga powtarzania po każdej zmianie
+    en:
+      - Machines with applications finding a server by broadcast, until they are reconfigured
+      - Environments where file shares are named by short name in scripts and shortcuts
+      - Stations with no maintenance window, since the change calls for a restart
+      - Machines whose set of network adapters changes often, where the rule has to be repeated after each change
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $root = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces'
+      $interfaces = @(Get-ChildItem -Path $root -ErrorAction Stop)
+      if ($interfaces.Count -eq 0) { 'CHECK_ERROR' }
+      else {
+        $enabled = @($interfaces | Where-Object {
+          $value = (Get-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -ErrorAction SilentlyContinue).NetbiosOptions
+          $null -eq $value -or [int]$value -ne 2
+        })
+        if ($enabled.Count -eq 0) { 'ALL_DISABLED' }
+        else { 'ENABLED_ON_' + $enabled.Count + '_OF_' + $interfaces.Count }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'ALL_DISABLED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $root = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces'
+    Get-ChildItem -Path $root | ForEach-Object {
+      [pscustomobject]@{
+        path    = $_.PSPath
+        value   = (Get-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -ErrorAction SilentlyContinue).NetbiosOptions
+        existed = ($null -ne (Get-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -ErrorAction SilentlyContinue).NetbiosOptions)
+      }
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $root = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces'
+    Get-ChildItem -Path $root | ForEach-Object {
+      Set-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -Value 2 -Type DWord
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($entry in @($b)) {
+      if ($entry.existed) {
+        Set-ItemProperty -Path $entry.path -Name 'NetbiosOptions' -Value $entry.value -Type DWord
+      } else {
+        Remove-ItemProperty -Path $entry.path -Name 'NetbiosOptions' -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/disable-netbios-tcp-ip-using-dhcp
+
+notes:
+  pl: |
+    Wynik zawiera liczbę kart, na których mechanizm pozostaje czynny, bo sama
+    informacja o niespełnieniu nic by tu nie dała — trzeba wiedzieć, ile ich
+    zostało. Brak jakiejkolwiek karty zgłaszany jest jako brak możliwości
+    sprawdzenia, a nie jako stan zgodny.
+  en: |
+    The result carries the number of adapters on which the mechanism is still
+    live, because a bare statement of non-compliance would say nothing here - what
+    is needed is how many are left. Finding no adapter at all is reported as being
+    unable to check, not as a compliant state.

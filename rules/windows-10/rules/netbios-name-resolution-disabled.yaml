@@ -1,0 +1,176 @@
+id: win10-netbios-name-resolution-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > DNS Client
+  title:
+    pl: Rozwiązywanie nazw starszym mechanizmem sieciowym wyłączone
+    en: Name resolution by the older network mechanism switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Trzecia i najstarsza droga pytania sieci o nazwę pochodzi z czasów przed
+    powszechnym serwerem nazw. Działa przez rozgłoszenie do całego segmentu sieci
+    i cierpi na tę samą chorobę co pozostałe: odpowiada, kto chce, a maszyna
+    wierzy pierwszemu.
+
+    Ten mechanizm jest jednak głębiej wrośnięty w system niż poprzednie dwa.
+    Korzystają z niego stare aplikacje, odwołania do zasobów po krótkiej nazwie,
+    skrypty logowania pisane przed laty i niejedno narzędzie zarządzania. Dlatego
+    wyłączenie wymaga planu, a nie decyzji przy okazji.
+
+    Zysk jest za to największy z całej trójki: zamyka najstarszą i najchętniej
+    wykorzystywaną drogę podszywania się pod zasoby w sieci lokalnej.
+  en: |
+    The third and oldest road for asking the network about a name comes from
+    before name servers were everywhere. It works by broadcasting to a whole
+    network segment and suffers the same illness as the others - anybody may
+    answer and the machine believes the first reply.
+
+    This mechanism, though, is more deeply grown into the system than the other
+    two. Old applications use it, so do references to resources by short name,
+    logon scripts written years ago and more than one management tool. Which is
+    why switching it off calls for a plan rather than a decision made in passing.
+
+    The gain is the largest of the three - it closes the oldest and most willingly
+    used road for posing as a resource on a local network.
+
+disruption_description:
+  pl: |
+    To jest zmiana, którą planuje się z wyprzedzeniem i wykonuje w oknie
+    serwisowym, bo część skutków ujawnia się dopiero po dniu albo dwóch pracy.
+    Odwołania po krótkiej nazwie przestają działać w miejscach, o których nikt nie
+    pamiętał: w skrótach na pulpitach, w mapowaniach dysków, w konfiguracji
+    starszych programów.
+
+    Sprawdzenie wygląda prosto: czy cokolwiek na maszynie odwołuje się do zasobu
+    po samej nazwie, bez domeny. W praktyce odpowiedź wymaga obserwacji, bo
+    odwołania takie siedzą w plikach konfiguracyjnych, a nie w ustawieniach
+    systemu.
+  en: |
+    This is a change planned ahead and carried out in a maintenance window,
+    because some of its effects surface only after a day or two of work.
+    References by short name stop working in places nobody remembered - desktop
+    shortcuts, mapped drives, the configuration of older programs.
+
+    The check looks simple - does anything on the machine refer to a resource by
+    bare name, without the domain? In practice the answer takes watching, because
+    such references sit in configuration files rather than in system settings.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-applications
+    - file-sharing
+  what_breaks:
+    pl:
+      - Odwołania do zasobów po samej nazwie, bez domeny, przestaną się rozwiązywać w skrótach, mapowaniach dysków i w plikach konfiguracyjnych programów
+      - Starsze aplikacje odnajdujące serwer przez rozgłoszenie zgłoszą brak serwera, mimo że serwer działa
+      - Skrypty logowania mapujące dyski po krótkiej nazwie zakończą się błędem i zostawią użytkownika bez dysków sieciowych
+      - Przeglądanie otoczenia sieciowego przestanie pokazywać maszyny, które zgłaszały się wyłącznie tą drogą
+      - Dostęp po pełnej nazwie z domeny, po adresie sieciowym i przez wpisy na serwerze nazw działa bez zmian
+    en:
+      - References to resources by bare name, without the domain, stop resolving in shortcuts, mapped drives and program configuration files
+      - Older applications that find a server by broadcast report the server as absent, though the server is running
+      - Logon scripts mapping drives by short name fail and leave the user without network drives
+      - Browsing the network neighbourhood stops showing machines that announced themselves by this road alone
+      - Access by full name with the domain, by network address and through entries on the name server is unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska z aplikacjami odnajdującymi serwer przez rozgłoszenie, dopóki nie zostaną przestawione na adres albo pełną nazwę
+      - Sieci ze skryptami logowania mapującymi dyski po krótkiej nazwie, dopóki skrypty nie zostaną poprawione
+      - Stanowiska korzystające z zasobów na maszynach bez wpisu na serwerze nazw
+      - Maszyny w sieciach bez utrzymywanego serwera nazw, gdzie ten mechanizm jest jedyną drogą odnalezienia czegokolwiek
+    en:
+      - Environments with applications that find a server by broadcast, until they are moved to an address or a full name
+      - Networks with logon scripts mapping drives by short name, until those scripts are corrected
+      - Stations using resources on machines that have no entry on the name server
+      - Machines on networks with no name server kept up, where this mechanism is the only way anything is found
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry takes values from a set: zero switches the mechanism off, one
+    # admits it, and the further positions make it depend on the network.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableNetbios'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    $name = 'EnableNetbios'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableNetbios' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/networking/dns/dns-top
+
+notes:
+  pl: |
+    Wpis przyjmuje wartości ze zbioru: zero wyłącza mechanizm, jedynka go
+    dopuszcza, a dalsze pozycje uzależniają go od rodzaju sieci. Zasada dotyczy
+    rozwiązywania nazw w warstwie klienta nazw; osobna reguła wyłącza ten sam
+    mechanizm na kartach sieciowych, a jeszcze inna ustala tryb zapytań. Wdrożone
+    osobno zostawiają maszynę w stanie pośrednim.
+  en: |
+    The entry takes values from a set - zero switches the mechanism off, one
+    admits it, and the further positions make it depend on the kind of network.
+    The rule covers name resolution at the name client layer; a separate rule
+    switches the same mechanism off on the network adapters, and another sets the
+    query mode. Deployed apart they leave the machine in a halfway state.

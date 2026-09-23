@@ -1,0 +1,168 @@
+id: win10-llmnr-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > DNS Client
+  title:
+    pl: Rozpoznawanie nazw przez LLMNR wyłączone
+    en: LLMNR name resolution disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy serwer nazw nie zna szukanej nazwy, maszyna pyta o nią całą sieć lokalną
+    naraz: „czy ktoś z was nazywa się tak?". Odpowiedzieć może dowolne urządzenie
+    w tej samej sieci, a maszyna uwierzy pierwszej odpowiedzi.
+
+    To jest najlepiej opisany sposób przechwytywania poświadczeń w sieci lokalnej.
+    Napastnik odpowiada twierdząco na każde takie pytanie, maszyna łączy się do
+    niego jak do zasobu i przedstawia się skrótem hasła użytkownika. Nie trzeba
+    ani luki, ani złośliwego oprogramowania — wystarczy być podłączonym do tej
+    samej sieci i odpowiadać szybciej.
+
+    Wyłączenie odbiera tę drogę w całości. Nazwy rozwiązuje wyłącznie wskazany
+    serwer nazw, czyli ten, któremu ktoś świadomie zaufał.
+  en: |
+    Where the name server does not know a name being looked for, the machine asks
+    the whole local network at once - is any of you called this? Any device on the
+    same network may answer, and the machine believes the first answer it gets.
+
+    This is the best-documented way of harvesting credentials on a local network.
+    The attacker answers yes to every such question, the machine connects to them
+    as though to a resource and introduces itself with the hash of the user
+    password. Neither a flaw nor malware is needed - it is enough to be attached
+    to the same network and answer faster.
+
+    Switching it off removes that road whole. Names are resolved by the named
+    server alone, which is to say by the one somebody deliberately trusted.
+
+disruption_description:
+  pl: |
+    Zapytanie do całej sieci działa jako awaryjne uzupełnienie serwera nazw, więc
+    odczuje to ten, kto polega na nim nieświadomie. Zwykle są to nazwy krótkie,
+    wpisywane z pamięci, i urządzenia bez wpisu na serwerze nazw: drukarka
+    postawiona naprędce, komputer kolegi obok, udział na maszynie testowej.
+
+    Tam, gdzie serwer nazw jest utrzymywany porządnie, zmiana jest niewidoczna.
+    Tam, gdzie służył za uzupełnienie bałaganu, ujawni brakujące wpisy — i to jest
+    praca do wykonania przed wdrożeniem, a nie po nim.
+  en: |
+    Asking the whole network works as a fallback to the name server, so the person
+    who feels this is whoever relies on it without knowing. Usually these are
+    short names typed from memory and devices with no entry on the name server - a
+    printer set up in a hurry, a colleague s computer next door, a share on a test
+    machine.
+
+    Where the name server is kept in order the change is invisible. Where it stood
+    in for the mess, it reveals the missing entries - and that is work to be done
+    before rollout, not after.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - legacy-authentication
+    - printing
+    - file-sharing
+  what_breaks:
+    pl:
+      - Nazwy urządzeń bez wpisu na serwerze nazw przestaną się rozwiązywać, więc drukarka albo udział wskazywany nazwą stanie się nieosiągalny
+      - Łączenie się z maszyną kolegi po samej nazwie, bez domeny, zacznie kończyć się komunikatem o nieznanej nazwie
+      - Narzędzia diagnostyczne wykrywające sąsiadów w sieci pokażą mniej urządzeń, bo część odpowiadała właśnie tą drogą
+      - Dostęp po adresie sieciowym, po pełnej nazwie z domeny i przez wpisy na serwerze nazw działa bez zmian
+    en:
+      - Names of devices with no entry on the name server stop resolving, so a printer or share referred to by name becomes unreachable
+      - Reaching a colleague s machine by bare name, without the domain, starts ending with an unknown name message
+      - Diagnostic tools that discover neighbours on the network show fewer devices, because some of them answered by this very road
+      - Access by network address, by full name with the domain and through entries on the name server all work unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Sieci bez utrzymywanego serwera nazw, gdzie zapytanie do sąsiadów jest jedyną drogą rozpoznania urządzeń
+      - Małe biura i pracownie, w których urządzenia nie mają wpisów, a nazwy wpisuje się z pamięci
+      - Stanowiska pracujące w sieciach obcych, gdzie maszyna musi odnajdywać zasoby bez wsparcia serwera nazw
+    en:
+      - Networks with no name server kept up, where asking the neighbours is the only way devices are found
+      - Small offices and workshops, where devices have no entries and names are typed from memory
+      - Stations working on foreign networks, where the machine has to find resources without a name server behind it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableMulticast'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    $name = 'EnableMulticast'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableMulticast' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/networking/dns/dns-top
+
+notes:
+  pl: |
+    Zasada należy do trójki opisującej pytania rozsyłane do całej sieci lokalnej:
+    ta dotyczy mechanizmu opartego na kliencie nazw, pozostałe — rozgłoszenia
+    grupowego i mechanizmu starszego. Wdrożenie jednej zostawia pozostałe drogi
+    otwarte, a napastnik korzysta z tej, która akurat jest czynna.
+  en: |
+    The rule belongs to a set of three covering questions broadcast to the whole
+    local network - this one the mechanism built into the name client, the others
+    multicast and the older mechanism. Deploying one leaves the other roads open,
+    and an attacker uses whichever happens to be live.

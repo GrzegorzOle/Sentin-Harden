@@ -1,0 +1,166 @@
+id: win10-mdns-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > DNS Client
+  title:
+    pl: Rozwiązywanie nazw przez rozgłoszenie grupowe wyłączone
+    en: Name resolution by multicast switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Druga droga pytania całej sieci naraz to rozgłoszenie grupowe, używane przez
+    urządzenia, które mają się „znajdować same": drukarki, głośniki, ekrany do
+    prezentacji, sprzęt domowy. Maszyna nasłuchuje odpowiedzi i przyjmuje je na
+    tych samych zasadach co poprzednio — wierzy tej, która przyszła pierwsza.
+
+    Zagrożenie jest identyczne jak przy poprzedniej drodze: podszycie się pod
+    nazwę, przekierowanie połączenia i odebranie poświadczeń. Różnica polega
+    wyłącznie na tym, że ta droga bywa pomijana przy zabezpieczaniu, bo kojarzy
+    się z drukarkami, a nie z bezpieczeństwem.
+
+    Wyłączenie zostawia rozpoznawanie nazw serwerowi nazw, a wykrywanie urządzeń —
+    temu, kto je świadomie skonfigurował.
+  en: |
+    The second road for asking the whole network at once is multicast, used by
+    devices meant to find themselves - printers, speakers, presentation screens,
+    home equipment. The machine listens for answers and takes them on the same
+    terms as before; it believes whichever came first.
+
+    The danger is identical to the previous road - posing as a name, redirecting
+    the connection and collecting credentials. The only difference is that this
+    road tends to be skipped when securing a machine, because it is associated
+    with printers rather than with security.
+
+    Switching it off leaves name resolution to the name server and device
+    discovery to whoever configured it deliberately.
+
+disruption_description:
+  pl: |
+    Tu skutek widać od razu i widzi go użytkownik. Drukarki sieciowe wykrywane
+    samoczynnie znikną z listy, ekrany do prezentacji przestaną się pojawiać przy
+    próbie udostępnienia obrazu, a część sprzętu biurowego straci funkcję
+    „znajdź urządzenie w pobliżu".
+
+    To nie znaczy, że urządzenia przestaną działać — wskazane adresem albo
+    zainstalowane wcześniej pracują dalej. Zmienia się sposób ich odnajdywania,
+    a nie sama możliwość korzystania z nich.
+  en: |
+    Here the effect is immediate and the user sees it. Network printers found
+    automatically drop off the list, presentation screens stop appearing when
+    sharing a picture is attempted, and some office equipment loses its find a
+    nearby device function.
+
+    That does not mean the devices stop working - those named by address or
+    installed earlier carry on. What changes is how they are found, not whether
+    they can be used.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Drukarki wykrywane samoczynnie znikną z listy urządzeń w pobliżu i trzeba będzie dodać je adresem albo przez serwer wydruku
+      - Udostępnianie obrazu na ekran do prezentacji przestanie wykrywać urządzenia i wymaga wskazania ich wprost
+      - Sprzęt biurowy z funkcją wykrywania w pobliżu, w tym skanery i głośniki, przestanie się zgłaszać na tej maszynie
+      - Urządzenia zainstalowane wcześniej, wskazane adresem albo wpisem na serwerze nazw działają bez zmian
+    en:
+      - Printers found automatically drop off the list of nearby devices and have to be added by address or through a print server
+      - Sharing a picture to a presentation screen stops discovering devices and calls for naming them outright
+      - Office equipment with a nearby discovery function, scanners and speakers among it, stops announcing itself on this machine
+      - Devices installed earlier, named by address or by an entry on the name server, work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Sale konferencyjne i stanowiska prezentacyjne, gdzie wykrywanie ekranu w pobliżu jest podstawowym sposobem pracy
+      - Biura z drukarkami dodawanymi przez wykrywanie, dopóki nie zostaną rozesłane inną drogą
+      - Stanowiska obsługujące sprzęt, który nie ma innego sposobu zgłoszenia się niż rozgłoszenie grupowe
+    en:
+      - Meeting rooms and presentation desks, where discovering a nearby screen is the basic way of working
+      - Offices with printers added by discovery, until they are distributed another way
+      - Stations serving equipment that has no way of announcing itself other than multicast
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableMDNS'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    $name = 'EnableMDNS'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableMDNS' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/networking/dns/dns-top
+
+notes:
+  pl: |
+    Jest to druga z trzech dróg rozsyłania pytań do sieci lokalnej i jedyna,
+    której wyłączenie użytkownik zauważa od razu. Właśnie dlatego bywa
+    przywracana po wdrożeniu — warto policzyć, co z niej faktycznie korzysta,
+    zanim zapadnie decyzja.
+  en: |
+    This is the second of the three roads for broadcasting questions to the local
+    network and the only one whose absence a user notices at once. That is exactly
+    why it tends to be put back after rollout - it is worth counting what actually
+    uses it before the decision is made.

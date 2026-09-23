@@ -1,0 +1,158 @@
+id: win10-netbios-name-release-ignored
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Żądania zwolnienia nazwy NetBIOS ignorowane
+    en: NetBIOS name release requests ignored
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Starszy mechanizm nazw pozwala poprosić maszynę, żeby zrzekła się swojej
+    nazwy w sieci. Prośba przychodzi z sieci i domyślnie bywa spełniana, bez
+    pytania kogokolwiek o zgodę.
+
+    Wykorzystanie jest banalne: napastnik wysyła takie żądanie, maszyna przestaje
+    odpowiadać na swoją nazwę, a on zgłasza się pod nią zamiast niej. Kto
+    następnie zapyta o tę nazwę w sieci, trafi do niego — razem z połączeniem
+    i poświadczeniami, które miały iść gdzie indziej.
+
+    Ustawienie każe maszynie ignorować takie żądania przychodzące z sieci. Nazwa
+    przestaje być czymś, co da się odebrać na zawołanie.
+  en: |
+    The older name mechanism allows a machine to be asked to give up its name on
+    the network. The request arrives from the network and by default is often
+    granted, with nobody asked for consent.
+
+    The use is trivial. The attacker sends such a request, the machine stops
+    answering to its name, and they announce themselves under it instead. Whoever
+    then asks for that name on the network reaches them - along with the
+    connection and the credentials that were meant to go elsewhere.
+
+    The setting has the machine ignore such requests arriving from the network.
+    The name stops being something that can be taken away on demand.
+
+disruption_description:
+  pl: |
+    Żądanie zwolnienia nazwy nie należy do normalnej pracy sieci, więc ignorowanie
+    go nie odbiera niczego użytkownikom ani aplikacjom. Zmiana jest niewidoczna
+    i nie ma znanych regresji poza jednym przypadkiem opisanym niżej.
+
+    Wymaga ponownego uruchomienia maszyny, żeby zaczęła obowiązywać, i to jest
+    jedyny jej koszt. Wycofanie również wymaga restartu, więc decyzję podejmuje
+    się raz.
+  en: |
+    A name release request is not part of the normal working of a network, so
+    ignoring it takes nothing from users or applications. The change is invisible
+    and has no known regressions beyond the one case described below.
+
+    It calls for a restart to take effect, and that is its only cost. Undoing it
+    calls for a restart as well, so the decision is made once.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-authentication
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Narzędzia zarządzania sprzątające nazwy po maszynach wycofanych z sieci przestaną móc zwolnić nazwę tą drogą
+      - Zmiana wymaga ponownego uruchomienia maszyny, więc między wykonaniem polecenia a skutkiem jest okno
+      - Wycofanie ustawienia również wymaga restartu, co warto uwzględnić przy planowaniu prac
+      - Rozwiązywanie nazw, dostęp do udziałów, drukowanie i pozostała praca w sieci nie zmieniają się w żaden sposób
+    en:
+      - Management tools that clear names after machines withdrawn from the network can no longer release a name this way
+      - The change calls for a restart, so there is a window between the command and its effect
+      - Undoing the setting calls for a restart as well, which is worth allowing for when planning work
+      - Name resolution, access to shares, printing and the rest of network work do not change in any way
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska z narzędziem porządkującym nazwy w sieci, które korzysta właśnie z żądania zwolnienia
+      - Stanowiska bez możliwości ponownego uruchomienia w rozsądnym czasie, bo bez restartu ustawienie nie zaczyna obowiązywać
+    en:
+      - Environments with a tool tidying names on the network that uses this very release request
+      - Stations that cannot be restarted within a reasonable time, since without a restart the setting does not take effect
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoNameReleaseOnDemand'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters'
+    $name = 'NoNameReleaseOnDemand'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoNameReleaseOnDemand' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/netbios-over-tcpip-name-resolution
+
+notes:
+  pl: |
+    Zasada zamyka jeden konkretny chwyt w starszym mechanizmie nazw i ma sens
+    wyłącznie tam, gdzie mechanizm ten pozostaje włączony. Po jego wyłączeniu na
+    kartach sieciowych punkt traci przedmiot, ale nie staje się szkodliwy —
+    zostaje wtedy zapisem bez skutku.
+  en: |
+    The rule closes one particular trick within the older name mechanism and
+    matters only where that mechanism stays on. Once it is switched off on the
+    network adapters the item loses its subject, though it does not become harmful -
+    it simply becomes an entry with no effect.

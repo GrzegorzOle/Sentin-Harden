@@ -1,0 +1,171 @@
+id: win10-netbt-node-type-point-to-point
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MS Security Guide
+  title:
+    pl: Tryb rozwiązywania nazw starszym mechanizmem ustawiony na zapytanie skierowane
+    en: The older mechanism name resolution mode set to a directed query
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Starszy mechanizm nazw potrafi szukać na dwa sposoby: krzyknąć do całego
+    segmentu sieci albo zapytać wskazany serwer nazw tego mechanizmu. Tryb
+    rozstrzyga, który z nich zostanie użyty i w jakiej kolejności.
+
+    Zapytanie skierowane usuwa rozgłoszenie z drogi rozwiązywania nazw. Maszyna
+    przestaje pytać sąsiadów, a więc przestaje przyjmować odpowiedzi od kogokolwiek
+    w tej samej sieci. To jest ta sama korzyść, którą daje wyłączenie mechanizmu,
+    osiągnięta bez odbierania go aplikacjom, które go potrzebują.
+
+    Dla środowisk, w których wyłączyć się go nie da, jest to najlepsze dostępne
+    ustawienie pośrednie.
+  en: |
+    The older name mechanism can search in two ways - shout to a whole network
+    segment, or ask a named server belonging to that mechanism. The mode decides
+    which is used and in what order.
+
+    A directed query takes broadcast out of the resolution path. The machine stops
+    asking its neighbours and so stops accepting answers from anybody on the same
+    network. That is the same benefit as switching the mechanism off, reached
+    without taking it away from applications that need it.
+
+    For environments where it cannot be switched off, this is the best middle
+    setting available.
+
+disruption_description:
+  pl: |
+    Warunek jest jeden i twardy: musi istnieć serwer nazw tego mechanizmu i
+    maszyna musi znać jego adres. Bez tego zapytanie skierowane nie ma dokąd pójść
+    i rozwiązywanie nazw tą drogą przestaje działać w całości, mimo że mechanizm
+    formalnie jest włączony.
+
+    To jest najczęstszy błąd przy wdrażaniu tego punktu: ustawienie trybu bez
+    sprawdzenia, czy serwer w ogóle jest. Skutek wygląda wtedy jak awaria sieci,
+    a jest konsekwencją zmiany wykonanej bez warunku wstępnego.
+  en: |
+    There is one hard precondition - a server for that mechanism has to exist and
+    the machine has to know its address. Without it a directed query has nowhere
+    to go and resolution by this road stops entirely, though the mechanism is
+    formally on.
+
+    That is the commonest mistake in deploying this item - setting the mode without
+    checking whether the server is there at all. The effect then looks like a
+    network fault while being a consequence of a change made without its
+    precondition.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - file-sharing
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Bez działającego serwera nazw tego mechanizmu rozwiązywanie nazw tą drogą przestanie działać w całości
+      - Zasoby widoczne dotąd wyłącznie przez rozgłoszenie staną się nieosiągalne, o ile nie mają wpisu na serwerze
+      - Starsze aplikacje polegające na wykrywaniu serwera w segmencie sieci zgłoszą jego brak
+      - Zmiana obowiązuje po ponownym uruchomieniu maszyny, więc skutek pojawia się później niż samo polecenie
+      - Rozwiązywanie nazw przez zwykły serwer nazw, dostęp po adresie i po pełnej nazwie działają bez zmian
+    en:
+      - Without a working server for that mechanism, resolution by this road stops entirely
+      - Resources visible so far only through broadcast become unreachable unless they hold an entry on the server
+      - Older applications relying on discovering a server within the network segment report it as absent
+      - The change takes effect after the machine restarts, so the effect arrives later than the command
+      - Resolution through the ordinary name server, access by address and by full name all work unchanged
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Sieci bez serwera nazw tego mechanizmu, gdzie zapytanie skierowane nie ma adresata
+      - Maszyny przenośne pracujące w sieciach obcych, gdzie adres takiego serwera nie jest znany
+      - Środowiska, w których mechanizm ma zostać wyłączony w całości — wtedy tryb jest krokiem zbędnym
+      - Stanowiska bez okna serwisowego, bo zmiana wymaga ponownego uruchomienia
+    en:
+      - Networks with no server for that mechanism, where a directed query has nobody to address
+      - Portable machines working on foreign networks, where the address of such a server is unknown
+      - Environments where the mechanism is to be switched off entirely - the mode is then a needless step
+      - Stations with no maintenance window, since the change calls for a restart
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry takes values from a set: one is broadcast only, two is a
+    # directed query only, four and eight mix the two in a set order.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NodeType'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '2'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters'
+    $name = 'NodeType'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NodeType' -Value 2 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/networking/tcpip-and-nbt-configuration-parameters
+
+notes:
+  pl: |
+    Wpis przyjmuje wartości ze zbioru: jedynka to samo rozgłoszenie, dwójka to samo
+    zapytanie skierowane, czwórka i ósemka mieszają obie drogi w ustalonej
+    kolejności. Punkt ma sens tam, gdzie mechanizmu nie można wyłączyć; tam, gdzie
+    można, wyłączenie idzie dalej i czyni tryb bezprzedmiotowym.
+  en: |
+    The entry takes values from a set - one is broadcast alone, two a directed
+    query alone, four and eight mix the two in a set order. The item matters where
+    the mechanism cannot be switched off; where it can, switching it off goes
+    further and makes the mode beside the point.

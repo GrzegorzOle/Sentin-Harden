@@ -1,0 +1,198 @@
+id: ubuntu2404-ldap-client-not-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.2.5
+  section: Services > Configure Client Services
+  title:
+    pl: Narzędzia klienta LDAP nie są zainstalowane
+    en: Ensure ldap client is not installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Narzędzia klienta LDAP pozwalają przeglądać i zmieniać katalog LDAP
+    z wiersza poleceń. Na komputerze, który nie zarządza katalogiem, tylko
+    ułatwiają atakującemu rozpoznanie kont i grup w organizacji.
+
+    Punkt wymaga, żeby pakiet ldap-utils nie był zainstalowany. Ubuntu go
+    domyślnie nie instaluje.
+  en: |
+    The LDAP client tools let users browse and change an LDAP directory from
+    the command line. On a computer that does not manage the directory, they
+    only make it easier for an attacker to explore the accounts and groups
+    of the organization.
+
+    The item requires that the ldap-utils package is not installed. Ubuntu
+    does not install it by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli nikt nie używał poleceń ldapsearch
+    i ldapmodify. Logowanie kontami z katalogu działa dalej.
+  en: |
+    Nobody will notice if nobody used the ldapsearch and ldapmodify
+    commands. Sign-in with directory accounts keeps working.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Polecenia ldapsearch, ldapmodify i ldappasswd nie są dostępne; skrypty, które z nich korzystają, kończą się błędem
+    en:
+      - The ldapsearch, ldapmodify and ldappasswd commands are not available; scripts that use them fail
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Komputer służy do zarządzania katalogiem LDAP
+    en:
+      - The computer is used to manage an LDAP directory
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    found=""
+    for p in ldap-utils; do
+      s=$(st "$p")
+      case "$s" in ""|not-installed) ;; installed) found="$found,$p" ;; *) found="$found,$p:$s" ;; esac
+    done
+    if [ -n "$found" ]; then echo "INSTALLED:${found#,}"; else echo NOT_INSTALLED; fi
+  expected: '^NOT_INSTALLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e -o pipefail
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      keep=""
+      for p in ldap-utils; do
+        case "$(st "$p")" in ""|not-installed) continue ;; esac
+        for f in $(dpkg-query -W -f='${Conffiles}\n' "$p" | awk '{ print $1 }'); do
+          if [ -e "$f" ] || [ -L "$f" ]; then keep="$keep ${f#/}"; fi
+        done
+      done
+      data=-
+      if [ -n "$keep" ]; then data=$(tar -C / -czf - $keep | base64 -w 0); fi
+      {
+        echo format=dpkg-off-1
+        for p in ldap-utils; do s=$(st "$p"); echo "pkg $p ${s:-not-installed}"; done
+        echo "conffiles $data"
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""
+      for p in ldap-utils; do case "$(st "$p")" in ""|not-installed) ;; *) rm="$rm $p" ;; esac; done
+      if [ -z "$rm" ]; then echo "Nothing to remove"; exit 0; fi
+      # apt-get also removes the packages that depend on these; do not take them along.
+      extra=$(LC_ALL=C apt-get -s purge $rm | awk '$1 == "Purg" || $1 == "Remv" { sub(/:.*/, "", $2); print $2 }' |
+        grep -vxF -e ldap-utils || true)
+      if [ -n "$extra" ]; then
+        echo "Removing$rm would also remove: $(echo $extra); nothing changed" >&2; exit 1
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get purge -y -qq $rm
+      for p in $rm; do
+        case "$(st "$p")" in ""|not-installed) ;; *) echo "$p is still installed" >&2; exit 1 ;; esac
+      done
+      echo "Removed and purged:$rm"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-off-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(sed -n 's/^pkg \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "ldap-utils " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      data=$(sed -n 's/^conffiles //p' "$b")
+      case "$data" in ""|*[!A-Za-z0-9+/=-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      inst=""; cfonly=""
+      while read -r tag p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != not-installed ] || continue
+        case "$(st "$p")" in ""|not-installed) ;; *) continue ;; esac
+        inst="$inst $p"
+        [ "$s" = installed ] || cfonly="$cfonly $p"
+      done < <(grep '^pkg ' "$b")
+      if [ -z "$inst" ]; then echo "Nothing to restore"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      # The removal left the recommended packages in place; do not add new ones.
+      o="-y -qq --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $inst; then apt-get update -qq; apt-get install $o $inst; fi
+      # The configuration files as they were, with the administrator's changes.
+      if [ "$data" != - ]; then printf '%s' "$data" | base64 -d | tar -C / -xzf -; fi
+      # A package that only had its configuration files left goes back to that state.
+      if [ -n "$cfonly" ]; then dpkg -r $cfonly >/dev/null; fi
+      echo "Installed again:$inst"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man1/ldapsearch.1.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+
+notes:
+  pl: |
+    Pakiet ldap-utils zawiera tylko polecenia, np. ldapsearch i ldapmodify.
+    Logowanie kontami z LDAP przez SSSD korzysta z bibliotek z pakietu
+    libldap, więc działa dalej. Od ldap-utils zależą m.in. niektóre
+    narzędzia do zarządzania katalogiem, np. ldapscripts; wtedy naprawa
+    kończy się błędem bez zmian.
+
+    Sprawdzenie odczytuje stan pakietów z dpkg-query. Wynik INSTALLED podaje
+    pakiety, a przy stanie innym niż installed także ten stan, np.
+    ldap-utils:config-files.
+
+    Naprawa usuwa pakiety z plikami konfiguracyjnymi poleceniem apt-get
+    purge. Kończy się błędem bez zmian, jeśli razem z nimi musiałyby zniknąć
+    inne pakiety. Kopia zapisuje stan pakietów i ich pliki konfiguracyjne;
+    wycofanie instaluje je ponownie i przywraca te pliki, więc wymaga dostępu
+    do repozytoriów.
+  en: |
+    The ldap-utils package only contains commands, such as ldapsearch and
+    ldapmodify. Sign-in with LDAP accounts through SSSD uses the libraries
+    from the libldap package, so it keeps working. Some directory management
+    tools, such as ldapscripts, depend on ldap-utils; then the remediation
+    ends with an error without changes.
+
+    The check reads the package state from dpkg-query. The INSTALLED result
+    gives the packages and, for a state other than installed, the state too,
+    for example ldap-utils:config-files.
+
+    The remediation removes the packages with their configuration files with
+    apt-get purge. It ends with an error without changes if other packages
+    would have to go with them. The backup records the package state and
+    their configuration files; rollback installs them again and restores
+    these files, so it needs access to the repositories.

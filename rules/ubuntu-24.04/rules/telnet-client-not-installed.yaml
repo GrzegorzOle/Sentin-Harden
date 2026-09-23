@@ -1,0 +1,196 @@
+id: ubuntu2404-telnet-client-not-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.2.4
+  section: Services > Configure Client Services
+  title:
+    pl: Klient telnet nie jest zainstalowany
+    en: Ensure telnet client is not installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Telnet przesyła login, hasło i całą sesję otwartym tekstem. Klient na
+    komputerze zachęca do łączenia się ze starymi urządzeniami bez
+    szyfrowania zamiast przez SSH.
+
+    Punkt wymaga, żeby klient telnet nie był zainstalowany. Ubuntu Server
+    instaluje go domyślnie jako pakiet zalecany przez ubuntu-standard, więc
+    na typowej instalacji punkt nie jest spełniony.
+  en: |
+    Telnet sends the login, the password and the whole session in clear
+    text. A client on the computer encourages connecting to old devices
+    without encryption instead of over SSH.
+
+    The item requires that the telnet client is not installed. Ubuntu Server
+    installs it by default as a package recommended by ubuntu-standard, so on
+    a typical installation the item is not met.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli nikt nie używał polecenia telnet.
+    W przeciwnym razie połączenia ze starymi urządzeniami i sprawdzanie
+    portów przez telnet trzeba zastąpić SSH, nc lub curl.
+  en: |
+    Nobody will notice if nobody used the telnet command. Otherwise
+    connections to old devices and port checks with telnet have to be
+    replaced by SSH, nc or curl.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Polecenie telnet nie jest dostępne; skrypty i procedury, które z niego korzystają, kończą się błędem
+    en:
+      - The telnet command is not available; scripts and procedures that use it fail
+  interruption: none
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    found=""
+    for p in telnet inetutils-telnet; do
+      s=$(st "$p")
+      case "$s" in ""|not-installed) ;; installed) found="$found,$p" ;; *) found="$found,$p:$s" ;; esac
+    done
+    if [ -n "$found" ]; then echo "INSTALLED:${found#,}"; else echo NOT_INSTALLED; fi
+  expected: '^NOT_INSTALLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e -o pipefail
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      keep=""
+      for p in telnet inetutils-telnet; do
+        case "$(st "$p")" in ""|not-installed) continue ;; esac
+        for f in $(dpkg-query -W -f='${Conffiles}\n' "$p" | awk '{ print $1 }'); do
+          if [ -e "$f" ] || [ -L "$f" ]; then keep="$keep ${f#/}"; fi
+        done
+      done
+      data=-
+      if [ -n "$keep" ]; then data=$(tar -C / -czf - $keep | base64 -w 0); fi
+      {
+        echo format=dpkg-off-1
+        for p in telnet inetutils-telnet; do s=$(st "$p"); echo "pkg $p ${s:-not-installed}"; done
+        echo "conffiles $data"
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""
+      for p in telnet inetutils-telnet; do case "$(st "$p")" in ""|not-installed) ;; *) rm="$rm $p" ;; esac; done
+      if [ -z "$rm" ]; then echo "Nothing to remove"; exit 0; fi
+      # apt-get also removes the packages that depend on these; do not take them along.
+      extra=$(LC_ALL=C apt-get -s purge $rm | awk '$1 == "Purg" || $1 == "Remv" { sub(/:.*/, "", $2); print $2 }' |
+        grep -vxF -e telnet -e inetutils-telnet || true)
+      if [ -n "$extra" ]; then
+        echo "Removing$rm would also remove: $(echo $extra); nothing changed" >&2; exit 1
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get purge -y -qq $rm
+      for p in $rm; do
+        case "$(st "$p")" in ""|not-installed) ;; *) echo "$p is still installed" >&2; exit 1 ;; esac
+      done
+      echo "Removed and purged:$rm"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-off-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(sed -n 's/^pkg \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "telnet inetutils-telnet " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      data=$(sed -n 's/^conffiles //p' "$b")
+      case "$data" in ""|*[!A-Za-z0-9+/=-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      inst=""; cfonly=""
+      while read -r tag p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != not-installed ] || continue
+        case "$(st "$p")" in ""|not-installed) ;; *) continue ;; esac
+        inst="$inst $p"
+        [ "$s" = installed ] || cfonly="$cfonly $p"
+      done < <(grep '^pkg ' "$b")
+      if [ -z "$inst" ]; then echo "Nothing to restore"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      # The removal left the recommended packages in place; do not add new ones.
+      o="-y -qq --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $inst; then apt-get update -qq; apt-get install $o $inst; fi
+      # The configuration files as they were, with the administrator's changes.
+      if [ "$data" != - ]; then printf '%s' "$data" | base64 -d | tar -C / -xzf -; fi
+      # A package that only had its configuration files left goes back to that state.
+      if [ -n "$cfonly" ]; then dpkg -r $cfonly >/dev/null; fi
+      echo "Installed again:$inst"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man1/inetutils-telnet.1.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+
+notes:
+  pl: |
+    Na Ubuntu polecenie telnet daje pakiet inetutils-telnet, a pakiet telnet
+    tylko go instaluje. Metapakiet ubuntu-standard jedynie je zaleca, więc
+    ich usunięcie nie usuwa innych pakietów. Polecenie telnet bywa używane
+    do sprawdzania, czy port TCP odpowiada; to samo zrobi nc z pakietu
+    netcat-openbsd albo curl.
+
+    Sprawdzenie odczytuje stan pakietów z dpkg-query. Wynik INSTALLED podaje
+    pakiety, a przy stanie innym niż installed także ten stan, np.
+    inetutils-telnet:config-files.
+
+    Naprawa usuwa pakiety z plikami konfiguracyjnymi poleceniem apt-get
+    purge. Kończy się błędem bez zmian, jeśli razem z nimi musiałyby zniknąć
+    inne pakiety. Kopia zapisuje stan pakietów i ich pliki konfiguracyjne;
+    wycofanie instaluje je ponownie i przywraca te pliki, więc wymaga dostępu
+    do repozytoriów.
+  en: |
+    On Ubuntu the telnet command comes from the inetutils-telnet package, and
+    the telnet package only installs it. The ubuntu-standard metapackage only
+    recommends them, so removing them does not remove other packages. The
+    telnet command is often used to check whether a TCP port answers; nc from
+    the netcat-openbsd package or curl can do the same.
+
+    The check reads the package state from dpkg-query. The INSTALLED result
+    gives the packages and, for a state other than installed, the state too,
+    for example inetutils-telnet:config-files.
+
+    The remediation removes the packages with their configuration files with
+    apt-get purge. It ends with an error without changes if other packages
+    would have to go with them. The backup records the package state and
+    their configuration files; rollback installs them again and restores
+    these files, so it needs access to the repositories.

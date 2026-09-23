@@ -1,0 +1,239 @@
+id: ubuntu2404-single-time-daemon
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.3.1.1
+  section: Services > Configure Time Synchronization
+  title:
+    pl: Czas synchronizuje dokładnie jedna usługa
+    en: Ensure a single time synchronization daemon is in use
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dokładny zegar jest potrzebny, żeby wpisy w dziennikach z różnych
+    komputerów dało się ze sobą zestawić, a Kerberos, certyfikaty TLS i kody
+    jednorazowe działały poprawnie. Dwie usługi poprawiające zegar naraz
+    przeszkadzają sobie, a bez żadnej zegar się rozjeżdża.
+
+    Punkt wymaga, żeby dokładnie jedna z usług systemd-timesyncd i chrony
+    była włączona i działała, a druga nie była używana. Ubuntu domyślnie
+    używa systemd-timesyncd.
+  en: |
+    An accurate clock is needed so that log entries from different computers
+    can be matched, and so that Kerberos, TLS certificates and one-time codes
+    work correctly. Two services correcting the clock at once get in each
+    other's way, and without any the clock drifts.
+
+    The item requires that exactly one of the systemd-timesyncd and chrony
+    services is enabled and running and the other is not in use. Ubuntu uses
+    systemd-timesyncd by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli czas synchronizowała już jedna usługa.
+    W przeciwnym razie naprawa zostawia usługę, która była już używana,
+    a jeśli nie ma takiej jednej, wybiera chrony, gdy jest zainstalowany,
+    lub systemd-timesyncd. Drugą z nich maskuje.
+  en: |
+    Nobody will notice if one service already synchronized the time.
+    Otherwise the remediation keeps the service that was already in use,
+    and if there is no single one, it chooses chrony when it is installed,
+    or else systemd-timesyncd. It masks the other one.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Jedna z usług systemd-timesyncd i chrony zostaje zatrzymana i zamaskowana
+    en:
+      - One of the systemd-timesyncd and chrony services is stopped and masked
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Czas synchronizuje świadomie inna usługa, np. ntpd z NTPsec, a organizacja przyjęła to jako odstępstwo od CIS
+    en:
+      - Another service, such as ntpd from NTPsec, synchronizes the time on purpose, and the organization accepted this as a deviation from CIS
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      info=""; ok=""; used=""
+      for u in systemd-timesyncd.service chrony.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        a=$(systemctl is-active "$u" 2>/dev/null) || true
+        info="$info,${u%.service}=${e:-none}/${a:-unknown}"
+        on=0
+        case "$e" in enabled|enabled-runtime) on=1 ;; esac
+        case "$a" in active|activating|reloading) on=$((on + 2)) ;; esac
+        [ "$on" = 0 ] || used="$used,${u%.service}"
+        [ "$on" != 3 ] || ok="$ok,${u%.service}"
+      done
+      if [ -n "$ok" ] && [ "$ok" = "$used" ] && [ "${ok#,*,}" = "$ok" ]; then echo "SINGLE:${ok#,}"
+      elif [ -z "$used" ]; then echo "NONE:${info#,}"
+      elif [ "${used#,*,}" != "$used" ]; then echo "MULTIPLE:${info#,}"
+      else echo "NOT_RUNNING:${info#,}"; fi
+    }
+    state
+  expected: '^SINGLE:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=time-units-1
+        for u in systemd-timesyncd.service chrony.service; do
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "unit $u ${a:--}"
+        done
+        find /etc/systemd/system /run/systemd/system -type l \( -name systemd-timesyncd.service -o -lname '*/systemd-timesyncd.service' -o -name chrony.service -o -lname '*/chrony.service' \) \
+          -printf 'link %p %l\n' 2>/dev/null | sort
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        info=""; ok=""; used=""
+        for u in systemd-timesyncd.service chrony.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          info="$info,${u%.service}=${e:-none}/${a:-unknown}"
+          on=0
+          case "$e" in enabled|enabled-runtime) on=1 ;; esac
+          case "$a" in active|activating|reloading) on=$((on + 2)) ;; esac
+          [ "$on" = 0 ] || used="$used,${u%.service}"
+          [ "$on" != 3 ] || ok="$ok,${u%.service}"
+        done
+        if [ -n "$ok" ] && [ "$ok" = "$used" ] && [ "${ok#,*,}" = "$ok" ]; then echo "SINGLE:${ok#,}"
+        elif [ -z "$used" ]; then echo "NONE:${info#,}"
+        elif [ "${used#,*,}" != "$used" ]; then echo "MULTIPLE:${info#,}"
+        else echo "NOT_RUNNING:${info#,}"; fi
+      }
+      s=$(state)
+      case "$s" in SINGLE:*) echo "One time daemon is in use ($s), nothing to change"; exit 0 ;; esac
+      has() { [ -n "$(systemctl list-unit-files --no-legend "$1" 2>/dev/null)" ]; }
+      used() { case "$(systemctl is-enabled "$1" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active -q "$1"; }
+      # Keep the daemon already in use; an installed chrony was put there on
+      # purpose, otherwise the default systemd-timesyncd.
+      if has chrony.service && { used chrony.service || ! used systemd-timesyncd.service; }; then keep=chrony.service; other=systemd-timesyncd.service
+      elif has systemd-timesyncd.service; then keep=systemd-timesyncd.service; other=chrony.service
+      else echo "Neither chrony nor systemd-timesyncd is installed; install one of them ($s)" >&2; exit 1; fi
+      if has "$other"; then systemctl disable -q --now "$other"; systemctl mask -q "$other"; echo "Stopped, disabled and masked $other"; fi
+      case "$(systemctl is-enabled "$keep" 2>/dev/null)" in masked|masked-runtime) systemctl unmask -q "$keep"; systemctl unmask -q --runtime "$keep" ;; esac
+      systemctl enable -q --now "$keep"
+      s=$(state)
+      case "$s" in SINGLE:*) ;; *) echo "The time daemon did not start ($s)" >&2; exit 1 ;; esac
+      echo "Enabled and started $keep ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=time-units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(sed -n 's/^unit \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "systemd-timesyncd.service chrony.service " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r k u a x; do
+        case "$a" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      done < <(grep '^unit ' "$b")
+      while read -r k p t x; do
+        bad=0
+        if [ -z "$t" ] || [ -n "$x" ]; then bad=1; fi
+        case "$p" in /etc/systemd/system/*|/run/systemd/system/*) ;; *) bad=1 ;; esac
+        case "$p$t" in *..*) bad=1 ;; esac
+        case "${p##*/} ${t##*/}" in *systemd-timesyncd.service*|*chrony.service*) ;; *) bad=1 ;; esac
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done < <(grep '^link ' "$b")
+      grep -qv '^\(format=\|unit \|link \)' "$b" && { echo "Backup file is damaged: $b" >&2; exit 1; }
+      # Stop what was not running, then put back the links in /etc and /run as
+      # they were, which brings back the enabled and masked state of both units.
+      while read -r k u a; do
+        case "$a" in active|activating|reloading) ;; *) systemctl stop "$u" 2>/dev/null || true ;; esac
+      done < <(grep '^unit ' "$b")
+      find /etc/systemd/system /run/systemd/system -type l \( -name systemd-timesyncd.service -o -lname '*/systemd-timesyncd.service' -o -name chrony.service -o -lname '*/chrony.service' \) \
+          -delete 2>/dev/null || true
+      while read -r k p t; do
+        mkdir -p "$(dirname "$p")"
+        ln -s "$t" "$p"
+      done < <(grep '^link ' "$b")
+      systemctl daemon-reload
+      while read -r k u a; do
+        case "$a" in active|activating|reloading) systemctl start "$u" ;; esac
+      done < <(grep '^unit ' "$b")
+      echo "Restored the previous state of systemd-timesyncd.service chrony.service"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd-timesyncd.service.html
+  - https://chrony-project.org/doc/latest/chronyd.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje stan włączenia i działania jednostek
+    systemd-timesyncd.service i chrony.service. Wynik SINGLE podaje usługę,
+    która synchronizuje czas. NONE oznacza, że żadna nie jest używana,
+    MULTIPLE, że używane są obie, a NOT_RUNNING, że jedna jest tylko
+    włączona albo tylko uruchomiona; każdy z nich podaje stan obu jednostek.
+    Pakiety tych usług wykluczają się w apt, więc zwykle zainstalowana jest
+    tylko jedna. Inne usługi czasu, np. ntpd z NTPsec, nie są sprawdzane, tak
+    jak w CIS.
+
+    Naprawa niczego nie instaluje. Zostawia usługę, która jako jedyna była
+    włączona lub uruchomiona. Jeśli żadna albo obie, wybiera chrony, gdy jest
+    zainstalowany, a w przeciwnym razie systemd-timesyncd. Drugą jednostkę zatrzymuje
+    i maskuje, a wybraną odmaskowuje, włącza i uruchamia. W kontenerze
+    systemd-timesyncd się nie uruchamia, więc naprawa kończy się wtedy
+    błędem. Kopia zapisuje, czy jednostki działały, oraz ich dowiązania
+    w /etc/systemd/system i /run/systemd/system, a wycofanie odtwarza te
+    dowiązania, co przywraca także maskowanie i stan włączenia.
+  en: |
+    The check reads the enabled and running state of the
+    systemd-timesyncd.service and chrony.service units. The SINGLE result
+    gives the service that synchronizes the time. NONE means that neither is
+    in use, MULTIPLE that both are, and NOT_RUNNING that one is only enabled
+    or only running; each of them gives the state of both units. The
+    packages of these services exclude each other in apt, so usually only
+    one is installed. Other time services, such as ntpd from NTPsec, are not
+    checked, as in CIS.
+
+    The remediation installs nothing. It keeps the service that was the only
+    one enabled or running. If neither or both are, it chooses chrony when it is
+    installed, or else systemd-timesyncd. It stops and masks the other unit, and
+    unmasks, enables and starts the chosen one. In a container
+    systemd-timesyncd does not start, so the remediation then ends with an
+    error. The backup records whether the units were running and their links
+    in /etc/systemd/system and /run/systemd/system, and rollback recreates
+    these links, which also brings back the mask and the enabled state.

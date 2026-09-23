@@ -1,0 +1,232 @@
+id: ubuntu2404-apparmor-bootloader-enabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.3.1.2
+  section: Initial Setup > Mandatory Access Control > Configure AppArmor
+  title:
+    pl: AppArmor jest włączony w parametrach rozruchu
+    en: Ensure AppArmor is enabled in the bootloader configuration
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Jądro wybiera moduły bezpieczeństwa przy starcie. Jądro Ubuntu włącza
+    AppArmor domyślnie, ale jądro z innego źródła albo zmieniona lista modułów
+    może go pominąć, a wtedy żaden profil nie działa. Parametry apparmor=1
+    i security=apparmor wybierają AppArmor jawnie przy każdym starcie.
+
+    Punkt wymaga obu parametrów we wszystkich wpisach /boot/grub/grub.cfg,
+    także w trybie odzyskiwania, oraz w zmiennej GRUB_CMDLINE_LINUX, z której
+    update-grub tworzy wpisy dla nowych jąder. Na domyślnej instalacji ich
+    nie ma. Kategoria jest niska, bo na jądrze Ubuntu parametry potwierdzają
+    stan, który już działa.
+  en: |
+    The kernel chooses its security modules at start. The Ubuntu kernel turns
+    AppArmor on by default, but a kernel from another source or a changed
+    module list can leave it out, and then no profile works. The apparmor=1
+    and security=apparmor parameters select AppArmor explicitly at every
+    start.
+
+    The item requires both parameters in every entry of /boot/grub/grub.cfg,
+    recovery mode included, and in the GRUB_CMDLINE_LINUX variable that
+    update-grub builds the entries for new kernels from. A default
+    installation does not have them. The category is low because on the Ubuntu
+    kernel the parameters confirm a state that already applies.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: na jądrze Ubuntu AppArmor już działa, a parametry
+    tylko to utrwalają. Zmiana działa po restarcie.
+  en: |
+    Nobody will notice: on the Ubuntu kernel AppArmor already runs, and the
+    parameters only make it permanent. The change takes effect after a
+    restart.
+
+implementation_consequences:
+  impact_areas:
+    - boot-and-firmware
+  what_breaks:
+    pl: []
+    en: []
+  interruption: system-restart
+  user_visible: false
+  reversibility: after-restart
+
+audit:
+  shell: bash
+  test_command: |
+    c=/boot/grub/grub.cfg
+    if [ ! -r "$c" ] || [ ! -r /etc/default/grub ]; then echo CHECK_ERROR; exit 0; fi
+    aa_ok() {
+      local a="" s="" m=- w
+      set -f
+      for w in $1; do
+        case "$w" in apparmor=*) a=${w#*=} ;; security=*) s=${w#*=} ;; lsm=*) m=${w#*=} ;; esac
+      done
+      set +f
+      [ "$a" = 1 ] && [ "$s" = apparmor ] || return 1
+      case ",$m," in ,-,|*,apparmor,*) return 0 ;; esac
+      return 1
+    }
+    cfg_bad() {
+      local n=0 bad=0 kw img args
+      while read -r kw img args; do
+        n=$((n + 1)); aa_ok "$args" || bad=$((bad + 1))
+      done < <(grep -E '^[[:space:]]*linux[[:space:]]' "$1")
+      echo "$bad $n"
+    }
+    src_ok() {
+      local l d
+      { read -r l; read -r d; } < <(
+        . /etc/default/grub >/dev/null 2>&1
+        for x in /etc/default/grub.d/*.cfg; do [ -e "$x" ] && . "$x" >/dev/null 2>&1; done
+        printf '%s\n%s\n' "$GRUB_CMDLINE_LINUX" "$GRUB_CMDLINE_LINUX_DEFAULT"
+      )
+      # Recovery entries get GRUB_CMDLINE_LINUX, the others both variables.
+      aa_ok "$l" && aa_ok "$l $d"
+    }
+    set -- $(cfg_bad "$c")
+    if [ "$2" = 0 ]; then echo CHECK_ERROR; exit 0; fi
+    if src_ok; then g=1; else g=0; fi
+    if [ "$1" = 0 ] && [ $g = 1 ]; then echo "ENABLED:entries=$2"
+    elif [ "$1" = 0 ]; then echo "NOT_IN_CONFIG:entries=$2"
+    elif [ $g = 1 ]; then echo "NOT_GENERATED:missing=$1/$2"
+    else echo "NOT_ENABLED:missing=$1/$2"; fi
+  expected: '^ENABLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/default/grub.d/sentin-harden-apparmor.cfg
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=grub-apparmor-1
+        if [ -e "$f" ]; then echo present=1; base64 -w 0 "$f"; echo; else echo present=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -r /etc/default/grub ] || { echo "/etc/default/grub not found: GRUB does not start this system" >&2; exit 1; }
+      command -v update-grub >/dev/null 2>&1 || { echo "update-grub is not installed" >&2; exit 1; }
+    aa_ok() {
+      local a="" s="" m=- w
+      set -f
+      for w in $1; do
+        case "$w" in apparmor=*) a=${w#*=} ;; security=*) s=${w#*=} ;; lsm=*) m=${w#*=} ;; esac
+      done
+      set +f
+      [ "$a" = 1 ] && [ "$s" = apparmor ] || return 1
+      case ",$m," in ,-,|*,apparmor,*) return 0 ;; esac
+      return 1
+    }
+    cfg_bad() {
+      local n=0 bad=0 kw img args
+      while read -r kw img args; do
+        n=$((n + 1)); aa_ok "$args" || bad=$((bad + 1))
+      done < <(grep -E '^[[:space:]]*linux[[:space:]]' "$1")
+      echo "$bad $n"
+    }
+    src_ok() {
+      local l d
+      { read -r l; read -r d; } < <(
+        . /etc/default/grub >/dev/null 2>&1
+        for x in /etc/default/grub.d/*.cfg; do [ -e "$x" ] && . "$x" >/dev/null 2>&1; done
+        printf '%s\n%s\n' "$GRUB_CMDLINE_LINUX" "$GRUB_CMDLINE_LINUX_DEFAULT"
+      )
+      # Recovery entries get GRUB_CMDLINE_LINUX, the others both variables.
+      aa_ok "$l" && aa_ok "$l $d"
+    }
+      f=/etc/default/grub.d/sentin-harden-apparmor.cfg
+      if ! src_ok; then
+        mkdir -p "$(dirname "$f")"
+        printf '%s\n' '# Added by Sentin-Harden (CIS Ubuntu 24.04 1.3.1.2); its rollback removes this file.' \
+          'GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX apparmor=1 security=apparmor"' > "$f"
+        echo "Wrote $f"
+      fi
+      src_ok || { echo "GRUB_CMDLINE_LINUX or GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub or /etc/default/grub.d still overrides the parameters" >&2; exit 1; }
+      update-grub
+      set -- $(cfg_bad /boot/grub/grub.cfg)
+      if [ "$1" != 0 ] || [ "$2" = 0 ]; then
+        echo "/boot/grub/grub.cfg still has $1 of $2 entries without the parameters" >&2; exit 1
+      fi
+      echo "Added apparmor=1 security=apparmor to all $2 boot entries; restart to apply"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=grub-apparmor-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      p=$(sed -n '2s/^present=//p' "$b")
+      case "$p" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      f=/etc/default/grub.d/sentin-harden-apparmor.cfg
+      if [ "$p" = 0 ]; then
+        rm -f "$f"
+      else
+        t=$(mktemp)
+        sed -n '3p' "$b" | base64 -d > "$t" || { rm -f "$t"; echo "Backup file is damaged: $b" >&2; exit 1; }
+        cat "$t" > "$f"; rm -f "$t"
+      fi
+      if command -v update-grub >/dev/null 2>&1; then update-grub; fi
+      echo "Restored the previous kernel parameters; restart to apply"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/admin-guide/LSM/apparmor.html
+  - https://docs.kernel.org/admin-guide/kernel-parameters.html
+  - https://docs.kernel.org/admin-guide/LSM/index.html
+  - https://www.gnu.org/software/grub/manual/grub/html_node/Simple-configuration.html
+
+notes:
+  pl: |
+    Wynik NOT_GENERATED oznacza, że konfiguracja zawiera parametry, ale nikt
+    nie uruchomił update-grub, a NOT_IN_CONFIG, że są tylko w grub.cfg
+    i znikną przy najbliższej aktualizacji jądra. Liczy się ostatnie
+    wystąpienie parametru, a lista lsm= bez apparmor unieważnia security=.
+    Sprawdzenie czyta /etc/default/grub i pliki z /etc/default/grub.d tak samo
+    jak update-grub. Sprawdza też GRUB_CMDLINE_LINUX_DEFAULT, bo w zwykłych
+    pozycjach menu stoi on po GRUB_CMDLINE_LINUX i może wyłączyć AppArmor.
+
+    Naprawa zapisuje parametry w pliku /etc/default/grub.d/sentin-harden-apparmor.cfg, który
+    dopisuje je do GRUB_CMDLINE_LINUX i jest czytany po pozostałych plikach,
+    a następnie uruchamia update-grub. /etc/default/grub zostaje bez zmian.
+    Wycofanie usuwa ten plik i ponownie uruchamia update-grub, więc grub.cfg
+    powstaje z bieżącej konfiguracji, a nie z kopii.
+  en: |
+    The NOT_GENERATED result means that the configuration has the parameters
+    but nobody ran update-grub, and NOT_IN_CONFIG that they are only in
+    grub.cfg and will disappear at the next kernel update. The last occurrence
+    of a parameter counts, and an lsm= list without apparmor overrides
+    security=. The check reads /etc/default/grub and the files in
+    /etc/default/grub.d the same way update-grub does. It also checks
+    GRUB_CMDLINE_LINUX_DEFAULT, which follows GRUB_CMDLINE_LINUX in the normal
+    menu entries and can turn AppArmor off.
+
+    The remediation writes the parameters to /etc/default/grub.d/sentin-harden-apparmor.cfg,
+    which appends them to GRUB_CMDLINE_LINUX and is read after the other
+    files, and then runs update-grub. /etc/default/grub stays unchanged.
+    Rollback removes that file and runs update-grub again, so grub.cfg is
+    built from the current configuration rather than from a copy.

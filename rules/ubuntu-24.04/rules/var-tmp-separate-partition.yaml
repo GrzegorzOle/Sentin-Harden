@@ -1,0 +1,138 @@
+id: ubuntu2404-var-tmp-separate-partition
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.2.5.1
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /var/tmp
+  title:
+    pl: Katalog /var/tmp jest osobną partycją
+    en: Ensure separate partition exists for /var/tmp
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    /var/tmp to drugi katalog tymczasowy, otwarty do zapisu dla wszystkich.
+    W odróżnieniu od /tmp jego zawartość przetrwa restart, a Ubuntu nie
+    usuwa z niego starych plików: reguła czyszczenia /var/tmp w konfiguracji
+    systemd-tmpfiles jest wyłączona. Programy trzymają tam duże pliki robocze,
+    a usługi z ustawieniem PrivateTmp dostają w nim własne podkatalogi.
+    Bez osobnego montowania jego zapełnienie odbiera miejsce reszcie systemu,
+    a opcji nodev, nosuid i noexec nie ma gdzie ustawić.
+
+    Domyślny układ instalatora Ubuntu Server i obrazy chmurowe nie wydzielają
+    /var/tmp, więc punkt nie jest spełniony. Należy do poziomu 2, bo zmiana
+    wymaga przeniesienia danych.
+  en: |
+    /var/tmp is the second temporary directory, open for writing to
+    everybody. Unlike /tmp its contents survive a restart, and Ubuntu does not
+    remove old files from it: the /var/tmp cleanup rule in the
+    systemd-tmpfiles configuration is turned off. Programs keep large working
+    files there, and services with the PrivateTmp setting get their own
+    subdirectories in it. Without a separate mount, filling it takes space
+    from the rest of the system, and the nodev, nosuid and noexec options have
+    nowhere to go.
+
+    The default layout of the Ubuntu Server installer and cloud images do not
+    separate /var/tmp, so the item is not met. It belongs to level 2 because
+    the change needs data to be moved.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia, bo przenosi dane na nowe miejsce
+    i wymaga pracy, gdy nikt z nich nie korzysta. Program nie wykonuje jej
+    sam; opis mówi, co trzeba zaplanować.
+
+    Nowy wolumin musi pomieścić największe pliki robocze, jakie powstają na
+    serwerze, a zawartość trzeba przenieść, gdy usługi z PrivateTmp są
+    zatrzymane, z zachowaniem uprawnień katalogu (1777 z bitem sticky).
+    Przy okazji warto przejrzeć stare pliki, bo Ubuntu ich samo nie usuwa.
+  en: |
+    The change needs a planned rollout because it moves data to a new place
+    and needs work while nobody uses it. The program does not perform it; the
+    description says what has to be planned.
+
+    The new volume has to hold the largest working files the server produces,
+    and the contents have to be moved while services with PrivateTmp are
+    stopped, keeping the directory's permissions (1777 with the sticky bit).
+    It is a good moment to review old files, because Ubuntu does not remove
+    them by itself.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Przeniesienie /var/tmp wymaga przerwy w działaniu usług, które z niego korzystają, na czas kopiowania danych
+      - Zbyt mały nowy wolumin dla /var/tmp przerywa zadania, które trzymają tam duże pliki robocze, np. budowanie obrazów lub pakietów
+    en:
+      - Moving /var/tmp needs a break in the services that use it while the data is copied
+      - A new volume for /var/tmp that is too small interrupts jobs that keep large working files there, such as building images or packages
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dysk i grupa woluminów nie mają wolnego miejsca na osobny wolumin, a zmiana układu partycji nie była zaplanowana
+    en:
+      - The disk and the volume group have no free space for a separate volume and no change to the partition layout has been planned
+  reversibility: difficult
+
+audit:
+  shell: bash
+  test_command: |
+    t=/var/tmp
+    if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if findmnt -kn --mountpoint "$t" >/dev/null 2>&1; then echo SEPARATE; else echo NOT_SEPARATE; fi
+  expected: '^SEPARATE$'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man5/fstab.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
+  - https://www.freedesktop.org/software/systemd/man/latest/file-hierarchy.html
+  - https://man7.org/linux/man-pages/man8/lvcreate.8.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje punkt za spełniony, gdy /var/tmp jest osobnym punktem
+    montowania, bez względu na to, czy jest to partycja, wolumin logiczny czy
+    udział sieciowy.
+
+    Punkt nie ma naprawy uruchamianej z programu. Wydzielenie katalogu wymaga
+    przeniesienia jego zawartości na nowe miejsce, gdy nic z niej nie korzysta,
+    i nie da się go bezpiecznie cofnąć jednym poleceniem.
+
+    Na serwerze zainstalowanym z domyślnym układem LVM instalator zwykle
+    zostawia w grupie woluminów ubuntu-vg wolne miejsce, więc nowy wolumin dla
+    /var/tmp można utworzyć poleceniem lvcreate bez zmiany partycji. Dane kopiuje
+    się np. poleceniem rsync -aAXH, a nowy wolumin dopisuje do /etc/fstab po
+    identyfikatorze UUID. AppArmor opiera się na ścieżkach, a nie na etykietach
+    plików, więc po przeniesieniu nie trzeba niczego oznaczać na nowo.
+  en: |
+    The check considers the item met when /var/tmp is a separate mount point,
+    whether it is a partition, a logical volume or a network share.
+
+    The item has no remediation that the program runs. Separating the
+    directory means moving its contents to the new place while nothing uses
+    them, and it cannot be safely undone with one command.
+
+    On a server installed with the default LVM layout the installer usually
+    leaves free space in the ubuntu-vg volume group, so a new volume for /var/tmp
+    can be created with lvcreate without changing partitions. The data is
+    copied, for example, with rsync -aAXH, and the new volume is added to
+    /etc/fstab by its UUID. AppArmor works on paths rather than file labels, so
+    nothing has to be relabelled after the move.

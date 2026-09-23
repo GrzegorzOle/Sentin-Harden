@@ -1,0 +1,140 @@
+id: ubuntu2404-unowned-files
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 7.1.12
+  section: System Maintenance > System File Permissions
+  title:
+    pl: Nie ma plików ani katalogów bez właściciela lub grupy
+    en: Ensure no files or directories without an owner and a group exist
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Plik należący do UID lub GID, którego nie ma w bazie kont, zostaje po
+    usuniętym koncie albo przychodzi z rozpakowanego archiwum. Gdy system
+    nada ten identyfikator nowemu kontu, dostanie ono cudze pliki razem
+    z pełnymi prawami do nich.
+
+    Punkt wymaga, żeby na lokalnych systemach plików każdy plik i katalog
+    miał właściciela i grupę znane systemowi.
+  en: |
+    A file owned by a UID or GID that is missing from the account database
+    remains after a deleted account or comes from an unpacked archive. When
+    the system gives that identifier to a new account, the account gets
+    someone else's files with full rights to them.
+
+    The item requires that every file and directory on the local file
+    systems has an owner and a group known to the system.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: sprawdzenie tylko czyta atrybuty plików.
+  en: |
+    Nobody will notice: the check only reads the file attributes.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    lmounts() {
+      findmnt -rn -o TARGET,FSTYPE 2>/dev/null |
+        awk 'NR == FNR { if (NF == 1) real[$1] = 1; next } ($2 in real) && $2 !~ /^(vfat|exfat|msdos|iso9660|udf|ntfs|ntfs3|fuseblk|squashfs)$/ { print $1 }' /proc/filesystems - |
+        while IFS= read -r m; do printf '%b\n' "$m"; done
+    }
+    lscan() {
+      local m
+      lmounts | while IFS= read -r m; do
+        find "$m" -xdev \( -path '*/containers/storage' -o -path '*/containerd' -o -path '*/kubelet/pods' -o -path '*/kubelet/plugins' -o -path /var/lib/docker -o -path /snap -o -path /var/snap/docker/common/var-lib-docker -o -path /var/snap/lxd/common/lxd -o -path /var/lib/lxd -o -path /var/lib/lxc \) -prune -o "$@" 2>/dev/null || true
+      done
+    }
+    [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; exit 0; }
+    ids=$(lscan -printf '%U %G %p\0' | awk 'BEGIN { RS = "\0" } {
+      p = substr($0, length($1) + length($2) + 3); gsub(/\n/, "?", p)
+      if (!($1 in u)) u[$1] = p; uc[$1]++
+      if (!($2 in g)) g[$2] = p; gc[$2]++
+    } END { for (i in u) print "u", i, uc[i], u[i]; for (i in g) print "g", i, gc[i], g[i] }')
+    nu=0; ng=0; first=""
+    while read -r k i c p; do
+      [ -n "$k" ] || continue
+      if [ "$k" = u ]; then getent passwd "$i" >/dev/null && continue; nu=$((nu + c))
+      else getent group "$i" >/dev/null && continue; ng=$((ng + c)); fi
+      [ -n "$first" ] || first="$p"
+    done <<< "$ids"
+    if [ $((nu + ng)) -gt 0 ]; then echo "NOT_OK:nouser=$nu,nogroup=$ng,$first"
+    else echo "OK:nouser=0,nogroup=0"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man1/find.1.html
+  - https://man7.org/linux/man-pages/man8/findmnt.8.html
+  - https://man7.org/linux/man-pages/man1/getent.1.html
+  - https://man7.org/linux/man-pages/man1/chown.1.html
+
+notes:
+  pl: |
+    Test przeszukuje lokalne systemy plików tak jak skrypt CIS: typy bez
+    nodev w /proc/filesystems, każdy punkt montowania z -xdev. Pomija vfat,
+    exfat, NTFS, iso9660 i udf, które nie mają uniksowych właścicieli ani
+    trybów, oraz squashfs i /snap, czyli obrazy snapów, tylko do odczytu,
+    które skrypt CIS dla Ubuntu także pomija. Odstępstwem od CIS jest
+    pominięcie warstw obrazów i systemów plików kontenerów
+    (containers/storage, containerd, kubelet, /var/lib/docker, Docker i LXD
+    ze snapów w /var/snap, /var/lib/lxd, /var/lib/lxc): należą do obrazów
+    i kontenerów, a nie do tego systemu. Find kończy każdą ścieżkę znakiem
+    NUL, więc znak nowej linii w nazwie pliku nie tworzy fałszywego wpisu;
+    w wyniku zastępuje go znak ?. Bez roota find nie wejdzie do wszystkich
+    katalogów, więc wynik to NOT_OK:needs-root.
+    Test zbiera UID i GID wszystkich ścieżek, a każdy identyfikator
+    sprawdza raz przez getent, bo find -nouser pyta o każdy plik osobno,
+    a z modułami NSS takimi jak systemd czy sss trwa to minuty. Wynik
+    NOT_OK podaje liczbę ścieżek bez właściciela i bez grupy oraz pierwszą
+    z nich. Użytkownicy dynamiczni systemd (usługi z DynamicUser=yes)
+    istnieją tylko wtedy, gdy działa ich usługa, więc ich pliki mogą
+    wyglądać na bezpańskie. Właściciela zmienia się ręcznie (chown, chgrp)
+    po ustaleniu, do kogo pliki należą. Reguła tylko sprawdza stan.
+  en: |
+    The test searches the local file systems like the CIS script: the
+    types without nodev in /proc/filesystems, each mount point with -xdev.
+    It leaves out vfat, exfat, NTFS, iso9660 and udf, which have no Unix
+    owners or modes, and squashfs and /snap, the read-only snap images,
+    which the CIS script for Ubuntu leaves out too. Unlike CIS, it skips the
+    image layers and file systems of containers (containers/storage,
+    containerd, kubelet, /var/lib/docker, Docker and LXD snaps in /var/snap,
+    /var/lib/lxd, /var/lib/lxc): they belong to the images and containers,
+    not to this system. Find ends each path with a NUL, so a newline in a
+    file name cannot forge an entry; the result shows a ? in its place.
+    Without root, find cannot enter every directory, so the result is
+    NOT_OK:needs-root.
+    The test collects the UID and GID of every path and resolves each
+    identifier once with getent, because find -nouser asks about each file
+    separately, which takes minutes with NSS modules such as systemd or
+    sss. The NOT_OK result gives the number of paths without an owner and
+    without a group and the first of them. Systemd dynamic users (services
+    with DynamicUser=yes) exist only while their service runs, so their
+    files may appear to have no owner. The owner is changed by hand (chown,
+    chgrp) after finding out whose files they are. The rule only checks the
+    state.

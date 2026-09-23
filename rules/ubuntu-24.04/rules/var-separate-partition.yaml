@@ -1,0 +1,137 @@
+id: ubuntu2404-var-separate-partition
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.2.4.1
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /var
+  title:
+    pl: Katalog /var jest osobną partycją
+    en: Ensure separate partition exists for /var
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    W /var system trzyma dane, które rosną w czasie pracy: dzienniki, pamięć
+    podręczną apt, bazę pakietów dpkg, pakiety snap, obrazy Dockera i dane
+    usług. Gdy /var dzieli system plików z resztą systemu, jego zapełnienie
+    odbiera miejsce wszystkiemu innemu. Najgroźniej jest w trakcie
+    aktualizacji: dpkg przerwany brakiem miejsca zostawia pakiety
+    rozpakowane, ale nieskonfigurowane.
+
+    Domyślny układ instalatora Ubuntu Server i obrazy chmurowe nie wydzielają
+    /var, więc punkt nie jest spełniony. Należy do poziomu 2, bo zmiana
+    wymaga przeniesienia danych systemu.
+  en: |
+    /var is where the system keeps data that grows while it runs: logs, the
+    apt cache, the dpkg package database, snap packages, Docker images and
+    service data. When /var shares a file system with the rest of the system,
+    filling it takes space from everything else. It is most dangerous during
+    an update: dpkg interrupted by a full disk leaves packages unpacked but
+    not configured.
+
+    The default layout of the Ubuntu Server installer and cloud images do not
+    separate /var, so the item is not met. It belongs to level 2 because the
+    change needs system data to be moved.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia, bo przenosi dane na nowe miejsce
+    i wymaga pracy, gdy nikt z nich nie korzysta. Program nie wykonuje jej
+    sam; opis mówi, co trzeba zaplanować.
+
+    Przeniesienie /var trzeba zrobić w trybie ratunkowym albo z nośnika
+    instalacyjnego, bo działające usługi stale z niego korzystają; dotyczy to
+    też snapd, który montuje pakiety snap z plików w /var/lib/snapd. Dane
+    trzeba skopiować z zachowaniem właścicieli, list ACL i atrybutów
+    rozszerzonych, a rozmiar woluminu dobrać do obrazów kontenerów
+    i pakietów snap, które na nim zamieszkają.
+  en: |
+    The change needs a planned rollout because it moves data to a new place
+    and needs work while nobody uses it. The program does not perform it; the
+    description says what has to be planned.
+
+    Moving /var has to be done in rescue mode or from installation media,
+    because running services use it constantly; this includes snapd, which
+    mounts snap packages from files in /var/lib/snapd. The data has to be
+    copied keeping owners, ACLs and extended attributes, and the volume size
+    has to fit the container images and snap packages that will live on it.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Przeniesienie /var wymaga uruchomienia serwera w trybie ratunkowym i przerwy w działaniu usług na czas kopiowania danych
+      - Zbyt mały nowy wolumin dla /var zatrzymuje aktualizacje apt, odświeżanie pakietów snap i pobieranie obrazów kontenerów po jego zapełnieniu
+    en:
+      - Moving /var needs the server to be started in rescue mode and a break in services while the data is copied
+      - A new volume for /var that is too small stops apt updates, snap refreshes and container image downloads once it fills up
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dysk i grupa woluminów nie mają wolnego miejsca na osobny wolumin, a zmiana układu partycji nie była zaplanowana
+    en:
+      - The disk and the volume group have no free space for a separate volume and no change to the partition layout has been planned
+  reversibility: difficult
+
+audit:
+  shell: bash
+  test_command: |
+    t=/var
+    if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if findmnt -kn --mountpoint "$t" >/dev/null 2>&1; then echo SEPARATE; else echo NOT_SEPARATE; fi
+  expected: '^SEPARATE$'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man5/fstab.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
+  - https://www.freedesktop.org/software/systemd/man/latest/file-hierarchy.html
+  - https://man7.org/linux/man-pages/man8/lvcreate.8.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje punkt za spełniony, gdy /var jest osobnym punktem
+    montowania, bez względu na to, czy jest to partycja, wolumin logiczny czy
+    udział sieciowy.
+
+    Punkt nie ma naprawy uruchamianej z programu. Wydzielenie katalogu wymaga
+    przeniesienia jego zawartości na nowe miejsce, gdy nic z niej nie korzysta,
+    i nie da się go bezpiecznie cofnąć jednym poleceniem.
+
+    Na serwerze zainstalowanym z domyślnym układem LVM instalator zwykle
+    zostawia w grupie woluminów ubuntu-vg wolne miejsce, więc nowy wolumin dla
+    /var można utworzyć poleceniem lvcreate bez zmiany partycji. Dane kopiuje
+    się np. poleceniem rsync -aAXH, a nowy wolumin dopisuje do /etc/fstab po
+    identyfikatorze UUID. AppArmor opiera się na ścieżkach, a nie na etykietach
+    plików, więc po przeniesieniu nie trzeba niczego oznaczać na nowo.
+  en: |
+    The check considers the item met when /var is a separate mount point,
+    whether it is a partition, a logical volume or a network share.
+
+    The item has no remediation that the program runs. Separating the
+    directory means moving its contents to the new place while nothing uses
+    them, and it cannot be safely undone with one command.
+
+    On a server installed with the default LVM layout the installer usually
+    leaves free space in the ubuntu-vg volume group, so a new volume for /var
+    can be created with lvcreate without changing partitions. The data is
+    copied, for example, with rsync -aAXH, and the new volume is added to
+    /etc/fstab by its UUID. AppArmor works on paths rather than file labels, so
+    nothing has to be relabelled after the move.

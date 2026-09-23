@@ -1,0 +1,138 @@
+id: ubuntu2404-var-log-separate-partition
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.2.6.1
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /var/log
+  title:
+    pl: Katalog /var/log jest osobną partycją
+    en: Ensure separate partition exists for /var/log
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    W /var/log system zapisuje dzienniki: trwały dziennik systemd w
+    /var/log/journal oraz pliki rsyslog, np. syslog i auth.log. Gdy dzielą
+    miejsce z resztą systemu, usługa, która zaczyna gwałtownie logować, np. po
+    błędzie albo w trakcie ataku, może zapełnić dysk i zatrzymać wszystko
+    inne. Odwrotnie też: pełny dysk z innego powodu przerywa zapis dzienników,
+    a właśnie wtedy są najbardziej potrzebne.
+
+    Domyślny układ instalatora Ubuntu Server i obrazy chmurowe nie wydzielają
+    /var/log. Dziennik systemd ogranicza własny rozmiar, ale nie obejmuje to
+    plików pisanych przez rsyslog i inne usługi. Punkt należy do poziomu 2, bo
+    zmiana wymaga przeniesienia danych.
+  en: |
+    /var/log is where the system writes its logs: the persistent systemd
+    journal in /var/log/journal and the rsyslog files, such as syslog and
+    auth.log. When they share space with the rest of the system, a service
+    that starts logging heavily, for example after an error or during an
+    attack, can fill the disk and stop everything else. It works the other way
+    too: a disk full for another reason stops logging, exactly when logs are
+    needed most.
+
+    The default layout of the Ubuntu Server installer and cloud images do not
+    separate /var/log. The systemd journal limits its own size, but that does
+    not cover files written by rsyslog and other services. The item belongs to
+    level 2 because the change needs data to be moved.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia, bo przenosi dane na nowe miejsce
+    i wymaga pracy, gdy nikt z nich nie korzysta. Program nie wykonuje jej
+    sam; opis mówi, co trzeba zaplanować.
+
+    Przeniesienie /var/log trzeba zrobić, gdy usługi dzienników są
+    zatrzymane, czyli w trybie ratunkowym. Katalog musi zachować właściciela
+    root, grupę syslog i tryb 775, a /var/log/journal grupę systemd-journal
+    i listy ACL, bo bez tego rsyslog, działający jako użytkownik syslog,
+    i journald nie zapiszą nowych wpisów.
+  en: |
+    The change needs a planned rollout because it moves data to a new place
+    and needs work while nobody uses it. The program does not perform it; the
+    description says what has to be planned.
+
+    Moving /var/log has to be done while the logging services are stopped,
+    that is, in rescue mode. The directory has to keep owner root, group
+    syslog and mode 775, and /var/log/journal its systemd-journal group and
+    ACLs, because without them rsyslog, which runs as user syslog, and
+    journald will not write new entries.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Przeniesienie /var/log wymaga uruchomienia serwera w trybie ratunkowym i przerwy w działaniu usług na czas kopiowania dzienników
+      - Kopia bez grupy syslog i trybu 775 katalogu sprawia, że rsyslog po starcie nie tworzy nowych plików dzienników, a wpisy przepadają
+    en:
+      - Moving /var/log needs the server to be started in rescue mode and a break in services while the logs are copied
+      - A copy without the syslog group and mode 775 on the directory makes rsyslog fail to create new log files after start, and entries are lost
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dysk i grupa woluminów nie mają wolnego miejsca na osobny wolumin, a zmiana układu partycji nie była zaplanowana
+    en:
+      - The disk and the volume group have no free space for a separate volume and no change to the partition layout has been planned
+  reversibility: difficult
+
+audit:
+  shell: bash
+  test_command: |
+    t=/var/log
+    if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if findmnt -kn --mountpoint "$t" >/dev/null 2>&1; then echo SEPARATE; else echo NOT_SEPARATE; fi
+  expected: '^SEPARATE$'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man5/fstab.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
+  - https://www.freedesktop.org/software/systemd/man/latest/file-hierarchy.html
+  - https://man7.org/linux/man-pages/man8/lvcreate.8.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje punkt za spełniony, gdy /var/log jest osobnym punktem
+    montowania, bez względu na to, czy jest to partycja, wolumin logiczny czy
+    udział sieciowy.
+
+    Punkt nie ma naprawy uruchamianej z programu. Wydzielenie katalogu wymaga
+    przeniesienia jego zawartości na nowe miejsce, gdy nic z niej nie korzysta,
+    i nie da się go bezpiecznie cofnąć jednym poleceniem.
+
+    Na serwerze zainstalowanym z domyślnym układem LVM instalator zwykle
+    zostawia w grupie woluminów ubuntu-vg wolne miejsce, więc nowy wolumin dla
+    /var/log można utworzyć poleceniem lvcreate bez zmiany partycji. Dane kopiuje
+    się np. poleceniem rsync -aAXH, a nowy wolumin dopisuje do /etc/fstab po
+    identyfikatorze UUID. AppArmor opiera się na ścieżkach, a nie na etykietach
+    plików, więc po przeniesieniu nie trzeba niczego oznaczać na nowo.
+  en: |
+    The check considers the item met when /var/log is a separate mount point,
+    whether it is a partition, a logical volume or a network share.
+
+    The item has no remediation that the program runs. Separating the
+    directory means moving its contents to the new place while nothing uses
+    them, and it cannot be safely undone with one command.
+
+    On a server installed with the default LVM layout the installer usually
+    leaves free space in the ubuntu-vg volume group, so a new volume for /var/log
+    can be created with lvcreate without changing partitions. The data is
+    copied, for example, with rsync -aAXH, and the new volume is added to
+    /etc/fstab by its UUID. AppArmor works on paths rather than file labels, so
+    nothing has to be relabelled after the move.

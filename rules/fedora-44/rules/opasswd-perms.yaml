@@ -1,0 +1,216 @@
+id: fedora44-opasswd-perms
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 7.1.10
+  section: System Maintenance > System File Permissions
+  title:
+    pl: Historia haseł w /etc/security/opasswd ma poprawne uprawnienia
+    en: Ensure permissions on /etc/security/opasswd are configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    pam_pwhistory zapisuje w /etc/security/opasswd skróty poprzednich haseł
+    użytkowników, żeby nie mogli do nich wracać. Stare hasła często
+    różnią się od obecnych tylko końcówką albo nadal działają w innych
+    systemach, więc ich skróty są cenne przy łamaniu haseł.
+
+    Punkt wymaga, żeby /etc/security/opasswd i /etc/security/opasswd.old
+    miały tryb 600 lub bardziej restrykcyjny oraz właściciela i grupę root.
+  en: |
+    pam_pwhistory stores the hashes of the users' previous passwords in
+    /etc/security/opasswd, so they cannot go back to them. Old passwords
+    often differ from the current ones only in the last characters or still
+    work on other systems, so their hashes are valuable for cracking.
+
+    The item requires /etc/security/opasswd and /etc/security/opasswd.old to
+    have mode 600 or stricter and owner and group root.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: plik czyta i zapisuje tylko pam_pwhistory
+    w procesach roota, przy zmianie hasła.
+  en: |
+    Nobody will notice: only pam_pwhistory reads and writes the file, in
+    root processes, when a password is changed.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    plist() {
+      local f
+      for f in /etc/security/opasswd /etc/security/opasswd.old; do
+        [ ! -e "$f" ] || readlink -f -- "$f"
+      done
+    }
+    pok() { [ "$2" = root ] && [ "$3" = root ] && [ $(( 0$1 & 07177 )) -eq 0 ]; }
+    gok() { set -- '' '' "$1"; [ "$3" = root ]; }
+    evaluate() {
+      local l f n=0 bad=0 first="" m o g
+      if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        read -r m o g <<< "$(stat -c '%a %U %G' -- "$f" 2>/dev/null)"
+        [ -n "$m" ] || continue
+        n=$((n + 1))
+        pok "$m" "$o" "$g" || { bad=$((bad + 1)); [ -n "$first" ] || first="$f=$m:$o:$g"; }
+      done <<< "$l"
+      if [ "$bad" -gt 0 ]; then echo "NOT_OK:bad=$bad,$first"; else echo "OK:paths=$n"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    plist() {
+      local f
+      for f in /etc/security/opasswd /etc/security/opasswd.old; do
+        [ ! -e "$f" ] || readlink -f -- "$f"
+      done
+    }
+    pok() { [ "$2" = root ] && [ "$3" = root ] && [ $(( 0$1 & 07177 )) -eq 0 ]; }
+    gok() { set -- '' '' "$1"; [ "$3" = root ]; }
+    evaluate() {
+      local l f n=0 bad=0 first="" m o g
+      if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        read -r m o g <<< "$(stat -c '%a %U %G' -- "$f" 2>/dev/null)"
+        [ -n "$m" ] || continue
+        n=$((n + 1))
+        pok "$m" "$o" "$g" || { bad=$((bad + 1)); [ -n "$first" ] || first="$f=$m:$o:$g"; }
+      done <<< "$l"
+      if [ "$bad" -gt 0 ]; then echo "NOT_OK:bad=$bad,$first"; else echo "OK:paths=$n"; fi
+    }
+      l=$(plist) || { echo "Cannot list the paths: $l" >&2; exit 1; }
+      {
+        echo format=perms-1
+        printf '%s\n' "$l" | while IFS= read -r f; do
+          [ -n "$f" ] && [ -e "$f" ] || continue
+          printf '%s %s\n' "$(stat -c '%a %u %g' -- "$f")" "$f"
+        done
+      } > "$b.tmp"
+      mv "$b.tmp" "$b"
+      echo "Saved the owner and mode of $(( $(wc -l < "$b") - 1 )) paths"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=perms-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    plist() {
+      local f
+      for f in /etc/security/opasswd /etc/security/opasswd.old; do
+        [ ! -e "$f" ] || readlink -f -- "$f"
+      done
+    }
+    pok() { [ "$2" = root ] && [ "$3" = root ] && [ $(( 0$1 & 07177 )) -eq 0 ]; }
+    gok() { set -- '' '' "$1"; [ "$3" = root ]; }
+    evaluate() {
+      local l f n=0 bad=0 first="" m o g
+      if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        read -r m o g <<< "$(stat -c '%a %U %G' -- "$f" 2>/dev/null)"
+        [ -n "$m" ] || continue
+        n=$((n + 1))
+        pok "$m" "$o" "$g" || { bad=$((bad + 1)); [ -n "$first" ] || first="$f=$m:$o:$g"; }
+      done <<< "$l"
+      if [ "$bad" -gt 0 ]; then echo "NOT_OK:bad=$bad,$first"; else echo "OK:paths=$n"; fi
+    }
+      l=$(plist) || { echo "Cannot list the paths: $l" >&2; exit 1; }
+      n=0
+      while IFS= read -r f; do
+        [ -n "$f" ] && [ -e "$f" ] || continue
+        read -r m o g <<< "$(stat -c '%a %U %G' -- "$f")"
+        ! pok "$m" "$o" "$g" || continue
+        [ "$o" = root ] || chown root -- "$f"
+        gok "$g" || chgrp root -- "$f"
+        chmod "$(printf '0%04o' $(( 0$m & 0600 )))" -- "$f"
+        n=$((n + 1))
+      done <<< "$l"
+      echo "Corrected $n paths"
+      r=$(evaluate)
+      case "$r" in OK:*) ;; *) echo "Paths still not as required ($r)" >&2; exit 1 ;; esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=perms-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if tail -n +2 "$b" | grep -qvE '^[0-7]+ [0-9]+ [0-9]+ /'; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      n=0
+      while read -r m u g f; do
+        [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
+        read -r cm cu cg <<< "$(stat -c '%a %u %g' -- "$f")"
+        k=0
+        [ "$cu" = "$u" ] || { chown "$u" -- "$f"; k=1; }
+        [ "$cg" = "$g" ] || { chgrp "$g" -- "$f"; k=1; }
+        [ "$cm" = "$m" ] || k=1
+        [ "$k" = 1 ] || continue
+        chmod "$(printf '0%04o' $(( 0$m )))" -- "$f"
+        echo "Restored $f"; n=$((n + 1))
+      done < <(tail -n +2 "$b")
+      [ "$n" -gt 0 ] || echo "Nothing to restore"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_pwhistory.8.html
+  - https://man7.org/linux/man-pages/man1/chmod.1.html
+  - https://man7.org/linux/man-pages/man1/chown.1.html
+
+notes:
+  pl: |
+    Naprawa odbiera tylko nadmiarowe bity (tryb i 600) i ustawia właściciela
+    oraz grupę root; plik z bardziej restrykcyjnym trybem zostaje bez
+    zmian. Test obejmuje tylko pliki, które istnieją; gdy nie ma żadnego,
+    wynik to OK:paths=0. Test odczytuje tylko atrybuty plików, więc działa
+    także bez roota.
+    Wycofanie przywraca tylko to, czym reguła zarządza (tryb, właściciela
+    albo grupę), i tylko dla ścieżek, które nadal istnieją, więc reguły
+    trybu, właściciela i grupy tych samych plików można wycofywać osobno.
+  en: |
+    The remediation only removes the excess bits (mode and 600) and sets
+    the owner and group to root; a file with a stricter mode stays
+    unchanged. The test covers only the files that exist; when there are
+    none, the result is OK:paths=0. The test only reads the file attributes,
+    so it also works without root.
+    Rollback restores only what the rule manages (mode, owner or group),
+    and only for the paths that still exist, so the mode, owner and group
+    rules for the same files can be rolled back separately.

@@ -1,0 +1,281 @@
+id: ubuntu2404-squashfs-not-available
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.1.7
+  section: Initial Setup > Filesystem > Configure Filesystem Kernel Modules
+  title:
+    pl: Moduł jądra squashfs niedostępny
+    en: Ensure squashfs kernel module is not available
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Na standardowym jądrze Ubuntu 24.04 tego punktu nie da się spełnić.
+    Jądro generic, używane także przez wariant linux-virtual, ma squashfs
+    wkompilowany na stałe, a nie dostarczony jako moduł, więc test zwraca
+    BUILTIN, a naprawa kończy się błędem bez zmian. Właściwą odpowiedzią
+    jest zapisanie wyjątku; punkt ma znaczenie tylko na własnym jądrze,
+    w którym squashfs zbudowano jako moduł.
+
+    Squashfs to skompresowany system plików tylko do odczytu, w którym
+    pakuje się gotowe drzewa plików. Na Ubuntu korzysta z niego przede
+    wszystkim snapd: każda paczka snap to obraz squashfs montowany przy
+    starcie, a Ubuntu Server instaluje snapd domyślnie. Tego samego formatu
+    używają rozszerzenia systemd-sysext, usługi przenośne systemd i obrazy
+    Live.
+
+    Każdy sterownik systemu plików to kod jądra, który czyta strukturę zapisaną
+    na nośniku. Jeśli nośnik przygotował napastnik, to on decyduje, co ten kod
+    dostaje na wejście, a błąd w obsłudze uszkodzonej struktury wykonuje się
+    z pełnymi uprawnieniami jądra. Jądro ładuje sterownik samo, gdy ktoś poprosi
+    o zamontowanie danego typu, więc nikt nie musi świadomie tego sterownika
+    uruchamiać.
+
+    Na jądrze z modułem punkt zamyka tę drogę dla squashfs: moduł nie ładuje
+    się ani na żądanie jądra, ani wywołany wprost.
+
+    Kategoria jest niska, bo squashfs jest dojrzałym i często używanym
+    kodem, a obraz trzeba najpierw dostarczyć i zamontować. Punkt należy do
+    poziomu 2, bo na Ubuntu odebrałby działanie snapów.
+  en: |
+    On the standard Ubuntu 24.04 kernel this item cannot be met. The generic
+    kernel, which the linux-virtual variant also uses, has squashfs compiled
+    in rather than shipped as a module, so the test returns BUILTIN and the
+    remediation fails without changes. The right response is to record an
+    exception; the item only matters on a custom kernel with squashfs built
+    as a module.
+
+    Squashfs is a compressed read-only file system in which ready-made file
+    trees are packed. On Ubuntu its main user is snapd: every snap package
+    is a squashfs image mounted at startup, and Ubuntu Server installs snapd
+    by default. The same format is used by systemd-sysext extensions,
+    systemd portable services and Live images.
+
+    Every file system driver is kernel code that reads a structure stored on a
+    medium. If an attacker prepared the medium, the attacker decides what that
+    code gets as input, and a bug in handling a damaged structure runs with full
+    kernel privileges. The kernel loads the driver by itself when something asks
+    to mount that type, so nobody has to start the driver on purpose.
+
+    On a kernel with the module, the item closes that path for squashfs: the
+    module does not load, neither on the kernel's request nor when called
+    directly.
+
+    The category is low because squashfs is mature and widely used code,
+    and an image has to be delivered and mounted first. The item belongs to
+    level 2 because on Ubuntu it would take snaps away.
+
+disruption_description:
+  pl: |
+    Na standardowym jądrze nic się nie zmienia, bo naprawa kończy się
+    błędem bez zmian: sterownika wkompilowanego w jądro nie da się
+    zablokować plikiem konfiguracji.
+
+    Na własnym jądrze ze squashfs jako modułem przestają działać snapy,
+    w tym LXD, który lxd-installer instaluje jako snap, a także rozszerzenia
+    systemd-sysext i usługi przenośne zbudowane jako squashfs oraz
+    montowanie obrazów Live. Rozpakowanie pliku narzędziem unsquashfs działa
+    dalej, bo nie korzysta z jądra.
+
+    Zmiana nie wymaga restartu ani wylogowania; obraz zamontowany wcześniej
+    działa do odmontowania.
+  en: |
+    On the standard kernel nothing changes, because the remediation fails
+    without changes: a driver compiled into the kernel cannot be blocked by
+    a configuration file.
+
+    On a custom kernel with squashfs as a module, snaps stop working,
+    including LXD, which lxd-installer installs as a snap, and so do
+    systemd-sysext extensions and portable services built as squashfs and
+    mounting Live images. Unpacking a file with unsquashfs still works,
+    because it does not use the kernel.
+
+    The change needs no restart and no sign-out; an image mounted earlier
+    keeps working until it is unmounted.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Na jądrze ze squashfs jako modułem aplikacje zainstalowane jako snap, w tym LXD, nie uruchamiają się
+      - Rozszerzenie systemd-sysext lub usługa przenośna w obrazie squashfs nie zostaje dołączona przy starcie systemu
+    en:
+      - On a kernel with squashfs as a module, applications installed as snaps, LXD included, do not start
+      - A systemd-sysext extension or a portable service in a squashfs image is not attached when the system starts
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyna używa standardowego jądra Ubuntu, w którym squashfs jest wkompilowany; zamiast naprawy zapisuje się wyjątek
+      - Na maszynie działają snapy, np. LXD, albo rozszerzenia systemd-sysext dostarczane jako obrazy squashfs
+    en:
+      - The machine uses the standard Ubuntu kernel, which has squashfs compiled in; an exception is recorded instead of the remediation
+      - The machine runs snaps, such as LXD, or systemd-sysext extensions delivered as squashfs images
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    m=squashfs
+    n=squashfs
+    mods=/usr/lib/modules
+    if [ ! -d "$mods" ] || [ ! -r /proc/modules ] || ! command -v modprobe >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if grep -q "^$n " /proc/modules; then echo LOADED; exit 0; fi
+    for list in "$mods"/*/modules.builtin; do
+      [ -e "$list" ] || continue
+      [ -r "$list" ] || { echo CHECK_ERROR; exit 0; }
+      if grep -Eq "/$m\.ko$" "$list"; then echo BUILTIN; exit 0; fi
+    done
+    if ! found=$(find "$mods" -name "$m.ko*" -print -quit 2>/dev/null); then
+      echo CHECK_ERROR; exit 0
+    fi
+    if [ -z "$found" ]; then echo NOT_PRESENT; exit 0; fi
+    if ! config=$(modprobe --showconfig 2>/dev/null); then echo CHECK_ERROR; exit 0; fi
+    blocked=no; listed=no
+    if printf '%s\n' "$config" | grep -Eq "^install $n (/usr)?/bin/(false|true)$"; then blocked=yes; fi
+    if printf '%s\n' "$config" | grep -qx "blacklist $n"; then listed=yes; fi
+    case "$blocked$listed" in
+      yesyes) echo BLOCKED ;;
+      yesno)  echo NOT_BLACKLISTED ;;
+      noyes)  echo LOADABLE_ON_REQUEST ;;
+      *)      echo AVAILABLE ;;
+    esac
+  expected: '^(BLOCKED|NOT_PRESENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      m=squashfs
+      n=squashfs
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        if grep -q "^$n " /proc/modules; then echo loaded=1; else echo loaded=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b.tmp"
+      mv "$b.tmp" "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      m=squashfs
+      n=squashfs
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      for list in /usr/lib/modules/*/modules.builtin; do
+        if [ -e "$list" ] && grep -Eq "/$m\.ko$" "$list"; then
+          echo "Module $m is built into the kernel and a configuration file cannot block it; record an exception instead" >&2
+          exit 1
+        fi
+      done
+      printf '%s\n' \
+        '# Sentin-Harden: ubuntu2404-squashfs-not-available' \
+        "install $n /bin/false" \
+        "blacklist $n" > "$f.tmp"
+      chmod 0644 "$f.tmp"
+      mv "$f.tmp" "$f"
+      if grep -q "^$n " /proc/modules; then
+        if ! modprobe -r "$n"; then
+          echo "Module $m is in use and stays loaded until whatever uses it is stopped or the machine restarts" >&2
+        fi
+      fi
+      echo "Wrote $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      m=squashfs
+      n=squashfs
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      grep -qx -- --- "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n 's/^existed=//p' "$b" | head -n 1)
+      loaded=$(sed -n 's/^loaded=//p' "$b" | head -n 1)
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f.tmp"; chmod 0644 "$f.tmp"; mv "$f.tmp" "$f" ;;
+        0) rm -f "$f" ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      if [ "$loaded" = 1 ] && ! grep -q "^$n " /proc/modules; then modprobe "$n"; fi
+      echo "Restored previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/modprobe.d.5.html
+  - https://docs.kernel.org/filesystems/squashfs.html
+  - https://snapcraft.io/docs/snap-format
+
+notes:
+  pl: |
+    Sprawdzenie czyta wynikową konfigurację modprobe, a nie jeden wybrany
+    plik. Blokada zapisana wcześniej gdzie indziej, np. w
+    /etc/modprobe.d/squashfs.conf, także spełnia punkt, a naprawa jej nie
+    dubluje, bo przy spełnionym punkcie nie jest uruchamiana. Naprawa
+    zapisuje plik /etc/modprobe.d/sentin-harden-squashfs.conf, a wycofanie
+    przywraca go z kopii albo usuwa.
+
+    Potrzebne są obie linie. Wpis blacklist powstrzymuje tylko ładowanie po
+    aliasie, czyli wtedy, gdy jądro samo prosi o sterownik; modprobe
+    wywołane z nazwą modułu go omija. Linia install zastępuje ładowanie
+    uruchomieniem /bin/false, więc każda taka próba kończy się błędem.
+    Obu mechanizmów nie zatrzymuje insmod z pełną ścieżką do pliku, ale to
+    wymaga roota i świadomego działania.
+
+    Test szuka modułu we wszystkich jądrach w /usr/lib/modules, także
+    w plikach .ko.zst, w których Ubuntu je dostarcza. Punkt jest
+    spełniony także wtedy, gdy żadne zainstalowane jądro nie zawiera
+    modułu. Moduł załadowany w chwili sprawdzenia daje wynik niespełniony
+    nawet przy obecnej blokadzie; naprawa próbuje go wyładować, a jeśli
+    jest w użyciu, zostaje w pamięci do zakończenia tego, co go używa, albo
+    do restartu. Sterownika wkompilowanego w jądro (wynik BUILTIN) plikiem
+    konfiguracji nie da się zablokować i zostaje zapisanie wyjątku.
+  en: |
+    The check reads the effective modprobe configuration rather than one
+    chosen file. A block written earlier somewhere else, for example in
+    /etc/modprobe.d/squashfs.conf, also meets the item, and the remediation
+    does not duplicate it, because it is not run when the item is met. The
+    remediation writes /etc/modprobe.d/sentin-harden-squashfs.conf, and
+    rollback restores it from the backup or removes it.
+
+    Both lines are needed. The blacklist entry only stops loading by alias,
+    that is, when the kernel itself asks for the driver; running modprobe
+    with the module name bypasses it. The install line replaces loading
+    with running /bin/false, so every such attempt fails. Neither mechanism
+    stops insmod with the full path to the file, but that needs root and a
+    deliberate action.
+
+    The test looks for the module in every kernel under /usr/lib/modules,
+    including the .ko.zst files Ubuntu ships them as. The item is also met
+    when no installed kernel contains the module. A module that is loaded
+    at the time of the check gives a non-compliant result even when the
+    block is in place; the remediation tries to unload it, and if it is in
+    use it stays in memory until whatever uses it stops or the machine
+    restarts. A driver compiled into the kernel (the BUILTIN result) cannot
+    be blocked by a configuration file, and the remaining option is to
+    record an exception.

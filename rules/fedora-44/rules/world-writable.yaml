@@ -1,0 +1,280 @@
+id: fedora44-world-writable
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 7.1.11
+  section: System Maintenance > System File Permissions
+  title:
+    pl: Pliki i katalogi zapisywalne dla wszystkich są zabezpieczone
+    en: Ensure world writable files and directories are secured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Plik zapisywalny dla wszystkich może zmienić każde konto i każda usługa
+    w systemie. Jeśli to skrypt, konfiguracja albo plik, który czyta inny
+    użytkownik, zmiana trafia do cudzego procesu. W katalogu zapisywalnym
+    dla wszystkich bez bitu sticky każdy może usuwać i podmieniać cudze
+    pliki.
+
+    Punkt wymaga, żeby na lokalnych systemach plików nie było plików
+    zapisywalnych dla wszystkich, a każdy katalog zapisywalny dla wszystkich
+    miał bit sticky, tak jak /tmp i /var/tmp.
+  en: |
+    A world-writable file can be changed by every account and service on the
+    system. If it is a script, a configuration or a file another user reads,
+    the change reaches someone else's process. In a world-writable directory
+    without the sticky bit, anyone can delete and replace other people's
+    files.
+
+    The item requires that the local file systems hold no world-writable
+    files, and that every world-writable directory has the sticky bit, like
+    /tmp and /var/tmp.
+
+disruption_description:
+  pl: |
+    Właściciel pliku nadal może go zmieniać; tracą tylko inne konta. Na
+    stacji jednego użytkownika zwykle nikt tego nie zauważy. Trzeba
+    sprawdzić listę z testu, gdy pliki współdzielą konta różnych osób albo
+    usługi, na przykład wspólne pliki blokad lub katalogi wymiany.
+  en: |
+    The owner of a file can still change it; only other accounts lose
+    access. On a single-user workstation nobody usually notices. The list
+    from the test needs checking when files are shared between the accounts
+    of different people or services, for example shared lock files or
+    exchange directories.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+  what_breaks:
+    pl:
+      - Inne konta i usługi nie mogą już zapisywać plików, które wcześniej były zapisywalne dla wszystkich
+      - W katalogach z nowym bitem sticky inne konta nie mogą usuwać ani zmieniać nazw cudzych plików
+    en:
+      - Other accounts and services can no longer write files that used to be world-writable
+      - In directories with the new sticky bit, other accounts cannot delete or rename someone else's files
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    lmounts() {
+      findmnt -rn -o TARGET,FSTYPE 2>/dev/null |
+        awk 'NR == FNR { if (NF == 1) real[$1] = 1; next } ($2 in real) && $2 !~ /^(vfat|exfat|msdos|iso9660|udf|ntfs|ntfs3|fuseblk)$/ { print $1 }' /proc/filesystems - |
+        while IFS= read -r m; do printf '%b\n' "$m"; done
+    }
+    lscan() {
+      local m
+      lmounts | while IFS= read -r m; do
+        find "$m" -xdev \( -path '*/containers/storage' -o -path '*/containerd' -o -path '*/kubelet/pods' -o -path '*/kubelet/plugins' -o -path /var/lib/docker \) -prune -o "$@" 2>/dev/null || true
+      done
+    }
+    # wwlist: "f path" and "d path"; find ends each path with a NUL, so a newline
+    # in a name cannot forge a line: such paths are "n path" with ? for the newline
+    wwlist() {
+      lscan \( -type f -perm -0002 -printf 'f %p\0' \) -o \( -type d -perm -0002 ! -perm -1000 -printf 'd %p\0' \) |
+        awk 'BEGIN { RS = "\0" } { x = $0; if (index(x, "\n")) { gsub(/\n/, "?", x); x = "n" substr(x, 2) } print x }' | sort -u
+    }
+    evaluate() {
+      local l nf nd nn
+      [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
+      l=$(wwlist)
+      [ -n "$l" ] || { echo "OK:files=0,dirs=0"; return; }
+      nf=$(grep -c '^f ' <<< "$l" || true); nd=$(grep -c '^d ' <<< "$l" || true); nn=$(grep -c '^n ' <<< "$l" || true)
+      if [ "$nn" = 0 ]; then nn=""; else nn=",names=$nn"; fi
+      echo "NOT_OK:files=$nf,dirs=$nd$nn,$(head -n 1 <<< "$l" | cut -c 3-)"
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    lmounts() {
+      findmnt -rn -o TARGET,FSTYPE 2>/dev/null |
+        awk 'NR == FNR { if (NF == 1) real[$1] = 1; next } ($2 in real) && $2 !~ /^(vfat|exfat|msdos|iso9660|udf|ntfs|ntfs3|fuseblk)$/ { print $1 }' /proc/filesystems - |
+        while IFS= read -r m; do printf '%b\n' "$m"; done
+    }
+    lscan() {
+      local m
+      lmounts | while IFS= read -r m; do
+        find "$m" -xdev \( -path '*/containers/storage' -o -path '*/containerd' -o -path '*/kubelet/pods' -o -path '*/kubelet/plugins' -o -path /var/lib/docker \) -prune -o "$@" 2>/dev/null || true
+      done
+    }
+    # wwlist: "f path" and "d path"; find ends each path with a NUL, so a newline
+    # in a name cannot forge a line: such paths are "n path" with ? for the newline
+    wwlist() {
+      lscan \( -type f -perm -0002 -printf 'f %p\0' \) -o \( -type d -perm -0002 ! -perm -1000 -printf 'd %p\0' \) |
+        awk 'BEGIN { RS = "\0" } { x = $0; if (index(x, "\n")) { gsub(/\n/, "?", x); x = "n" substr(x, 2) } print x }' | sort -u
+    }
+    evaluate() {
+      local l nf nd nn
+      [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
+      l=$(wwlist)
+      [ -n "$l" ] || { echo "OK:files=0,dirs=0"; return; }
+      nf=$(grep -c '^f ' <<< "$l" || true); nd=$(grep -c '^d ' <<< "$l" || true); nn=$(grep -c '^n ' <<< "$l" || true)
+      if [ "$nn" = 0 ]; then nn=""; else nn=",names=$nn"; fi
+      echo "NOT_OK:files=$nf,dirs=$nd$nn,$(head -n 1 <<< "$l" | cut -c 3-)"
+    }
+      [ "$(id -u)" = 0 ] || { echo "Root privileges are required" >&2; exit 1; }
+      l=$(wwlist)
+      {
+        echo format=perms-1
+        printf '%s\n' "$l" | while IFS= read -r x; do
+          f=${x#? }
+          case $x in [fd]" "*) ;; *) continue ;; esac
+          [ -e "$f" ] && [ ! -L "$f" ] || continue
+          printf '%s %s\n' "$(stat -c '%a %u %g' -- "$f")" "$f"
+        done
+      } > "$b.tmp"
+      mv "$b.tmp" "$b"
+      echo "Saved the mode of $(( $(wc -l < "$b") - 1 )) paths"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=perms-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    lmounts() {
+      findmnt -rn -o TARGET,FSTYPE 2>/dev/null |
+        awk 'NR == FNR { if (NF == 1) real[$1] = 1; next } ($2 in real) && $2 !~ /^(vfat|exfat|msdos|iso9660|udf|ntfs|ntfs3|fuseblk)$/ { print $1 }' /proc/filesystems - |
+        while IFS= read -r m; do printf '%b\n' "$m"; done
+    }
+    lscan() {
+      local m
+      lmounts | while IFS= read -r m; do
+        find "$m" -xdev \( -path '*/containers/storage' -o -path '*/containerd' -o -path '*/kubelet/pods' -o -path '*/kubelet/plugins' -o -path /var/lib/docker \) -prune -o "$@" 2>/dev/null || true
+      done
+    }
+    # wwlist: "f path" and "d path"; find ends each path with a NUL, so a newline
+    # in a name cannot forge a line: such paths are "n path" with ? for the newline
+    wwlist() {
+      lscan \( -type f -perm -0002 -printf 'f %p\0' \) -o \( -type d -perm -0002 ! -perm -1000 -printf 'd %p\0' \) |
+        awk 'BEGIN { RS = "\0" } { x = $0; if (index(x, "\n")) { gsub(/\n/, "?", x); x = "n" substr(x, 2) } print x }' | sort -u
+    }
+    evaluate() {
+      local l nf nd nn
+      [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
+      l=$(wwlist)
+      [ -n "$l" ] || { echo "OK:files=0,dirs=0"; return; }
+      nf=$(grep -c '^f ' <<< "$l" || true); nd=$(grep -c '^d ' <<< "$l" || true); nn=$(grep -c '^n ' <<< "$l" || true)
+      if [ "$nn" = 0 ]; then nn=""; else nn=",names=$nn"; fi
+      echo "NOT_OK:files=$nf,dirs=$nd$nn,$(head -n 1 <<< "$l" | cut -c 3-)"
+    }
+      n=0
+      while IFS= read -r x; do
+        read -r m u g _ <<< "$x"; f=${x#* * * }
+        [ -e "$f" ] && [ ! -L "$f" ] || continue
+        read -r cm cu cg <<< "$(stat -c '%a %u %g' -- "$f")"
+        [ "$cu $cg" = "$u $g" ] || { echo "Skipped $f: its owner changed since the backup"; continue; }
+        if [ -d "$f" ]; then
+          [ $(( 0$cm & 01002 )) -eq 2 ] || continue
+          chmod +t -- "$f"
+        else
+          [ $(( 0$cm & 02 )) -ne 0 ] || continue
+          chmod o-w -- "$f"
+        fi
+        n=$((n + 1))
+      done < <(tail -n +2 "$b")
+      echo "Corrected $n paths"
+      r=$(evaluate)
+      case "$r" in OK:*) ;; *) echo "Paths still not as required ($r)" >&2; exit 1 ;; esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=perms-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if tail -n +2 "$b" | grep -qvE '^[0-7]+ [0-9]+ [0-9]+ /'; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      n=0
+      while IFS= read -r x; do
+        read -r m u g _ <<< "$x"; f=${x#* * * }
+        [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
+        [ ! -L "$f" ] || { echo "Skipped $f: it is now a link"; continue; }
+        read -r cm cu cg <<< "$(stat -c '%a %u %g' -- "$f")"
+        [ "$cu $cg" = "$u $g" ] || { echo "Skipped $f: its owner changed since the backup"; continue; }
+        [ "$cm" != "$m" ] || continue
+        chmod "$(printf '0%04o' $(( 0$m )))" -- "$f"
+        echo "Restored $f"; n=$((n + 1))
+      done < <(tail -n +2 "$b")
+      [ "$n" -gt 0 ] || echo "Nothing to restore"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man1/find.1.html
+  - https://man7.org/linux/man-pages/man8/findmnt.8.html
+  - https://man7.org/linux/man-pages/man1/chmod.1.html
+  - https://man7.org/linux/man-pages/man7/path_resolution.7.html
+
+notes:
+  pl: |
+    Test przeszukuje lokalne systemy plików tak jak skrypt CIS: typy bez
+    nodev w /proc/filesystems, każdy punkt montowania z -xdev. Pomija vfat,
+    exfat, NTFS, iso9660 i udf, które nie mają uniksowych właścicieli ani
+    trybów. Odstępstwem od CIS jest pominięcie warstw obrazów kontenerów
+    (containers/storage, containerd, kubelet, /var/lib/docker): należą do
+    obrazów i zmieniają się przy każdym pobraniu. Podwoluminy btrfs
+    niezamontowane osobno leżą na innym urządzeniu, więc -xdev je pomija,
+    tak jak w CIS. Find kończy każdą ścieżkę znakiem NUL, więc znak nowej
+    linii w nazwie pliku nie tworzy fałszywego wpisu; w wyniku zastępuje go
+    znak ?. Bez roota find nie wejdzie do wszystkich katalogów, więc
+    wynik to NOT_OK:needs-root.
+    Wynik NOT_OK podaje liczbę plików i katalogów oraz pierwszą ścieżkę.
+    Naprawa odbiera plikom prawo zapisu dla innych (chmod o-w), a katalogom
+    dodaje bit sticky (chmod +t). Zmienia tylko ścieżki zapisane w kopii
+    i tylko te, które nadal mają tego samego właściciela i grupę i nie są
+    dowiązaniami, bo leżą w miejscach, w których ktoś mógł je podmienić.
+    Wycofanie przywraca tylko tryb, na tych samych warunkach. Ścieżek ze
+    znakiem nowej linii w nazwie (names=N w wyniku) naprawa nie zmienia;
+    trzeba im ręcznie zmienić nazwę albo tryb. Typowe
+    znaleziska w katalogach domowych to pliki konfiguracji i blokad
+    zapisane przez programy spoza repozytoriów Fedory z trybem 666.
+  en: |
+    The test searches the local file systems like the CIS script: the
+    types without nodev in /proc/filesystems, each mount point with -xdev.
+    It leaves out vfat, exfat, NTFS, iso9660 and udf, which have no Unix
+    owners or modes. Unlike CIS, it skips container image layers
+    (containers/storage, containerd, kubelet, /var/lib/docker): they belong
+    to the images and change with every pull. Btrfs subvolumes that are not
+    mounted on their own lie on another device, so -xdev skips them, as in
+    CIS. Find ends each path with a NUL, so a newline in a file name cannot
+    forge an entry; the result shows a ? in its place. Without root, find cannot enter every directory, so the result is
+    NOT_OK:needs-root.
+    The NOT_OK result gives the number of files and directories and the
+    first path. The remediation removes write access for others from the
+    files (chmod o-w) and adds the sticky bit to the directories (chmod +t).
+    It changes only the paths saved in the backup, and only those that still
+    have the same owner and group and are not links, because they lie in
+    places where someone could have swapped them. Rollback restores only the
+    mode, under the same conditions. The remediation does not change paths
+    with a newline in their name (names=N in the result); they need a new
+    name or mode set by hand. Typical findings in home directories
+    are configuration and lock files that programs from outside the Fedora
+    repositories save with mode 666.

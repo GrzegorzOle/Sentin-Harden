@@ -1,0 +1,197 @@
+id: win2016-problem-reports-control-panel-service-disabled
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: System Services
+  title:
+    pl: Usługa obsługi panelu zgłoszeń o problemach wyłączona
+    en: The service backing the problem reports panel disabled
+  level: 2
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usługa obsługuje panel, w którym przegląda się zgłoszenia o problemach
+    zapisane wcześniej na tej maszynie i sprawdza, czy producent przysłał
+    dla nich rozwiązanie.
+
+    Zakres jest wąski i warto go od razu ograniczyć. Usługa nie zbiera
+    danych, nie tworzy raportów i nie wysyła niczego. Jej jedynym zadaniem
+    jest pokazanie listy tego, co już zostało zebrane, oraz odpytanie
+    producenta o odpowiedź.
+
+    Serwer nie ma nikogo, kto by tę listę otwierał. Panel jest narzędziem
+    interaktywnym, a maszyna, do której nikt się nie loguje po to, żeby
+    czytać zgłoszenia, utrzymuje usługę bez odbiorcy.
+
+    Wartość punktu leży zatem w porządku oraz w zdjęciu jednego z połączeń
+    wychodzących do usługi producenta. Kategoria niska opisuje to uczciwie
+    — nie ma tu drogi ataku, jest składnik pracujący bez celu.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: praktycznie
+    nic; punkt dotyczy panelu, którego na serwerze nikt nie otwiera.
+  en: |
+    The service backs the panel in which problem reports saved earlier on this machine are
+    browsed, and checks whether the maker has sent a solution for them.
+
+    The reach is a narrow one and worth limiting at once. The service gathers no data, makes no
+    reports and sends nothing. Its one task is to show a list of what has already been gathered
+    and to query the maker for an answer.
+
+    A server has nobody who would open that list. The panel is an interactive tool, and a
+    machine nobody signs in to in order to read reports keeps up a service with no listener.
+
+    The item's worth therefore lies in good order and in taking away one of the outgoing
+    connections to the maker's service. The low category describes that honestly - there is
+    here no road of attack, there is a component working to no end.
+
+    What an attacker gains while the item goes unmet: practically nothing; the item concerns a
+    panel nobody opens on a server.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Nikt na serwerze tego panelu nie otwiera. Wyłączenie usługi nie zmienia
+    niczego w zbieraniu ani w wysyłaniu zgłoszeń — te rządzą się regułami
+    sąsiednimi.
+
+    Objaw jedyny, jaki może wystąpić: ktoś, kto zaloguje się na maszynę
+    i otworzy panel zgłoszeń, zobaczy go pustym albo dostanie komunikat
+    o niedostępności. Nie ma to wpływu na nic poza samym widokiem.
+
+    Nie ma znanych regresji.
+
+    Czego to nie psuje: zbierania i wysyłania zgłoszeń, zrzutów lokalnych,
+    dzienników zdarzeń, usług, sieci, uwierzytelniania.
+
+    Wymaga zatrzymania usługi; poza tym natychmiast odwracalne.
+  en: |
+    The class is "no disruption".
+
+    Nobody opens that panel on a server. Switching the service off changes nothing in the
+    gathering or the sending of reports - those are governed by the neighbouring rules.
+
+    The one symptom that may show: somebody who signs in to the machine and opens the problem
+    reports panel will see it empty or get a message about it being unreachable. That has no
+    bearing on anything beyond the view itself.
+
+    There are no known regressions.
+
+    What this does not break: the gathering and sending of reports, local dumps, event logs,
+    services, the network, or authentication.
+
+    Calls for the service to be stopped; otherwise undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - user-interface
+  what_breaks:
+    pl:
+      - Panel zgłoszeń o problemach otwarty na tej maszynie pokaże się pusty albo zgłosi niedostępność
+      - Zbieranie i wysyłanie zgłoszeń nie zmienia się - tym rządzą reguły sąsiednie
+      - Znika jedno połączenie wychodzące do usługi producenta, odpytujące o rozwiązania
+      - Zrzuty lokalne, dzienniki zdarzeń, usługi i sieć pozostają bez zmian
+    en:
+      - The problem reports panel opened on this machine will show empty or report itself unreachable
+      - The gathering and sending of reports does not change - the neighbouring rules govern that
+      - One outgoing connection to the maker's service, querying for solutions, goes away
+      - Local dumps, event logs, services and the network stay unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na tej maszynie ktoś regularnie przegląda panel zgłoszeń przy rozwiązywaniu problemów z aplikacjami
+    en:
+      - Somebody on this machine regularly browses the reports panel when settling troubles with applications
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\wercplsupport'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'NOT_APPLICABLE' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).Start
+        if ($null -eq $value) { 'CHECK_ERROR' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '4'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\wercplsupport'
+    $current = (Get-ItemProperty -Path $path -Name 'Start' -ErrorAction SilentlyContinue).Start
+    [pscustomobject]@{
+      path    = $path
+      name    = 'Start'
+      value   = $current
+      existed = ($null -ne $current)
+      running = ((Get-Service -Name 'wercplsupport' -ErrorAction SilentlyContinue).Status -eq 'Running')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Only the panel for browsing past reports goes. The reporting itself is
+    # governed by the neighbouring rules.
+    Stop-Service -Name 'wercplsupport' -Force -ErrorAction SilentlyContinue
+    Set-Service -Name 'wercplsupport' -StartupType Disabled
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    if ($b.running) { Start-Service -Name 'wercplsupport' -ErrorAction SilentlyContinue }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/wer/windows-error-reporting
+
+notes:
+  pl: |
+    Punkt jest w bloku najlżejszy i warto pilnować, żeby nie podpierał się
+    powagą sąsiadów. Usługa zgłaszania błędów wysyła dane; ta pokazuje listę.
+    Są to dwie różne rzeczy i pomylenie ich prowadzi do wdrożenia
+    tego punktu z powodu, który do niego nie należy.
+
+    Trzy punkty tego bloku układają się warstwowo i warto tę warstwowość
+    pokazać w interfejsie. Pierwszy zamyka zbieranie i wysyłanie, drugi
+    zamyka dosyłanie na żądanie, trzeci zamyka przeglądanie. Wdrożenie
+    samego trzeciego nie robi prawie nic; wdrożenie samego pierwszego robi
+    prawie wszystko.
+
+    Jest to dobry przykład na to, że kolejność w domyślnym sortowaniu ma
+    znaczenie praktyczne. Punkt najlżejszy postawiony obok najcięższego bez
+    wskazania zależności zachęca do wykonania tego, co tanie, zamiast tego,
+    co skuteczne.
+  en: |
+    The item is the lightest in the block and it is worth seeing that it does not prop itself
+    on its neighbours' weight. The error reporting service sends data; this one shows a list.
+    They are two different things and confusing them leads to a rollout for an overrated
+    reason.
+
+    The block's three items lie in layers and that layering is worth showing in the interface.
+    The first shuts the gathering and the sending, the second shuts the sending on request, the
+    third shuts the browsing. Rolling out the third alone does almost nothing; rolling out the
+    first alone does almost everything.
+
+    It is a good example of the order in the default sorting mattering in practice. The
+    lightest item set beside the heaviest with no dependence shown tempts one to carry out what
+    is cheap instead of what is telling.

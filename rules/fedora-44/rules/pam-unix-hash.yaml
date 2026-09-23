@@ -1,0 +1,117 @@
+id: fedora44-pam-unix-hash
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.3.3.4.3
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_unix module
+  title:
+    pl: Moduł pam_unix zapisuje hasła silnym algorytmem skrótu
+    en: Ensure pam_unix includes a strong password hashing algorithm
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Algorytm, którym pam_unix zapisuje nowe hasło w /etc/shadow, decyduje,
+    jak szybko da się je odgadnąć, gdy plik wycieknie. Stare algorytmy, na
+    przykład md5 albo bigcrypt, pozwalają sprawdzać miliardy haseł na
+    sekundę.
+
+    Punkt wymaga, żeby wiersz password z pam_unix w /etc/pam.d/system-auth
+    i password-auth miał opcję sha512 albo yescrypt.
+  en: |
+    The algorithm pam_unix uses to store a new password in /etc/shadow
+    decides how fast it can be guessed when the file leaks. Old algorithms,
+    for example md5 or bigcrypt, allow billions of passwords to be tried per
+    second.
+
+    The item requires the password line with pam_unix in
+    /etc/pam.d/system-auth and password-auth to have the sha512 or yescrypt
+    option.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: sprawdzenie tylko czyta pliki PAM.
+  en: |
+    Nobody will notice: the check only reads the PAM files.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_lines() {
+      [ -r "$1" ] || return 0
+      awk -v m="$2" '
+        { sub(/#.*/, "") }
+        NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        p[n] == m { s = $1; for (i = 4; i <= NF; i++) s = s " " $i; print s }' "$1"
+    }
+    ok="" bad=""
+    for f in system-auth password-auth; do
+      l=$(pam_lines "/etc/pam.d/$f" pam_unix.so | awk '$1 == "password" { h = "no-hash-option"
+        for (i = 2; i <= NF; i++) if ($i ~ /^(md5|bigcrypt|sha256|sha512|blowfish|gost_yescrypt|yescrypt)$/) h = $i
+        print h }')
+      [ -n "$l" ] || { bad="$bad,$f:no-password-line"; continue; }
+      for h in $l; do
+        case $h in sha512|yescrypt) ok="$ok,$f:$h" ;; *) bad="$bad,$f:$h" ;; esac
+      done
+    done
+    if [ -z "$bad" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:${bad#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_unix.8.html
+
+notes:
+  pl: |
+    Sprawdzenie czyta aktywne wiersze pam_unix w /etc/pam.d/system-auth
+    i password-auth; inne pliki w /etc/pam.d dołączają te dwa. Profile
+    local i sssd generują te wiersze z szablonów w /usr/share/authselect,
+    więc ręczna zmiana w /etc/authselect znika przy następnym authselect
+    select albo enable-feature. Trwałą zmianę robi się we własnym profilu
+    w /etc/authselect/custom i poleceniem authselect apply-changes.
+
+    Profile local i sssd mają w wierszu password opcję yescrypt. Gdy wiersz
+    ma kilka opcji algorytmu, pam_unix bierze ostatnią i tę samą bierze
+    sprawdzenie. Wiersz bez opcji algorytmu daje wynik NOT_OK, chociaż
+    pam_unix używa wtedy ENCRYPT_METHOD z /etc/login.defs (punkt 5.4.1.4),
+    bo punkt wymaga opcji w pliku PAM. Zmiana algorytmu dotyczy tylko haseł
+    ustawionych po niej. Reguła tylko sprawdza stan.
+  en: |
+    The check reads the active pam_unix lines in /etc/pam.d/system-auth and
+    password-auth; other files in /etc/pam.d include these two. The local
+    and sssd profiles generate these lines from the templates in
+    /usr/share/authselect, so a change by hand in /etc/authselect is lost at
+    the next authselect select or enable-feature. A lasting change is made
+    in a custom profile in /etc/authselect/custom and with authselect
+    apply-changes.
+
+    The local and sssd profiles have the yescrypt option on the password
+    line. When the line has several algorithm options, pam_unix takes the
+    last one and so does the check. A line without an algorithm option gives
+    the NOT_OK result, although pam_unix then uses ENCRYPT_METHOD from
+    /etc/login.defs (item 5.4.1.4), because the item requires the option in
+    the PAM file. A change of algorithm only affects passwords set after it.
+    The rule only checks the state.

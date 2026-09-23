@@ -1,0 +1,222 @@
+id: win2016-audit-ipsec-driver
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja sterownika zabezpieczeń protokołu internetowego
+    en: Audit IPsec driver
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zdarzenia sterownika odpowiadającego za szyfrowanie
+    i uwierzytelnianie ruchu na poziomie protokołu internetowego: uruchomienie
+    i zatrzymanie sterownika, niepowodzenia przetwarzania pakietów oraz
+    odrzucenie ruchu.
+
+    Znaczenie punktu zależy od tego, czy mechanizm jest na tej maszynie
+    używany, i trzeba to powiedzieć wprost. Tam, gdzie ruch między serwerami
+    jest chroniony tym mechanizmem, zatrzymanie sterownika oznacza, że ruch
+    przestaje być szyfrowany. W zależności od konfiguracji albo połączenia
+    przestają działać — i wtedy widać to od razu — albo idą dalej otwartym
+    tekstem, i wtedy nie widać niczego.
+
+    Ten drugi przypadek uzasadnia istnienie punktu. Utrata ochrony bez utraty
+    łączności jest najgorszym możliwym trybem awarii, bo nie wywołuje żadnej
+    reakcji: aplikacje działają, użytkownicy nie dzwonią, a ruch, który miał
+    być szyfrowany, przechodzi przez sieć jawnie.
+
+    Tam, gdzie mechanizm nie jest używany, podkategoria zapisze zdarzenia
+    uruchomienia sterownika przy starcie maszyny i nic więcej.
+
+    Rejestruje się powodzenia i niepowodzenia.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: doprowadzenie do
+    przesyłania ruchu bez szyfrowania bez sygnału, że ochrona przestała działać.
+  en: |
+    The subcategory records events of the driver answering for the encryption and
+    authentication of traffic at the level of the internet protocol: the starting
+    and stopping of the driver, failures in processing packets, and traffic being
+    dropped.
+
+    The item's weight hangs on whether the mechanism is in use on this machine, and
+    that has to be said outright. Where traffic between servers is protected by this
+    mechanism, the driver stopping means the traffic ceases to be encrypted.
+    Depending on the configuration, either the connections stop working - and then
+    it shows at once - or they go on in the clear, and then nothing shows at all.
+
+    That second case justifies the item's existence. A loss of protection without a
+    loss of connectivity is the worst possible mode of failure, because it provokes
+    no reaction: the applications work, the users do not ring, and traffic that was
+    to be encrypted crosses the network in the open.
+
+    Where the mechanism is not in use, the subcategory will record the driver
+    starting with the machine and nothing more.
+
+    Successes and failures are both recorded.
+
+    What an attacker gains while the item goes unmet: bringing traffic to be sent
+    unencrypted, with no signal that the protection has stopped working.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Na maszynie, która tego mechanizmu nie używa,
+    zdarzeń jest kilka przy starcie i żadnych później.
+
+    Tam, gdzie mechanizm jest używany, objętość zależy od tego, ile ruchu jest
+    odrzucane. W konfiguracji działającej poprawnie odrzuceń nie ma i zdarzeń
+    też nie. W konfiguracji, w której część partnerów nie negocjuje ochrony,
+    odrzucenia potrafią się powtarzać — ale jest to samo w sobie ustalenie
+    warte uwagi, a nie szum do odfiltrowania.
+
+    Nic przy tym nie przestaje działać. Sterownik pracuje tak samo, ruch idzie
+    tak samo, negocjacje przebiegają tak samo.
+
+    Czego to nie psuje: szyfrowania ruchu, negocjacji z partnerami, łączności
+    ani wydajności sieci.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". On a machine not using this mechanism there are a
+    few events at the start and none later.
+
+    Where the mechanism is in use, the volume hangs on how much traffic is dropped.
+    In a properly working configuration there are no drops and so no events. In one
+    where some partners do not negotiate protection, drops can recur - but that is
+    itself a finding worth attention rather than noise to be filtered out.
+
+    Nothing stops working while this goes on. The driver works as before, traffic
+    passes as before, negotiations proceed as before.
+
+    What this does not break: the encryption of traffic, negotiation with partners,
+    connectivity, or the network's performance.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — na maszynie nieużywającej tego mechanizmu zdarzeń jest kilka przy starcie i żadnych później
+      - Tam, gdzie część partnerów nie negocjuje ochrony, odrzucenia ruchu powtarzają się i dopisują zdarzenia
+      - Powtarzające się odrzucenia są ustaleniem wartym uwagi, a nie szumem do odfiltrowania
+      - Szyfrowanie ruchu, negocjacje i wydajność sieci pozostają nietknięte
+    en:
+      - No regression in the working - on a machine not using this mechanism there are a few events at the start and none later
+      - Where some partners do not negotiate protection, dropped traffic recurs and adds events
+      - Recurring drops are a finding worth attention rather than noise to be filtered out
+      - The encryption of traffic, negotiation and the network's performance stay untouched
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przeciwwskazań — objętość jest niewielka niezależnie od tego, czy mechanizm jest używany
+    en:
+      - No known contraindication - the volume is small whether the mechanism is in use or not
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9213-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9213-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9213-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9213-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9213-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-ipsec-driver
+
+notes:
+  pl: |
+    Na większości serwerów punkt jest gotowością, a nie ochroną, i tak warto go
+    przedstawić. Mechanizm ochrony ruchu na poziomie protokołu internetowego
+    jest w praktyce używany rzadko, zwykle między wybranymi serwerami.
+
+    Tam jednak, gdzie jest używany, ta podkategoria bywa jedynym miejscem,
+    w którym widać, że ochrona przestała działać bez zerwania łączności.
+    Jest to cichy tryb awarii i zasługuje na osobne zdanie w raporcie.
+
+    Punktu nie należy mylić z regułami o ochronie połączeń sieciowych
+    w warstwie wyższej. Tamte dotyczą protokołu TLS i są osobnym tematem.
+  en: |
+    On most servers the item is readiness rather than protection, and is worth
+    presenting as such. The mechanism for protecting traffic at the internet
+    protocol level is in practice seldom used, usually between chosen servers.
+
+    Where it is used, though, this subcategory is at times the one place where it
+    shows that protection has stopped working without connectivity being broken. It
+    is a quiet mode of failure and deserves a sentence of its own in the report.
+
+    The item should not be confused with the rules on protecting network connections
+    at a higher layer. Those concern the TLS protocol and are a separate subject.

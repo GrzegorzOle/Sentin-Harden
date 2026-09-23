@@ -1,0 +1,216 @@
+id: win2016-audit-security-state-change
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja zmiany stanu zabezpieczeń
+    en: Audit security state change
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany stanu podsystemu zabezpieczeń: uruchomienie
+    i zamknięcie systemu oraz zmianę czasu systemowego.
+
+    Wartość bierze się z domykania osi czasu. Dochodzenie prowadzi się na
+    zdarzeniach uporządkowanych chronologicznie, a przerwa w tym porządku bez
+    wyjaśnienia jest dziurą, której nie da się zinterpretować. Zdarzenie
+    zamknięcia i uruchomienia systemu tę przerwę tłumaczy: maszyna była
+    wyłączona, więc nic w tym czasie nie mogło się na niej zdarzyć.
+
+    Bez tego pusty przedział czasu ma dwa możliwe znaczenia — maszyna stała
+    albo ktoś usunął zapis — i nie da się między nimi rozstrzygnąć.
+
+    Zmiana czasu systemowego jest drugą częścią i mniej oczywistą. Przesunięcie
+    zegara przestawia znaczniki czasu kolejnych zdarzeń, co przy zestawianiu
+    dzienników z kilku maszyn prowadzi do wniosków odwróconych w kolejności.
+    Zdarzenie o zmianie czasu jest jedynym sposobem, żeby to wykryć.
+
+    Rejestruje się powodzenia.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: przestawienie
+    zegara albo ponowne uruchomienie maszyny bez zapisu wyjaśniającego przerwę
+    w osi czasu.
+  en: |
+    The subcategory records changes to the security subsystem's state: the start and
+    shutdown of the system, and a change of system time.
+
+    The worth comes of closing the axis of time. An inquiry is carried out on events
+    ordered chronologically, and an unexplained break in that order is a hole
+    admitting no interpretation. The event of the system being shut down and started
+    explains the break: the machine was off, so nothing could have happened on it in
+    that time.
+
+    Without it an empty span of time has two possible meanings - the machine stood
+    idle, or somebody removed the record - and there is no deciding between them.
+
+    A change of system time is the second part and the less obvious. Shifting the
+    clock moves the timestamps of subsequent events, which when logs from several
+    machines are set side by side leads to conclusions reversed in order. The event
+    about a change of time is the only way of detecting it.
+
+    Successes are recorded.
+
+    What an attacker gains while the item goes unmet: the resetting of the clock or
+    the restarting of the machine with no record explaining the break in the axis of
+    time.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Zdarzeń jest tyle, ile restartów maszyny, czyli
+    na serwerze kilka miesięcznie.
+
+    Jedyne źródło podwyższonej objętości to maszyny wirtualne z narzędziami
+    gościa synchronizującymi zegar z hostem. Tam korekta czasu bywa wykonywana
+    regularnie i każda dopisuje zdarzenie. Jest to szum przewidywalny i łatwy
+    do odfiltrowania po rozmiarze korekty — ale warto wiedzieć, że wystąpi.
+
+    Nic przy tym nie przestaje działać, synchronizacja czasu działa tak samo
+    i użytkownik niczego nie widzi.
+
+    Czego to nie psuje: uruchamiania i zamykania systemu, synchronizacji czasu
+    ani pracy narzędzi gościa w maszynie wirtualnej.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". There are as many events as there are restarts of
+    the machine, which on a server is a few a month.
+
+    The one source of raised volume is virtual machines with guest tools
+    synchronising the clock with the host. There a correction of time is at times
+    carried out regularly and each adds an event. It is predictable noise, easy to
+    filter by the size of the correction - but it is worth knowing it will occur.
+
+    Nothing stops working while this goes on, time synchronisation works as before,
+    and the user sees nothing.
+
+    What this does not break: the starting and shutting down of the system, time
+    synchronisation, or the work of guest tools in a virtual machine.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — zdarzeń jest tyle, ile restartów maszyny
+      - W maszynie wirtualnej narzędzia gościa synchronizujące zegar dopisują zdarzenie przy każdej korekcie
+      - Uruchamianie i zamykanie systemu oraz synchronizacja czasu działają bez zmian
+      - Szum z korekt czasu da się odfiltrować po rozmiarze korekty
+    en:
+      - No regression in the working - there are as many events as there are restarts of the machine
+      - In a virtual machine guest tools synchronising the clock add an event at every correction
+      - The starting and shutting down of the system, and time synchronisation, work unchanged
+      - Noise from time corrections can be filtered by the size of the correction
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przeciwwskazań — objętość jest pomijalna nawet w maszynie wirtualnej z częstą korektą zegara
+    en:
+      - No known contraindication - the volume is negligible even in a virtual machine with frequent clock correction
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9210-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9210-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9210-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9210-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9210-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-security-state-change
+
+notes:
+  pl: |
+    Punkt sam nie wykrywa niczego i oceniony osobno wygląda na porządkowy.
+    Jego wartość polega na tym, że nadaje sens pustym przedziałom czasu
+    w dzienniku — a te są w dochodzeniu pytaniem zadawanym bardzo wcześnie.
+
+    Zmianę czasu systemowego warto czytać razem z regułą o uprawnieniu do
+    zmiany czasu. Tamta ogranicza, kto może to zrobić; ta zapisuje, że zrobił.
+
+    Na maszynie fizycznej zdarzenia zmiany czasu praktycznie nie występują poza
+    korektą z usługi czasu. Każde inne jest warte pytania.
+  en: |
+    The item detects nothing on its own and judged apart looks like housekeeping.
+    Its worth lies in giving meaning to empty spans of time in the log - and those
+    are a question asked very early in an inquiry.
+
+    A change of system time is worth reading together with the rule on the right to
+    change the time. That one limits who may do it; this one records that they did.
+
+    On a physical machine events of time change practically do not occur beyond the
+    correction from the time service. Every other one is worth a question.

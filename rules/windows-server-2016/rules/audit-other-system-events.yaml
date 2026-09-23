@@ -1,0 +1,217 @@
+id: win2016-audit-other-system-events
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > System
+  title:
+    pl: Inspekcja innych zdarzeń systemowych
+    en: Audit other system events
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zbiera zdarzenia systemowe niemieszczące się w pozostałych,
+    a przede wszystkim zdarzenia zapory sieciowej: uruchomienie i zatrzymanie
+    usługi, niepowodzenie wczytania konfiguracji oraz przywrócenie ustawień
+    domyślnych.
+
+    Zatrzymanie zapory jest tu rzeczą najważniejszą. Wyłączenie ochrony sieciowej
+    przed działaniem jest odpowiednikiem wyłączenia inspekcji: krokiem
+    przygotowawczym, po którym nic już nie broni maszyny przed ruchem
+    przychodzącym. Bez tej podkategorii wyłączenie zapory jest zdarzeniem
+    niewidocznym w dzienniku zabezpieczeń.
+
+    Niepowodzenie wczytania konfiguracji jest przypadkiem subtelniejszym
+    i łatwiejszym do przeoczenia. Zapora, która nie zdołała wczytać reguł,
+    działa — tyle że nie tak, jak zaplanowano. Maszyna wygląda na chronioną,
+    a chroniona jest w sposób domyślny.
+
+    Rejestruje się powodzenia i niepowodzenia, bo zdarzeń jest niewiele,
+    a oba rodzaje niosą treść.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: wyłączenie
+    zapory przed działaniem bez pozostawienia zapisu w dzienniku zabezpieczeń.
+  en: |
+    The subcategory gathers system events not fitting the others, and above all
+    firewall events: the starting and stopping of the service, a failure to load the
+    configuration, and the restoring of default settings.
+
+    Stopping the firewall is the chief matter here. Switching network protection off
+    before acting is the counterpart of switching auditing off: a preparatory step
+    after which nothing guards the machine against incoming traffic. Without this
+    subcategory the switching off of the firewall is an event invisible in the
+    security log.
+
+    A failure to load the configuration is a subtler case and easier to overlook. A
+    firewall that failed to load its rules is running - only not as planned. The
+    machine looks protected, and is protected by default settings.
+
+    Successes and failures are both recorded, there being few events and both kinds
+    carrying substance.
+
+    What an attacker gains while the item goes unmet: the switching off of the
+    firewall before acting, leaving no record in the security log.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Zdarzeń jest niewiele: usługa zapory uruchamia się
+    przy starcie maszyny i zwykle nie jest zatrzymywana.
+
+    Jedno źródło podwyższonej objętości warto znać. Na maszynie, na której
+    reguły zapory są wdrażane zasadami grupy przy każdym cyklu odświeżania,
+    zdarzenia wczytania konfiguracji powstają regularnie. Jest to szum
+    przewidywalny, ale trzeba wiedzieć, że nie każde zdarzenie w tej
+    podkategorii oznacza kłopot.
+
+    Nic przy tym nie przestaje działać. Zapora pracuje tak samo, reguły
+    obowiązują tak samo, ruch idzie tak samo.
+
+    Czego to nie psuje: pracy zapory, wdrażania reguł zasadami grupy,
+    połączeń sieciowych ani niczego, co przez tę maszynę przechodzi.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". There are few events: the firewall service starts
+    with the machine and is not usually stopped.
+
+    One source of raised volume is worth knowing. On a machine where firewall rules
+    are deployed by group policy at every refresh cycle, events of the configuration
+    being loaded arise regularly. It is predictable noise, but one has to know that
+    not every event in this subcategory means trouble.
+
+    Nothing stops working while this goes on. The firewall works as before, the
+    rules hold as before, traffic passes as before.
+
+    What this does not break: the firewall's work, the deployment of rules by group
+    policy, network connections, or anything passing through this machine.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — usługa zapory uruchamia się przy starcie i zwykle nie jest zatrzymywana
+      - Wdrażanie reguł zapory zasadami grupy przy każdym cyklu odświeżania dopisuje zdarzenia regularnie
+      - Zapora pracuje tak samo, reguły obowiązują tak samo i ruch idzie tak samo
+      - Nie każde zdarzenie w tej podkategorii oznacza kłopot i warto to wiedzieć przed przeglądem
+    en:
+      - No regression in the working - the firewall service starts with the machine and is not usually stopped
+      - Deploying firewall rules by group policy at every refresh cycle adds events regularly
+      - The firewall works as before, the rules hold as before and traffic passes as before
+      - Not every event in this subcategory means trouble, and that is worth knowing before a review
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przeciwwskazań — objętość jest niewielka nawet przy częstym odświeżaniu zasad grupy
+    en:
+      - No known contraindication - the volume is small even with frequent group policy refreshes
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9214-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9214-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9214-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9214-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9214-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-other-system-events
+
+notes:
+  pl: |
+    Nazwa podkategorii jest pojemna i nic nie mówi, a jej treść na serwerze
+    sprowadza się w praktyce do zapory. Warto czytać ją razem z regułami
+    o konfiguracji zapory: tamte ustalają, jak ma działać, ta zapisuje, czy
+    w ogóle działa.
+
+    Zdarzenie o przywróceniu ustawień domyślnych jest wartym uwagi sygnałem.
+    Zapora przywrócona do ustawień domyślnych na serwerze zwykle przepuszcza
+    więcej niż zapora skonfigurowana, a wygląda w narzędziu na włączoną.
+
+    Punkt nie obejmuje zmian pojedynczych reguł zapory — te opisuje osobna
+    podkategoria i osobna reguła.
+  en: |
+    The subcategory's name is capacious and says nothing, while its content on a
+    server comes in practice down to the firewall. It is worth reading together with
+    the rules on firewall configuration: those settle how it should work, this one
+    records whether it works at all.
+
+    The event about default settings being restored is a signal worth attention. A
+    firewall restored to defaults on a server usually lets more through than a
+    configured one, while looking switched on in the tool.
+
+    The item does not cover changes to individual firewall rules - a separate
+    subcategory and a separate rule describe those.

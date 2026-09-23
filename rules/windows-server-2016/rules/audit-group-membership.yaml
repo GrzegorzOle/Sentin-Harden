@@ -1,0 +1,221 @@
+id: win2016-audit-group-membership
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja członkostwa w grupach przy logowaniu
+    en: Audit group membership
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria dopisuje do zdarzeń logowania wykaz grup, do których należała
+    zalogowana sesja.
+
+    Jest to uzupełnienie, a nie osobne zdarzenie, i na tym polega jego wartość.
+    Zwykłe zdarzenie logowania mówi, kto się zalogował. Dopiero wykaz grup mówi,
+    z jakimi uprawnieniami — a w systemie opartym na grupach to jest właściwa
+    odpowiedź na pytanie, co ta sesja mogła zrobić.
+
+    Znaczenie praktyczne widać w dochodzeniu prowadzonym po czasie. Członkostwo
+    sprawdzone dzisiaj mówi, do jakich grup konto należy dzisiaj. Jeżeli
+    w międzyczasie ktoś je z grupy usunął — celowo albo w ramach porządków —
+    odtworzenie stanu sprzed miesiąca jest niemożliwe. Wykaz zapisany razem
+    ze zdarzeniem logowania jest jedynym trwałym śladem tego, czym konto
+    dysponowało w danej chwili.
+
+    Rejestruje się powodzenia, bo wykaz grup powstaje w chwili tworzenia sesji,
+    a sesja nieudana żadnego wykazu nie ma.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    cofnięcia własnych uprawnień po działaniu, tak że zapis logowania nie
+    pokazuje, czym wtedy dysponował.
+  en: |
+    The subcategory adds to sign-in events the list of groups the signed-in session
+    belonged to.
+
+    It is a supplement rather than a separate event, and in that lies its worth. An
+    ordinary sign-in event says who signed in. Only the list of groups says with what
+    rights - and in a system resting on groups that is the real answer to the
+    question what the session could do.
+
+    The practical weight shows in an inquiry held after time has passed. Membership
+    checked today says what groups the account belongs to today. If somebody removed
+    it from a group in the meantime - on purpose or in the course of tidying up -
+    reconstructing the state of a month ago is impossible. The list recorded
+    together with the sign-in event is the only lasting trace of what the account
+    had at its disposal at that moment.
+
+    Successes are recorded, since the list of groups arises at the creation of the
+    session, and a failed session has no list at all.
+
+    What an attacker gains while the item goes unmet: the means of withdrawing their
+    own rights after acting, so that the sign-in record does not show what they had
+    at the time.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości" z jednym zastrzeżeniem objętościowym, które warto
+    znać.
+
+    Zdarzeń nie przybywa — podkategoria nie generuje nowych wpisów, tylko
+    rozszerza istniejące. Rośnie natomiast rozmiar pojedynczego wpisu i to
+    proporcjonalnie do liczby grup. Konto należące do pięciu grup dopisze
+    kilka wierszy; konto w organizacji, gdzie uprawnienia nadaje się przez
+    kilkadziesiąt grup zagnieżdżonych, dopisze ich odpowiednio więcej.
+
+    Praktyczny skutek dotyczy nie tyle dziennika, co systemu zbierającego,
+    który rozlicza się objętością, a nie liczbą zdarzeń. Warto to sprawdzić
+    tam, gdzie takie rozliczenie obowiązuje.
+
+    Nic przy tym nie przestaje działać, czas logowania nie zmienia się
+    w sposób odczuwalny i użytkownik niczego nie widzi.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption" with one reservation about volume worth knowing.
+
+    The count of events does not grow - the subcategory generates no new entries, it
+    widens existing ones. What grows is the size of a single entry, in proportion to
+    the number of groups. An account in five groups adds a few lines; an account in
+    an organisation granting rights through some dozens of nested groups adds
+    correspondingly more.
+
+    The practical effect concerns not so much the log as the gathering system, which
+    bills by volume rather than by count of events. That is worth checking where
+    such billing applies.
+
+    Nothing stops working while this goes on, the time taken to sign in does not
+    alter perceptibly, and the user sees nothing.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — nie przybywa zdarzeń, rośnie rozmiar pojedynczego wpisu
+      - W organizacji nadającej uprawnienia przez kilkadziesiąt grup zagnieżdżonych wpisy rosną odpowiednio bardziej
+      - System zbierający rozliczający się objętością odczuje to mocniej niż sam dziennik
+      - Czas logowania nie zmienia się w sposób odczuwalny
+    en:
+      - No regression in the working - the count of events does not grow, the size of a single entry does
+      - In an organisation granting rights through some dozens of nested groups the entries grow correspondingly more
+      - A gathering system billing by volume will feel this more than the log itself
+      - The time taken to sign in does not alter perceptibly
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zdarzenia z tej maszyny są rozliczane objętościowo, a konta należą do wielu grup zagnieżdżonych
+    en:
+      - Events from this machine are billed by volume and the accounts belong to many nested groups
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9249-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9249-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9249-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9249-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9249-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-group-membership
+
+notes:
+  pl: |
+    Punkt jest uzupełnieniem inspekcji logowania i bez niej nie ma sensu.
+    W raporcie warto pokazać je razem, bo osobno ten wygląda na szczegół
+    techniczny, a w parze odpowiada na pytanie o zakres możliwości sesji.
+
+    Wartość ujawnia się dopiero po czasie i to jest powód, dla którego bywa
+    pomijany. Korzyść z zapisania wykazu grup dzisiaj widać dopiero wtedy,
+    gdy trzeba odtworzyć stan sprzed miesięcy.
+
+    Podkategoria nie zapisuje zmian członkostwa — to robi inspekcja zarządzania
+    grupami zabezpieczeń. Ta utrwala stan w chwili logowania.
+  en: |
+    The item is a supplement to the auditing of sign-ins and makes no sense without
+    it. They are worth showing together in the report, since apart this one looks
+    like a technical detail, while paired it answers the question of a session's
+    reach.
+
+    Its worth comes out only after time has passed, and that is why it gets passed
+    over. The gain from recording the list of groups today shows only when the state
+    of months ago has to be reconstructed.
+
+    The subcategory does not record changes of membership - the auditing of security
+    group management does that. This one fixes the state at the moment of signing
+    in.

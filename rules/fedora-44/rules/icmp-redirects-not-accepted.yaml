@@ -1,52 +1,54 @@
-id: fedora44-send-redirects-disabled
+id: fedora44-icmp-redirects-not-accepted
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 3.3.2
+  item: 3.3.5
   section: Network > Configure Network Kernel Parameters
   title:
-    pl: Wysyłanie przekierowań ICMP jest wyłączone
-    en: Ensure packet redirect sending is disabled
+    pl: Przekierowania ICMP nie są przyjmowane
+    en: Ensure icmp redirects are not accepted
   level: 1
   profile: workstation
 
 platform:
   system: fedora-44
 
-risk_category: low
+risk_category: medium
 disruption: none
 assessment_state: assessed-no-impact
 
 description:
   pl: |
-    Router wysyła komunikat ICMP redirect, gdy zauważy, że nadawca może
-    dotrzeć do celu krótszą drogą przez inną bramę w tej samej sieci.
-    Komputer, który nie jest routerem, nie ma powodu tego robić, a jeśli
-    przekazuje pakiety, np. dla kontenerów, takie komunikaty mogą zmieniać
-    trasy innych komputerów w sieci.
+    Komunikat ICMP redirect każe komputerowi wysyłać ruch do danego celu
+    przez inną bramę. Komputer, który go przyjmie, zmienia swoją tablicę
+    tras. Intruz w tej samej sieci może w ten sposób skierować ruch przez
+    własny komputer i podsłuchiwać albo zmieniać połączenia.
 
-    Punkt wymaga wartości 0 parametrów net.ipv4.conf.all.send_redirects
-    i net.ipv4.conf.default.send_redirects. Jądro domyślnie ma 1, a Fedora
-    tego nie zmienia.
+    Punkt wymaga wartości 0 parametrów accept_redirects w ustawieniach all
+    i default, osobno dla IPv4 (net.ipv4.conf) i IPv6 (net.ipv6.conf). Jądro
+    domyślnie przyjmuje przekierowania, a Fedora tego nie zmienia.
   en: |
-    A router sends an ICMP redirect message when it notices that the sender
-    can reach the destination by a shorter path through another gateway in
-    the same network. A computer that is not a router has no reason to do
-    that, and if it forwards packets, for example for containers, such
-    messages can change the routes of other computers in the network.
+    An ICMP redirect message tells the computer to send traffic for a given
+    destination through another gateway. A computer that accepts it changes
+    its routing table. An intruder in the same network can use this to
+    direct traffic through their own computer and eavesdrop on or change
+    connections.
 
-    The item requires the value 0 for net.ipv4.conf.all.send_redirects and
-    net.ipv4.conf.default.send_redirects. The kernel default is 1, and
-    Fedora does not change it.
+    The item requires the value 0 for the accept_redirects parameters in the
+    all and default settings, separately for IPv4 (net.ipv4.conf) and IPv6
+    (net.ipv6.conf). The kernel accepts redirects by default, and Fedora does
+    not change it.
 
 disruption_description:
   pl: |
-    Nikt tego nie zauważy: jądro wysyła przekierowania tylko przy
-    przekazywaniu pakietów, a ich brak nie przerywa żadnego połączenia.
+    Nikt tego nie zauważy: w sieciach domowych i biurowych jest jedna brama,
+    a w sieci z kilkoma routerami ruch idzie najwyżej o jeden skok dłuższą
+    drogą przez bramę domyślną.
   en: |
-    Nobody will notice: the kernel sends redirects only while forwarding
-    packets, and not sending them does not break any connection.
+    Nobody will notice: home and office networks have one gateway, and in a
+    network with several routers traffic at most takes a path one hop longer
+    through the default gateway.
 
 implementation_consequences:
   impact_areas:
@@ -83,12 +85,14 @@ audit:
       if [ "$r" = "$want" ] && { [ "$c" = "$want" ] || [ "$c" = default ]; }; then ok="$ok,$n=$r"
       else bad="$bad;$n:runtime=$r,config=${c:-none}"; fi
     done <<'EOF'
-    net.ipv4.conf.all.send_redirects 0 0
-    net.ipv4.conf.default.send_redirects 0 0
+    net.ipv4.conf.all.accept_redirects 0 0
+    net.ipv4.conf.default.accept_redirects 0 0
+    net.ipv6.conf.all.accept_redirects 0 0
+    net.ipv6.conf.default.accept_redirects 0 0
     EOF
     # Interfaces with their own value, for information only: the item checks all and default.
     ifs=""
-    for spec in net/ipv4/conf:send_redirects:0; do
+    for spec in net/ipv4/conf:accept_redirects:0 net/ipv6/conf:accept_redirects:0; do
       d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
       for p in /proc/sys/$d/*/$q; do
         [ -r "$p" ] || continue
@@ -108,18 +112,18 @@ remediation:
   backup_command: |
     (
       set -e
-      f=/etc/sysctl.d/sentin-harden-send-redirects.conf
+      f=/etc/sysctl.d/sentin-harden-accept-redirects.conf
       b='{{backup_file}}'
       mkdir -p "$(dirname "$b")"
       {
         echo format=sysctl-2
         if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
-        for k in net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects ; do
+        for k in net.ipv4.conf.all.accept_redirects net.ipv4.conf.default.accept_redirects net.ipv6.conf.all.accept_redirects net.ipv6.conf.default.accept_redirects ; do
           p=/proc/sys/$(printf '%s' "$k" | tr . /)
           if [ -r "$p" ]; then echo "rt $k $(tr -s ' \t' ' ' < "$p")"; fi
         done
         # Interface values are stored as paths, because interface names may contain dots.
-        for spec in net/ipv4/conf:send_redirects:0; do
+        for spec in net/ipv4/conf:accept_redirects:0 net/ipv6/conf:accept_redirects:0; do
           d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
           for p in /proc/sys/$d/*/$q; do
             [ -r "$p" ] || continue
@@ -136,7 +140,7 @@ remediation:
   change_command: |
     (
       set -e
-      f=/etc/sysctl.d/sentin-harden-send-redirects.conf
+      f=/etc/sysctl.d/sentin-harden-accept-redirects.conf
       b='{{backup_file}}'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       command -v sysctl >/dev/null 2>&1 || { echo "sysctl is not installed" >&2; exit 1; }
@@ -146,17 +150,17 @@ remediation:
         p=/proc/sys/$(printf '%s' "$k" | tr . /)
         if [ -r "$p" ]; then keep="$keep $k=$(cat "$p")"; fi
       done
-      printf '%s\n' '# Sentin-Harden: fedora44-send-redirects-disabled' 'net.ipv4.conf.all.send_redirects = 0' 'net.ipv4.conf.default.send_redirects = 0' 'net.ipv4.conf.*.send_redirects = 0' > "$f"
+      printf '%s\n' '# Sentin-Harden: fedora44-icmp-redirects-not-accepted' 'net.ipv4.conf.all.accept_redirects = 0' 'net.ipv4.conf.default.accept_redirects = 0' '-net.ipv6.conf.all.accept_redirects = 0' '-net.ipv6.conf.default.accept_redirects = 0' 'net.ipv4.conf.*.accept_redirects = 0' '-net.ipv6.conf.*.accept_redirects = 0' > "$f"
       chmod 0644 "$f"
       if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
-      for kv in net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0; do
+      for kv in net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.default.accept_redirects=0 net.ipv6.conf.all.accept_redirects=0 net.ipv6.conf.default.accept_redirects=0; do
         k=${kv%%=*}
         [ -e "/proc/sys/$(printf '%s' "$k" | tr . /)" ] || { echo "Skipped $k: IPv6 is disabled"; continue; }
         sysctl -q -w "$kv"
       done
       for kv in $keep; do sysctl -q -w "$kv"; done
       # The file covers interfaces added later; the existing ones are set here.
-      for spec in net/ipv4/conf:send_redirects:0; do
+      for spec in net/ipv4/conf:accept_redirects:0 net/ipv6/conf:accept_redirects:0; do
         d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
         for p in /proc/sys/$d/*/$q; do
           [ -e "$p" ] || continue
@@ -166,7 +170,7 @@ remediation:
         done
       done
       late=""
-      for kv in net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0; do
+      for kv in net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.default.accept_redirects=0 net.ipv6.conf.all.accept_redirects=0 net.ipv6.conf.default.accept_redirects=0; do
         k=${kv%%=*}
         c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
       /^[ \t]*[#;]/ || !/=/ { next }
@@ -181,13 +185,13 @@ remediation:
       if [ -n "$late" ]; then
         echo "Another sysctl.d file is applied after $f and the next start will set:$late" >&2; exit 1
       fi
-      echo "Set net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0 now and in $f"
+      echo "Set net.ipv4.conf.all.accept_redirects=0 net.ipv4.conf.default.accept_redirects=0 net.ipv6.conf.all.accept_redirects=0 net.ipv6.conf.default.accept_redirects=0 now and in $f"
     )
 
   rollback_command: |
     (
       set -e
-      f=/etc/sysctl.d/sentin-harden-send-redirects.conf
+      f=/etc/sysctl.d/sentin-harden-accept-redirects.conf
       b='{{backup_file}}'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=sysctl-2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
@@ -200,10 +204,10 @@ remediation:
         bad=0
         case "$v" in ""|*[!0-9-]*) bad=1 ;; esac
         case "$t" in
-          rt) case " net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects  " in *" $k "*) ;; *) bad=1 ;; esac ;;
+          rt) case " net.ipv4.conf.all.accept_redirects net.ipv4.conf.default.accept_redirects net.ipv6.conf.all.accept_redirects net.ipv6.conf.default.accept_redirects  " in *" $k "*) ;; *) bad=1 ;; esac ;;
           if)
             known=0
-            for spec in net/ipv4/conf:send_redirects:0; do
+            for spec in net/ipv4/conf:accept_redirects:0 net/ipv6/conf:accept_redirects:0; do
               d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
               case "$k" in "$d"/*/"$q") ;; *) continue ;; esac
               i=${k#"$d"/}; i=${i%/"$q"}
@@ -246,19 +250,22 @@ notes:
     z wartością, którą ustawi następny start. Tę drugą wyznacza
     systemd-sysctl --cat-config, które wypisuje pliki z /usr/lib/sysctl.d,
     /run/sysctl.d i /etc/sysctl.d w kolejności stosowania, więc liczy się
-    ostatnie przypisanie. Brak wpisu oznacza wartość jądra 1,
-    więc punkt wymaga jawnego ustawienia. Wynik NOT_OK podaje obie wartości każdego
+    ostatnie przypisanie. Brak wpisu oznacza wartość
+    jądra 1, więc punkt wymaga jawnego ustawienia. Parametry IPv6 są
+    spełnione, gdy IPv6 wyłączono przy starcie jądra. Wynik NOT_OK podaje obie wartości każdego
     parametru, który nie spełnia punktu.
 
-    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-send-redirects.conf
+    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-accept-redirects.conf
     i od razu je stosuje. Nazwa bez numeru na początku sortuje się po plikach
     typu 99-*.conf, więc ustawienia wygrywają z nimi; jeśli mimo to inny
     plik nadpisuje wartość, naprawa kończy się błędem. Wycofanie przywraca
     poprzednią zawartość pliku i poprzednie wartości bieżące.
 
-    Jądro wysyła
-    przekierowania, gdy włączone jest to w all albo w ustawieniu interfejsu,
-    więc interfejs z wartością 1 wysyła je mimo all równego 0. Wartość default trafia tylko do interfejsów, którym nikt nie
+    Dla IPv6
+    jądro sprawdza tylko ustawienie interfejsu, na którym przyszło
+    przekierowanie, a wartości all nie bierze pod uwagę. Dla IPv4 przy
+    wyłączonym przekazywaniu pakietów wystarczy 1 w all albo w ustawieniu
+    interfejsu. Wartość default trafia tylko do interfejsów, którym nikt nie
     ustawił wartości osobno, a interfejs utworzony po wcześniejszym zapisie
     default dostaje jej kopię i nie śledzi dalszych zmian. Dlatego naprawa
     ustawia też wszystkie istniejące interfejsy, a w pliku dopisuje linię
@@ -267,25 +274,33 @@ notes:
     ocenia, tak jak punkt, tylko all i default; interfejsy z inną wartością
     wypisuje po średniku jako informację. Wycofanie przywraca też poprzednie
     wartości interfejsów, które nadal istnieją.
+
+    Zmiana net.ipv4.ip_forward ustawia w jądrze
+    net.ipv4.conf.all.accept_redirects na wartość przeciwną, więc
+    wyłączenie przekazywania, np. po zatrzymaniu Dockera, włącza z powrotem
+    przyjmowanie przekierowań w all. Sprawdzenie pokaże wtedy NOT_OK,
+    a ponowna naprawa ustawi 0.
   en: |
     For each parameter, the check compares the current value from /proc/sys
     with the value the next start will set. The latter comes from
     systemd-sysctl --cat-config, which prints the files from
     /usr/lib/sysctl.d, /run/sysctl.d and /etc/sysctl.d in the order they are
-    applied, so the last assignment counts. No entry means the kernel value 1, so
-    the item needs an explicit setting. The NOT_OK result gives
+    applied, so the last assignment counts. No entry means the kernel value 1,
+    so the item needs an explicit setting. The IPv6 parameters are met when
+    IPv6 was turned off at kernel start. The NOT_OK result gives
     both values of every parameter that does not meet the item.
 
     The remediation writes the settings to
-    /etc/sysctl.d/sentin-harden-send-redirects.conf and applies them at once. A name
+    /etc/sysctl.d/sentin-harden-accept-redirects.conf and applies them at once. A name
     without a leading number sorts after files such as 99-*.conf, so the
     settings win over them; if another file still overrides a value, the
     remediation ends with an error. Rollback restores the previous file
     content and the previous current values.
 
-    The kernel sends
-    redirects when this is turned on in all or in the interface setting, so
-    an interface with the value 1 sends them although all is 0. The default value reaches only interfaces whose value nobody set
+    For IPv6 the
+    kernel checks only the setting of the interface on which the redirect
+    came, and does not take the all value into account. For IPv4 with packet
+    forwarding off, 1 in all or in the interface setting is enough. The default value reaches only interfaces whose value nobody set
     separately, and an interface created after an earlier write of default
     gets a copy of it and does not follow later changes. So the remediation
     also sets all existing interfaces and adds a line with an asterisk to
@@ -294,3 +309,9 @@ notes:
     check assesses only all and default; interfaces with another value are
     listed after a semicolon for information. Rollback also restores the
     previous values of interfaces that still exist.
+
+    Changing net.ipv4.ip_forward makes the kernel set
+    net.ipv4.conf.all.accept_redirects to the opposite value, so turning
+    forwarding off, for example after Docker stops, turns accepting
+    redirects in all back on. The check then shows NOT_OK, and running the
+    remediation again sets 0.

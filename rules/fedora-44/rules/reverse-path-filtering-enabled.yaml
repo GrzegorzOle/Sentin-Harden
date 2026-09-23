@@ -1,13 +1,13 @@
-id: fedora44-send-redirects-disabled
+id: fedora44-reverse-path-filtering-enabled
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 3.3.2
+  item: 3.3.7
   section: Network > Configure Network Kernel Parameters
   title:
-    pl: Wysyłanie przekierowań ICMP jest wyłączone
-    en: Ensure packet redirect sending is disabled
+    pl: Filtrowanie pakietów po ścieżce zwrotnej jest włączone
+    en: Ensure reverse path filtering is enabled
   level: 1
   profile: workstation
 
@@ -20,33 +20,35 @@ assessment_state: assessed-no-impact
 
 description:
   pl: |
-    Router wysyła komunikat ICMP redirect, gdy zauważy, że nadawca może
-    dotrzeć do celu krótszą drogą przez inną bramę w tej samej sieci.
-    Komputer, który nie jest routerem, nie ma powodu tego robić, a jeśli
-    przekazuje pakiety, np. dla kontenerów, takie komunikaty mogą zmieniać
-    trasy innych komputerów w sieci.
+    Filtrowanie po ścieżce zwrotnej odrzuca pakiety, na które komputer nie
+    mógłby odpowiedzieć tym samym interfejsem, którym przyszły. Utrudnia to
+    ataki z podrobionym adresem nadawcy, np. pakiety udające ruch z sieci
+    lokalnej, które przychodzą od strony internetu.
 
-    Punkt wymaga wartości 0 parametrów net.ipv4.conf.all.send_redirects
-    i net.ipv4.conf.default.send_redirects. Jądro domyślnie ma 1, a Fedora
-    tego nie zmienia.
+    Punkt wymaga wartości 1 (tryb ścisły) parametrów
+    net.ipv4.conf.all.rp_filter i net.ipv4.conf.default.rp_filter. Jądro
+    domyślnie ma 0, a Fedora ustawia w pliku
+    /usr/lib/sysctl.d/50-default.conf wartość 2 (tryb luźny) dla default
+    i dla wszystkich interfejsów.
   en: |
-    A router sends an ICMP redirect message when it notices that the sender
-    can reach the destination by a shorter path through another gateway in
-    the same network. A computer that is not a router has no reason to do
-    that, and if it forwards packets, for example for containers, such
-    messages can change the routes of other computers in the network.
+    Reverse path filtering drops packets the computer could not answer
+    through the same interface they came in on. This makes attacks with a
+    forged sender address harder, such as packets that pretend to be local
+    network traffic but come in from the internet side.
 
-    The item requires the value 0 for net.ipv4.conf.all.send_redirects and
-    net.ipv4.conf.default.send_redirects. The kernel default is 1, and
-    Fedora does not change it.
+    The item requires the value 1 (strict mode) for
+    net.ipv4.conf.all.rp_filter and net.ipv4.conf.default.rp_filter. The
+    kernel default is 0, and Fedora sets the value 2 (loose mode) for
+    default and for all interfaces in /usr/lib/sysctl.d/50-default.conf.
 
 disruption_description:
   pl: |
-    Nikt tego nie zauważy: jądro wysyła przekierowania tylko przy
-    przekazywaniu pakietów, a ich brak nie przerywa żadnego połączenia.
+    Nikt tego nie zauważy: interfejsy zachowują ustawienie Fedory, więc
+    działa ono tak jak dotąd, także przy jednoczesnym połączeniu Wi-Fi
+    i kablowym albo przy VPN.
   en: |
-    Nobody will notice: the kernel sends redirects only while forwarding
-    packets, and not sending them does not break any connection.
+    Nobody will notice: the interfaces keep the Fedora setting, so it works
+    as before, also with Wi-Fi and a cable connected at once or with a VPN.
 
 implementation_consequences:
   impact_areas:
@@ -83,12 +85,12 @@ audit:
       if [ "$r" = "$want" ] && { [ "$c" = "$want" ] || [ "$c" = default ]; }; then ok="$ok,$n=$r"
       else bad="$bad;$n:runtime=$r,config=${c:-none}"; fi
     done <<'EOF'
-    net.ipv4.conf.all.send_redirects 0 0
-    net.ipv4.conf.default.send_redirects 0 0
+    net.ipv4.conf.all.rp_filter 1 0
+    net.ipv4.conf.default.rp_filter 1 0
     EOF
     # Interfaces with their own value, for information only: the item checks all and default.
     ifs=""
-    for spec in net/ipv4/conf:send_redirects:0; do
+    for spec in ; do
       d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
       for p in /proc/sys/$d/*/$q; do
         [ -r "$p" ] || continue
@@ -108,18 +110,18 @@ remediation:
   backup_command: |
     (
       set -e
-      f=/etc/sysctl.d/sentin-harden-send-redirects.conf
+      f=/etc/sysctl.d/sentin-harden-rp-filter.conf
       b='{{backup_file}}'
       mkdir -p "$(dirname "$b")"
       {
         echo format=sysctl-2
         if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
-        for k in net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects ; do
+        for k in net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter ; do
           p=/proc/sys/$(printf '%s' "$k" | tr . /)
           if [ -r "$p" ]; then echo "rt $k $(tr -s ' \t' ' ' < "$p")"; fi
         done
         # Interface values are stored as paths, because interface names may contain dots.
-        for spec in net/ipv4/conf:send_redirects:0; do
+        for spec in ; do
           d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
           for p in /proc/sys/$d/*/$q; do
             [ -r "$p" ] || continue
@@ -136,7 +138,7 @@ remediation:
   change_command: |
     (
       set -e
-      f=/etc/sysctl.d/sentin-harden-send-redirects.conf
+      f=/etc/sysctl.d/sentin-harden-rp-filter.conf
       b='{{backup_file}}'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       command -v sysctl >/dev/null 2>&1 || { echo "sysctl is not installed" >&2; exit 1; }
@@ -146,17 +148,17 @@ remediation:
         p=/proc/sys/$(printf '%s' "$k" | tr . /)
         if [ -r "$p" ]; then keep="$keep $k=$(cat "$p")"; fi
       done
-      printf '%s\n' '# Sentin-Harden: fedora44-send-redirects-disabled' 'net.ipv4.conf.all.send_redirects = 0' 'net.ipv4.conf.default.send_redirects = 0' 'net.ipv4.conf.*.send_redirects = 0' > "$f"
+      printf '%s\n' '# Sentin-Harden: fedora44-reverse-path-filtering-enabled' 'net.ipv4.conf.all.rp_filter = 1' 'net.ipv4.conf.default.rp_filter = 1' > "$f"
       chmod 0644 "$f"
       if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
-      for kv in net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0; do
+      for kv in net.ipv4.conf.all.rp_filter=1 net.ipv4.conf.default.rp_filter=1; do
         k=${kv%%=*}
         [ -e "/proc/sys/$(printf '%s' "$k" | tr . /)" ] || { echo "Skipped $k: IPv6 is disabled"; continue; }
         sysctl -q -w "$kv"
       done
       for kv in $keep; do sysctl -q -w "$kv"; done
       # The file covers interfaces added later; the existing ones are set here.
-      for spec in net/ipv4/conf:send_redirects:0; do
+      for spec in ; do
         d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
         for p in /proc/sys/$d/*/$q; do
           [ -e "$p" ] || continue
@@ -166,7 +168,7 @@ remediation:
         done
       done
       late=""
-      for kv in net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0; do
+      for kv in net.ipv4.conf.all.rp_filter=1 net.ipv4.conf.default.rp_filter=1; do
         k=${kv%%=*}
         c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
       /^[ \t]*[#;]/ || !/=/ { next }
@@ -181,13 +183,13 @@ remediation:
       if [ -n "$late" ]; then
         echo "Another sysctl.d file is applied after $f and the next start will set:$late" >&2; exit 1
       fi
-      echo "Set net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0 now and in $f"
+      echo "Set net.ipv4.conf.all.rp_filter=1 net.ipv4.conf.default.rp_filter=1 now and in $f"
     )
 
   rollback_command: |
     (
       set -e
-      f=/etc/sysctl.d/sentin-harden-send-redirects.conf
+      f=/etc/sysctl.d/sentin-harden-rp-filter.conf
       b='{{backup_file}}'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=sysctl-2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
@@ -200,10 +202,10 @@ remediation:
         bad=0
         case "$v" in ""|*[!0-9-]*) bad=1 ;; esac
         case "$t" in
-          rt) case " net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects  " in *" $k "*) ;; *) bad=1 ;; esac ;;
+          rt) case " net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter  " in *" $k "*) ;; *) bad=1 ;; esac ;;
           if)
             known=0
-            for spec in net/ipv4/conf:send_redirects:0; do
+            for spec in ; do
               d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
               case "$k" in "$d"/*/"$q") ;; *) continue ;; esac
               i=${k#"$d"/}; i=${i%/"$q"}
@@ -239,6 +241,7 @@ runnable: true
 sources:
   - https://docs.kernel.org/networking/ip-sysctl.html
   - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
+  - https://www.rfc-editor.org/rfc/rfc3704
 
 notes:
   pl: |
@@ -246,51 +249,51 @@ notes:
     z wartością, którą ustawi następny start. Tę drugą wyznacza
     systemd-sysctl --cat-config, które wypisuje pliki z /usr/lib/sysctl.d,
     /run/sysctl.d i /etc/sysctl.d w kolejności stosowania, więc liczy się
-    ostatnie przypisanie. Brak wpisu oznacza wartość jądra 1,
-    więc punkt wymaga jawnego ustawienia. Wynik NOT_OK podaje obie wartości każdego
+    ostatnie przypisanie. Brak wpisu oznacza wartość jądra 0,
+    a wpis Fedory dla default ma 2, więc punkt wymaga jawnego ustawienia. Wynik NOT_OK podaje obie wartości każdego
     parametru, który nie spełnia punktu.
 
-    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-send-redirects.conf
+    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-rp-filter.conf
     i od razu je stosuje. Nazwa bez numeru na początku sortuje się po plikach
     typu 99-*.conf, więc ustawienia wygrywają z nimi; jeśli mimo to inny
     plik nadpisuje wartość, naprawa kończy się błędem. Wycofanie przywraca
     poprzednią zawartość pliku i poprzednie wartości bieżące.
 
-    Jądro wysyła
-    przekierowania, gdy włączone jest to w all albo w ustawieniu interfejsu,
-    więc interfejs z wartością 1 wysyła je mimo all równego 0. Wartość default trafia tylko do interfejsów, którym nikt nie
-    ustawił wartości osobno, a interfejs utworzony po wcześniejszym zapisie
-    default dostaje jej kopię i nie śledzi dalszych zmian. Dlatego naprawa
-    ustawia też wszystkie istniejące interfejsy, a w pliku dopisuje linię
-    z gwiazdką, którą udev stosuje do interfejsów dodawanych później, np.
-    przy podłączeniu karty sieciowej albo starcie kontenera. Sprawdzenie
-    ocenia, tak jak punkt, tylko all i default; interfejsy z inną wartością
-    wypisuje po średniku jako informację. Wycofanie przywraca też poprzednie
-    wartości interfejsów, które nadal istnieją.
+    Jądro stosuje dla interfejsu wyższą z wartości all i ustawienia
+    interfejsu. Fedora ustawia 2 na każdym interfejsie linią z gwiazdką,
+    którą udev stosuje także do interfejsów dodawanych później, więc po
+    naprawie filtrowanie działa na nich nadal w trybie luźnym: pakiet
+    przechodzi, jeśli na adres nadawcy da się odpowiedzieć którymkolwiek
+    interfejsem. Naprawa tego celowo nie zmienia, bo tryb ścisły na
+    interfejsach odrzuca ruch przy trasach niesymetrycznych, np. przy
+    jednoczesnym połączeniu Wi-Fi i kablowym albo przy niektórych VPN.
+    Spełnienie punktu nie daje więc samo w sobie trybu ścisłego na
+    interfejsach; zapewnia go dopiero wartość 1 ustawiona dla konkretnych
+    interfejsów.
   en: |
     For each parameter, the check compares the current value from /proc/sys
     with the value the next start will set. The latter comes from
     systemd-sysctl --cat-config, which prints the files from
     /usr/lib/sysctl.d, /run/sysctl.d and /etc/sysctl.d in the order they are
-    applied, so the last assignment counts. No entry means the kernel value 1, so
-    the item needs an explicit setting. The NOT_OK result gives
+    applied, so the last assignment counts. No entry means the kernel value 0, and
+    the Fedora entry for default has 2, so the item needs an explicit
+    setting. The NOT_OK result gives
     both values of every parameter that does not meet the item.
 
     The remediation writes the settings to
-    /etc/sysctl.d/sentin-harden-send-redirects.conf and applies them at once. A name
+    /etc/sysctl.d/sentin-harden-rp-filter.conf and applies them at once. A name
     without a leading number sorts after files such as 99-*.conf, so the
     settings win over them; if another file still overrides a value, the
     remediation ends with an error. Rollback restores the previous file
     content and the previous current values.
 
-    The kernel sends
-    redirects when this is turned on in all or in the interface setting, so
-    an interface with the value 1 sends them although all is 0. The default value reaches only interfaces whose value nobody set
-    separately, and an interface created after an earlier write of default
-    gets a copy of it and does not follow later changes. So the remediation
-    also sets all existing interfaces and adds a line with an asterisk to
-    the file, which udev applies to interfaces added later, for example when
-    a network card is plugged in or a container starts. Like the item, the
-    check assesses only all and default; interfaces with another value are
-    listed after a semicolon for information. Rollback also restores the
-    previous values of interfaces that still exist.
+    For an interface the kernel uses the higher of the all value and the
+    interface setting. Fedora sets 2 on every interface with a line with an
+    asterisk, which udev also applies to interfaces added later, so after
+    the remediation filtering on them still works in loose mode: a packet
+    passes if the sender address can be answered through any interface. The
+    remediation does not change this on purpose, because strict mode on
+    interfaces drops traffic with asymmetric routes, for example with Wi-Fi
+    and a cable connected at once or with some VPNs. Meeting the item does
+    not by itself give strict mode on the interfaces; only the value 1 set
+    for specific interfaces does.

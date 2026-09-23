@@ -1,0 +1,307 @@
+id: ubuntu2404-sshd-use-pam
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.1.22
+  section: Access Control > Configure SSH Server
+  title:
+    pl: UsePAM sshd jest włączone
+    en: Ensure sshd UsePAM is enabled
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    PAM to wspólny mechanizm uwierzytelniania w Linuksie. Dzięki niemu
+    logowanie przez SSH podlega tym samym zasadom co logowanie lokalne:
+    blokadzie konta po nieudanych próbach, sprawdzaniu ważności hasła,
+    limitom zasobów i zapisowi sesji.
+
+    Punkt wymaga ustawienia UsePAM yes.
+  en: |
+    PAM is the common authentication mechanism in Linux. With it, SSH login
+    follows the same rules as local login: account lockout after failed
+    attempts, password expiry checks, resource limits and session records.
+
+    The item requires UsePAM yes.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: Ubuntu ma to ustawienie domyślnie włączone
+    w /etc/ssh/sshd_config.
+  en: |
+    Nobody will notice: Ubuntu has this setting enabled by default in
+    /etc/ssh/sshd_config.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konfiguracje sshd zbudowane świadomie bez PAM; po zmianie logowanie przez SSH przechodzi przez stos /etc/pam.d/sshd, np. limity zasobów i sprawdzanie ważności hasła
+    en:
+      - sshd configurations built on purpose without PAM; after the change SSH login goes through the /etc/pam.d/sshd stack, for example resource limits and password expiry checks
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/sbin/sshd ]; then echo NOT_APPLICABLE; exit 0; fi
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+    # Values set inside Match blocks, one "key<TAB>value<TAB>file" line each.
+    match_vals() {
+      for mf in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [ -f "$mf" ] || continue
+        awk -v F="$mf" '
+          { l = $0; sub(/#.*/, "", l); sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l)
+            if (l == "") next
+            k = tolower(l); sub(/[ \t=].*/, "", k)
+            # sshd -T without -C skips every Match block, Match all too.
+            if (k == "match") { m = 1; next }
+            if (m) { v = l; sub(/^[^ \t=]+[ \t]*=?[ \t]*/, "", v); print k "\t" v "\t" F } }' "$mf"
+      done
+    }
+    good() {
+      lv=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+      case "$1" in
+        usepam) [ "$lv" = yes ] ;;
+      esac
+    }
+    evaluate() {
+      cfg=$(sshd_t) || { echo CHECK_ERROR; return 0; }
+      ok=""; bad=""
+      for k in usepam; do
+        v=$(printf '%s\n' "$cfg" | awk -v k="$k" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }')
+        if good "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=${v:-unset}"; fi
+      done
+      while IFS=$'\t' read -r k v f; do
+        case " usepam " in *" $k "*) good "$k" "$v" || bad="$bad,match:$k=$v:$f" ;; esac
+      done <<< "$(match_vals)"
+      if [ -z "$bad" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:${bad#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-use-pam.conf
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sshopt-1
+        if [ -f "$f" ]; then echo existed=1; cat "$f"; else echo existed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-use-pam.conf
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshopt-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+    # Values set inside Match blocks, one "key<TAB>value<TAB>file" line each.
+    match_vals() {
+      for mf in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [ -f "$mf" ] || continue
+        awk -v F="$mf" '
+          { l = $0; sub(/#.*/, "", l); sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l)
+            if (l == "") next
+            k = tolower(l); sub(/[ \t=].*/, "", k)
+            # sshd -T without -C skips every Match block, Match all too.
+            if (k == "match") { m = 1; next }
+            if (m) { v = l; sub(/^[^ \t=]+[ \t]*=?[ \t]*/, "", v); print k "\t" v "\t" F } }' "$mf"
+      done
+    }
+    good() {
+      lv=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+      case "$1" in
+        usepam) [ "$lv" = yes ] ;;
+      esac
+    }
+    evaluate() {
+      cfg=$(sshd_t) || { echo CHECK_ERROR; return 0; }
+      ok=""; bad=""
+      for k in usepam; do
+        v=$(printf '%s\n' "$cfg" | awk -v k="$k" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }')
+        if good "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=${v:-unset}"; fi
+      done
+      while IFS=$'\t' read -r k v f; do
+        case " usepam " in *" $k "*) good "$k" "$v" || bad="$bad,match:$k=$v:$f" ;; esac
+      done <<< "$(match_vals)"
+      if [ -z "$bad" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:${bad#,}"; fi
+    }
+      revert() {
+        if [ "$(sed -n 2p "$b")" = existed=1 ]; then tail -n +3 "$b" > "$f"; chmod 0600 "$f"; else rm -f "$f"; fi
+      }
+      r=$(evaluate)
+      case "$r" in
+        OK:*) echo "sshd already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        CHECK_ERROR) echo "Cannot read the effective sshd configuration with sshd -T" >&2; exit 1 ;;
+        *match:*) echo "A Match block sets a value of this item; change it by hand: ${r#NOT_OK:}" >&2; exit 1 ;;
+      esac
+      t=$(mktemp "$f.XXXXXX")
+      printf '%s\n' '# Sentin-Harden' 'UsePAM yes' > "$t"
+      chmod 0600 "$t"
+      mv -f "$t" "$f"
+      r=$(evaluate)
+      case "$r" in
+        OK:*) ;;
+        *) revert; echo "sshd does not meet the item after the change ($r), for example because an earlier directive wins over $f; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Set UsePAM yes in $f"
+      # A reload keeps open sessions; new connections use the new settings.
+      if [ "$(systemctl is-active ssh.service 2>/dev/null)" = active ]; then systemctl reload ssh.service; echo "Reloaded sshd"; fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-use-pam.conf
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshopt-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+      if [ "$ex" = 1 ]; then
+        # Only comments and the directives of this rule may come back.
+        if tail -n +3 "$b" | grep -Evq -e '^(#.*)?$' -e '^(UsePAM) [A-Za-z0-9@.,:/_+-]+$'; then
+          echo "Backup file is damaged: $b" >&2; exit 1
+        fi
+        tail -n +3 "$b" > "$f.sentin-new"
+        chmod 0600 "$f.sentin-new"
+        mv -f "$f.sentin-new" "$f"
+        echo "Restored $f"
+      else
+        rm -f "$f"
+        echo "Removed $f"
+      fi
+      if [ "$(systemctl is-active ssh.service 2>/dev/null)" = active ]; then
+        # A reload with a broken configuration would stop sshd.
+        if sshd_t >/dev/null; then systemctl reload ssh.service; echo "Reloaded sshd"
+        else echo "sshd rejects its configuration, so it was not reloaded; check it with sshd -t" >&2; exit 1; fi
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man.openbsd.org/sshd_config
+  - https://man.openbsd.org/sshd
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje skuteczną konfigurację serwera poleceniem sshd -T,
+    które wymaga uprawnień roota. Ubuntu uruchamia ssh.service dopiero przy
+    pierwszym połączeniu (ssh.socket), a bez niego nie ma katalogu /run/sshd,
+    bez którego sshd -T się zatrzymuje. W takim przypadku sprawdzenie
+    uruchamia sshd -T we własnej przestrzeni montowania z pustym /run, więc
+    w systemie nic się nie zmienia; bez kluczy hosta sshd -T dostaje klucz
+    tymczasowy.
+    Sprawdza też wartości ustawione
+    w blokach Match w /etc/ssh/sshd_config i w plikach .conf z katalogu
+    /etc/ssh/sshd_config.d, bo sshd -T bez parametrów połączenia ich nie
+    stosuje. Brak serwera SSH daje wynik NOT_APPLICABLE.
+
+    Naprawa zapisuje ustawienie w pliku /etc/ssh/sshd_config.d/01-sentin-harden-use-pam.conf z uprawnieniami 0600. sshd
+    bierze pierwszą znalezioną wartość, a stockowy /etc/ssh/sshd_config
+    dołącza pliki z katalogu na samym początku, więc ten plik wygrywa
+    z późniejszymi wierszami. Gdy blok Match ustawia niezgodną wartość,
+    naprawa nic nie zmienia i prosi o ręczną poprawkę. Po zapisie sprawdza
+    konfigurację jeszcze raz; gdy sshd ją odrzuca albo wcześniejsza
+    dyrektywa wygrywa, przywraca poprzedni stan i kończy się błędem.
+    Działający ssh.service dostaje polecenie reload, które nie przerywa
+    otwartych sesji; zatrzymany wczyta nowe ustawienie przy najbliższym
+    połączeniu. Wycofanie usuwa plik albo przywraca jego poprzednią treść.
+
+    Ubuntu ma domyślnie UsePAM yes w /etc/ssh/sshd_config. Przy UsePAM no
+    sshd sam sprawdza hasła i pomija moduły ze stosu /etc/pam.d/sshd. UsePAM
+    nie może stać w bloku Match.
+  en: |
+    The check reads the effective server configuration with sshd -T, which
+    needs root privileges. Ubuntu starts ssh.service only on the first
+    connection (ssh.socket), and without it there is no /run/sshd directory,
+    without which sshd -T stops. In that case the check runs sshd -T in its
+    own mount namespace with an empty /run, so nothing changes in the
+    system; without host keys sshd -T gets a temporary key.
+    It also checks values set in
+    Match blocks in /etc/ssh/sshd_config and in the .conf files in the
+    /etc/ssh/sshd_config.d directory, because sshd -T without connection
+    parameters does not apply them. No SSH server gives the NOT_APPLICABLE
+    result.
+
+    The remediation writes the setting to /etc/ssh/sshd_config.d/01-sentin-harden-use-pam.conf with the mode 0600. sshd takes
+    the first value it finds, and the stock /etc/ssh/sshd_config includes
+    the files of the directory at its very top, so this file wins over later
+    lines. When a Match block sets a non-compliant value, the remediation
+    changes nothing and asks for a manual fix. After writing, it checks the
+    configuration again; when sshd rejects it or an earlier directive wins,
+    it restores the previous state and ends with an error. A running
+    ssh.service gets a reload, which keeps open sessions; a stopped one
+    reads the new setting on the next connection. Rollback removes the file
+    or restores its previous content.
+
+    Ubuntu has UsePAM yes by default in /etc/ssh/sshd_config. With UsePAM
+    no, sshd checks passwords itself and skips the modules of the
+    /etc/pam.d/sshd stack. UsePAM cannot be set in a Match block.

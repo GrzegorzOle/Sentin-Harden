@@ -1,0 +1,174 @@
+id: ubuntu2404-sudo-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.2.1
+  section: Access Control > Configure privilege escalation
+  title:
+    pl: sudo jest zainstalowane
+    en: Ensure sudo is installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    sudo pozwala zwykłym kontom wykonywać wybrane polecenia jako root po
+    podaniu własnego hasła. Każde takie polecenie trafia do dziennika
+    z nazwą konta, więc wiadomo, kto co zrobił, a hasło roota nie musi być
+    nikomu znane.
+
+    Punkt wymaga, żeby pakiet sudo był zainstalowany.
+  en: |
+    sudo lets regular accounts run selected commands as root after entering
+    their own password. Each such command is logged with the account name,
+    so it is known who did what, and nobody needs to know the root
+    password.
+
+    The item requires the sudo package to be installed.
+
+disruption_description:
+  pl: |
+    Na zwykłej instalacji serwerowej nikt tego nie zauważy, bo Ubuntu
+    instaluje sudo domyślnie. Na minimalnych obrazach, np. kontenerowych,
+    naprawa doinstalowuje pakiet.
+  en: |
+    On a regular server installation nobody will notice, because Ubuntu
+    installs sudo by default. On minimal images, for example container
+    images, the remediation installs the package.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Członkowie grup sudo i admin mogą od razu wykonywać polecenia jako root po podaniu własnego hasła, bo tak stanowi domyślny /etc/sudoers Ubuntu; przed naprawą warto sprawdzić, kto do nich należy
+    en:
+      - Members of the sudo and admin groups can at once run commands as root after entering their own password, because Ubuntu's default /etc/sudoers says so; check who belongs to them before the remediation
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    have=""; miss=""
+    for p in sudo; do
+      if [ "$(st "$p")" = installed ]; then have="$have,$p=$(dpkg-query -W -f='${Version}' "$p")"
+      else miss="$miss,$p"; fi
+    done
+    if [ -n "$miss" ] && [ "$(st sudo-ldap)" = installed ]; then echo "INSTALLED:sudo-ldap=$(dpkg-query -W -f='${Version}' sudo-ldap)"
+    elif [ -n "$miss" ]; then echo "NOT_INSTALLED:${miss#,}"; else echo "INSTALLED:${have#,}"; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      {
+        echo format=dpkg-on-1
+        for p in sudo; do s=$(st "$p"); echo "$p ${s:-not-installed}"; done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      # sudo-ldap conflicts with sudo and provides the same command.
+      if [ "$(st sudo-ldap)" = installed ]; then echo "Already installed: sudo-ldap"; exit 0; fi
+      miss=""
+      for p in sudo; do [ "$(st "$p")" = installed ] || miss="$miss $p"; done
+      if [ -z "$miss" ]; then echo "Already installed: sudo"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      o="-y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $miss; then apt-get update -qq; apt-get install $o $miss; fi
+      for p in $miss; do [ "$(st "$p")" = installed ] || { echo "$p is still not installed" >&2; exit 1; }; done
+      echo "Installed:$miss"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | cut -d' ' -f1 | tr '\n' ' ')" = "sudo " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""; purge=""
+      while read -r p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != installed ] && [ "$(st "$p")" = installed ] || continue
+        rm="$rm $p"
+        # A package that was not there at all loses its configuration files too.
+        [ "$s" != not-installed ] || purge="$purge $p"
+      done < <(tail -n +2 "$b")
+      if [ -z "$rm" ]; then echo "Nothing to restore"; exit 0; fi
+      # The sudo package refuses its own removal while root has no password,
+      # because nobody could gain root rights without it; the same test here.
+      case "$(getent shadow root | cut -d: -f2)" in
+        "*"|"!"*) echo "Kept sudo: root has no password, so sudo is the only way to gain root rights"; exit 0 ;;
+      esac
+      # Packages installed since then may need them; then they stay.
+      if ! dpkg -r --dry-run $rm >/dev/null 2>&1; then
+        echo "Kept$rm: other installed packages need them now"; exit 0
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get remove -y -qq $rm
+      if [ -n "$purge" ]; then dpkg --purge $purge >/dev/null; fi
+      echo "Removed again:$rm"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.sudo.ws/docs/man/sudoers.man/
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
+
+notes:
+  pl: |
+    Sprawdzenie pyta dpkg-query o pakiet sudo; pakiet sudo-ldap, który go
+    zastępuje, też daje wynik zgodny. Pakiet usunięty bez usunięcia plików
+    konfiguracyjnych nie liczy się jako zainstalowany. Naprawa instaluje
+    sudo przez apt-get, co wymaga dostępu do repozytorium. Wycofanie usuwa
+    pakiet tylko wtedy, gdy naprawa go zainstalowała i żaden inny pakiet go
+    teraz nie wymaga; gdy pakietu wcześniej w ogóle nie było, usuwa też
+    jego pliki konfiguracyjne. Pakiet sudo w Ubuntu sam odmawia usunięcia,
+    gdy root nie ma hasła, bo wtedy nikt nie mógłby uzyskać uprawnień roota;
+    na Ubuntu hasło roota jest zwykle zablokowane, więc wycofanie zostawia
+    wtedy sudo na miejscu i o tym informuje. Domyślny /etc/sudoers Ubuntu pozwala grupom
+    sudo i admin na wszystkie polecenia po podaniu hasła.
+  en: |
+    The check asks dpkg-query for the sudo package; the sudo-ldap package,
+    which replaces it, gives a compliant result too. A package removed
+    without removing its configuration files does not count as installed.
+    The remediation installs sudo with apt-get, which needs access to a
+    repository. Rollback removes the package only when the remediation
+    installed it and no other package needs it now; when the package was
+    not there at all before, it removes its configuration files too. On
+    Ubuntu the sudo package itself refuses removal when root has no
+    password, because nobody could then gain root rights; the root password
+    is usually locked on Ubuntu, so rollback then keeps sudo and says so.
+    Ubuntu's default /etc/sudoers allows the sudo and admin groups all
+    commands after entering the password.

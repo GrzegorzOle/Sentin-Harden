@@ -1,0 +1,176 @@
+id: win10-smb-server-idle-session-timeout
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Bezczynne sesje plikowe zawieszane po najwyżej 15 minutach
+    en: Idle file sessions suspended after fifteen minutes at most
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Sesja plikowa otwarta przez klienta trwa, dopóki ktoś jej nie zamknie. Klient,
+    który już niczego nie pobiera, nadal ma otwarte uwierzytelnione połączenie z
+    maszyną.
+
+    Sesja bezczynna jest gotowym punktem zaczepienia. Połączenie już istnieje,
+    uwierzytelnienie już przeszło, więc atakujący, który przejmie maszynę klienta,
+    zastaje otwarte drzwi zamiast zamkniętych. Liczba takich sesji rośnie z czasem,
+    bo klienci odchodzą od maszyn, nie rozłączając się.
+
+    Zawieszanie sesji bezczynnych ogranicza to do rzeczywiście używanych połączeń.
+  en: |
+    A file session opened by a client lasts until somebody shuts it. A client that
+    is fetching nothing any more still holds an open, authenticated connection to
+    the machine.
+
+    An idle session is a ready foothold. The connection already exists, the
+    authentication has already passed, so an attacker who takes over the client s
+    machine finds an open door rather than a shut one. The number of such sessions
+    grows over time, since clients walk away from machines without disconnecting.
+
+    Suspending idle sessions limits this to connections really in use.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, choć w typowej pracy jest niewidoczna. Zawieszona
+    sesja odtwarza się sama przy kolejnym sięgnięciu po plik, więc użytkownik
+    niczego nie zauważa.
+
+    Koszt pojawia się tam, gdzie program trzyma plik otwarty przez wiele godzin i
+    nie radzi sobie z ponownym nawiązaniem połączenia. Starsze bazy plikowe i
+    aplikacje pisane pod stałe połączenie potrafią wtedy zgłosić błąd zapisu albo
+    uszkodzić plik.
+
+    Sprawdzenie warto zacząć od pytania, co na tej maszynie trzyma pliki otwarte
+    najdłużej. Jeżeli nic takiego nie ma, zmiana jest bez znaczenia dla pracy.
+  en: |
+    The change calls for a review, though in ordinary work it is invisible. A
+    suspended session comes back by itself the next time a file is reached for, so
+    the user notices nothing.
+
+    The cost appears where a program holds a file open for many hours and cannot
+    cope with a connection being made again. Older file-based databases and
+    applications written for a standing connection can then report a write error or
+    damage the file.
+
+    The review is best begun by asking what on this machine holds files open
+    longest. Where there is nothing of the sort, the change carries no weight for
+    the work.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+  what_breaks:
+    pl:
+      - Starsze bazy plikowe trzymające plik otwarty godzinami mogą zgłosić błąd zapisu po zawieszeniu sesji
+      - Aplikacje pisane pod stałe połączenie z udziałem sieciowym mogą wymagać ponownego otwarcia dokumentu
+      - Liczba sesji widocznych na maszynie spadnie, co zmienia obraz w narzędziach monitorujących
+      - Dostęp do plików, prawa do udziałów, uwierzytelnianie i praca użytkownika pozostają bez zmian
+    en:
+      - Older file-based databases holding a file open for hours may report a write error once a session is suspended
+      - Applications written for a standing connection to a network share may call for a document to be opened again
+      - The number of sessions visible on the machine falls, which changes the picture in monitoring tools
+      - Access to files, share permissions, authentication and user work are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny obsługujące starszą bazę plikową wymagającą stałego połączenia
+      - Środowiska z aplikacją trzymającą dokument otwarty przez całą zmianę roboczą
+    en:
+      - Machines serving an older file-based database that needs a standing connection
+      - Environments with an application holding a document open for a whole shift
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value is read as a 64-bit number, because the registry keeps it
+      # unsigned and the largest possible value stands for "never suspend".
+      # Reading it as a 32-bit number would turn that into minus one.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      $name = 'AutoDisconnect'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'MISSING' }
+        else {
+          $minutes = [int64]$value
+          if ($minutes -ge 4294967295 -or $minutes -lt 0) { 'NEVER' }
+          elseif ($minutes -le 15) { 'WITHIN_LIMIT' }
+          else { 'OVER_LIMIT ' + $minutes }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'WITHIN_LIMIT'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'AutoDisconnect'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AutoDisconnect' -Value 15 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/microsoft-network-server-amount-of-idle-time-required-before-suspending-session
+
+notes:
+  pl: |
+    Wartość czytana jest jako liczba 64-bitowa, bo rejestr trzyma ją bez znaku, a
+    wartość największa z możliwych oznacza „nigdy nie zawieszaj". Odczytanie jej
+    jako liczby 32-bitowej zamieniłoby to na minus jeden. Przekroczony limit
+    zgłaszany jest wraz z zastaną liczbą minut.
+  en: |
+    The value is read as a 64-bit number, because the registry keeps it unsigned
+    and the largest possible value stands for never suspending. Reading it as a
+    32-bit number would turn that into minus one. A limit exceeded is reported
+    together with the number of minutes found.

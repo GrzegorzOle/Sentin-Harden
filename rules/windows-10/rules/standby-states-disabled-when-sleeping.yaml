@@ -1,0 +1,186 @@
+id: win10-standby-states-disabled-when-sleeping
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Power Management > Sleep Settings
+  title:
+    pl: Sen z zawartością pamięci wyłączony na rzecz hibernacji
+    en: Sleep holding memory contents turned off in favour of hibernation
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna uśpiona trzyma całą zawartość pamięci w układach zasilanych prądem.
+    Leżą tam klucze szyfrowania dysku, otwarte dokumenty i poświadczenia sesji —
+    wszystko w postaci jawnej.
+
+    To jest punkt, w którym szyfrowanie dysku przestaje chronić. Sprzęt odczytujący
+    pamięć przez port o bezpośrednim dostępie albo po schłodzeniu układów wydobywa
+    klucz z maszyny uśpionej, a dysk zaszyfrowany otwiera się wtedy sam. Kradzież
+    laptopa w stanie uśpienia i kradzież laptopa wyłączonego to dwa różne
+    zdarzenia, choć wyglądają tak samo.
+
+    Hibernacja zapisuje pamięć na dysk i odcina zasilanie. Zawartość jest wtedy
+    chroniona tak samo jak reszta dysku.
+  en: |
+    A sleeping machine holds the whole contents of its memory in powered circuits.
+    The disk encryption keys, open documents and session credentials lie there -
+    all of it in the clear.
+
+    This is the point at which disk encryption stops protecting. Hardware reading
+    memory through a port with direct access, or after the circuits have been
+    chilled, draws the key out of a sleeping machine, and an encrypted disk then
+    opens by itself. A laptop stolen while asleep and a laptop stolen while off are
+    two different events, though they look the same.
+
+    Hibernation writes the memory to disk and cuts the power. The contents are then
+    protected exactly as the rest of the disk is.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo jest odczuwalna przy każdym powrocie do pracy.
+    Wybudzenie z hibernacji trwa dłużej niż wybudzenie ze snu — na starszym dysku
+    zauważalnie dłużej.
+
+    Znika też zachowanie, do którego ludzie przywykli na sprzęcie z nowoczesnym
+    trybem uśpienia: maszyna przestaje odbierać poczty i powiadomień przy zamkniętej
+    pokrywie, bo nie pracuje w tle. Dla części osób to jest zmiana sposobu pracy,
+    a nie drobiazg.
+
+    Hibernacja musi być na maszynie włączona. Tam, gdzie ją wyłączono, żeby
+    odzyskać miejsce na dysku, ta zasada nie zadziała, dopóki nie zostanie
+    przywrócona.
+  en: |
+    The change calls for a review, since it is felt on every return to work. Waking
+    from hibernation takes longer than waking from sleep - on an older disk,
+    noticeably longer.
+
+    The behaviour people have grown used to on hardware with the modern sleep mode
+    also disappears - the machine stops taking in mail and notifications with the
+    lid shut, since it is not working in the background. For some people that is a
+    change in the way they work rather than a detail.
+
+    Hibernation has to be switched on on the machine. Where it was switched off to
+    reclaim disk space, this rule does nothing until it is restored.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - boot-and-firmware
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Powrót do pracy potrwa dłużej, bo zawartość pamięci musi zostać odczytana z dysku
+      - Maszyna przestanie odbierać poczty i powiadomień przy zamkniętej pokrywie, bo nie będzie pracowała w tle
+      - Na maszynie z wyłączoną hibernacją zasada nie zadziała, dopóki hibernacja nie zostanie przywrócona
+      - Plik hibernacji zajmie na dysku miejsce odpowiadające wielkości pamięci
+      - Zawartość pulpitu po powrocie, otwarte dokumenty, łączność po wybudzeniu i praca użytkownika pozostają bez zmian
+    en:
+      - The return to work takes longer, since the memory contents have to be read from the disk
+      - The machine stops taking in mail and notifications with the lid shut, since it will not be working in the background
+      - On a machine with hibernation switched off the rule does nothing until hibernation is restored
+      - The hibernation file takes disk space matching the size of the memory
+      - The desktop as found on return, open documents, connectivity after waking and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których wyłączono hibernację z powodu braku miejsca na dysku
+      - Maszyny przenośne, od których oczekuje się odbierania poczty przy zamkniętej pokrywie
+      - Sprzęt ze starszym dyskiem, na którym wybudzanie z hibernacji trwa zauważalnie długo
+    en:
+      - Stations where hibernation was switched off for lack of disk space
+      - Portable machines expected to take in mail with the lid shut
+      - Hardware with an older disk, where waking from hibernation takes noticeably long
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # One setting in two power variants. The report gives the weaker of them,
+      # because a portable machine moves between the two by itself and is
+      # protected only as far as the worse variant protects it.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Power\PowerSettings\abfc2519-3608-4c2a-94ea-171b0ed546ab'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $ac = $item.ACSettingIndex
+        $dc = $item.DCSettingIndex
+        if ($null -eq $ac -or $null -eq $dc) { 'MISSING' }
+        elseif ([int]$ac -eq 0 -and [int]$dc -eq 0) { 'HIBERNATE_ONLY' }
+        else { 'AC=' + $ac + ' DC=' + $dc }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'HIBERNATE_ONLY'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Power\PowerSettings\abfc2519-3608-4c2a-94ea-171b0ed546ab'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path        = $path
+      ac          = $item.ACSettingIndex
+      dc          = $item.DCSettingIndex
+      ac_existed  = ($null -ne $item.ACSettingIndex)
+      dc_existed  = ($null -ne $item.DCSettingIndex)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Power\PowerSettings\abfc2519-3608-4c2a-94ea-171b0ed546ab'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ACSettingIndex' -Value 0 -Type DWord
+    Set-ItemProperty -Path $path -Name 'DCSettingIndex' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.ac_existed) {
+      Set-ItemProperty -Path $b.path -Name 'ACSettingIndex' -Value $b.ac -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'ACSettingIndex' -ErrorAction SilentlyContinue
+    }
+    if ($b.dc_existed) {
+      Set-ItemProperty -Path $b.path -Name 'DCSettingIndex' -Value $b.dc -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'DCSettingIndex' -ErrorAction SilentlyContinue
+    }
+    if (-not $b.key_existed) {
+      # The key is removed only where the change created it and nothing else
+      # has since been written into it.
+      $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+      if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+        Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/design/device-experiences/modern-standby
+
+notes:
+  pl: |
+    Jedno ustawienie w dwóch wariantach zasilania. Raport podaje słabszy z nich, bo
+    maszyna przenośna przechodzi między nimi sama i jest chroniona tylko na tyle,
+    na ile chroni ją wariant gorszy. Naprawa zapisuje oba naraz.
+  en: |
+    One setting in two power variants. The report gives the weaker of them, because
+    a portable machine moves between the two by itself and is protected only as far
+    as the worse variant protects it. The remediation writes both at once.

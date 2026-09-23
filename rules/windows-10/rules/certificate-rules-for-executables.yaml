@@ -1,0 +1,174 @@
+id: win10-certificate-rules-for-executables
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Reguły oparte o certyfikat stosowane do plików wykonywalnych
+    en: Rules resting on a certificate applied to executable files
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zasady ograniczania oprogramowania rozstrzygają, co wolno uruchomić na
+    maszynie. Regułę można oprzeć na ścieżce, na skrócie pliku albo na
+    certyfikacie, którym plik jest podpisany.
+
+    Bez tego ustawienia reguły certyfikatowe są po prostu pomijane dla plików
+    wykonywalnych. Administrator widzi regułę na liście, uznaje ją za obowiązującą
+    i nie wie, że nie działa. Jest to gorsze niż brak reguły, bo daje poczucie
+    ochrony, której nie ma.
+
+    Włączenie sprawdzania podpisu sprawia, że reguła oparta o wystawcę certyfikatu
+    faktycznie obowiązuje — a to jedyna postać reguły, która przeżywa aktualizację
+    programu, bo ścieżka i skrót zmieniają się z każdą wersją.
+  en: |
+    Software restriction policy settles what may be run on the machine. A rule can
+    rest on a path, on a file s digest, or on the certificate a file is signed
+    with.
+
+    Without this setting the certificate rules are simply passed over for
+    executable files. An administrator sees a rule on the list, takes it to hold,
+    and does not know it does nothing. That is worse than no rule at all, since it
+    gives a sense of protection that is not there.
+
+    Switching the signature check on makes a rule resting on a certificate issuer
+    actually hold - and that is the only form of rule surviving an update of a
+    program, since the path and the digest change with every version.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo skutek zależy wprost od tego, jakie reguły już
+    istnieją na maszynie. Tam, gdzie reguł certyfikatowych nie ma, zmiana nie robi
+    nic; tam, gdzie są, zaczynają nagle obowiązywać.
+
+    To jest właśnie ryzyko. Reguła napisana kiedyś na próbę i pozostawiona na
+    liście po włączeniu sprawdzania zacznie blokować albo dopuszczać programy
+    naprawdę. Przed wdrożeniem trzeba przejrzeć istniejące reguły, a nie zakładać,
+    że są puste.
+
+    Sprawdzanie podpisu kosztuje też trochę czasu przy uruchamianiu programu,
+    zwłaszcza gdy trzeba sięgnąć po listę unieważnionych certyfikatów przez sieć.
+    Na maszynie bez dostępu do sieci objawia się to opóźnieniem startu.
+  en: |
+    The change calls for a review, because the effect depends directly on what
+    rules already exist on the machine. Where there are no certificate rules, the
+    change does nothing; where there are, they suddenly begin to hold.
+
+    That is precisely the risk. A rule written once as a trial and left on the list
+    starts, once checking is switched on, to block or admit programs in earnest.
+    Before the rollout the existing rules have to be reviewed rather than assumed
+    empty.
+
+    Checking a signature also costs a little time when a program starts, especially
+    where the list of revoked certificates has to be fetched over the network. On a
+    machine without network access this shows as a delayed start.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Istniejące reguły oparte o certyfikat zaczną obowiązywać dla plików wykonywalnych, także te napisane kiedyś na próbę
+      - Uruchamianie programów może być wolniejsze, gdy sprawdzenie wymaga pobrania listy unieważnionych certyfikatów
+      - Na maszynie bez dostępu do sieci opóźnienie startu programu bywa zauważalne
+      - Programy podpisane certyfikatem, którego wystawcy maszyna nie uznaje, mogą zostać zablokowane
+      - Reguły oparte o ścieżkę i o skrót pliku, uprawnienia, dostęp do plików i praca użytkownika pozostają bez zmian
+    en:
+      - Existing certificate rules begin to hold for executable files, including ones written once as a trial
+      - Starting programs may be slower where the check calls for the list of revoked certificates to be fetched
+      - On a machine without network access the delayed start of a program is sometimes noticeable
+      - Programs signed with a certificate whose issuer the machine does not recognise may be blocked
+      - Rules resting on a path and on a file digest, privileges, access to files and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny z regułami certyfikatowymi napisanymi kiedyś na próbę i pozostawionymi na liście
+      - Stanowiska bez dostępu do sieci, na których opóźnienie startu programów jest zauważalne
+      - Środowiska, w których nie przejrzano istniejących zasad ograniczania oprogramowania
+    en:
+      - Machines with certificate rules written once as a trial and left on the list
+      - Stations without network access, where a delayed start of programs is noticeable
+      - Environments where the existing software restriction policy has not been reviewed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AuthenticodeEnabled'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers'
+    $name = 'AuthenticodeEnabled'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AuthenticodeEnabled' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/system-settings-use-certificate-rules-on-windows-executables-for-software-restriction-policies
+
+notes:
+  pl: |
+    Zasada nie tworzy żadnej reguły — włącza jedynie uwzględnianie reguł
+    certyfikatowych dla plików wykonywalnych. Skutek zależy więc od tego, co już
+    leży na liście, i to trzeba sprawdzić przed wdrożeniem.
+  en: |
+    The rule creates no rule of its own - it merely switches on the honouring of
+    certificate rules for executable files. The effect therefore depends on what
+    already lies on the list, and that has to be checked before the rollout.

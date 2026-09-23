@@ -1,0 +1,170 @@
+id: win10-force-logoff-when-logon-hours-expire
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Sesje sieciowe rozłączane po upływie dozwolonych godzin pracy
+    en: Network sessions disconnected once permitted working hours end
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Konto może mieć wyznaczone godziny, w których wolno się nim logować. Bez tego
+    ustawienia ograniczenie działa tylko przy nawiązywaniu połączenia — sesja
+    otwarta wcześniej trwa dalej, choć godziny już minęły.
+
+    Znaczy to, że ograniczenie da się obejść samym czasem nawiązania połączenia.
+    Sesja otwarta na kilka minut przed końcem dozwolonych godzin daje dostęp do
+    zasobów przez całą noc, a w dzienniku widać logowanie w porze dozwolonej.
+    Ograniczenie czasowe przestaje być ograniczeniem, a staje się formalnością.
+
+    Wymuszone rozłączenie zamyka sesje z chwilą upływu godzin i przywraca
+    ograniczeniu jego treść.
+  en: |
+    An account may have hours set in which signing in with it is permitted. Without
+    this setting the limit works only when a connection is made - a session opened
+    earlier runs on, though the hours have passed.
+
+    This means the limit can be got round by the timing of the connection alone. A
+    session opened a few minutes before the permitted hours end gives access to the
+    resources all night, and the log shows a sign-in within the permitted time. The
+    limit stops being a limit and becomes a formality.
+
+    Forced disconnection shuts sessions the moment the hours pass and gives the
+    limit back its substance.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo rozłączenie następuje bez uprzedzenia i bez
+    zapisania pracy. Plik otwarty z udziału sieciowego zostaje zamknięty w
+    połowie, a niezapisane zmiany przepadają.
+
+    Największe znaczenie ma to tam, gdzie ludzie pracują na plikach leżących na
+    serwerze przez cały dzień: arkusze, bazy plikowe, dokumenty współdzielone.
+    Rozłączenie o ustalonej godzinie wygląda wtedy jak awaria sieci.
+
+    Na maszynie bez ograniczeń czasowych na kontach zmiana nie robi nic, bo nie ma
+    czego egzekwować. Warto to sprawdzić przed wdrożeniem, żeby wiedzieć, czy
+    zasada jest zapisem na zapas, czy realną zmianą zachowania.
+  en: |
+    The change calls for a review, since the disconnection comes without warning
+    and without work being saved. A file open from a network share is shut
+    half-way, and unsaved changes are lost.
+
+    It weighs most where people work all day on files lying on a server -
+    spreadsheets, file-based databases, shared documents. A disconnection at a set
+    hour then looks like a network fault.
+
+    On a machine with no hour limits on its accounts the change does nothing, since
+    there is nothing to enforce. That is worth checking before the rollout, so as
+    to know whether the rule is written in reserve or is a real change of
+    behaviour.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Sesje plikowe zostaną zamknięte z chwilą upływu dozwolonych godzin, bez uprzedzenia i bez zapisania pracy
+      - Plik otwarty z udziału sieciowego zostanie zamknięty w połowie, a niezapisane zmiany przepadną
+      - Objaw wygląda jak awaria sieci, choć przyczyną jest upływ godzin wyznaczonych na koncie
+      - Zadania nocne uruchamiane kontem z ograniczeniem czasowym przestaną dobiegać końca
+      - Logowanie lokalne, konta bez ograniczeń czasowych, dostęp do dysków lokalnych i praca użytkownika pozostają bez zmian
+    en:
+      - File sessions are shut the moment the permitted hours pass, without warning and without work being saved
+      - A file open from a network share is shut half-way and unsaved changes are lost
+      - The symptom looks like a network fault, though the cause is the hours set on the account running out
+      - Night jobs run under an account with an hour limit stop running to the end
+      - Local sign-in, accounts with no hour limits, access to local disks and user work are all unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których praca na plikach z serwera trwa poza wyznaczonymi godzinami
+      - Maszyny uruchamiające zadania nocne kontem z ograniczeniem czasowym
+      - Stanowiska pracujące na zmiany, na których godziny wyznaczono dla jednej zmiany, a pracują wszystkie
+    en:
+      - Environments where work on files from a server runs beyond the hours set
+      - Machines running night jobs under an account with an hour limit
+      - Stations working in shifts, where the hours were set for one shift while all of them work
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableForcedLogOff'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'EnableForcedLogOff'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableForcedLogOff' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-force-logoff-when-logon-hours-expire
+
+notes:
+  pl: |
+    Zasada egzekwuje ograniczenia zapisane na kontach i nie ustanawia ich sama. Na
+    maszynie bez wyznaczonych godzin nie zmienia niczego. Wartość leży w gałęzi
+    usługi serwera plików i zaczyna obowiązywać po jej ponownym uruchomieniu.
+  en: |
+    The rule enforces limits written on the accounts and does not set any itself.
+    On a machine with no hours set it changes nothing. The value lies in the file
+    server service s branch and takes effect once that service restarts.

@@ -1,0 +1,178 @@
+id: win10-smb-server-name-hardening
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Weryfikacja nazwy, pod którą klient łączy się z zasobami maszyny
+    en: Verification of the name a client connects to the machine s resources by
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Klient łączący się z udziałem podaje nazwę serwera, pod którą go szuka. Bez
+    weryfikacji maszyna przyjmuje połączenie niezależnie od tego, jaką nazwę klient
+    miał na myśli.
+
+    Na tym stoi przekierowanie uwierzytelnienia. Atakujący nakłania klienta, żeby
+    połączył się z maszyną atakującego, a uzyskane poświadczenie podstawia w
+    połączeniu z maszyną właściwą. Skoro nazwa nie jest sprawdzana, uwierzytelnienie
+    wystawione dla jednego celu działa wobec innego — i właśnie tak przejmuje się
+    dostęp bez znajomości hasła.
+
+    Weryfikacja nazwy sprawia, że poświadczenie obowiązuje wyłącznie tam, gdzie
+    zostało wystawione.
+  en: |
+    A client connecting to a share gives the name of the server it is looking for.
+    Without verification the machine accepts the connection whatever name the client
+    had in mind.
+
+    Relayed authentication rests on this. An attacker gets a client to connect to
+    the attacker s machine and presents the credential thus obtained on a
+    connection to the proper machine. Since the name is not checked, a credential
+    issued for one target works against another - and that is precisely how access
+    is taken without knowing a password.
+
+    Verifying the name means a credential holds only where it was issued.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo uderza w połączenia nawiązywane pod nazwą inną
+    niż właściwa nazwa maszyny: aliasy w katalogu nazw, nazwy klastrowe, wpisy
+    historyczne pozostawione po przeniesieniu usługi.
+
+    Skutkiem jest odmowa dostępu do udziału przy połączeniu pod nazwą, której
+    maszyna nie rozpoznaje jako swojej. Objaw wygląda na problem z uprawnieniami,
+    choć przyczyną jest nazwa.
+
+    Przed wdrożeniem trzeba spisać nazwy, pod którymi ta maszyna jest osiągana.
+    Każda z nich musi być zarejestrowana jako nazwa usługi, inaczej połączenie
+    przestanie przechodzić.
+  en: |
+    The change calls for a review, since it strikes at connections made under a
+    name other than the machine s proper one - aliases in the name directory,
+    cluster names, historic entries left after a service was moved.
+
+    The consequence is access to a share refused on a connection under a name the
+    machine does not recognise as its own. The symptom looks like a permissions
+    problem, though the cause is a name.
+
+    Before the rollout the names this machine is reached by have to be written
+    down. Every one of them has to be registered as a service name, or the
+    connection stops going through.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-authentication
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Połączenia z udziałem nawiązywane pod aliasem niezarejestrowanym jako nazwa usługi zostaną odrzucone
+      - Objaw wygląda na problem z uprawnieniami, choć przyczyną jest nazwa, pod którą klient szuka maszyny
+      - Wpisy historyczne w katalogu nazw, pozostawione po przeniesieniu usługi, przestaną prowadzić do zasobów
+      - Połączenia pod właściwą nazwą maszyny, uprawnienia do udziałów, uwierzytelnianie i praca użytkownika pozostają bez zmian
+    en:
+      - Connections to a share made under an alias not registered as a service name are refused
+      - The symptom looks like a permissions problem, though the cause is the name the client looks for the machine by
+      - Historic entries in the name directory, left after a service was moved, stop leading to the resources
+      - Connections under the machine s proper name, share permissions, authentication and user work are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny osiągane pod aliasami, których nie zarejestrowano jako nazw usługi
+      - Środowiska z nazwami klastrowymi albo z usługą przeniesioną pod nową nazwę
+      - Stanowiska, na których nie spisano nazw używanych przez klientów
+    en:
+      - Machines reached under aliases not registered as service names
+      - Environments with cluster names or a service moved under a new name
+      - Stations where the names used by clients have not been written down
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Two settings satisfy the item: accepting the name when the client gives
+      # one, and demanding it always. They are reported under one token, because
+      # the item is met by either, and the stricter one is a deployment choice.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+      $name = 'SmbServerNameHardeningLevel'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'MISSING' }
+        elseif ([int]$value -ge 1) { 'VERIFIED' }
+        else { 'NOT_VERIFIED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'VERIFIED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    $name = 'SmbServerNameHardeningLevel'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SmbServerNameHardeningLevel' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/microsoft-network-server-server-spn-target-name-validation-level
+
+notes:
+  pl: |
+    Punkt spełniają dwa ustawienia: przyjmowanie nazwy, gdy klient ją poda, oraz
+    żądanie jej zawsze. Zgłaszane są jednym stanem, bo punkt spełnia każde z nich,
+    a wybór ostrzejszego jest decyzją wdrożeniową. Naprawa ustawia wariant
+    łagodniejszy.
+  en: |
+    Two settings satisfy the item - accepting the name when the client gives one,
+    and demanding it always. They are reported under one token, since either meets
+    the item and the stricter one is a deployment choice. The remediation sets the
+    milder variant.

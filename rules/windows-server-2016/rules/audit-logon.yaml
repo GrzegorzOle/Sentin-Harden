@@ -1,0 +1,224 @@
+id: win2016-audit-logon
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja logowania
+    en: Audit logon
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje każdą próbę zalogowania się na tej maszynie — udaną
+    i nieudaną — wraz z tym, skąd przyszła i jakim sposobem.
+
+    Nie jest to to samo co sprawdzanie poświadczeń. Tamto mówi, gdzie hasło
+    zostało porównane; to mówi, gdzie powstała sesja. Na serwerze członkowskim
+    w domenie hasło sprawdza kontroler, ale sesja powstaje tutaj, więc dopiero
+    ta podkategoria odpowiada na pytanie, czyja noga stanęła na tej maszynie.
+
+    Najcenniejsza jest informacja o typie logowania. To ona odróżnia zalogowanie
+    przy konsoli od sesji zdalnej, od dostępu do udziału sieciowego, od
+    uruchomienia usługi i od zadania w harmonogramie. Wzorzec włamania zwykle
+    widać nie w pojedynczym zdarzeniu, tylko w typie: konto usługowe, które
+    nagle loguje się interaktywnie, albo konto osoby, która nagle loguje się
+    jako usługa.
+
+    Rejestrowanie niepowodzeń pokazuje próby, rejestrowanie powodzeń pokazuje
+    skutek. W dochodzeniu potrzebne są oba, bo pytanie brzmi nie „czy próbowano",
+    tylko „kiedy przestano próbować, bo się udało".
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: wejście na tę
+    maszynę bez śladu wskazującego, skąd przyszedł i jakim sposobem.
+  en: |
+    The subcategory records every attempt to sign in on this machine - successful
+    and failed alike - together with where it came from and by what means.
+
+    This is not the same as the checking of credentials. That says where the
+    password was compared; this says where the session arose. On a member server in
+    a domain the password is checked by the controller, but the session arises here,
+    so only this subcategory answers the question whose foot was set on this
+    machine.
+
+    The most valuable part is the logon type. It is what tells a sign-in at the
+    console from a remote session, from access to a network share, from the start of
+    a service and from a scheduled task. The pattern of a break-in is usually
+    visible not in a single event but in the type: a service account that suddenly
+    signs in interactively, or a person's account that suddenly signs in as a
+    service.
+
+    Recording failures shows the attempts; recording successes shows the outcome. An
+    inquiry needs both, because the question is not "did somebody try" but "when did
+    they stop trying, because it worked".
+
+    What an attacker gains while the item goes unmet: entry onto this machine with
+    no trace of where they came from or by what means.
+
+disruption_description:
+  pl: |
+    Klasa „wymaga sprawdzenia" i znowu chodzi o objętość, nie o regresję.
+
+    Rząd wielkości zależy tu od roli inaczej niż przy sprawdzaniu poświadczeń.
+    Serwer plików dopisuje zdarzenie przy każdym sięgnięciu po udział, więc
+    liczba zdarzeń idzie za liczbą otwarć, a nie za liczbą ludzi. Serwer
+    aplikacyjny z pulą połączeń potrafi generować zdarzenia logowania w tempie
+    kilkudziesięciu na minutę, choć nikt fizycznie się nie loguje.
+
+    Warto to oszacować przed zmianą, bo objętość na serwerze plikowym bywa
+    zaskoczeniem: maszyna, która wygląda na cichą, dopisuje setki tysięcy
+    zdarzeń dziennie.
+
+    Nic przy tym nie przestaje działać i żaden użytkownik niczego nie zauważy.
+    Koszt jest w całości kosztem miejsca w dzienniku i pasma do zbieracza.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "needs review", and again the matter is volume, not regression.
+
+    The order of size hangs on the role differently here than with credential
+    validation. A file server adds an event at every reach for a share, so the count
+    of events follows the count of opens rather than the count of people. An
+    application server with a connection pool can generate sign-in events at some
+    tens a minute, though nobody is physically signing in.
+
+    This is worth estimating before the change, because the volume on a file server
+    comes as a surprise: a machine that looks quiet adds hundreds of thousands of
+    events a day.
+
+    Nothing stops working while this goes on and no user notices anything. The cost
+    is wholly one of room in the log and of bandwidth to the collector.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — rośnie wyłącznie objętość dziennika zabezpieczeń
+      - Na serwerze plików liczba zdarzeń idzie za liczbą sięgnięć po udział, a nie za liczbą użytkowników
+      - Serwer aplikacyjny z pulą połączeń potrafi dopisywać zdarzenia w tempie kilkudziesięciu na minutę
+      - System zbierający zdarzenia dostanie z tej maszyny strumień wielokrotnie większy niż dotąd
+    en:
+      - No regression in the working - only the security log's volume grows
+      - On a file server the count of events follows the count of reaches for a share, not the count of users
+      - An application server with a connection pool can add events at some tens a minute
+      - The event-gathering system will get from this machine a stream many times larger than before
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Dziennik zabezpieczeń ma domyślny rozmiar i nie ma go jak powiększyć
+      - Maszyna udostępnia pliki albo prowadzi pulę połączeń, a objętości zdarzeń nie oszacowano
+    en:
+      - The security log is at its default size and there is no way of enlarging it
+      - The machine shares files or runs a connection pool, and the volume of events has not been estimated
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9215-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9215-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9215-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9215-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9215-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-logon
+
+notes:
+  pl: |
+    Punkt warto czytać razem ze sprawdzaniem poświadczeń i z logowaniem
+    specjalnym. Trzy podkategorie opisują to samo wejście z trzech stron:
+    gdzie sprawdzono hasło, gdzie powstała sesja i czy sesja miała podwyższone
+    uprawnienia.
+
+    Typ logowania jest w tych zdarzeniach najważniejszym polem i to on decyduje
+    o wartości całej podkategorii. Reguła go nie konfiguruje — jest on częścią
+    zdarzenia i pojawia się razem z nim.
+
+    Na maszynie, która nie jest kontrolerem, ta podkategoria daje więcej niż
+    sprawdzanie poświadczeń. Jeżeli objętość zmusza do wyboru, to ten punkt
+    wdraża się pierwszy.
+  en: |
+    The item is worth reading together with credential validation and with special
+    logon. Three subcategories describe the same entry from three sides: where the
+    password was checked, where the session arose, and whether the session held
+    raised rights.
+
+    The logon type is the most important field in these events, and it decides the
+    worth of the whole subcategory. The rule does not configure it - it is part of
+    the event and comes with it.
+
+    On a machine that is not a controller this subcategory gives more than credential
+    validation does. If volume forces a choice, this item goes in first.

@@ -1,0 +1,227 @@
+id: win2016-audit-account-lockout
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja blokady konta
+    en: Audit account lockout
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje odrzucenie logowania z powodu zablokowania konta.
+
+    Zdarzenie powstaje wtedy, gdy ktoś podaje poświadczenia do konta, które
+    zostało już zablokowane po serii nieudanych prób. Jest to więc sygnał
+    dwuznaczny i w tej dwuznaczności tkwi jego wartość: albo ktoś nadal próbuje
+    zgadywać hasło mimo blokady, albo prawowity właściciel konta usiłuje się
+    dostać i nie wie, dlaczego nie może.
+
+    Pierwszy przypadek jest tym, po co ta podkategoria istnieje. Zgadywanie
+    haseł nie kończy się na blokadzie — napastnik zwykle nie wie, że konto
+    zostało zablokowane, i próbuje dalej. Seria takich zdarzeń jest wyraźnym
+    wzorcem, znacznie czytelniejszym niż pojedyncze niepowodzenia rozrzucone
+    w czasie.
+
+    Drugi przypadek ma wartość eksploatacyjną: to samo zdarzenie pozwala
+    działowi wsparcia odpowiedzieć na pytanie użytkownika, zanim ten zdąży
+    zadzwonić.
+
+    Rejestruje się wyłącznie niepowodzenia, bo powodzenie nie ma tu znaczenia:
+    odrzucenie logowania na zablokowanym koncie z definicji nie kończy się
+    sukcesem.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    prowadzenia zgadywania haseł dalej, mimo że mechanizm blokady już zadziałał,
+    bez zostawiania osobnego, czytelnego śladu.
+  en: |
+    The subcategory records a sign-in refused because the account is locked out.
+
+    The event arises when somebody gives credentials for an account already locked
+    after a run of failed attempts. It is therefore an ambiguous signal, and in that
+    ambiguity lies its worth: either somebody is still trying to guess the password
+    despite the lockout, or the account's rightful owner is trying to get in and
+    does not know why they cannot.
+
+    The first case is what this subcategory exists for. The guessing of passwords
+    does not end at a lockout - an attacker usually does not know the account has
+    been locked and goes on trying. A run of such events is a plain pattern, far
+    more legible than single failures scattered through time.
+
+    The second case has operational worth: the same event lets a support desk answer
+    a user's question before they have had time to ring.
+
+    Only failures are recorded, since success carries no meaning here: a sign-in
+    refused on a locked account by definition does not end in one.
+
+    What an attacker gains while the item goes unmet: the means of carrying on
+    guessing passwords although the lockout mechanism has already acted, without
+    leaving a separate, legible trace.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Zdarzeń tego rodzaju powstaje na maszynie niewiele,
+    bo warunkiem ich wystąpienia jest wcześniejsze zablokowanie konta.
+
+    Objętość jest tu wyjątkowo dobrze przewidywalna. Na serwerze członkowskim
+    zdarzeń praktycznie nie ma. Na kontrolerze domeny ich liczba idzie za liczbą
+    blokad w domenie, a ta jest z natury niewielka — mechanizm blokady po to
+    właśnie istnieje, żeby prób było mało.
+
+    Warunkiem sensowności punktu jest to, żeby blokada kont w ogóle była
+    włączona. Przy wyłączonej blokadzie ta podkategoria nie zapisze nigdy
+    niczego i jej zgodność będzie zgodnością pustą.
+
+    Czego to nie psuje: niczego. Logowanie na zablokowanym koncie kończy się
+    odmową tak samo przed zmianą, jak po niej — zmienia się tylko to, czy
+    zostaje po tym zapis.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". Few events of this kind arise on a machine, since
+    their condition is an account having been locked beforehand.
+
+    The volume here is unusually well predicted. On a member server there are
+    practically no events. On a domain controller their count follows the count of
+    lockouts in the domain, and that is by nature small - the lockout mechanism
+    exists precisely so that there be few attempts.
+
+    The item makes sense only if account lockout is switched on at all. With lockout
+    off this subcategory will never record anything and its compliance will be an
+    empty compliance.
+
+    What this does not break: nothing. A sign-in on a locked account ends in a
+    refusal just as before the change - what alters is only whether a record is left
+    of it.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — zdarzeń tego rodzaju powstaje niewiele i ich liczba jest z góry ograniczona
+      - Przy wyłączonej blokadzie kont podkategoria nigdy niczego nie zapisze i zgodność będzie pusta
+      - Logowanie na zablokowanym koncie kończy się odmową tak samo jak przed zmianą
+      - Przyrost strumienia do systemu zbierającego jest pomijalny
+    en:
+      - No regression in the working - few events of this kind arise and their count is bounded in advance
+      - With account lockout off the subcategory will never record anything and the compliance will be empty
+      - A sign-in on a locked account ends in a refusal just as before the change
+      - The growth of the stream to the gathering system is negligible
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Blokada kont po nieudanych próbach nie jest na tej maszynie ani w domenie włączona, więc podkategoria nie ma czego zapisywać
+    en:
+      - Account lockout after failed attempts is not on for this machine or the domain, so the subcategory has nothing to record
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9217-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[23]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9217-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9217-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9217-69AE-11D9-BED3-505054503030}" /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9217-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-account-lockout
+
+notes:
+  pl: |
+    Punkt jest tani i wąski, więc w macierzy trafia do rubryki „zrób przy
+    okazji". Nie należy go jednak mylić z bezwartościowym: seria zdarzeń
+    blokady jest jednym z niewielu wzorców, które da się zauważyć bez
+    narzędzia korelującego.
+
+    Zgodność tej reguły nie dowodzi, że blokada kont jest włączona. To jest
+    osobny punkt i osobna reguła. Warto je w raporcie czytać razem, bo ta bez
+    tamtej nie daje nic.
+
+    Rejestrowanie powodzeń jest tu celowo pominięte. Oczekiwanie dopuszcza oba
+    stany bitu powodzeń, bo zdarzenie udane w tej podkategorii nie powstaje.
+  en: |
+    The item is cheap and narrow, so in the matrix it falls under "do it in
+    passing". It should not be taken for worthless, though: a run of lockout events
+    is one of the few patterns noticeable without a correlating tool.
+
+    This rule being compliant does not prove account lockout is on. That is a
+    separate item and a separate rule. They are worth reading together in the report,
+    since this one without that one gives nothing.
+
+    The recording of successes is deliberately passed over here. The expectation
+    admits either state of the success bit, a successful event in this subcategory
+    not arising.

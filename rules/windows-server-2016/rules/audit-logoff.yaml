@@ -1,0 +1,218 @@
+id: win2016-audit-logoff
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Logon/Logoff
+  title:
+    pl: Inspekcja wylogowania
+    en: Audit logoff
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zakończenie sesji na tej maszynie.
+
+    Sama w sobie jest to informacja skromna — nikt nie prowadzi dochodzenia
+    w sprawie tego, że ktoś się wylogował. Wartość bierze się z zestawienia:
+    zdarzenie wylogowania domyka przedział czasu otwarty przez zdarzenie
+    logowania i dopiero z obu razem wynika, jak długo sesja trwała.
+
+    To jest pytanie, które pada w każdym dochodzeniu. Sesja otwarta na minutę
+    i sesja otwarta na trzy doby wyglądają w zdarzeniu logowania identycznie.
+    Bez domknięcia nie da się też odróżnić sesji, która się skończyła, od tej,
+    która nadal trwa — a to jest pierwsza rzecz, jaką trzeba ustalić.
+
+    Rejestruje się wyłącznie powodzenia, bo wylogowanie nie ma sensownego
+    wariantu nieudanego. Ustawienie rejestrowania niepowodzeń dodałoby
+    kategorię zdarzeń, która nie powstaje.
+
+    Kategoria średnia. Punkt sam nie wykrywa niczego; zwiększa natomiast
+    wartość zdarzeń logowania, które bez niego zostają niedomknięte.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: niepewność co do
+    tego, jak długo jego sesja była otwarta, a więc co mógł w niej zrobić.
+  en: |
+    The subcategory records the ending of a session on this machine.
+
+    By itself this is modest information - nobody holds an inquiry into somebody
+    having signed out. The worth comes of the pairing: a sign-out event closes the
+    span of time opened by a sign-in event, and only the two together give how long
+    the session lasted.
+
+    That is a question asked in every inquiry. A session open for a minute and one
+    open for three days look identical in the sign-in event. Without a closing one
+    cannot tell a session that has ended from one still running either - and that is
+    the first thing to establish.
+
+    Only successes are recorded, because signing out has no sensible failed variant.
+    Setting the recording of failures would add a class of events that does not
+    arise.
+
+    The category is medium. The item detects nothing on its own; it does raise the
+    worth of the sign-in events, which without it stay unclosed.
+
+    What an attacker gains while the item goes unmet: uncertainty about how long
+    their session was open, and so about what they could have done in it.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Zdarzeń wylogowania jest z definicji nie więcej
+    niż zdarzeń logowania, a w praktyce mniej — sesje zrywane bez wylogowania
+    nie dopisują tu niczego.
+
+    Nic nie przestaje działać, użytkownik niczego nie widzi, a przyrost
+    objętości jest tym razem przewidywalny, bo ograniczony z góry przez liczbę
+    sesji.
+
+    Jedyna uwaga dotyczy kolejności: włączanie tej podkategorii bez inspekcji
+    logowania nie ma sensu, bo domykanie przedziałów wymaga tego, żeby były
+    otwarte. Punkt wdraża się razem z tamtym albo po nim.
+
+    Czego to nie psuje: niczego. Zdarzenie powstaje po zakończeniu sesji i nie
+    wpływa na jej przebieg.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". Sign-out events are by definition no more numerous
+    than sign-in events, and in practice fewer - sessions broken off without a
+    sign-out add nothing here.
+
+    Nothing stops working, the user sees nothing, and the growth in volume is this
+    time predictable, being bounded above by the number of sessions.
+
+    The one remark concerns order: switching this subcategory on without auditing
+    sign-ins makes no sense, since closing spans requires that they be open. The item
+    goes in together with that one or after it.
+
+    What this does not break: nothing. The event arises once the session has ended
+    and does not bear on its course.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — przyrost objętości jest ograniczony liczbą sesji
+      - Sesje zrywane bez wylogowania nie dopisują tu zdarzenia, więc część przedziałów zostaje otwarta mimo wszystko
+      - Włączenie tego punktu bez inspekcji logowania nie daje nic, bo nie ma czego domykać
+      - Przebieg sesji użytkownika pozostaje nietknięty
+    en:
+      - No regression in the working - the growth in volume is bounded by the number of sessions
+      - Sessions broken off without a sign-out add no event here, so some spans stay open all the same
+      - Switching this item on without auditing sign-ins gives nothing, there being nothing to close
+      - The course of a user's session stays untouched
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Inspekcja logowania nie jest włączona, więc nie ma przedziałów czasu, które to zdarzenie miałoby domykać
+    en:
+      - Auditing of sign-ins is not on, so there are no spans of time for this event to close
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9216-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9216-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9216-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9216-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9216-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-logoff
+
+notes:
+  pl: |
+    Punkt jest przykładem reguły, której wartości nie da się ocenić w izolacji.
+    Sam nie wykrywa niczego. Oceniony osobno wygląda na zbędny, a w zestawie
+    z inspekcją logowania odpowiada na pytanie, które w dochodzeniu pada
+    najwcześniej.
+
+    Sesja zerwana — z powodu awarii sieci albo wyłączenia maszyny — nie
+    generuje zdarzenia wylogowania. Zapis nie jest więc kompletny i nie należy
+    go tak przedstawiać w raporcie.
+
+    Rejestrowanie niepowodzeń jest tu celowo pominięte. Oczekiwanie dopuszcza
+    oba stany bitu niepowodzeń, bo ich ustawienie nic nie zmienia.
+  en: |
+    The item is an example of a rule whose worth cannot be judged in isolation. It
+    detects nothing on its own. Judged apart it looks superfluous; paired with the
+    auditing of sign-ins it answers the question asked earliest in an inquiry.
+
+    A session broken off - through a network failure or the machine being switched
+    off - generates no sign-out event. The record is therefore not complete and
+    should not be presented as such in the report.
+
+    The recording of failures is deliberately passed over here. The expectation
+    admits either state of the failure bit, since setting it changes nothing.

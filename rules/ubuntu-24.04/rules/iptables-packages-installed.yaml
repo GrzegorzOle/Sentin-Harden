@@ -1,0 +1,209 @@
+id: ubuntu2404-iptables-packages-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.4.1.1
+  section: Host Based Firewall > Configure iptables > Configure iptables software
+  title:
+    pl: Pakiety iptables są zainstalowane
+    en: Ensure iptables packages are installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Pakiet iptables daje polecenia iptables i ip6tables do tworzenia reguł
+    zapory, a iptables-persistent zapisuje je w /etc/iptables i wczytuje
+    przy starcie serwera przez netfilter-persistent.service. Punkty 4.4
+    dotyczą serwerów, na których zaporę tworzy się w ten sposób.
+
+    Punkt wymaga zainstalowanych pakietów iptables i iptables-persistent.
+  en: |
+    The iptables package provides the iptables and ip6tables commands for
+    building firewall rules, and iptables-persistent saves them in
+    /etc/iptables and loads them at the start of the server through
+    netfilter-persistent.service. The items in 4.4 concern servers whose
+    firewall is built this way.
+
+    The item requires the iptables and iptables-persistent packages to be
+    installed.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: sama instalacja pakietów niczego nie filtruje.
+    Przy instalacji iptables-persistent zapisuje bieżące reguły iptables
+    w /etc/iptables.
+  en: |
+    Nobody will notice: installing the packages filters nothing. At
+    installation iptables-persistent saves the current iptables rules in
+    /etc/iptables.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in iptables|multiple:*iptables*) ;; *) echo NOT_APPLICABLE; exit 0 ;; esac
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    have=""; miss=""
+    for p in iptables iptables-persistent; do
+      if [ "$(st "$p")" = installed ]; then have="$have,$p=$(dpkg-query -W -f='${Version}' "$p")"
+      else miss="$miss,$p"; fi
+    done
+    if [ -n "$miss" ]; then echo "NOT_INSTALLED:${miss#,}"; else echo "INSTALLED:${have#,}"; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      {
+        echo format=dpkg-on-1
+        for p in iptables iptables-persistent; do s=$(st "$p"); echo "$p ${s:-not-installed}"; done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    m=$(fwmode)
+    case "$m" in iptables|multiple:*iptables*) ;; *) echo "iptables-persistent is not in use as the firewall ($m); the iptables items do not apply (see item 4.1.1)" >&2; exit 1 ;; esac
+    r=$(apt-get install -s iptables iptables-persistent 2>/dev/null | sed -n 's/^Remv \([^ ]*\).*/\1/p' | tr '\n' ' ')
+    [ -z "$r" ] || { echo "Installing iptables-persistent would remove: ${r% } (see item 4.4.1.3)" >&2; exit 1; }
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      miss=""
+      for p in iptables iptables-persistent; do [ "$(st "$p")" = installed ] || miss="$miss $p"; done
+      if [ -z "$miss" ]; then echo "Already installed: iptables iptables-persistent"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      o="-y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $miss; then apt-get update -qq; apt-get install $o $miss; fi
+      for p in $miss; do [ "$(st "$p")" = installed ] || { echo "$p is still not installed" >&2; exit 1; }; done
+      echo "Installed:$miss"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | cut -d' ' -f1 | tr '\n' ' ')" = "iptables iptables-persistent " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""; purge=""
+      while read -r p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != installed ] && [ "$(st "$p")" = installed ] || continue
+        rm="$rm $p"
+        # A package that was not there at all loses its configuration files too.
+        [ "$s" != not-installed ] || purge="$purge $p"
+      done < <(tail -n +2 "$b")
+      if [ -z "$rm" ]; then echo "Nothing to restore"; exit 0; fi
+      # Packages installed since then may need them; then they stay.
+      if ! dpkg -r --dry-run $rm >/dev/null 2>&1; then
+        echo "Kept$rm: other installed packages need them now"; exit 0
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get remove -y -qq $rm
+      if [ -n "$purge" ]; then dpkg --purge $purge >/dev/null; fi
+      echo "Removed again:$rm"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/iptables.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/netfilter-persistent.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
+
+notes:
+  pl: |
+    Punkty 4.4 dotyczą serwera, na którym w użyciu jest iptables-persistent,
+    czyli netfilter-persistent.service jest włączona lub uruchomiona.
+    W pozostałych przypadkach sprawdzenie zwraca NOT_APPLICABLE, a naprawa
+    odmawia. Wybór narzędzia ocenia punkt 4.1.1.
+
+    Wynik INSTALLED podaje wersje pakietów, a NOT_INSTALLED wymienia
+    brakujące. Pakiet usunięty bez --purge nie liczy się jako zainstalowany.
+    Naprawa instaluje brakujące pakiety przez apt-get, a wycofanie usuwa je,
+    jeśli ich nie było, chyba że zależą od nich pakiety zainstalowane
+    później.
+
+    Pakiet ufw nie może być zainstalowany razem z iptables-persistent, więc
+    apt-get usunąłby go przy instalacji. Naprawa najpierw symuluje
+    instalację i odmawia, gdy apt-get chce usunąć jakikolwiek pakiet.
+  en: |
+    The items in 4.4 concern a server where iptables-persistent is in use,
+    that is netfilter-persistent.service is enabled or running. In the other
+    cases the check returns NOT_APPLICABLE and the remediation refuses. The
+    choice of the tool is assessed by item 4.1.1.
+
+    The INSTALLED result gives the versions of the packages, and
+    NOT_INSTALLED lists the missing ones. A package removed without --purge
+    does not count as installed. The remediation installs the missing
+    packages with apt-get, and rollback removes them if they were not there,
+    unless packages installed later depend on them.
+
+    The ufw package cannot be installed together with iptables-persistent,
+    so apt-get would remove it during the installation. The remediation
+    first simulates the installation and refuses when apt-get wants to
+    remove any package.

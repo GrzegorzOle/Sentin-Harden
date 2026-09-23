@@ -1,0 +1,155 @@
+id: ubuntu2404-nftables-rules-permanent
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.3.10
+  section: Host Based Firewall > Configure nftables
+  title:
+    pl: Reguły nftables są trwałe
+    en: Ensure nftables rules are permanent
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Reguły dodane poleceniem nft działają tylko do ponownego uruchomienia
+    serwera. Po starcie nftables.service wczytuje zestaw reguł
+    z /etc/nftables.conf, więc zapora działa po restarcie tylko wtedy, gdy
+    ten plik ją opisuje.
+
+    Punkt wymaga, żeby /etc/nftables.conf, razem z dołączanymi plikami,
+    tworzył łańcuchy bazowe typu filter dla input, forward i output.
+  en: |
+    Rules added with the nft command work only until the server restarts.
+    After the start nftables.service loads the ruleset from
+    /etc/nftables.conf, so the firewall works after a restart only when that
+    file describes it.
+
+    The item requires /etc/nftables.conf, together with the files it
+    includes, to create filter base chains for input, forward and output.
+
+disruption_description:
+  pl: |
+    Samo sprawdzenie niczego nie zmienia. Zapisanie reguł w pliku zmienia
+    zaporę dopiero przy następnym wczytaniu pliku, np. po restarcie
+    serwera.
+  en: |
+    The check itself changes nothing. Saving the rules in the file changes
+    the firewall only the next time the file is loaded, for example after
+    the server restarts.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in nftables|multiple:*nftables*) ;; *) echo NOT_APPLICABLE; exit 0 ;; esac
+    f=/etc/nftables.conf
+    [ -e "$f" ] || { echo "NOT_OK:no-file"; exit 0; }
+    [ -r "$f" ] || { echo CHECK_ERROR; exit 0; }
+    # The file and the files it includes, also through globs; relative paths from /etc.
+    files=""; todo="$f"; n=0
+    while [ -n "$todo" ] && [ $n -lt 100 ]; do
+      set -- $todo; cur=$1; shift; todo="$*"; n=$((n + 1))
+      case " $files " in *" $cur "*) continue ;; esac
+      files="$files $cur"
+      for p in $(sed -nE 's/^[[:space:]]*include[[:space:]]+"([^"]+)".*/\1/p' "$cur"); do
+        case "$p" in /*) ;; *) p="/etc/$p" ;; esac
+        for g in $p; do [ -f "$g" ] && [ -r "$g" ] && todo="$todo $g"; done
+      done
+    done
+    hooks=$(cat $files | sed 's/#.*//' | grep -oE 'type[[:space:]]+filter[[:space:]]+hook[[:space:]]+(input|forward|output)([^a-z]|$)' | awk '{ sub(/[^a-z]$/, "", $4); print $4 }' | sort -u)
+    ok=""; miss=""
+    for h in input forward output; do
+      if printf '%s\n' "$hooks" | grep -qx "$h"; then ok="$ok,$h"; else miss="$miss,$h"; fi
+    done
+    if [ -z "$miss" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:missing=${miss#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains
+  - https://www.netfilter.org/projects/nftables/manpage.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/nft.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Punkty 4.3 dotyczą serwera, na którym w użyciu jest nftables, czyli
+    nftables.service jest włączona lub uruchomiona. W pozostałych
+    przypadkach, także gdy nie działa żadne narzędzie zapory, sprawdzenie
+    zwraca NOT_APPLICABLE, a naprawa odmawia. Wybór narzędzia ocenia punkt
+    4.1.1, który przy braku zapory włącza ufw.
+
+    Reguła tylko sprawdza stan: zestaw reguł zapory projektuje
+    administrator, a jego automatyczna zmiana na zdalnym serwerze grozi
+    odcięciem dostępu. Reguły zapisuje się w /etc/nftables.conf, który
+    nftables.service wczytuje przy starcie, i wczytuje poleceniem systemctl
+    reload nftables. Sprawdzenie odczytuje bieżący zestaw reguł poleceniem
+    nft list ruleset, które wymaga uprawnień roota. Bieżący zestaw reguł zapisuje się np. poleceniem
+    nft list ruleset, którego wynik trafia do pliku po wierszu flush
+    ruleset.
+
+    Sprawdzenie czyta /etc/nftables.conf i pliki dołączane poleceniem
+    include, także przez wzorce jak /etc/nftables.d/*.nft; ścieżki względne
+    szuka w /etc. Pomija komentarze i szuka definicji type filter hook dla
+    input, forward i output. Wynik NOT_OK wymienia brakujące haki,
+    a NOT_OK:no-file oznacza brak pliku. Sprawdzenie nie porównuje pliku
+    z działającym zestawem reguł.
+  en: |
+    The items in 4.3 concern a server where nftables is in use, that is
+    nftables.service is enabled or running. In the other cases, also when no
+    firewall tool runs, the check returns NOT_APPLICABLE and the remediation
+    refuses. The choice of the tool is assessed by item 4.1.1, which turns
+    on ufw when there is no firewall.
+
+    The rule only checks the state: the firewall ruleset is designed by
+    the administrator, and changing it automatically on a remote server
+    risks cutting off access. The rules are written to /etc/nftables.conf,
+    which nftables.service loads at start, and loaded with systemctl reload
+    nftables. The check reads the current ruleset with nft list ruleset,
+    which needs root privileges. The current ruleset is saved for example with nft
+    list ruleset, whose output goes to the file after the flush ruleset
+    line.
+
+    The check reads /etc/nftables.conf and the files included with the
+    include command, also through patterns like /etc/nftables.d/*.nft;
+    relative paths are looked up in /etc. It skips comments and looks for
+    type filter hook definitions for input, forward and output. The NOT_OK
+    result lists the missing hooks, and NOT_OK:no-file means the file is
+    missing. The check does not compare the file with the running ruleset.

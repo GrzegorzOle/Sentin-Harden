@@ -1,0 +1,134 @@
+id: fedora44-nftables-default-deny
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 4.3.3
+  section: Host Based Firewall > Configure nftables
+  title:
+    pl: Domyślna polityka nftables odrzuca ruch
+    en: Ensure nftables default deny firewall policy
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Polityka łańcucha bazowego decyduje o pakiecie, do którego nie pasuje
+    żadna reguła. Przy polityce accept zapora przepuszcza wszystko, czego
+    nie zabroniono wprost, więc każda zapomniana usługa jest dostępna
+    z sieci.
+
+    Punkt wymaga polityki drop w łańcuchach bazowych input, forward
+    i output. Wtedy przechodzi tylko ruch dozwolony regułami.
+  en: |
+    The policy of a base chain decides about a packet that matches no rule.
+    With the accept policy, the firewall lets through everything not
+    explicitly forbidden, so every forgotten service is reachable from the
+    network.
+
+    The item requires the drop policy in the input, forward and output base
+    chains. Then only traffic allowed by rules passes.
+
+disruption_description:
+  pl: |
+    Polityka drop bez kompletu reguł zezwalających przerywa ruch, którego nie
+    przewidziano: połączenia wychodzące, DNS, DHCP, aktualizacje, a przy
+    pracy zdalnej także samą sesję administratora. Przed zmianą trzeba
+    dopisać reguły dla ruchu powrotnego (punkt 4.3.2), pętli zwrotnej
+    i potrzebnych usług i sprawdzić je na komputerze z dostępem lokalnym.
+  en: |
+    The drop policy without a complete set of allow rules interrupts
+    traffic that was not foreseen: outgoing connections, DNS, DHCP, updates,
+    and during remote work the administrator's own session. Before the
+    change, rules for return traffic (item 4.3.2), loopback and the needed
+    services have to be added and tested on a computer with local access.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Połączenia wychodzące, DNS, DHCP i aktualizacje, dla których nie ma reguły zezwalającej w łańcuchu output
+      - Usługi przyjmujące połączenia z sieci, dla których nie ma reguły w łańcuchu input, w tym SSH
+      - Kontenery i maszyny wirtualne korzystające z przekazywania pakietów bez reguł w łańcuchu forward
+    en:
+      - Outgoing connections, DNS, DHCP and updates with no allow rule in the output chain
+      - Services accepting connections from the network with no rule in the input chain, including SSH
+      - Containers and virtual machines relying on packet forwarding with no rules in the forward chain
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Zmiana przez połączenie zdalne bez przetestowanego zestawu reguł i bez dostępu awaryjnego
+    en:
+      - A change over a remote connection without a tested ruleset and without emergency access
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    # With firewalld as the firewall its rules are assessed by the firewalld items.
+    if [ "$(systemctl is-active firewalld.service 2>/dev/null)" = active ]; then echo NOT_APPLICABLE; exit 0; fi
+    if ! command -v nft >/dev/null 2>&1; then echo NOT_INSTALLED; exit 0; fi
+    rs=$(nft list ruleset 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    hp=$(printf '%s\n' "$rs" | sed -nE 's/.*type filter hook (input|forward|output) .*policy (accept|drop);.*/\1 \2/p')
+    # One drop policy per hook is enough: accept in one base chain does not end the others.
+    ok=""; bad=""
+    for h in input forward output; do
+      if printf '%s\n' "$hp" | grep -qx "$h drop"; then ok="$ok,$h=drop"
+      elif printf '%s\n' "$hp" | grep -q "^$h "; then bad="$bad,$h=accept"
+      else bad="$bad,$h=missing"; fi
+    done
+    if [ -z "$bad" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:${bad#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains
+  - https://www.netfilter.org/projects/nftables/manpage.html
+  - https://wiki.nftables.org/wiki-nftables/index.php/Main_Page
+
+notes:
+  pl: |
+    Punkty o nftables dotyczą komputera, na którym zaporę tworzy sama usługa
+    nftables z regułami w /etc/sysconfig/nftables.conf. Gdy działa firewalld,
+    sprawdzenie zwraca NOT_APPLICABLE, bo jego reguły ocenia punkt o firewalld.
+    Sprawdzenie odczytuje bieżący zestaw reguł poleceniem nft list ruleset,
+    które wymaga uprawnień roota.
+
+    Reguła tylko sprawdza stan: zestaw reguł zapory projektuje administrator,
+    a jego automatyczna zmiana na zdalnym komputerze grozi odcięciem dostępu.
+    Reguły zapisuje się w pliku ładowanym przez usługę nftables i wczytuje
+    poleceniem systemctl reload nftables.
+
+    Sprawdzenie wymaga, żeby dla każdego z haków input, forward i output
+    istniał co najmniej jeden łańcuch bazowy typu filter z polityką drop.
+    Jeden wystarczy, bo accept w jednym łańcuchu bazowym nie kończy
+    sprawdzania w pozostałych łańcuchach tego samego haka, a drop kończy.
+  en: |
+    The nftables items concern a computer whose firewall is built by the
+    nftables service itself, with rules in /etc/sysconfig/nftables.conf.
+    When firewalld runs, the check returns NOT_APPLICABLE, because its rules
+    are assessed by the firewalld item. The check reads the current ruleset
+    with nft list ruleset, which needs root privileges.
+
+    The rule only checks the state: the firewall ruleset is designed by the
+    administrator, and changing it automatically on a remote computer risks
+    cutting off access. The rules are written to the file loaded by the
+    nftables service and loaded with systemctl reload nftables.
+
+    The check requires at least one filter base chain with the drop policy
+    for each of the input, forward and output hooks. One is enough, because
+    accept in one base chain does not end the evaluation in the other chains
+    of the same hook, while drop does.

@@ -1,0 +1,220 @@
+id: win2016-audit-security-group-management
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Account Management
+  title:
+    pl: Inspekcja zarządzania grupami zabezpieczeń
+    en: Audit security group management
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w grupach zabezpieczeń: utworzenie i usunięcie
+    grupy oraz — co ważniejsze — dodanie i usunięcie członka.
+
+    Dopisanie konta do grupy administratorów jest najkrótszą drogą od dostępu
+    zwykłego do pełnego i najczęstszym sposobem utrwalenia uprawnień.
+    Ma nad zakładaniem nowego konta tę przewagę, że nie tworzy niczego nowego:
+    konto istniało wcześniej, wygląda zwyczajnie i nie rzuca się w oczy na
+    liście. Zmienia się wyłącznie członkostwo, a tego nie widać nigdzie poza
+    tą podkategorią.
+
+    Rzecz dotyczy nie tylko administratorów. Grupa dająca dostęp do udziału
+    z danymi kadrowymi albo do konsoli zarządzania jest w praktyce tym samym
+    uprawnieniem, tylko węższym — i tak samo cichym.
+
+    Rejestruje się powodzenia, bo to zmiana faktycznie dokonana jest tym, co ma
+    zostać udokumentowane. Zdarzenia niepowodzeń dla tej podkategorii są rzadkie
+    i ich wartość nie uzasadnia objętości.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: rozszerzenie
+    własnych uprawnień przez dopisanie się do grupy, bez śladu wskazującego
+    moment i sprawcę.
+  en: |
+    The subcategory records changes to security groups: the creation and deletion of
+    a group and - more importantly - the adding and removing of a member.
+
+    Writing an account into the administrators group is the shortest road from
+    ordinary access to full access, and the commonest way of making rights last. It
+    has over setting up a new account the advantage of creating nothing new: the
+    account existed before, looks ordinary and does not catch the eye on a list.
+    Only the membership alters, and that is visible nowhere outside this
+    subcategory.
+
+    The matter concerns more than the administrators. A group giving access to a
+    share of personnel data, or to a management console, is in practice the same
+    right, only narrower - and just as quiet.
+
+    Successes are recorded, because a change actually made is what is to be
+    documented. Failure events for this subcategory are rare and their worth does
+    not justify the volume.
+
+    What an attacker gains while the item goes unmet: the widening of their own
+    rights by writing themselves into a group, with no trace of the moment or the
+    hand.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Zmiany w grupach są rzadkie nawet w dużych
+    organizacjach i liczba zdarzeń nie rośnie z obciążeniem maszyny.
+
+    Na kontrolerze domeny warto pamiętać o jednym: grupy o dużej liczbie
+    członków, aktualizowane wsadowo z systemu kadrowego albo skryptem
+    porządkowym, dopisują zdarzenie dla każdego członka osobno. Tura
+    synchronizacji obejmująca tysiąc osób to tysiąc zdarzeń w kilka minut.
+    Nadal jest to zdarzenie jednorazowe, a nie stały strumień.
+
+    Nic przy tym nie przestaje działać i nikt niczego nie zauważy.
+
+    Czego to nie psuje: zarządzania grupami, dodawania i usuwania członków,
+    pracy narzędzi administracyjnych ani zasad grupy opartych na członkostwie.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". Changes to groups are rare even in large
+    organisations, and the count of events does not grow with the machine's load.
+
+    On a domain controller one thing is worth remembering: groups with many members,
+    updated in bulk from a personnel system or by a tidying script, add an event for
+    every member separately. A round of synchronisation covering a thousand people
+    is a thousand events in a few minutes. It is still a one-off occurrence rather
+    than a steady stream.
+
+    Nothing stops working while this goes on and nobody notices anything.
+
+    What this does not break: the managing of groups, the adding and removing of
+    members, the work of administrative tools, or group policy resting on
+    membership.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — zmiany w grupach są rzadkie i nie rosną z obciążeniem
+      - Wsadowa aktualizacja grupy o tysiącu członków dopisuje tysiąc zdarzeń w kilka minut
+      - Zarządzanie grupami i praca narzędzi administracyjnych działają bez zmian
+      - Zasady grupy oparte na członkostwie pozostają nietknięte
+    en:
+      - No regression in the working - changes to groups are rare and do not grow with load
+      - A bulk update of a group of a thousand members adds a thousand events in a few minutes
+      - The managing of groups and the work of administrative tools work unchanged
+      - Group policy resting on membership stays untouched
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przeciwwskazań — punkt wdraża się także tam, gdzie objętość dziennika jest ograniczeniem
+    en:
+      - No known contraindication - the item goes in even where the log's volume is a constraint
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9237-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9237-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9237-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9237-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9237-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-security-group-management
+
+notes:
+  pl: |
+    Punkt warto czytać razem z zarządzaniem kontami. Oba opisują utrwalanie
+    dostępu, tylko dwoma różnymi drogami: tamto przez nową tożsamość, to przez
+    rozszerzenie istniejącej. Druga droga jest cichsza i dlatego częstsza.
+
+    Zdarzenia tej podkategorii są tym, co pozwala odpowiedzieć na pytanie „od
+    kiedy ta osoba jest administratorem". Samo członkostwo mówi, że jest —
+    nie mówi, od kiedy ani z czyjego polecenia.
+
+    Rejestrowanie niepowodzeń jest tu celowo pominięte. Oczekiwanie dopuszcza
+    oba stany bitu niepowodzeń; organizacja, która chce rejestrować także próby
+    nieudane, może je włączyć bez naruszenia tej reguły.
+  en: |
+    The item is worth reading together with user account management. Both describe
+    the making of access last, only by two different roads: that one through a new
+    identity, this one through the widening of an existing one. The second road is
+    quieter and therefore commoner.
+
+    Events of this subcategory are what allows the question "since when has this
+    person been an administrator" to be answered. Membership alone says that they
+    are - it does not say since when or on whose instruction.
+
+    The recording of failures is deliberately passed over here. The expectation
+    admits either state of the failure bit; an organisation wanting to record failed
+    attempts too may switch them on without breaking this rule.

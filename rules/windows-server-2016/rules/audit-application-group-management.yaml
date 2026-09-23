@@ -1,0 +1,223 @@
+id: win2016-audit-application-group-management
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Account Management
+  title:
+    pl: Inspekcja zarządzania grupami aplikacji
+    en: Audit application group management
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w grupach aplikacji — osobnym rodzaju grup,
+    używanym przez mechanizm menedżera autoryzacji do opisywania ról
+    w aplikacjach biznesowych.
+
+    Grupy te różnią się od grup zabezpieczeń tym, że nie nadają uprawnień do
+    zasobów systemu. Nadają role wewnątrz aplikacji: kto zatwierdza, kto widzi
+    zestawienia, kto wystawia dokument. Z punktu widzenia systemu jest to
+    zmiana błaha; z punktu widzenia organizacji bywa poważniejsza niż część
+    zmian w grupach zabezpieczeń.
+
+    Dlatego punkt istnieje mimo że mechanizm jest stary i rzadko używany.
+    Tam, gdzie go używano, zmiana członkostwa w roli bywa jedynym miejscem,
+    w którym widać, kto nadał sobie prawo zatwierdzania.
+
+    Na serwerze 2016 mechanizm ten jest dostępny i w części wdrożeń
+    aplikacyjnych z tego okresu faktycznie działa. Na maszynie, która go nie
+    używa, podkategoria nie zapisze nigdy niczego — i to jest normalny wynik,
+    nie usterka.
+
+    Rejestruje się powodzenia i niepowodzenia, bo zdarzeń jest tak mało, że
+    koszt rejestrowania obu jest zerowy.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: zmianę ról
+    w aplikacji biznesowej bez śladu poza samą aplikacją, która tego śladu może
+    nie prowadzić.
+  en: |
+    The subcategory records changes to application groups - a separate kind of
+    group, used by the authorisation manager mechanism to describe roles in business
+    applications.
+
+    These groups differ from security groups in granting no rights to the system's
+    resources. They grant roles within an application: who approves, who sees the
+    figures, who issues a document. From the system's point of view such a change is
+    trifling; from the organisation's it is at times weightier than some changes to
+    security groups.
+
+    That is why the item exists although the mechanism is old and seldom used. Where
+    it was used, a change of membership in a role is at times the one place where it
+    is visible who granted themselves the right to approve.
+
+    On Server 2016 the mechanism is available and in some application deployments of
+    that period is actually in use. On a machine that does not use it the
+    subcategory will never record anything - and that is a normal result, not a
+    fault.
+
+    Successes and failures are both recorded, because there are so few events that
+    the cost of recording both is nil.
+
+    What an attacker gains while the item goes unmet: a change of roles in a business
+    application with no trace outside the application itself, which may keep none.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości" i jest to jeden z najtańszych punktów w całym
+    bloku. Na większości maszyn liczba zdarzeń wynosi zero, bo mechanizm nie
+    jest używany.
+
+    Warto to powiedzieć wprost, bo zgodność tego punktu bywa mylona z
+    zabezpieczeniem czegoś. Reguła nie chroni aplikacji, których na maszynie
+    nie ma — zapewnia, że jeżeli taka aplikacja jest albo się pojawi, jej role
+    nie będą zmieniane po cichu.
+
+    Czego to nie psuje: niczego. Aplikacje korzystające z menedżera autoryzacji
+    działają bez zmian, a zdarzenie powstaje obok zmiany roli.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption" and this is one of the cheapest items in the whole
+    block. On most machines the count of events is zero, the mechanism not being
+    used.
+
+    That is worth saying outright, because this item being compliant gets mistaken
+    for something having been protected. The rule guards no applications that are
+    not on the machine - it ensures that if such an application is there or appears,
+    its roles will not be changed quietly.
+
+    What this does not break: nothing. Applications using the authorisation manager
+    work unchanged, and the event arises alongside the change of role.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — na maszynie bez menedżera autoryzacji nie powstaje żadne zdarzenie
+      - Aplikacje korzystające z tego mechanizmu działają bez zmian, a zdarzenie powstaje obok zmiany roli
+      - Zgodność punktu nie oznacza, że cokolwiek zostało zabezpieczone, jeżeli mechanizm nie jest używany
+      - Przyrost strumienia do systemu zbierającego jest zerowy albo bliski zeru
+    en:
+      - No regression in the working - on a machine without the authorisation manager no event arises at all
+      - Applications using the mechanism work unchanged, and the event arises alongside the change of role
+      - The item being compliant does not mean anything has been protected if the mechanism is not in use
+      - The growth of the stream to the gathering system is nil or close to it
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przeciwwskazań — koszt jest zerowy niezależnie od tego, czy mechanizm jest używany
+    en:
+      - No known contraindication - the cost is nil whether the mechanism is in use or not
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9239-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^3$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9239-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9239-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9239-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9239-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-application-group-management
+
+notes:
+  pl: |
+    Jest to punkt, który na większości serwerów nie zapisze nigdy niczego.
+    Utrzymujemy go, bo koszt wynosi zero, a maszyna, która dziś aplikacji nie
+    ma, może ją dostać jutro — wtedy inspekcja już działa, zamiast być włączana
+    po fakcie.
+
+    W raporcie warto to jednak przedstawić uczciwie: zgodność oznacza gotowość,
+    a nie ochronę czegoś istniejącego. Reguła nie zasługuje na miejsce wyżej
+    niż na końcu listy roboczej.
+
+    Mechanizm menedżera autoryzacji jest w nowszych wersjach systemu uznany za
+    przestarzały. Na maszynie z rocznika 2016 bywa jednak nadal w użyciu i to
+    jest jedyny powód, dla którego punkt ma tu treść, a nie tylko formę.
+  en: |
+    This is an item that on most servers will never record anything. It is kept
+    because the cost is nil, and a machine that has no such application today may
+    get one tomorrow - the auditing is then already on, rather than being switched on
+    after the event.
+
+    In the report this is worth presenting honestly, though: compliance means
+    readiness, not the protection of something existing. The item deserves no place
+    higher than the end of the working list.
+
+    The authorisation manager mechanism is held to be obsolete in newer versions of
+    the system. On a machine of the 2016 vintage it is at times still in use, and
+    that is the only reason the item has substance here and not merely form.

@@ -1,0 +1,219 @@
+id: win2016-audit-authentication-policy-change
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Advanced Audit Policy Configuration > Policy Change
+  title:
+    pl: Inspekcja zmiany zasad uwierzytelniania
+    en: Audit authentication policy change
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podkategoria zapisuje zmiany w zasadach uwierzytelniania: w relacjach
+    zaufania między domenami, w zasadach protokołu biletowego oraz w tym, komu
+    wolno logować się jako usługa albo wsadowo.
+
+    Zaufanie między domenami jest tu rzeczą najcięższą. Nowa relacja zaufania
+    oznacza, że tożsamości z innego katalogu stają się rozpoznawalne w tym —
+    a więc że krąg osób mogących się uwierzytelnić rozszerza się poza granicę,
+    którą organizacja uznawała za swoją. Jest to zmiana o skutku szerszym niż
+    jakiekolwiek dopisanie do grupy i zarazem znacznie rzadziej przeglądana.
+
+    Zmiany w zasadach protokołu biletowego — czasy życia biletów, dopuszczalne
+    metody szyfrowania — są cichsze, ale idą w tę samą stronę: przesuwają
+    granice tego, co system uzna za ważne poświadczenie.
+
+    Kategoria średnia, bo zmiany te są rzadkie i wymagają wysokich uprawnień;
+    punkt nie blokuje ataku, tylko zapewnia, że tak poważna zmiana nie przejdzie
+    niezauważona.
+
+    Rejestruje się powodzenia.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    rozszerzenia kręgu tożsamości uznawanych przez tę maszynę bez śladu
+    wskazującego, kiedy granica została przesunięta.
+  en: |
+    The subcategory records changes to authentication policy: to trust relationships
+    between domains, to the ticket protocol's policy, and to who may sign in as a
+    service or in batch.
+
+    Trust between domains is the heaviest matter here. A new trust relationship
+    means identities from another directory become recognisable in this one - and so
+    that the circle of those able to authenticate widens beyond the boundary the
+    organisation held to be its own. It is a change of broader effect than any
+    writing into a group, and at the same time reviewed far more seldom.
+
+    Changes to the ticket protocol's policy - ticket lifetimes, the encryption
+    methods allowed - are quieter, but run the same way: they shift the bounds of
+    what the system will hold to be a valid credential.
+
+    The category is medium, because such changes are rare and call for high rights;
+    the item blocks no attack, it ensures only that a change of such weight does not
+    pass unnoticed.
+
+    Successes are recorded.
+
+    What an attacker gains while the item goes unmet: the means of widening the
+    circle of identities this machine recognises, with no trace of when the boundary
+    was moved.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Zdarzeń jest bardzo mało — relacje zaufania
+    zakłada się raz na lata, a zasady protokołu biletowego zmienia się przy
+    przeglądach, nie w codziennej pracy.
+
+    Na serwerze członkowskim podkategoria bywa całkiem cicha, bo zasady
+    uwierzytelniania pochodzą z domeny, a nie z maszyny. Na kontrolerze domeny
+    zdarzeń jest więcej, ale nadal mowa o pojedynczych sztukach.
+
+    Nic przy tym nie przestaje działać i nikt niczego nie zauważy.
+
+    Czego to nie psuje: uwierzytelniania, relacji zaufania, wydawania biletów,
+    logowania usług ani zadań wsadowych.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". There are very few events - trust relationships
+    are set up once in years, and the ticket protocol's policy is changed at reviews
+    rather than in the daily course of work.
+
+    On a member server the subcategory can be altogether quiet, authentication
+    policy coming from the domain rather than from the machine. On a domain
+    controller there are more events, but still single figures.
+
+    Nothing stops working while this goes on and nobody notices anything.
+
+    What this does not break: authentication, trust relationships, the issuing of
+    tickets, the signing in of services, or batch tasks.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Brak regresji w działaniu — zdarzeń przybywa pojedynczo, nie strumieniem
+      - Na serwerze członkowskim podkategoria bywa całkiem cicha, bo zasady pochodzą z domeny
+      - Uwierzytelnianie, relacje zaufania i wydawanie biletów działają bez zmian
+      - Logowanie usług i zadania wsadowe pozostają nietknięte
+    en:
+      - No regression in the working - events accrue singly, not as a stream
+      - On a member server the subcategory can be altogether quiet, the policy coming from the domain
+      - Authentication, trust relationships and the issuing of tickets work unchanged
+      - The signing in of services and batch tasks stay untouched
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przeciwwskazań — objętość jest pomijalna nawet przy ciasnym dzienniku
+    en:
+      - No known contraindication - the volume is negligible even with a tight log
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $csv = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.csv')
+      $output = & auditpol /backup /file:$csv 2>&1
+      $rows = @()
+      if (Test-Path -Path $csv) {
+        $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+        Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+      }
+      # The backup format carries a numeric setting in the last column, which
+      # the localised output of auditpol /get does not.
+      $line = $rows | Where-Object { $_ -match '0CCE9230-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+      if (-not $line) {
+        # auditpol writes the file even when it refuses the backup, so the
+        # missing row - not a missing file - is what tells the refusal apart.
+        # Its own message goes to the error stream, so the report can tell a
+        # missing privilege from a real fault instead of a bare error.
+        $text = ($output | ForEach-Object {
+          if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+          else { [string]$_ }
+        }) -join ' '
+        [Console]::Error.WriteLine($text.Trim())
+        'CHECK_ERROR'
+      }
+      else {
+        $value = ($line -split ',')[-1].Trim()
+        if ($value -match '^\d+$') { $value } else { 'CHECK_ERROR' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[13]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $csv = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.csv')
+    $null = auditpol /backup /file:$csv
+    $rows = Get-Content -Path $csv -ErrorAction SilentlyContinue
+    Remove-Item -Path $csv -Force -ErrorAction SilentlyContinue
+    $line = $rows | Where-Object { $_ -match '0CCE9230-69AE-11D9-BED3-505054503030' } | Select-Object -First 1
+    $value = ''
+    if ($line) { $value = ($line -split ',')[-1].Trim() }
+    [pscustomobject]@{
+      subcategory = '{0CCE9230-69AE-11D9-BED3-505054503030}'
+      value       = $value
+      existed     = ($value -ne '')
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    auditpol /set /subcategory:"{0CCE9230-69AE-11D9-BED3-505054503030}" /success:enable
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    $value = [int]$b.value
+    $success = if ($value -band 1) { 'enable' } else { 'disable' }
+    $failure = if ($value -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:"{0CCE9230-69AE-11D9-BED3-505054503030}" /success:$success /failure:$failure
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/auditing/audit-authentication-policy-change
+
+notes:
+  pl: |
+    Na serwerze członkowskim punkt jest w dużej mierze gotowością, a nie
+    ochroną: zasady uwierzytelniania ustala domena. Warto to w raporcie
+    powiedzieć, żeby zgodność nie była czytana jako coś więcej, niż jest.
+
+    Na kontrolerze domeny rzecz ma pełną wagę. Zmiana relacji zaufania jest tam
+    zdarzeniem o skutku sięgającym daleko poza tę maszynę i to jest jedyne
+    miejsce, w którym zostaje po niej zapis.
+
+    Punkt warto czytać razem ze zmianą zasad autoryzacji. Tamten mówi, co wolno
+    zrobić tożsamości już uznanej; ten — które tożsamości w ogóle są uznawane.
+  en: |
+    On a member server the item is largely readiness rather than protection:
+    authentication policy is settled by the domain. That is worth saying in the
+    report, so that compliance is not read as more than it is.
+
+    On a domain controller the matter carries its full weight. A change of trust
+    relationship is there an event whose effect reaches far beyond this machine, and
+    this is the one place where a record of it is left.
+
+    The item is worth reading together with the change of authorisation policy. That
+    one says what an identity already recognised may do; this one which identities
+    are recognised at all.

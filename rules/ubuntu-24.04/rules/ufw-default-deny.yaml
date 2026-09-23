@@ -1,0 +1,160 @@
+id: ubuntu2404-ufw-default-deny
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.2.7
+  section: Host Based Firewall > Configure UncomplicatedFirewall
+  title:
+    pl: Domyślna polityka ufw odrzuca ruch
+    en: Ensure ufw default deny firewall policy
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Domyślna polityka ufw decyduje o pakiecie, do którego nie pasuje żadna
+    reguła. Ubuntu odrzuca ruch przychodzący i przekazywany, ale przepuszcza
+    cały ruch wychodzący, więc program, który przejął konto na serwerze,
+    może bez przeszkód łączyć się z dowolnym miejscem w sieci.
+
+    Punkt wymaga polityki deny albo reject dla ruchu przychodzącego,
+    wychodzącego i przekazywanego, czyli wartości DROP albo REJECT
+    w DEFAULT_INPUT_POLICY, DEFAULT_OUTPUT_POLICY i DEFAULT_FORWARD_POLICY
+    w /etc/default/ufw.
+  en: |
+    The default policy of ufw decides about a packet that matches no rule.
+    Ubuntu drops incoming and forwarded traffic but lets all outgoing
+    traffic through, so a program that has taken over an account on the
+    server can freely connect to any place in the network.
+
+    The item requires the deny or reject policy for incoming, outgoing and
+    forwarded traffic, that is the DROP or REJECT value in
+    DEFAULT_INPUT_POLICY, DEFAULT_OUTPUT_POLICY and DEFAULT_FORWARD_POLICY
+    in /etc/default/ufw.
+
+disruption_description:
+  pl: |
+    Polityka deny dla ruchu wychodzącego bez reguł zezwalających przerywa
+    nowe połączenia wychodzące: DNS, aktualizacje apt, synchronizację czasu,
+    wysyłanie poczty i logów. Przed zmianą trzeba dodać reguły ufw allow out
+    dla potrzebnego ruchu (punkt 4.2.5) i sprawdzić je na komputerze
+    z dostępem lokalnym. Otwarta sesja SSH trwa dalej, bo ufw przepuszcza
+    ruch nawiązanych połączeń.
+  en: |
+    The deny policy for outgoing traffic without allow rules interrupts new
+    outgoing connections: DNS, apt updates, time synchronisation, sending
+    mail and logs. Before the change, ufw allow out rules for the needed
+    traffic have to be added (item 4.2.5) and tested on a computer with
+    local access. An open SSH session goes on, because ufw lets through the
+    traffic of established connections.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Rozwiązywanie nazw DNS, aktualizacje apt i synchronizacja czasu, dla których nie ma reguły ufw allow out
+      - Wysyłanie poczty, logów i kopii zapasowych na inne serwery bez reguły ufw allow out
+      - Kontenery i maszyny wirtualne za mostkiem sieciowym, gdy polityka ruchu przekazywanego zmienia się z allow na deny
+    en:
+      - DNS name resolution, apt updates and time synchronisation with no ufw allow out rule
+      - Sending mail, logs and backups to other servers with no ufw allow out rule
+      - Containers and virtual machines behind a network bridge, when the policy for forwarded traffic changes from allow to deny
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Zmiana przez połączenie zdalne bez przetestowanych reguł ufw allow out i bez dostępu awaryjnego
+    en:
+      - A change over a remote connection without tested ufw allow out rules and without emergency access
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in nftables|iptables|multiple:nftables,iptables) echo NOT_APPLICABLE; exit 0 ;; esac
+    [ -x /usr/sbin/ufw ] || { echo NOT_INSTALLED; exit 0; }
+    f=/etc/default/ufw
+    [ -r "$f" ] || { echo CHECK_ERROR; exit 0; }
+    pol() {
+      v=$(sed -n "s/^[[:space:]]*$1=[\"']\{0,1\}\([A-Za-z]*\).*/\1/p" "$f" | tail -n 1 | tr a-z A-Z)
+      case "$v" in DROP) echo deny ;; REJECT) echo reject ;; ACCEPT) echo allow ;; "") echo unset ;; *) echo "$v" ;; esac
+    }
+    i=$(pol DEFAULT_INPUT_POLICY); o=$(pol DEFAULT_OUTPUT_POLICY); r=$(pol DEFAULT_FORWARD_POLICY)
+    ok=1
+    for v in "$i" "$o" "$r"; do case "$v" in deny|reject) ;; *) ok=0 ;; esac; done
+    s="incoming=$i,outgoing=$o,routed=$r"
+    if [ $ok = 1 ]; then echo "OK:$s"; else echo "NOT_OK:$s"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html#default
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw-framework.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Reguła tylko sprawdza stan, bo polityka deny dla ruchu wychodzącego
+    wymaga najpierw reguł dla ruchu, którego serwer potrzebuje, a te zależą
+    od jego roli. Politykę zmienia się poleceniami ufw default deny
+    incoming, ufw default deny outgoing i ufw default deny routed.
+
+    Sprawdzenie czyta /etc/default/ufw, a nie wynik ufw status, więc działa
+    także przy wyłączonym ufw; polityki zaczynają działać, gdy punkt 4.2.3
+    włączy ufw. ufw status pokazuje dla ruchu przekazywanego disabled, gdy
+    przekazywanie pakietów w jądrze jest wyłączone, niezależnie od polityki.
+    Reguła i tak wymaga DROP albo REJECT, bo przy polityce ACCEPT włączenie
+    przekazywania, np. przez oprogramowanie kontenerów, od razu
+    przepuszczałoby ruch przekazywany. Wynik OK i NOT_OK podaje polityki
+    w postaci incoming=, outgoing= i routed=.
+
+    Gdy w użyciu jest nftables albo iptables-persistent, sprawdzenie
+    zwraca NOT_APPLICABLE, bo ten przypadek oceniają punkty 4.1.1, 4.3 i 4.4,
+    a bez pakietu ufw wynik to NOT_INSTALLED.
+  en: |
+    The rule only checks the state, because the deny policy for outgoing
+    traffic first needs rules for the traffic the server needs, and those
+    depend on its role. The policy is changed with ufw default deny
+    incoming, ufw default deny outgoing and ufw default deny routed.
+
+    The check reads /etc/default/ufw, not the output of ufw status, so it
+    works also with ufw turned off; the policies take effect when item 4.2.3
+    turns ufw on. ufw status shows disabled for forwarded traffic when
+    packet forwarding in the kernel is turned off, whatever the policy. The
+    rule still requires DROP or REJECT, because with the ACCEPT policy
+    turning on forwarding, for example by container software, would at once
+    let forwarded traffic through. The OK and NOT_OK results give the
+    policies as incoming=, outgoing= and routed=.
+
+    When nftables or iptables-persistent is in use, the check returns
+    NOT_APPLICABLE, because items 4.1.1, 4.3 and 4.4 assess that case, and
+    without the ufw package the result is NOT_INSTALLED.

@@ -1,0 +1,377 @@
+id: ubuntu2404-single-firewall-utility
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.1.1
+  section: Host Based Firewall > Configure a firewall utility
+  title:
+    pl: W użyciu jest jedno narzędzie do konfiguracji zapory
+    en: Ensure a single firewall configuration utility is in use
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ubuntu ma trzy narzędzia do zapory: ufw, nftables i iptables-persistent.
+    Wszystkie zapisują reguły w tym samym filtrze pakietów jądra, więc dwa
+    naraz nadpisują sobie nawzajem reguły albo je usuwają, np. zatrzymanie
+    nftables.service kasuje także reguły ufw. Bez żadnego z nich serwer nie
+    filtruje ruchu przychodzącego.
+
+    Punkt jest spełniony, gdy w użyciu jest dokładnie jedno narzędzie: ufw
+    włączony w /etc/ufw/ufw.conf, nftables.service albo
+    netfilter-persistent.service włączona lub uruchomiona.
+  en: |
+    Ubuntu has three firewall tools: ufw, nftables and iptables-persistent.
+    All of them write rules into the same packet filter of the kernel, so
+    two at once overwrite or remove each other's rules; stopping
+    nftables.service, for example, also deletes the rules of ufw. Without
+    any of them the server does not filter incoming traffic.
+
+    The item is met when exactly one tool is in use: ufw turned on in
+    /etc/ufw/ufw.conf, or nftables.service or netfilter-persistent.service
+    enabled or running.
+
+disruption_description:
+  pl: |
+    Gdy żadne narzędzie nie działa, naprawa włącza ufw, który od razu
+    odrzuca ruch przychodzący do wszystkiego poza SSH. Serwer, który
+    udostępnia inne usługi, przestaje je udostępniać, dopóki administrator
+    nie doda dla nich reguł. Gdy działa kilka narzędzi, jedno z nich zostaje
+    wyłączone i jego reguły przestają działać.
+  en: |
+    When no tool runs, the remediation turns on ufw, which at once drops
+    incoming traffic to everything but SSH. A server that offers other
+    services stops offering them until the administrator adds rules for
+    them. When several tools run, one of them is turned off and its rules
+    stop working.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - remote-management
+  what_breaks:
+    pl:
+      - Usługi nasłuchujące w sieci, inne niż SSH, stają się niedostępne z zewnątrz, dopóki nie zostaną dla nich dodane reguły ufw allow
+      - SSH na porcie, którego nie ma w konfiguracji sshd, np. przekierowanym przez NAT albo obsługiwanym przez inny program, zostaje zablokowane
+      - Kontenery i maszyny wirtualne za mostkiem sieciowym, np. LXD albo libvirt, mogą stracić przekazywany ruch i DHCP
+      - Reguły wyłączonego narzędzia przestają działać, gdy naprawa zostawia inne z kilku działających
+    en:
+      - Network services other than SSH become unreachable from outside until ufw allow rules are added for them
+      - SSH on a port that is not in the sshd configuration, for example forwarded through NAT or served by another program, is blocked
+      - Containers and virtual machines behind a network bridge, for example LXD or libvirt, can lose forwarded traffic and DHCP
+      - The rules of the tool that is turned off stop working when the remediation keeps another one of several running tools
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwer udostępnia w sieci inne usługi niż SSH, a nie ma jeszcze dla nich reguł ufw
+      - Na serwerze działają kontenery albo maszyny wirtualne za mostkiem sieciowym
+      - Ruch filtruje zapora zarządzana innym narzędziem niż ufw, nftables i iptables-persistent, np. własnym skryptem
+    en:
+      - The server offers network services other than SSH, and there are no ufw rules for them yet
+      - Containers or virtual machines behind a network bridge run on the server
+      - The traffic is filtered by a firewall managed with a tool other than ufw, nftables and iptables-persistent, for example a script of its own
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    m=$(fwmode)
+    case "$m" in
+      none) echo "NOT_SINGLE:none" ;;
+      multiple:*) echo "NOT_SINGLE:${m#multiple:}" ;;
+      *) echo "SINGLE:$m" ;;
+    esac
+  expected: '^SINGLE:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      sshd_t() {
+        # sshd -T stops when no host key exists yet, for example before sshd first starts.
+        if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+        k=$(mktemp -d) || return 1
+        if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+          rm -rf "$k"; printf '%s\n' "$o"; return 0
+        fi
+        rm -rf "$k"; return 1
+      }
+      ssh_ports() {
+        [ -x /usr/sbin/sshd ] || return 0
+        {
+          if c=$(sshd_t); then
+            printf '%s\n' "$c" | awk '$1 == "port" { print $2 } $1 == "listenaddress" { n = split($2, a, ":"); print a[n] }'
+          fi
+          if fw_used "$(fw_st ssh.socket)"; then
+            systemctl show -P Listen ssh.socket 2>/dev/null | awk '{ n = split($1, a, ":"); print a[n] }'
+          fi
+        } | grep -E '^[0-9]{1,5}$' | sort -un | tr '\n' ' ' | grep . || echo 22
+      }
+      # A rule of ufw that lets TCP in to the port: allow or limit, any source,
+      # a single port, a list or a range, or all ports.
+      ufw_has() {
+        awk -v p="$1" '$1 == "###" && $2 == "tuple" && ($4 == "allow" || $4 == "limit") && ($5 == "tcp" || $5 == "any") && $NF ~ /^in/ {
+          n = split($6, a, ",")
+          for (i = 1; i <= n; i++) {
+            if (a[i] == "any" || a[i] == p) f = 1
+            else if (split(a[i], r, ":") == 2 && p + 0 >= r[1] + 0 && p + 0 <= r[2] + 0) f = 1
+          }
+        } END { exit !f }' /etc/ufw/user.rules 2>/dev/null
+      }
+      {
+        echo format=ufw-1
+        if ufw_on; then echo enabled=yes; else echo enabled=no; fi
+        for u in ufw.service nftables.service netfilter-persistent.service; do s=$(fw_st $u); echo "unit $u ${s%%/*} ${s#*/}"; done
+        for p in $(ssh_ports); do if ufw_has "$p"; then echo "port $p kept"; else echo "port $p added"; fi; done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=ufw-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if grep -vqxE 'format=ufw-1|enabled=(yes|no)|unit (ufw|nftables|netfilter-persistent)\.service [a-z-]+ [a-z-]+|port [0-9]{1,5} (added|kept)' "$b" ||
+         [ "$(grep -c '^enabled=' "$b")" != 1 ] ||
+         [ "$(sed -n 's/^unit \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" != "ufw.service nftables.service netfilter-persistent.service " ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      m=$(fwmode)
+      case "$m" in
+        none)
+          [ -x /usr/sbin/ufw ] || { echo "ufw is not installed (see item 4.2.1)" >&2; exit 1; }
+          case "$(fw_st ufw.service)" in masked*) echo "ufw.service is masked; unmask it by hand if ufw should run" >&2; exit 1 ;; esac
+          if ! ufw_on; then
+            for p in $(sed -n 's/^port \([0-9]*\) added$/\1/p' "$b"); do
+              ufw allow "$p/tcp" >/dev/null
+              echo "Allowed incoming SSH on port $p/tcp"
+            done
+            ufw --force enable >/dev/null
+            ufw_on || { echo "ufw is still not enabled" >&2; exit 1; }
+            echo "Enabled ufw"
+          fi
+          s=$(fw_st ufw.service)
+          case "${s%%/*}" in enabled|enabled-runtime) ;; *) systemctl enable -q ufw.service; echo "Enabled ufw.service" ;; esac
+          case "${s#*/}" in active) ;; *) systemctl start ufw.service; echo "Started ufw.service" ;; esac
+          ;;
+        multiple:*)
+          # ufw stays when it is on; otherwise nftables, and iptables-persistent goes.
+          if ufw_on; then drop="nftables.service netfilter-persistent.service"; else drop=netfilter-persistent.service; fi
+          flushed=0
+          for u in $drop; do
+            s=$(fw_st $u)
+            case "${s%%/*}" in enabled|enabled-runtime) systemctl disable -q "$u"; echo "Disabled $u" ;; esac
+            case "${s#*/}" in active|activating|reloading)
+              systemctl stop "$u"; echo "Stopped $u"
+              [ $u != nftables.service ] || flushed=1 ;;
+            esac
+          done
+          if [ $flushed = 1 ]; then
+            if ufw_on; then
+              ufw reload >/dev/null 2>&1 || /usr/lib/ufw/ufw-init start >/dev/null
+              echo "Reloaded the rules of ufw"
+            fi
+          fi
+          ;;
+        *) echo "Only $m is in use, nothing to change"; exit 0 ;;
+      esac
+      m=$(fwmode)
+      case "$m" in none|multiple:*) echo "Still not a single firewall utility ($m)" >&2; exit 1 ;; esac
+      echo "Kept $m as the only firewall utility"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=ufw-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if grep -vqxE 'format=ufw-1|enabled=(yes|no)|unit (ufw|nftables|netfilter-persistent)\.service [a-z-]+ [a-z-]+|port [0-9]{1,5} (added|kept)' "$b" ||
+         [ "$(grep -c '^enabled=' "$b")" != 1 ] ||
+         [ "$(sed -n 's/^unit \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" != "ufw.service nftables.service netfilter-persistent.service " ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      if [ -x /usr/sbin/ufw ] && grep -qx enabled=no "$b"; then
+        if ufw_on; then ufw --force disable >/dev/null; echo "Disabled ufw again"; fi
+        for p in $(sed -n 's/^port \([0-9]*\) added$/\1/p' "$b"); do
+          ufw delete allow "$p/tcp" >/dev/null
+        done
+      fi
+      # Stop first, then restore the enabled state and start what ran.
+      while read -r tag u e a; do
+        case "$a" in active|activating|reloading) continue ;; esac
+        case "$(fw_st $u)" in */active|*/activating|*/reloading) systemctl stop "$u"; echo "Stopped $u" ;; esac
+      done < <(grep '^unit ' "$b")
+      start=""
+      while read -r tag u e a; do
+        s=$(fw_st $u)
+        case "${s%%/*}" in none|masked*|not-found) continue ;; esac
+        case "$e" in
+          enabled) [ "${s%%/*}" = enabled ] || systemctl enable -q "$u" ;;
+          enabled-runtime) [ "${s%%/*}" = enabled-runtime ] || systemctl enable -q --runtime "$u" ;;
+          disabled) case "${s%%/*}" in enabled|enabled-runtime) systemctl disable -q "$u" ;; esac ;;
+        esac
+        case "$a" in active|activating|reloading)
+          case "${s#*/}" in active|activating|reloading) ;; *) start="$start $u" ;; esac ;;
+        esac
+      done < <(grep '^unit ' "$b")
+      if [ -n "$start" ]; then
+        systemctl start $start; echo "Started$start"
+        if ufw_on; then
+          ufw reload >/dev/null 2>&1 || /usr/lib/ufw/ufw-init start >/dev/null
+          echo "Reloaded the rules of ufw"
+        fi
+      fi
+      echo "Restored the previous state of the firewall"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw-framework.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/nft.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/netfilter-persistent.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Wynik SINGLE podaje narzędzie w użyciu, a NOT_SINGLE listę narzędzi albo
+    none. ufw liczy się jako używany według wpisu ENABLED=yes w
+    /etc/ufw/ufw.conf, a nie według ufw.service, bo ta jednostka jest
+    włączona i uruchamia się przy każdym starcie także przy wyłączonym ufw.
+    nftables i iptables-persistent liczą się według swoich jednostek,
+    a nie zawartości reguł w jądrze, w której są też łańcuchy ufw.
+
+    Gdy żadne narzędzie nie jest w użyciu, naprawa włącza ufw, a gdy ufw nie
+    jest zainstalowany, odmawia i odsyła do punktu 4.2.1. Gdy działa kilka,
+    zostaje ufw, jeśli jest włączony, a w przeciwnym razie nftables.
+    Pozostałe jednostki naprawa wyłącza i zatrzymuje. Zatrzymanie
+    nftables.service kasuje cały zestaw reguł, więc potem naprawa wczytuje
+    reguły ufw ponownie. Wycofanie uruchamia je z powrotem i także potem
+    wczytuje ponownie reguły ufw.
+
+    Przed włączeniem ufw naprawa dodaje reguły ufw allow dla portów TCP,
+    na których słucha sshd. Porty bierze z sshd -T (wpisy Port
+    i ListenAddress) oraz z gniazda ssh.socket, a gdy sshd nie da się
+    odczytać, przyjmuje 22. Port, który przepuszcza już reguła allow albo
+    limit w /etc/ufw/user.rules, także z ograniczeniem źródła, zostaje bez
+    nowej reguły. Otwarte połączenia SSH trwają dalej, bo reguły ufw
+    przepuszczają ruch nawiązanych połączeń. Gdy ufw już jest włączony,
+    naprawa nie dodaje reguł.
+
+    Domyślna polityka ufw odrzuca ruch przychodzący i przekazywany,
+    a przepuszcza wychodzący. Kopia zapisuje stan ENABLED z
+    /etc/ufw/ufw.conf, stan jednostek ufw, nftables i netfilter-persistent
+    oraz porty SSH z informacją, czy reguła już była. Wycofanie wyłącza ufw,
+    jeśli był wyłączony, usuwa tylko dodane przez naprawę reguły SSH
+    i przywraca stan jednostek.
+  en: |
+    The SINGLE result names the tool in use, and NOT_SINGLE lists the tools
+    or none. ufw counts as used by the ENABLED=yes entry in
+    /etc/ufw/ufw.conf, not by ufw.service, because this unit is enabled and
+    runs at every start also with ufw turned off. nftables and
+    iptables-persistent count by their units, not by the rules in the
+    kernel, which also hold the chains of ufw.
+
+    When no tool is in use, the remediation turns on ufw, and when ufw is
+    not installed, it refuses and points to item 4.2.1. When several run,
+    ufw stays if it is turned on, and nftables otherwise. The remediation
+    disables and stops the other units. Stopping nftables.service deletes
+    the whole ruleset, so the remediation then loads the rules of ufw again.
+    Rollback starts them back and then also loads the rules of ufw again.
+
+    Before turning ufw on, the remediation adds ufw allow rules for the TCP
+    ports sshd listens on. It takes the ports from sshd -T (the Port and
+    ListenAddress entries) and from the ssh.socket socket, and assumes 22
+    when sshd cannot be read. A port that an allow or limit rule in
+    /etc/ufw/user.rules already lets through, also one limited by source,
+    gets no new rule. Open SSH connections go on, because the ufw rules let
+    through the traffic of established connections. When ufw is already
+    turned on, the remediation adds no rules.
+
+    The default policy of ufw drops incoming and forwarded traffic and lets
+    outgoing traffic through. The backup records the ENABLED state from
+    /etc/ufw/ufw.conf, the state of the ufw, nftables and
+    netfilter-persistent units, and the SSH ports with whether a rule was
+    already there. Rollback turns ufw off if it was off, removes only the
+    SSH rules the remediation added, and restores the state of the units.

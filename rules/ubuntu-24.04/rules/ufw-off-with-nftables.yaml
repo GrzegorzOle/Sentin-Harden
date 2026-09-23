@@ -1,0 +1,238 @@
+id: ubuntu2404-ufw-off-with-nftables
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.3.2
+  section: Host Based Firewall > Configure nftables
+  title:
+    pl: ufw jest odinstalowany albo wyłączony przy nftables
+    en: Ensure ufw is uninstalled or disabled with nftables
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    ufw też zapisuje swoje reguły w filtrze pakietów jądra. Włączony obok
+    zestawu reguł nftables dokłada własne łańcuchy, a jego wyłączenie albo
+    przeładowanie zmienia filtrowanie niezależnie od nftables, więc zapora
+    działa inaczej, niż opisuje /etc/nftables.conf.
+
+    Punkt wymaga, żeby przy nftables w użyciu ufw nie był zainstalowany
+    albo był wyłączony, czyli miał wpis ENABLED=no w /etc/ufw/ufw.conf.
+  en: |
+    ufw also writes its rules into the packet filter of the kernel. Turned
+    on next to an nftables ruleset, it adds its own chains, and turning it
+    off or reloading it changes the filtering independently of nftables, so
+    the firewall works differently than /etc/nftables.conf describes.
+
+    The item requires that with nftables in use ufw is not installed or is
+    turned off, that is has the ENABLED=no entry in /etc/ufw/ufw.conf.
+
+disruption_description:
+  pl: |
+    Ruch, który blokowały tylko reguły ufw, zaczyna przechodzić, jeśli nie
+    blokuje go zestaw reguł nftables. Standardowy /etc/nftables.conf
+    w Ubuntu ma łańcuchy bez reguł z polityką accept, więc bez własnych
+    reguł nftables serwer przestaje filtrować ruch przychodzący.
+  en: |
+    Traffic that only the ufw rules blocked starts to pass if the nftables
+    ruleset does not block it. The standard /etc/nftables.conf in Ubuntu has
+    chains without rules with the accept policy, so without rules of its own
+    in nftables the server stops filtering incoming traffic.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Ruch blokowany dotąd tylko przez ufw przechodzi, gdy zestaw reguł nftables go nie blokuje
+    en:
+      - Traffic blocked so far only by ufw passes when the nftables ruleset does not block it
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zaporą serwera ma zarządzać ufw, a nftables.service została włączona przypadkiem; wtedy właściwa jest naprawa z punktu 4.1.1
+    en:
+      - The firewall of the server should be managed by ufw, and nftables.service was enabled by accident; then the remediation of item 4.1.1 is the right one
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in nftables|multiple:*nftables*) ;; *) echo NOT_APPLICABLE; exit 0 ;; esac
+    if [ ! -x /usr/sbin/ufw ]; then echo "OK:ufw=not-installed"
+    elif ufw_on; then echo "NOT_OK:ufw=on"
+    else echo "OK:ufw=off"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      { echo format=ufwoff-1; if ufw_on; then echo enabled=yes; else echo enabled=no; fi; } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      case "$(tr '\n' ' ' < "$b")" in
+        "format=ufwoff-1 enabled=yes "|"format=ufwoff-1 enabled=no ") ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      m=$(fwmode)
+      case "$m" in nftables|multiple:*nftables*) ;; *) echo "nftables is not in use as the firewall ($m); ufw is left as it is (see item 4.1.1)" >&2; exit 1 ;; esac
+      if ufw_on; then
+        ufw --force disable >/dev/null
+        if ufw_on; then echo "ufw is still enabled" >&2; exit 1; fi
+        echo "Disabled ufw; nftables stays as the firewall"
+      else
+        echo "ufw is not enabled, nothing to change"
+      fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      case "$(tr '\n' ' ' < "$b")" in
+        "format=ufwoff-1 enabled=yes "|"format=ufwoff-1 enabled=no ") ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      if grep -qx enabled=yes "$b" && [ -x /usr/sbin/ufw ] && ! ufw_on; then
+        ufw --force enable >/dev/null
+        echo "Enabled ufw again"
+      fi
+      echo "Restored the previous state of ufw"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw-framework.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/nft.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Punkty 4.3 dotyczą serwera, na którym w użyciu jest nftables, czyli
+    nftables.service jest włączona lub uruchomiona. W pozostałych
+    przypadkach, także gdy nie działa żadne narzędzie zapory, sprawdzenie
+    zwraca NOT_APPLICABLE, a naprawa odmawia. Wybór narzędzia ocenia punkt
+    4.1.1, który przy braku zapory włącza ufw. Wynik OK:ufw=not-installed oznacza brak
+    pakietu, OK:ufw=off wyłączony ufw, a NOT_OK:ufw=on ufw włączony obok
+    nftables.
+
+    Naprawa wyłącza ufw poleceniem ufw --force disable, które usuwa tylko
+    łańcuchy ufw i ustawia politykę accept we wbudowanych łańcuchach
+    iptables; tablice nftables, np. inet filter, zostają bez zmian. Pakiet
+    zostaje, a ufw.service nadal uruchamia się przy starcie, ale przy
+    ENABLED=no niczego nie wczytuje. Kopia zapisuje stan ENABLED,
+    a wycofanie włącza ufw ponownie, jeśli był włączony.
+
+    Gdy włączone są ufw i nftables, punkt 4.1.1 zostawia ufw i wyłącza
+    nftables, a ten punkt wyłącza ufw. Po zastosowaniu któregokolwiek z nich
+    w użyciu zostaje jedno narzędzie, a drugi punkt jest spełniony albo nie
+    ma zastosowania. Który z nich zastosować, zależy od tego, którym
+    narzędziem ma być zarządzana zapora.
+  en: |
+    The items in 4.3 concern a server where nftables is in use, that is
+    nftables.service is enabled or running. In the other cases, also when no
+    firewall tool runs, the check returns NOT_APPLICABLE and the remediation
+    refuses. The choice of the tool is assessed by item 4.1.1, which turns
+    on ufw when there is no firewall. The OK:ufw=not-installed result means the
+    package is not there, OK:ufw=off that ufw is turned off, and
+    NOT_OK:ufw=on that ufw is turned on next to nftables.
+
+    The remediation turns ufw off with ufw --force disable, which removes
+    only the chains of ufw and sets the accept policy in the built-in
+    iptables chains; the nftables tables, for example inet filter, stay
+    unchanged. The package stays, and ufw.service still runs at start, but
+    with ENABLED=no it loads nothing. The backup records the ENABLED state,
+    and rollback turns ufw on again if it was on.
+
+    When ufw and nftables are both turned on, item 4.1.1 keeps ufw and turns
+    off nftables, and this item turns off ufw. After either of them is
+    applied one tool stays in use, and the other item is met or does not
+    apply. Which one to apply depends on which tool should manage the
+    firewall.

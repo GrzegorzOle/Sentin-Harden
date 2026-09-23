@@ -1,0 +1,177 @@
+id: ubuntu2404-ufw-rules-for-open-ports
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.2.6
+  section: Host Based Firewall > Configure UncomplicatedFirewall
+  title:
+    pl: Dla wszystkich otwartych portów istnieją reguły ufw
+    en: Ensure ufw firewall rules exist for all open ports
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Każda usługa, która nasłuchuje na adresie innym niż pętla zwrotna, może
+    być dostępna z sieci. Reguła ufw dla jej portu pokazuje, że ktoś
+    zdecydował, czy ta usługa ma być dostępna, zamiast zdać się na domyślną
+    politykę zapory.
+
+    Punkt wymaga, żeby dla każdego portu TCP i UDP, na którym coś nasłuchuje
+    poza adresami 127.0.0.0/8 i ::1, istniała reguła ufw dla ruchu
+    przychodzącego: allow, limit, deny albo reject.
+  en: |
+    Every service that listens on an address other than loopback may be
+    reachable from the network. A ufw rule for its port shows that someone
+    decided whether this service should be reachable, instead of leaving it
+    to the default policy of the firewall.
+
+    The item requires a ufw rule for incoming traffic, allow, limit, deny or
+    reject, for every TCP and UDP port on which something listens outside
+    the 127.0.0.0/8 and ::1 addresses.
+
+disruption_description:
+  pl: |
+    Samo sprawdzenie niczego nie zmienia. Reguły dopisuje administrator:
+    reguła allow udostępnia usługę w sieci, a reguła deny dla portu,
+    z którego ktoś korzysta, odcina tę usługę, gdy ufw jest włączony.
+  en: |
+    The check itself changes nothing. The administrator adds the rules: an
+    allow rule makes the service reachable from the network, and a deny rule
+    for a port someone uses cuts off that service while ufw is turned on.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Usługa, dla której portu administrator doda regułę deny, przestaje być dostępna z sieci przy włączonym ufw
+    en:
+      - A service whose port the administrator gives a deny rule becomes unreachable from the network while ufw is turned on
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Nie wiadomo jeszcze, które z nasłuchujących usług mają być dostępne z sieci
+    en:
+      - It is not yet known which of the listening services should be reachable from the network
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in nftables|iptables|multiple:nftables,iptables) echo NOT_APPLICABLE; exit 0 ;; esac
+    [ -x /usr/sbin/ufw ] || { echo NOT_INSTALLED; exit 0; }
+    command -v ss >/dev/null 2>&1 || { echo CHECK_ERROR; exit 0; }
+    l=$(ss -H -tuln 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    files=""
+    for f in /etc/ufw/user.rules /etc/ufw/user6.rules /etc/ufw/before.rules /etc/ufw/before6.rules; do
+      [ -r "$f" ] && files="$files $f"
+    done
+    [ -n "$files" ] || { echo CHECK_ERROR; exit 0; }
+    # Listening sockets reachable from the network, as port/protocol.
+    ports=$(printf '%s\n' "$l" | awk '$1 == "tcp" || $1 == "udp" {
+        n = split($5, x, ":"); p = x[n]; h = substr($5, 1, length($5) - length(p) - 1)
+        if (p !~ /^[0-9]+$/ || h ~ /^127\./ || h ~ /^\[::1\]/ || h ~ /^\[::ffff:127\./ || h ~ /%lo$/) next
+        print p "/" $1
+      }' | sort -t/ -k1,1n -k2,2 -u)
+    ok=""; miss=""
+    for pp in $ports; do
+      # A user rule for incoming traffic on the port (any action), or an ACCEPT
+      # for the port in the before rules of ufw, as for the DHCP client.
+      if awk -v p="${pp%/*}" -v pr="${pp#*/}" '
+          FILENAME ~ /\/user6?\.rules$/ {
+            if ($1 == "###" && $2 == "tuple" && $4 !~ /^route:/ && ($5 == pr || $5 == "any") && $NF ~ /^in/) {
+              n = split($6, a, ",")
+              for (i = 1; i <= n; i++) {
+                if (a[i] == "any" || a[i] == p) f = 1
+                else if (split(a[i], r, ":") == 2 && p + 0 >= r[1] + 0 && p + 0 <= r[2] + 0) f = 1
+              }
+            }
+            next
+          }
+          $1 == "-A" && ($2 == "ufw-before-input" || $2 == "ufw6-before-input") && $NF == "ACCEPT" {
+            d = ""; q = ""
+            for (i = 3; i < NF; i++) { if ($i == "--dport") d = $(i + 1); if ($i == "-p") q = $(i + 1) }
+            if (d == p && q == pr) f = 1
+          }
+          END { exit !f }' $files; then ok="$ok,$pp"; else miss="$miss,$pp"; fi
+    done
+    if [ -n "$miss" ]; then echo "NOT_OK:missing=${miss#,}"
+    elif [ -n "$ok" ]; then echo "OK:${ok#,}"
+    else echo "OK:none"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/ufw-framework.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/ss.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Reguła tylko sprawdza stan: to, czy usługa ma być dostępna z sieci,
+    zależy od roli serwera, a automatyczna reguła allow otworzyłaby każdą
+    nasłuchującą usługę. Reguły dodaje się np. poleceniem ufw allow 443/tcp
+    albo ufw deny 3306/tcp.
+
+    Sprawdzenie bierze gniazda nasłuchujące z ss -tuln i pomija te na
+    adresach 127.0.0.0/8, ::1 i na interfejsie lo. Port uznaje za objęty
+    regułą, gdy wpis tuple w /etc/ufw/user.rules albo user6.rules dotyczy
+    ruchu przychodzącego, tego samego protokołu albo any i tego portu, także
+    przez listę, zakres albo wszystkie porty. Liczą się też reguły ACCEPT
+    dla portu w /etc/ufw/before.rules i before6.rules, np. dla klienta DHCP
+    na portach 68/udp i 546/udp. Wynik OK wymienia porty z regułami albo
+    none, a NOT_OK porty bez reguł w postaci port/protokół.
+
+    Gdy w użyciu jest nftables albo iptables-persistent, sprawdzenie
+    zwraca NOT_APPLICABLE, bo ten przypadek oceniają punkty 4.1.1, 4.3 i 4.4,
+    a bez pakietu ufw wynik to NOT_INSTALLED. Sprawdzenie
+    wymaga uprawnień roota, bo pliki reguł ufw może czytać tylko root.
+  en: |
+    The rule only checks the state: whether a service should be reachable
+    from the network depends on the role of the server, and an automatic
+    allow rule would open every listening service. The rules are added for
+    example with ufw allow 443/tcp or ufw deny 3306/tcp.
+
+    The check takes the listening sockets from ss -tuln and skips those on
+    127.0.0.0/8, ::1 and the lo interface. It counts a port as covered when
+    a tuple entry in /etc/ufw/user.rules or user6.rules concerns incoming
+    traffic, the same protocol or any, and the port, also through a list, a
+    range or all ports. ACCEPT rules for the port in /etc/ufw/before.rules
+    and before6.rules count too, for example for the DHCP client on 68/udp
+    and 546/udp. The OK result lists the ports with rules or none, and
+    NOT_OK the ports without rules as port/protocol.
+
+    When nftables or iptables-persistent is in use, the check returns
+    NOT_APPLICABLE, because items 4.1.1, 4.3 and 4.4 assess that case, and
+    without the ufw package the result is NOT_INSTALLED. The check needs
+    root privileges, because only root can read the rule files of ufw.

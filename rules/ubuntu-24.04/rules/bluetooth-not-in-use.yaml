@@ -1,0 +1,257 @@
+id: ubuntu2404-bluetooth-not-in-use
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 3.1.3
+  section: Network > Configure Network Devices
+  title:
+    pl: Usługa Bluetooth nie jest używana
+    en: Ensure bluetooth services are not in use
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usługa bluetooth uruchamia demona BlueZ, który obsługuje adapter
+    Bluetooth: parowanie, połączenia z klawiaturami, myszami, słuchawkami
+    i telefonami oraz przesyłanie plików. Dopóki działa, komputer przyjmuje
+    pakiety radiowe od każdego urządzenia w zasięgu, a w stosie Bluetooth
+    znajdowano błędy pozwalające przejąć system bez parowania.
+
+    Punkt wymaga, żeby pakiet bluez nie był zainstalowany albo żeby usługa
+    bluetooth nie była włączona ani uruchomiona. Ubuntu Server domyślnie
+    nie instaluje bluez, a na Ubuntu Desktop usługa jest włączona.
+  en: |
+    The bluetooth service starts the BlueZ daemon, which handles the
+    Bluetooth adapter: pairing, connections to keyboards, mice, headsets and
+    phones, and file transfer. While it runs, the computer accepts radio
+    packets from every device in range, and bugs that allowed taking over
+    the system without pairing have been found in the Bluetooth stack.
+
+    The item requires that the bluez package is not installed or that the
+    bluetooth service is neither enabled nor running. Ubuntu Server does not
+    install bluez by default, and on Ubuntu Desktop the service is enabled.
+
+disruption_description:
+  pl: |
+    Na serwerze bez adaptera Bluetooth nikt tego nie zauważy. Na komputerze
+    z adapterem połączone urządzenia rozłączają się od razu, a w ustawieniach
+    Bluetooth przestaje być dostępny.
+  en: |
+    On a server without a Bluetooth adapter nobody will notice. On a
+    computer with an adapter, connected devices disconnect at once, and
+    Bluetooth is no longer available in the settings.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - removable-media
+  what_breaks:
+    pl:
+      - Klawiatury, myszy, słuchawki i głośniki Bluetooth rozłączają się i nie można ich ponownie połączyć
+      - Przesyłanie plików przez Bluetooth i udostępnianie internetu z telefonu przez Bluetooth nie działa
+      - Panel Bluetooth w ustawieniach nie pokazuje adaptera
+    en:
+      - Bluetooth keyboards, mice, headsets and speakers disconnect and cannot be connected again
+      - File transfer over Bluetooth and internet sharing from a phone over Bluetooth do not work
+      - The Bluetooth panel in the settings does not show the adapter
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Jedyna klawiatura albo mysz komputera łączy się przez Bluetooth; przed naprawą trzeba podłączyć urządzenie przewodowe
+    en:
+      - The only keyboard or mouse of the computer connects over Bluetooth; a wired device has to be connected before the remediation
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || ! command -v dpkg-query >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      inst=""
+      for p in bluez; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
+      bad=""
+      for u in bluetooth.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        a=$(systemctl is-active "$u" 2>/dev/null) || true
+        case "$a" in
+          active|activating|reloading) ;;
+          *)
+            [ -n "$inst" ] || continue
+            case "$e" in enabled|enabled-runtime|linked|linked-runtime) ;; *) continue ;; esac ;;
+        esac
+        bad="$bad,$u=${e:-none}/${a:-unknown}"
+      done
+      if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+      elif [ -z "$inst" ]; then echo NOT_INSTALLED
+      else echo "NOT_IN_USE:${inst#,}"; fi
+    }
+    state
+  expected: '^(NOT_INSTALLED$|NOT_IN_USE:)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=units-1
+        for u in bluetooth.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "$u ${e:--} ${a:--}"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        inst=""
+        for p in bluez; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
+        bad=""
+        for u in bluetooth.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          case "$a" in
+            active|activating|reloading) ;;
+            *)
+              [ -n "$inst" ] || continue
+              case "$e" in enabled|enabled-runtime|linked|linked-runtime) ;; *) continue ;; esac ;;
+          esac
+          bad="$bad,$u=${e:-none}/${a:-unknown}"
+        done
+        if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+        elif [ -z "$inst" ]; then echo NOT_INSTALLED
+        else echo "NOT_IN_USE:${inst#,}"; fi
+      }
+      m=""
+      for u in bluetooth.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        case "$e" in ""|not-found) continue ;; esac
+        l=/etc/systemd/system/$u
+        if { [ -e "$l" ] || [ -L "$l" ]; } && [ "$(readlink "$l")" != /dev/null ]; then
+          echo "$l is a unit file or link of its own, not masking $u" >&2; exit 1
+        fi
+        m="$m $u"
+      done
+      if [ -z "$m" ]; then
+        s=$(state)
+        case "$s" in IN_USE:*) echo "Running without a unit file, stop the processes by hand ($s)" >&2; exit 1 ;; esac
+        echo "None of the units is installed, nothing to change"; exit 0
+      fi
+      systemctl mask --now $m
+      s=$(state)
+      case "$s" in IN_USE:*) echo "The units are still in use ($s)" >&2; exit 1 ;; esac
+      echo "Stopped and masked:$m ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      [ -n "$lines" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r u e a x; do
+        case " bluetooth.service " in *" $u "*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      start=""
+      while read -r u e a; do
+        case "$e" in
+          -|not-found|masked) continue ;;
+          masked-runtime) systemctl unmask "$u"; systemctl mask --runtime "$u"; continue ;;
+        esac
+        systemctl unmask "$u"
+        case "$e" in
+          enabled) systemctl enable "$u" ;;
+          enabled-runtime) systemctl enable --runtime "$u" ;;
+          linked|linked-runtime) echo "Could not link $u again; link its unit file by hand" >&2 ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$lines"
+      if [ -n "$start" ]; then systemctl start $start; fi
+      echo "Restored the previous state of the units"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.bluez.org/
+  - https://nvd.nist.gov/vuln/detail/CVE-2020-12351
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Punkt jest spełniony, gdy pakiet nie jest zainstalowany albo gdy żadna
+    z jednostek bluetooth.service nie jest włączona ani uruchomiona. Wynik IN_USE
+    wymienia jednostki w użyciu razem ze stanem z systemctl is-enabled
+    i is-active, a NOT_IN_USE pakiety, które są zainstalowane, ale nie
+    działają. Pakiet usunięty bez --purge, z pozostawionymi plikami
+    konfiguracyjnymi, liczy się jako niezainstalowany. Gdy żaden z pakietów
+    nie jest zainstalowany, wynik IN_USE daje tylko jednostka, która nadal
+    działa.
+
+    Naprawa nie usuwa pakietów, bo mogą od nich zależeć inne programy.
+    Zatrzymuje i maskuje jednostki poleceniem systemctl mask --now, więc nie
+    da się ich uruchomić ręcznie, przez gniazdo ani jako zależność.
+    Aktualizacja pakietu przez apt nie zdejmuje maski. Kopia zapisuje stan
+    każdej jednostki, a wycofanie zdejmuje maskę, włącza jednostki, które
+    były włączone, i uruchamia te, które działały. Jednostki zamaskowane
+    wcześniej zostają zamaskowane. Naprawa odmawia, gdy w /etc/systemd/system
+    leży własny plik jednostki o tej samej nazwie.
+
+    Jeśli usługa ma zniknąć całkiem, można usunąć pakiet przez apt purge po
+    sprawdzeniu, co jeszcze zostałoby usunięte.
+
+    Zamaskowana usługa nie uruchomi się także przez D-Bus ani po
+    podłączeniu adaptera. Moduły jądra obsługujące adapter zostają
+    załadowane, ale bez demona nie da się sparować ani połączyć
+    urządzenia.
+  en: |
+    The item is met when the package is not installed or when none of the
+    bluetooth.service units is enabled or running. The IN_USE result lists the units in
+    use with their state from systemctl is-enabled and is-active, and
+    NOT_IN_USE lists the packages that are installed but not running. A
+    package removed without --purge, with its configuration files left,
+    counts as not installed. When none of the packages is installed, only a
+    unit that is still running gives the IN_USE result.
+
+    The remediation does not remove packages, because other programs may
+    depend on them. It stops and masks the units with systemctl mask --now,
+    so they cannot be started by hand, through a socket or as a dependency.
+    A package upgrade through apt does not remove the mask. The backup
+    records the state of every unit, and rollback removes the mask, enables
+    the units that were enabled and starts the ones that were running. Units
+    that were masked before stay masked. The remediation refuses when
+    /etc/systemd/system holds a unit file of its own with the same name.
+
+    If the service should be gone completely, the package can be removed with
+    apt purge after checking what else would be removed.
+
+    A masked service does not start through D-Bus or when an adapter is
+    plugged in either. The kernel modules for the adapter stay loaded, but
+    without the daemon no device can be paired or connected.

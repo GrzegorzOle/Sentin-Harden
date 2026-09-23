@@ -1,0 +1,261 @@
+id: ubuntu2404-sshd-kex-algorithms
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.1.12
+  section: Access Control > Configure SSH Server
+  title:
+    pl: Algorytmy wymiany kluczy sshd są skonfigurowane
+    en: Ensure sshd KexAlgorithms is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wymiana kluczy ustala na początku sesji SSH wspólny klucz, którym potem
+    szyfruje się całą rozmowę. Algorytmy oparte na SHA-1 albo na grupie
+    Diffiego-Hellmana z kluczem 1024 bitów są za słabe wobec dzisiejszych
+    możliwości obliczeniowych.
+
+    Punkt wymaga, żeby serwer SSH nie oferował algorytmów wymiany kluczy
+    z SHA-1: diffie-hellman-group1-sha1, diffie-hellman-group14-sha1
+    i diffie-hellman-group-exchange-sha1.
+  en: |
+    Key exchange sets up, at the start of an SSH session, the shared key
+    that then encrypts the whole conversation. Algorithms based on SHA-1 or
+    on a Diffie-Hellman group with a 1024-bit key are too weak for today's
+    computing power.
+
+    The item requires the SSH server not to offer key exchange algorithms
+    with SHA-1: diffie-hellman-group1-sha1, diffie-hellman-group14-sha1 and
+    diffie-hellman-group-exchange-sha1.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, chyba że z tym komputerem łączy się bardzo stary
+    klient SSH, który zna tylko wymianę kluczy z SHA-1. Otwarte sesje trwają dalej.
+  en: |
+    Nobody will notice unless a very old SSH client that knows only key exchange with SHA-1
+    connects to this computer. Open sessions continue.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Stare klienty SSH, które obsługują wyłącznie wymianę kluczy z SHA-1, nie połączą się z tym komputerem
+    en:
+      - Old SSH clients that support only key exchange with SHA-1 do not connect to this computer
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/sbin/sshd ]; then echo NOT_APPLICABLE; exit 0; fi
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+    w='-sha1$'
+    cfg=$(sshd_t) || { echo CHECK_ERROR; exit 0; }
+    l=$(printf '%s\n' "$cfg" | awk '$1 == "kexalgorithms" { print $2 }')
+    [ -n "$l" ] || { echo CHECK_ERROR; exit 0; }
+    bad=$(printf '%s\n' "$l" | tr ',' '\n' | grep -E -e "$w" | paste -sd, -)
+    if [ -z "$bad" ]; then echo NO_WEAK; else echo "WEAK:$bad"; fi
+  expected: '^NO_WEAK$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-kex.conf
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sshalg-1
+        if [ -f "$f" ]; then echo existed=1; cat "$f"; else echo existed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-kex.conf
+      w='-sha1$'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshalg-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+      revert() {
+        if [ "$(sed -n 2p "$b")" = existed=1 ]; then tail -n +3 "$b" > "$f"; chmod 0600 "$f"; else rm -f "$f"; fi
+      }
+      cur=$(sshd_t | awk '$1 == "kexalgorithms" { print $2 }')
+      [ -n "$cur" ] || { echo "Cannot read the effective sshd configuration with sshd -T" >&2; exit 1; }
+      bad=$(printf '%s\n' "$cur" | tr ',' '\n' | grep -E -e "$w" | paste -sd, -)
+      if [ -z "$bad" ]; then echo "KexAlgorithms has no weak algorithms, nothing to change"; exit 0; fi
+      new=$(printf '%s\n' "$cur" | tr ',' '\n' | grep -Ev -e "$w" | paste -sd, -)
+      [ -n "$new" ] || { echo "No other KexAlgorithms would remain; set the list by hand" >&2; exit 1; }
+      t=$(mktemp "$f.XXXXXX")
+      printf '%s\n' '# Sentin-Harden: the effective list without weak algorithms' "KexAlgorithms $new" > "$t"
+      chmod 0600 "$t"
+      mv -f "$t" "$f"
+      if ! out=$(sshd_t); then
+        revert; echo "sshd rejects the new configuration; restored the previous state" >&2; exit 1
+      fi
+      left=$(printf '%s\n' "$out" | awk '$1 == "kexalgorithms" { print $2 }' | tr ',' '\n' | grep -E -e "$w" | paste -sd, -)
+      if [ -n "$left" ]; then
+        revert; echo "An earlier KexAlgorithms directive overrides $f ($left remain); restored the previous state" >&2; exit 1
+      fi
+      echo "Removed $bad from KexAlgorithms in $f"
+      # A reload keeps open sessions; new connections use the new list.
+      if [ "$(systemctl is-active ssh.service 2>/dev/null)" = active ]; then systemctl reload ssh.service; echo "Reloaded sshd"; fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-kex.conf
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshalg-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    sshd_x() {
+      if [ -d /run/sshd ]; then sshd "$@"; return; fi
+      # ssh.service creates /run/sshd only when it starts, and sshd -T stops without it;
+      # a private mount namespace gives sshd its own empty /run and leaves the real one untouched.
+      unshare -m --propagation private sh -c 'mount -t tmpfs -o mode=0755,size=1m sentin /run && mkdir -m 0755 /run/sshd && exec sshd "$@"' sh "$@"
+    }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd_x -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd_x -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+      if [ "$ex" = 1 ]; then
+        # Only comments and the one directive of this rule may come back.
+        if tail -n +3 "$b" | grep -Evq -e '^(#.*)?$' -e '^KexAlgorithms [A-Za-z0-9@.,+-]+$'; then
+          echo "Backup file is damaged: $b" >&2; exit 1
+        fi
+        tail -n +3 "$b" > "$f.sentin-new"
+        chmod 0600 "$f.sentin-new"
+        mv -f "$f.sentin-new" "$f"
+        echo "Restored $f"
+      else
+        rm -f "$f"
+        echo "Removed $f"
+      fi
+      if [ "$(systemctl is-active ssh.service 2>/dev/null)" = active ]; then
+        # A reload with a broken configuration would stop sshd.
+        if sshd_t >/dev/null; then systemctl reload ssh.service; echo "Reloaded sshd"
+        else echo "sshd rejects its configuration, so it was not reloaded; check it with sshd -t" >&2; exit 1; fi
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man.openbsd.org/sshd_config
+  - https://man.openbsd.org/sshd
+  - https://www.rfc-editor.org/rfc/rfc9142
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje skuteczną konfigurację serwera poleceniem sshd -T,
+    które wymaga uprawnień roota. Ubuntu uruchamia ssh.service dopiero przy
+    pierwszym połączeniu (ssh.socket), a bez niego nie ma katalogu /run/sshd,
+    bez którego sshd -T się zatrzymuje. W takim przypadku sprawdzenie
+    uruchamia sshd -T we własnej przestrzeni montowania z pustym /run, więc
+    w systemie nic się nie zmienia; bez kluczy hosta sshd -T dostaje klucz
+    tymczasowy.
+    Brak serwera SSH daje wynik
+    NOT_APPLICABLE.
+
+    Ubuntu nie ma systemowej polityki kryptograficznej: sshd bierze
+    wbudowane listy OpenSSH, chyba że konfiguracja podaje własne. Naprawa
+    zapisuje w pliku /etc/ssh/sshd_config.d/01-sentin-harden-kex.conf bieżącą listę bez słabych algorytmów. sshd bierze
+    pierwszą znalezioną wartość, a stockowy sshd_config dołącza ten katalog
+    na początku, więc plik wygrywa z późniejszymi wierszami. Lista zostaje
+    wtedy zamrożona: nowe algorytmy z przyszłych wersji OpenSSH nie trafią
+    do niej same, dopóki plik istnieje. Naprawa sprawdza konfigurację
+    poleceniem sshd -T; gdy sshd ją odrzuca albo wcześniejsza dyrektywa
+    nadal podaje słabe algorytmy, przywraca poprzedni stan i kończy się
+    błędem. Działający ssh.service dostaje polecenie reload, które nie
+    przerywa otwartych sesji. Wycofanie usuwa plik albo przywraca jego
+    poprzednią treść.
+
+    Za słabe sprawdzenie uznaje algorytmy wymiany kluczy kończące się na
+    -sha1. Algorytmy z SHA-256 i nowsze, w tym hybrydowy
+    sntrup761x25519-sha512@openssh.com, zostają. Wbudowana lista OpenSSH 9.6
+    na Ubuntu 24.04 nie ma algorytmów z SHA-1, więc bez własnej dyrektywy
+    KexAlgorithms punkt jest spełniony.
+  en: |
+    The check reads the effective server configuration with sshd -T, which
+    needs root privileges. Ubuntu starts ssh.service only on the first
+    connection (ssh.socket), and without it there is no /run/sshd directory,
+    without which sshd -T stops. In that case the check runs sshd -T in its
+    own mount namespace with an empty /run, so nothing changes in the
+    system; without host keys sshd -T gets a temporary key.
+    No SSH server gives the
+    NOT_APPLICABLE result.
+
+    Ubuntu has no system-wide crypto policy: sshd takes the built-in OpenSSH
+    lists unless the configuration gives its own. The remediation writes the
+    current list without the weak algorithms to /etc/ssh/sshd_config.d/01-sentin-harden-kex.conf. sshd takes the first
+    value it finds, and the stock sshd_config includes this directory at its
+    top, so the file wins over later lines. The list is then frozen: new
+    algorithms from future OpenSSH versions do not get into it by
+    themselves while the file exists. The remediation checks the
+    configuration with sshd -T; when sshd rejects it or an earlier directive
+    still gives weak algorithms, it restores the previous state and ends
+    with an error. A running ssh.service gets a reload, which keeps open
+    sessions. Rollback removes the file or restores its previous content.
+
+    The check treats as weak the key exchange algorithms ending in -sha1.
+    Algorithms with SHA-256 and newer, including the hybrid
+    sntrup761x25519-sha512@openssh.com, stay. The built-in list of OpenSSH
+    9.6 on Ubuntu 24.04 has no algorithms with SHA-1, so without a custom
+    KexAlgorithms directive the item is met.

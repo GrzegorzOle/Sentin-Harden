@@ -1,0 +1,215 @@
+id: ubuntu2404-nftables-service-enabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.3.9
+  section: Host Based Firewall > Configure nftables
+  title:
+    pl: Usługa nftables jest włączona
+    en: Ensure nftables service is enabled
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Reguły nftables żyją w jądrze tylko do ponownego uruchomienia serwera.
+    Po starcie wczytuje je z /etc/nftables.conf usługa nftables.service,
+    ale tylko wtedy, gdy jest włączona; inaczej serwer po restarcie działa
+    bez zapory, dopóki ktoś nie uruchomi jej ręcznie.
+
+    Punkt wymaga, żeby nftables.service była włączona do uruchamiania przy
+    starcie.
+  en: |
+    The nftables rules live in the kernel only until the server restarts.
+    After the start nftables.service loads them from /etc/nftables.conf,
+    but only when it is enabled; otherwise after a restart the server runs
+    without a firewall until someone starts it by hand.
+
+    The item requires nftables.service to be enabled to run at start.
+
+disruption_description:
+  pl: |
+    Teraz nic się nie zmienia, bo usługa już działa. Przy następnym starcie
+    serwera nftables.service wczytuje /etc/nftables.conf, który zaczyna się
+    od flush ruleset, więc reguły dodane ręcznie poleceniem nft
+    i niezapisane w tym pliku znikają (punkt 4.3.10).
+  en: |
+    Nothing changes now, because the service already runs. At the next
+    start of the server nftables.service loads /etc/nftables.conf, which
+    begins with flush ruleset, so rules added by hand with nft and not saved
+    in that file disappear (item 4.3.10).
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Reguły nftables dodane ręcznie i niezapisane w /etc/nftables.conf znikają po ponownym uruchomieniu serwera
+    en:
+      - nftables rules added by hand and not saved in /etc/nftables.conf disappear after the server restarts
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zawartość /etc/nftables.conf różni się od reguł, które działają teraz, i nikt jej nie sprawdził
+    en:
+      - The content of /etc/nftables.conf differs from the rules running now, and nobody has checked it
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in nftables|multiple:*nftables*) ;; *) echo NOT_APPLICABLE; exit 0 ;; esac
+    s=$(fw_st nftables.service)
+    case "${s%%/*}" in
+      enabled) echo "ENABLED:nftables.service=$s" ;;
+      *) echo "NOT_ENABLED:nftables.service=$s" ;;
+    esac
+  expected: '^ENABLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      e=$(systemctl is-enabled nftables.service 2>/dev/null) || true
+      { echo format=nftsvc-1; echo "enabled=${e:-none}"; } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      if [ "$(head -n 1 "$b")" != format=nftsvc-1 ] || [ "$(wc -l < "$b")" != 2 ] ||
+         ! sed -n 2p "$b" | grep -qxE 'enabled=[a-z-]+'; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      m=$(fwmode)
+      case "$m" in nftables|multiple:*nftables*) ;; *) echo "nftables is not in use as the firewall ($m); nftables.service is left as it is (see item 4.1.1)" >&2; exit 1 ;; esac
+      # At start the service clears the whole ruleset, with the chains of ufw.
+      if ufw_on; then
+        echo "ufw is enabled too; turn it off first (see item 4.3.2)" >&2; exit 1
+      fi
+      e=$(systemctl is-enabled nftables.service 2>/dev/null) || true
+      case "$e" in
+        enabled) echo "nftables.service is already enabled, nothing to change"; exit 0 ;;
+        masked*) echo "nftables.service is masked; unmask it by hand if it should run" >&2; exit 1 ;;
+        enabled-runtime) systemctl disable -q --runtime nftables.service ;;
+      esac
+      systemctl enable -q nftables.service
+      [ "$(systemctl is-enabled nftables.service 2>/dev/null)" = enabled ] || {
+        echo "nftables.service is still not enabled" >&2; exit 1; }
+      echo "Enabled nftables.service; it loads /etc/nftables.conf at every start"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if [ "$(head -n 1 "$b")" != format=nftsvc-1 ] || [ "$(wc -l < "$b")" != 2 ] ||
+         ! sed -n 2p "$b" | grep -qxE 'enabled=[a-z-]+'; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      e0=$(sed -n 's/^enabled=//p' "$b")
+      e=$(systemctl is-enabled nftables.service 2>/dev/null) || true
+      if [ "$e" = enabled ] && [ "$e0" != enabled ]; then
+        systemctl disable -q nftables.service
+        echo "Disabled nftables.service again"
+        if [ "$e0" = enabled-runtime ]; then
+          systemctl enable -q --runtime nftables.service
+          echo "Enabled nftables.service again until the next start"
+        fi
+      fi
+      echo "Restored the previous state of nftables.service"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/nft.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/systemctl.1.html
+  - https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Punkty 4.3 dotyczą serwera, na którym w użyciu jest nftables, czyli
+    nftables.service jest włączona lub uruchomiona. W pozostałych
+    przypadkach, także gdy nie działa żadne narzędzie zapory, sprawdzenie
+    zwraca NOT_APPLICABLE, a naprawa odmawia. Wybór narzędzia ocenia punkt
+    4.1.1, który przy braku zapory włącza ufw. Wynik ENABLED i NOT_ENABLED podaje stan
+    nftables.service w postaci włączenie/działanie, np. enabled/active.
+    Stan enabled-runtime nie wystarcza, bo znika przy ponownym
+    uruchomieniu.
+
+    Naprawa wykonuje systemctl enable nftables.service bez --now, więc nie
+    wczytuje reguł od nowa i nie zmienia działającego zestawu reguł. Odmawia,
+    gdy włączony jest też ufw, bo przy starcie usługa czyści cały zestaw
+    reguł razem z łańcuchami ufw; najpierw trzeba zastosować punkt 4.3.2.
+    Kopia zapisuje wynik systemctl is-enabled, a wycofanie wyłącza usługę,
+    jeśli nie była włączona, i przywraca stan enabled-runtime, jeśli taki
+    był.
+  en: |
+    The items in 4.3 concern a server where nftables is in use, that is
+    nftables.service is enabled or running. In the other cases, also when no
+    firewall tool runs, the check returns NOT_APPLICABLE and the remediation
+    refuses. The choice of the tool is assessed by item 4.1.1, which turns
+    on ufw when there is no firewall. The ENABLED and NOT_ENABLED results give
+    the state of nftables.service as enablement/activity, for example
+    enabled/active. The enabled-runtime state is not enough, because it is
+    gone after a restart.
+
+    The remediation runs systemctl enable nftables.service without --now,
+    so it does not load the rules again and does not change the running
+    ruleset. It refuses when ufw is enabled too, because at start the
+    service clears the whole ruleset together with the chains of ufw; item
+    4.3.2 has to be applied first. The backup records the output of
+    systemctl is-enabled, and rollback disables the service if it was not
+    enabled and restores the enabled-runtime state if it was there.

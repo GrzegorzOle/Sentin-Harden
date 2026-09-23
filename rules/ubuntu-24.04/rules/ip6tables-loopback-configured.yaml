@@ -1,0 +1,157 @@
+id: ubuntu2404-ip6tables-loopback-configured
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.4.3.2
+  section: Host Based Firewall > Configure iptables > Configure IPv6 ip6tables
+  title:
+    pl: Ruch pętli zwrotnej w ip6tables jest skonfigurowany
+    en: Ensure ip6tables loopback traffic is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Adres ::1 należy tylko do interfejsu pętli zwrotnej lo, przez który
+    rozmawiają ze sobą programy na tym samym serwerze. Pakiet IPv6 z takim
+    adresem nadawcy, który przychodzi z sieci, jest podrobiony.
+
+    Punkt wymaga, żeby ip6tables przepuszczał ruch na interfejsie lo w łańcuchach
+    INPUT i OUTPUT, a w łańcuchu INPUT odrzucał pakiety z adresem nadawcy
+    ::1 z innych interfejsów.
+  en: |
+    The ::1 address belongs only to the loopback interface lo, through
+    which programs on the same server talk to each other. An IPv6 packet
+    with such a sender address that arrives from the network is forged.
+
+    The item requires ip6tables to allow traffic on the lo interface in the
+    INPUT and OUTPUT chains, and in the INPUT chain to drop packets with the
+    sender address ::1 from other interfaces.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli reguły przepuszczające lo stoją przed
+    regułą odrzucającą; jądro i tak odrzuca takie pakiety, chyba że
+    interfejs ma włączony parametr route_localnet.
+  en: |
+    Nobody will notice if the rules allowing lo come before the drop rule;
+    the kernel drops such packets anyway, unless an interface has
+    route_localnet enabled.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in iptables|multiple:*iptables*) ;; *) echo NOT_APPLICABLE; exit 0 ;; esac
+    [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = 0 ] || { echo "OK:ipv6-disabled"; exit 0; }
+    command -v ip6tables >/dev/null 2>&1 || { echo NOT_INSTALLED; exit 0; }
+    r=$(ip6tables -S 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    # Rules as iptables -S prints them, without comments.
+    printf '%s\n' "$r" | sed -E 's/ -m comment --comment ("[^"]*"|[^ ]+)//' | awk -v src="::1/128" '
+      $1 != "-A" { next }
+      $2 == "INPUT" { n++ }
+      $0 == "-A INPUT -i lo -j ACCEPT" { if (!li) li = n }
+      $0 == "-A OUTPUT -o lo -j ACCEPT" { lo = 1 }
+      $0 == "-A INPUT -s " src " -j DROP" || index($0, "-A INPUT -s " src " -j REJECT") == 1 { if (!d) d = n }
+      END {
+        ok = ""; miss = ""
+        if (li) ok = ok ",in-lo-accept"; else miss = miss ",in-lo-accept"
+        if (lo) ok = ok ",out-lo-accept"; else miss = miss ",out-lo-accept"
+        if (d) ok = ok ",loopback-drop"; else miss = miss ",loopback-drop"
+        # A drop before the loopback accept would also drop local traffic.
+        if (li && d && d < li) miss = miss ",lo-accept-after-drop"
+        if (miss == "") print "OK:" substr(ok, 2); else print "NOT_OK:missing=" substr(miss, 2)
+      }'
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ip6tables.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/netfilter-persistent.8.html
+  - https://docs.kernel.org/networking/ip-sysctl.html
+
+notes:
+  pl: |
+    Punkty 4.4 dotyczą serwera, na którym w użyciu jest iptables-persistent,
+    czyli netfilter-persistent.service jest włączona lub uruchomiona.
+    W pozostałych przypadkach sprawdzenie zwraca NOT_APPLICABLE, a naprawa
+    odmawia. Wybór narzędzia ocenia punkt 4.1.1.
+
+    Reguła tylko sprawdza stan: zestaw reguł zapory projektuje
+    administrator, a jego automatyczna zmiana na zdalnym serwerze grozi
+    odcięciem dostępu. Nowe reguły trzeba zapisać poleceniem
+    netfilter-persistent save, inaczej znikną po restarcie. Reguły iptables zapisane przez iptables-persistent leżą
+    w /etc/iptables/rules.v4 i rules.v6, a zapisuje je polecenie
+    netfilter-persistent save.
+
+    Sprawdzenie czyta reguły z ip6tables -S, które wymaga uprawnień roota,
+    i pomija w nich komentarze. Szuka reguł -A INPUT -i lo -j ACCEPT,
+    -A OUTPUT -o lo -j ACCEPT oraz -A INPUT -s ::1/128 -j DROP albo REJECT.
+    Reguła przepuszczająca lo musi stać w INPUT przed regułą odrzucającą,
+    inaczej ta odrzucałaby też ruch lokalny. Reguły w łańcuchach
+    wywoływanych skokiem nie są sprawdzane. Przykład: ip6tables -A INPUT -i lo
+    -j ACCEPT, ip6tables -A OUTPUT -o lo -j ACCEPT i ip6tables -A INPUT -s ::1
+    -j DROP. Wynik NOT_OK wymienia brakujące reguły.
+
+    Gdy IPv6 jest wyłączony, czyli net.ipv6.conf.all.disable_ipv6 ma
+    wartość różną od 0, sprawdzenie zwraca OK:ipv6-disabled.
+  en: |
+    The items in 4.4 concern a server where iptables-persistent is in use,
+    that is netfilter-persistent.service is enabled or running. In the other
+    cases the check returns NOT_APPLICABLE and the remediation refuses. The
+    choice of the tool is assessed by item 4.1.1.
+
+    The rule only checks the state: the firewall ruleset is designed by
+    the administrator, and changing it automatically on a remote server
+    risks cutting off access. New rules have to be saved with
+    netfilter-persistent save, otherwise they disappear after a restart. The iptables rules saved by iptables-persistent are in
+    /etc/iptables/rules.v4 and rules.v6, and the netfilter-persistent save
+    command saves them.
+
+    The check reads the rules from ip6tables -S, which needs root privileges,
+    and skips the comments in them. It looks for the rules -A INPUT -i lo -j
+    ACCEPT, -A OUTPUT -o lo -j ACCEPT and -A INPUT -s ::1/128 -j DROP or
+    REJECT. The rule allowing lo has to come before the drop rule in INPUT,
+    otherwise the drop would also hit local traffic. Rules in chains reached
+    by a jump are not checked. An example: ip6tables -A INPUT -i lo -j ACCEPT,
+    ip6tables -A OUTPUT -o lo -j ACCEPT and ip6tables -A INPUT -s ::1 -j DROP. The
+    NOT_OK result lists the missing rules.
+
+    When IPv6 is turned off, that is net.ipv6.conf.all.disable_ipv6 is not
+    0, the check returns OK:ipv6-disabled.

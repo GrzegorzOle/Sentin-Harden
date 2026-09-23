@@ -1,0 +1,146 @@
+id: ubuntu2404-iptables-default-deny
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.4.2.1
+  section: Host Based Firewall > Configure iptables > Configure IPv4 iptables
+  title:
+    pl: Domyślna polityka iptables odrzuca ruch
+    en: Ensure iptables default deny firewall policy
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Polityka wbudowanego łańcucha iptables decyduje o pakiecie IPv4, do
+    którego nie pasuje żadna reguła. Polityka ACCEPT przepuszcza cały ruch,
+    na który nikt nie napisał reguły.
+
+    Punkt wymaga polityki DROP albo REJECT w łańcuchach INPUT, FORWARD
+    i OUTPUT tablicy filter.
+  en: |
+    The policy of a built-in iptables chain decides about an IPv4 packet
+    that matches no rule. The ACCEPT policy lets through all traffic nobody
+    wrote a rule for.
+
+    The item requires the DROP or REJECT policy in the INPUT, FORWARD and
+    OUTPUT chains of the filter table.
+
+disruption_description:
+  pl: |
+    Polityka DROP bez reguł zezwalających przerywa ruch, na który nie ma
+    reguły: w INPUT także SSH, a w OUTPUT DNS, aktualizacje apt
+    i synchronizację czasu. Przed zmianą trzeba dodać reguły dla
+    potrzebnego ruchu i dla nawiązanych połączeń (punkt 4.4.2.3)
+    i sprawdzić je na serwerze z dostępem lokalnym.
+  en: |
+    The DROP policy without allow rules interrupts traffic there is no rule
+    for: in INPUT also SSH, and in OUTPUT DNS, apt updates and time
+    synchronisation. Before the change, rules for the needed traffic and for
+    established connections (item 4.4.2.3) have to be added and tested on a
+    server with local access.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Połączenia SSH i inne usługi sieciowe serwera bez reguły ACCEPT w łańcuchu INPUT
+      - Rozwiązywanie nazw DNS, aktualizacje apt i synchronizacja czasu bez reguły ACCEPT w łańcuchu OUTPUT
+      - Kontenery i maszyny wirtualne za mostkiem sieciowym bez reguł w łańcuchu FORWARD
+    en:
+      - SSH connections and other network services of the server with no ACCEPT rule in the INPUT chain
+      - DNS name resolution, apt updates and time synchronisation with no ACCEPT rule in the OUTPUT chain
+      - Containers and virtual machines behind a network bridge with no rules in the FORWARD chain
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Zmiana przez połączenie zdalne bez przetestowanych reguł ACCEPT i bez dostępu awaryjnego
+    en:
+      - A change over a remote connection without tested ACCEPT rules and without emergency access
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in iptables|multiple:*iptables*) ;; *) echo NOT_APPLICABLE; exit 0 ;; esac
+    command -v iptables >/dev/null 2>&1 || { echo NOT_INSTALLED; exit 0; }
+    r=$(iptables -S 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    ok=1; s=""
+    for c in INPUT FORWARD OUTPUT; do
+      p=$(printf '%s\n' "$r" | awk -v c="$c" '$1 == "-P" && $2 == c { print $3 }')
+      case "${p:=missing}" in DROP|REJECT) ;; *) ok=0 ;; esac
+      s="$s,$(echo "$c" | tr A-Z a-z)=$p"
+    done
+    if [ $ok = 1 ]; then echo "OK:${s#,}"; else echo "NOT_OK:${s#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/iptables.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/netfilter-persistent.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Punkty 4.4 dotyczą serwera, na którym w użyciu jest iptables-persistent,
+    czyli netfilter-persistent.service jest włączona lub uruchomiona.
+    W pozostałych przypadkach sprawdzenie zwraca NOT_APPLICABLE, a naprawa
+    odmawia. Wybór narzędzia ocenia punkt 4.1.1.
+
+    Reguła tylko sprawdza stan: zestaw reguł zapory projektuje
+    administrator, a jego automatyczna zmiana na zdalnym serwerze grozi
+    odcięciem dostępu. Politykę ustawia się np. poleceniem iptables -P
+    INPUT DROP, a potem zapisuje poleceniem netfilter-persistent save.
+    Reguły iptables zapisane przez iptables-persistent leżą
+    w /etc/iptables/rules.v4 i rules.v6, a zapisuje je polecenie
+    netfilter-persistent save.
+
+    Sprawdzenie czyta bieżącą politykę z iptables -S, które wymaga
+    uprawnień roota. Wynik podaje politykę każdego łańcucha albo missing,
+    gdy jej nie odczytano. Politykę IPv6 ocenia punkt 4.4.3.1.
+  en: |
+    The items in 4.4 concern a server where iptables-persistent is in use,
+    that is netfilter-persistent.service is enabled or running. In the other
+    cases the check returns NOT_APPLICABLE and the remediation refuses. The
+    choice of the tool is assessed by item 4.1.1.
+
+    The rule only checks the state: the firewall ruleset is designed by the
+    administrator, and changing it automatically on a remote server risks
+    cutting off access. The policy is set for example with iptables -P
+    INPUT DROP and then saved with netfilter-persistent save.
+    The iptables rules saved by iptables-persistent are in
+    /etc/iptables/rules.v4 and rules.v6, and the netfilter-persistent save
+    command saves them.
+
+    The check reads the current policy from iptables -S, which needs root
+    privileges. The result gives the policy of each chain, or missing when
+    it was not read. The IPv6 policy is assessed by item 4.4.3.1.

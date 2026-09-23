@@ -1,0 +1,261 @@
+id: ubuntu2404-nftables-not-in-use-with-iptables
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 4.4.1.2
+  section: Host Based Firewall > Configure iptables > Configure iptables software
+  title:
+    pl: nftables nie jest używany razem z iptables
+    en: Ensure nftables is not in use with iptables
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    iptables w Ubuntu 24.04 zapisuje reguły w nf_tables, tym samym
+    mechanizmie jądra, którego używa nftables. Działająca obok usługa
+    nftables przy każdym starcie i przeładowaniu czyści cały zestaw reguł,
+    także reguły iptables, więc zapora działa inaczej, niż opisują pliki
+    iptables-persistent.
+
+    Punkt wymaga, żeby przy iptables w użyciu nftables nie był zainstalowany
+    albo nftables.service nie była włączona ani uruchomiona.
+  en: |
+    iptables on Ubuntu 24.04 writes its rules into nf_tables, the same
+    kernel mechanism nftables uses. The nftables service running next to it
+    clears the whole ruleset at every start and reload, the iptables rules
+    too, so the firewall works differently than the files of
+    iptables-persistent describe.
+
+    The item requires that with iptables in use nftables is not installed
+    or nftables.service is neither enabled nor running.
+
+disruption_description:
+  pl: |
+    Tabele nftables z /etc/nftables.conf przestają działać, a ruch filtrują
+    tylko reguły iptables. Zatrzymanie usługi czyści cały zestaw reguł,
+    więc naprawa wczytuje od razu reguły iptables zapisane
+    w /etc/iptables; reguły iptables dodane ręcznie i niezapisane
+    znikają.
+  en: |
+    The nftables tables from /etc/nftables.conf stop working, and only the
+    iptables rules filter traffic. Stopping the service clears the whole
+    ruleset, so the remediation at once loads the iptables rules saved in
+    /etc/iptables; iptables rules added by hand and not saved disappear.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Ruch filtrowany dotąd tylko przez tabele nftables z /etc/nftables.conf
+      - Reguły iptables dodane ręcznie i niezapisane poleceniem netfilter-persistent save
+    en:
+      - Traffic filtered so far only by the nftables tables from /etc/nftables.conf
+      - iptables rules added by hand and not saved with netfilter-persistent save
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zaporą serwera ma zarządzać nftables, a iptables-persistent został włączony przypadkiem; wtedy właściwa jest naprawa z punktu 4.1.1
+      - Działające reguły iptables różnią się od zapisanych w /etc/iptables/rules.v4 i rules.v6
+    en:
+      - The firewall of the server should be managed by nftables, and iptables-persistent was enabled by accident; then the remediation of item 4.1.1 is the right one
+      - The running iptables rules differ from those saved in /etc/iptables/rules.v4 and rules.v6
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    fw_st() {
+      e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+      a=$(systemctl is-active "$1" 2>/dev/null) || true
+      echo "${e:-none}/${a:-unknown}"
+    }
+    fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+    ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+    fwmode() {
+      m=""
+      if ufw_on; then m="$m,ufw"; fi
+      if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+      if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+      m=${m#,}
+      case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+    }
+    case "$(fwmode)" in iptables|multiple:*iptables*) ;; *) echo NOT_APPLICABLE; exit 0 ;; esac
+    if [ "$(dpkg-query -W -f='${db:Status-Status}' nftables 2>/dev/null)" != installed ]; then echo "OK:nftables=not-installed"; exit 0; fi
+    s=$(fw_st nftables.service)
+    if fw_used "$s"; then echo "NOT_OK:nftables.service=$s"; else echo "OK:nftables.service=$s"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      e=$(systemctl is-enabled nftables.service 2>/dev/null) || true
+      a=$(systemctl is-active nftables.service 2>/dev/null) || true
+      { echo format=nftoff-1; echo "state ${e:-none} ${a:-unknown}"; } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      if [ "$(head -n 1 "$b")" != format=nftoff-1 ] || [ "$(wc -l < "$b")" != 2 ] ||
+         ! sed -n 2p "$b" | grep -qxE 'state [a-z-]+ [a-z-]+'; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      m=$(fwmode)
+      case "$m" in iptables|multiple:*iptables*) ;; *) echo "iptables-persistent is not in use as the firewall ($m); the iptables items do not apply (see item 4.1.1)" >&2; exit 1 ;; esac
+      s=$(fw_st nftables.service)
+      if ! fw_used "$s"; then echo "nftables.service is not in use ($s), nothing to change"; exit 0; fi
+      case "${s%%/*}" in
+        enabled) systemctl disable -q nftables.service; echo "Disabled nftables.service" ;;
+        enabled-runtime) systemctl disable -q --runtime nftables.service; echo "Disabled nftables.service" ;;
+      esac
+      case "${s#*/}" in active|activating|reloading)
+        # Stopping clears the whole ruleset, the iptables rules in nf_tables too.
+        systemctl stop nftables.service
+        echo "Stopped nftables.service"
+        case "$(fw_st netfilter-persistent.service)" in */active)
+          netfilter-persistent start >/dev/null
+          echo "Loaded the saved iptables rules again" ;;
+        esac
+        ;;
+      esac
+      s=$(fw_st nftables.service)
+      if fw_used "$s"; then echo "nftables.service is still in use ($s)" >&2; exit 1; fi
+      echo "nftables is no longer used next to iptables"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if [ "$(head -n 1 "$b")" != format=nftoff-1 ] || [ "$(wc -l < "$b")" != 2 ] ||
+         ! sed -n 2p "$b" | grep -qxE 'state [a-z-]+ [a-z-]+'; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      fw_st() {
+        e=$(systemctl is-enabled "$1" 2>/dev/null) || true
+        a=$(systemctl is-active "$1" 2>/dev/null) || true
+        echo "${e:-none}/${a:-unknown}"
+      }
+      fw_used() { case "$1" in enabled/*|enabled-runtime/*|*/active|*/activating|*/reloading) return 0 ;; esac; return 1; }
+      ufw_on() { [ -x /usr/sbin/ufw ] && grep -qsx 'ENABLED=yes' /etc/ufw/ufw.conf; }
+      fwmode() {
+        m=""
+        if ufw_on; then m="$m,ufw"; fi
+        if fw_used "$(fw_st nftables.service)"; then m="$m,nftables"; fi
+        if fw_used "$(fw_st netfilter-persistent.service)"; then m="$m,iptables"; fi
+        m=${m#,}
+        case "$m" in "") echo none ;; *,*) echo "multiple:$m" ;; *) echo "$m" ;; esac
+      }
+      read -r tag e a < <(sed -n 2p "$b")
+      s=$(fw_st nftables.service)
+      case "${s%%/*}" in none|masked*|not-found)
+        echo "nftables.service is not available now ($s); its state is not restored"; exit 0 ;;
+      esac
+      case "$e" in
+        enabled) [ "${s%%/*}" = enabled ] || { systemctl enable -q nftables.service; echo "Enabled nftables.service again"; } ;;
+        enabled-runtime) [ "${s%%/*}" = enabled-runtime ] || { systemctl enable -q --runtime nftables.service; echo "Enabled nftables.service again until the next start"; } ;;
+      esac
+      case "$a" in active|activating|reloading)
+        case "${s#*/}" in active|activating|reloading) ;; *)
+          # /etc/nftables.conf starts with flush ruleset, which clears the iptables rules too.
+          systemctl start nftables.service
+          echo "Started nftables.service again"
+          case "$(fw_st netfilter-persistent.service)" in */active)
+            netfilter-persistent start >/dev/null
+            echo "Loaded the saved iptables rules again" ;;
+          esac
+          ;;
+        esac ;;
+      esac
+      echo "Restored the previous state of nftables.service"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/nft.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/iptables.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/netfilter-persistent.8.html
+  - https://documentation.ubuntu.com/server/how-to/security/firewalls/
+
+notes:
+  pl: |
+    Punkty 4.4 dotyczą serwera, na którym w użyciu jest iptables-persistent,
+    czyli netfilter-persistent.service jest włączona lub uruchomiona.
+    W pozostałych przypadkach sprawdzenie zwraca NOT_APPLICABLE, a naprawa
+    odmawia. Wybór narzędzia ocenia punkt 4.1.1. Wynik OK:nftables=not-installed oznacza
+    brak pakietu, a pozostałe wyniki podają stan nftables.service w postaci
+    włączenie/działanie.
+
+    Naprawa wyłącza i zatrzymuje nftables.service. Usługa przy zatrzymaniu
+    wykonuje nft flush ruleset, co usuwa też reguły iptables, więc gdy
+    netfilter-persistent.service działa, naprawa wczytuje ponownie reguły
+    zapisane w /etc/iptables. Reguły iptables zapisane przez iptables-persistent leżą
+    w /etc/iptables/rules.v4 i rules.v6, a zapisuje je polecenie
+    netfilter-persistent save. Kopia zapisuje stan
+    usługi, a wycofanie włącza ją i uruchamia ponownie, po czym znowu
+    wczytuje zapisane reguły iptables.
+
+    Gdy w użyciu są nftables i iptables-persistent, punkt 4.1.1 zostawia
+    nftables i wyłącza netfilter-persistent, a ten punkt wyłącza nftables.
+    Który z nich zastosować, zależy od tego, którym narzędziem ma być
+    zarządzana zapora.
+  en: |
+    The items in 4.4 concern a server where iptables-persistent is in use,
+    that is netfilter-persistent.service is enabled or running. In the other
+    cases the check returns NOT_APPLICABLE and the remediation refuses. The
+    choice of the tool is assessed by item 4.1.1. The OK:nftables=not-installed result means
+    the package is not there, and the other results give the state of
+    nftables.service as enablement/activity.
+
+    The remediation disables and stops nftables.service. When it stops, the
+    service runs nft flush ruleset, which also removes the iptables rules,
+    so when netfilter-persistent.service runs, the remediation loads the
+    rules saved in /etc/iptables again. The iptables rules saved by iptables-persistent are in
+    /etc/iptables/rules.v4 and rules.v6, and the netfilter-persistent save
+    command saves them. The backup
+    records the state of the service, and rollback enables and starts it
+    again, and then loads the saved iptables rules once more.
+
+    When nftables and iptables-persistent are both in use, item 4.1.1 keeps
+    nftables and turns off netfilter-persistent, and this item turns off
+    nftables. Which one to apply depends on which tool should manage the
+    firewall.

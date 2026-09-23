@@ -1,0 +1,166 @@
+id: win10-printing-over-http-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Internet Communication Management > Internet Communication settings
+  title:
+    pl: Blokada wysyłania wydruków protokołem sieciowym przeglądarki
+    en: Printing over the browser network protocol blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    System umie wysłać wydruk do drukarki wskazanej adresem sieciowym, tym samym
+    protokołem, którym przeglądarka pobiera strony. Wydruk przechodzi wtedy przez
+    dowolną drogę, którą maszyna ma do internetu, i trafia tam, gdzie prowadzi
+    adres.
+
+    Kłopot jest podwójny. Dokument wychodzi poza sieć, w której go przygotowano,
+    często bez szyfrowania i bez śladu w kolejkach wydruku, a adres drukarki może
+    wskazywać dokąd tylko zechce ten, kto go podał. Wystarczy przekonać kogoś do
+    dodania drukarki spod obcego adresu, żeby dokumenty zaczęły wychodzić na
+    zewnątrz.
+
+    Blokada zostawia druk w sieci lokalnej, gdzie widać, dokąd trafia dokument
+    i kto ma do niego dostęp.
+  en: |
+    The system can send a printout to a printer named by a web address, over the
+    same protocol a browser uses to fetch pages. The printout then travels any
+    route the machine has to the internet and lands wherever the address leads.
+
+    The trouble is twofold. The document leaves the network it was prepared in,
+    often unencrypted and without a trace in the print queues, and the printer
+    address may point wherever the person who supplied it wishes. Talking somebody
+    into adding a printer at a foreign address is enough for documents to start
+    going outward.
+
+    Blocking it keeps printing inside the local network, where it is visible where
+    a document lands and who can reach it.
+
+disruption_description:
+  pl: |
+    Druk tym protokołem jest dziś rzadkością i większość organizacji nie używa go
+    wcale. Tam, gdzie go nie ma, blokada jest zapisem stanu faktycznego i nie
+    zmienia niczego.
+
+    Wyjątki istnieją i są konkretne: usługi drukowania w chmurze, drukarki
+    wystawione przez dostawcę usług wydruku, rozwiązania łączące oddziały bez
+    własnej sieci. Tam zmiana odcina realnie działającą drogę i wymaga
+    zamiennika, a nie samej decyzji.
+  en: |
+    Printing over this protocol is a rarity today and most organisations do not
+    use it at all. Where it is absent, blocking it merely writes down the state of
+    affairs and changes nothing.
+
+    The exceptions exist and they are concrete - cloud print services, printers
+    exposed by a print service provider, arrangements joining branches that have
+    no network of their own. There the change cuts a genuinely working route and
+    calls for a replacement rather than just a decision.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Drukarki dodane przez adres sieciowy przestaną przyjmować wydruki i zgłoszą błąd wysłania zadania
+      - Usługi drukowania w chmurze oparte na tym protokole przestaną być dostępne z tej maszyny
+      - Podgląd i dodawanie drukarek udostępnionych przez stronę internetową serwera wydruku przestaną działać
+      - Drukowanie do drukarek sieciowych w sieci lokalnej, kolejki lokalne, drukowanie do pliku i wydruk przez serwer wydruku działają bez zmian
+    en:
+      - Printers added by web address stop accepting work and report an error sending the job
+      - Cloud print services built on this protocol become unavailable from this machine
+      - Browsing and adding printers published on a print server web page stop working
+      - Printing to network printers on the local network, local queues, printing to file and printing through a print server are unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska korzystające z drukowania w chmurze albo z usługi wydruku dostawcy zewnętrznego
+      - Oddziały bez własnego serwera wydruku, które drukują przez adres sieciowy do centrali
+      - Stanowiska mobilne drukujące u klientów przez udostępniony adres, dopóki nie ma innej drogi
+    en:
+      - Environments using cloud printing or an outside provider s print service
+      - Branches with no print server of their own that print to head office by web address
+      - Mobile stations printing at customer sites through a published address, until another route exists
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableHTTPPrinting'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    $name = 'DisableHTTPPrinting'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableHTTPPrinting' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/print-management-group-policy
+
+notes:
+  pl: |
+    Blokada dotyczy wysyłania wydruków i przeglądania drukarek tym protokołem,
+    nie zaś drukowania w sieci lokalnej — to idzie inną drogą i pozostaje czynne.
+    Razem z blokadą pobierania sterowników z internetu zamyka wyjście podsystemu
+    druku poza sieć lokalną w obie strony.
+  en: |
+    The block covers sending printouts and browsing printers over this protocol,
+    not printing on the local network, which travels another road and stays
+    active. Together with blocking driver downloads from the internet it closes
+    the printing subsystem s way out of the local network in both directions.

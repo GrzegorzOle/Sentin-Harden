@@ -1,0 +1,165 @@
+id: win10-print-driver-download-http-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Internet Communication Management > Internet Communication settings
+  title:
+    pl: Blokada pobierania sterowników drukarek z internetu
+    en: Printer drivers not downloaded from the internet
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy sterownika brakuje lokalnie i nie ma go w zasobach aktualizacji, system
+    potrafi sięgnąć po niego wprost do internetu. Pobiera wtedy kod, który zaraz
+    potem zainstaluje w jądrze albo w usłudze systemowej, opierając całe zaufanie
+    na tym, że odpowiedź przyszła z właściwego miejsca.
+
+    Ta zasada zamyka tę drogę. Sterowniki pozostają te, które są na maszynie albo
+    przychodzą kanałem aktualizacji i z zarządzania — czyli te, o których ktoś
+    w organizacji podjął decyzję.
+
+    Napastnikowi odbiera to sytuację, w której wystarczy wpłynąć na odpowiedź
+    z sieci, żeby maszyna sama zainstalowała sobie kod o najwyższych uprawnieniach.
+  en: |
+    Where a driver is missing locally and absent from the update store, the system
+    can reach for it straight from the internet. It then pulls down code that it
+    will install moments later into the kernel or a system service, resting the
+    whole of its trust on the answer having come from the right place.
+
+    This rule closes that road. Drivers remain those already on the machine or
+    arriving through the update channel and through management - the ones somebody
+    in the organisation decided about.
+
+    It takes from an attacker the situation in which shaping one answer from the
+    network is enough for the machine to install code at the highest privilege by
+    itself.
+
+disruption_description:
+  pl: |
+    Odczuje to ten, kto podłącza sprzęt nietypowy albo stary, dla którego system
+    nie ma nic we własnych zasobach. Zamiast samoczynnej instalacji zobaczy
+    komunikat o braku sterownika i będzie musiał zdobyć pakiet osobno.
+
+    Typowe drukarki biurowe mają sterowniki w zasobach aktualizacji, więc dla
+    większości urządzeń zmiana jest niewidoczna. Różnica ujawnia się na sprzęcie
+    spoza głównego nurtu — i tam bywa dotkliwa, bo pojawia się dokładnie wtedy,
+    gdy ktoś stoi przy nowym urządzeniu i chce je uruchomić.
+  en: |
+    The one who feels this is whoever attaches unusual or old hardware for which
+    the system holds nothing in its own store. Instead of installing by itself it
+    shows a message about a missing driver, and the package has to be obtained
+    separately.
+
+    Ordinary office printers have drivers in the update store, so for most devices
+    the change is invisible. The difference shows on hardware outside the
+    mainstream - and it bites there, because it appears exactly when somebody is
+    standing at a new device wanting to bring it up.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Urządzenie bez sterownika w zasobach systemu nie zainstaluje się samo i zgłosi brak sterownika przy pierwszym podłączeniu
+      - Uruchomienie starszego sprzętu wymaga zdobycia pakietu producenta osobno, co przy urządzeniach wycofanych bywa czasochłonne
+      - Kreator dodawania drukarki nie zaproponuje już sterownika pobranego z sieci i pokaże wyłącznie to, co jest na miejscu
+      - Drukarki już zainstalowane, sterowniki z zasobów aktualizacji, rozsyłane centralnie i wnoszone z pakietu działają bez zmian
+    en:
+      - A device with no driver in the system store does not install itself and reports a missing driver on first connection
+      - Bringing up older hardware calls for obtaining the vendor package separately, which with withdrawn devices takes time
+      - The add-printer wizard no longer offers a driver pulled from the network and shows only what is present locally
+      - Printers already installed, drivers from the update store, those distributed centrally and those brought in as a package all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska techniczne podłączające różnorodny sprzęt, gdzie samoczynne pobranie sterownika jest realnym ułatwieniem pracy
+      - Maszyny obsługiwane bez wsparcia na miejscu, gdzie zdobycie pakietu producenta oznacza wielodniowe czekanie
+      - Środowiska bez centralnego rozsyłania sterowników, dopóki taki kanał nie powstanie
+    en:
+      - Technical stations attaching varied hardware, where fetching a driver automatically is a real help in the work
+      - Machines served without support on site, where obtaining the vendor package means waiting days
+      - Environments with no central driver distribution, until such a channel exists
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableWebPnPDownload'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    $name = 'DisableWebPnPDownload'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableWebPnPDownload' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/printing/print-management-group-policy
+
+notes:
+  pl: |
+    Zasada dotyczy pobierania wprost z internetu, a nie kanału aktualizacji
+    systemu — ten pozostaje czynny i nadal dostarcza sterowniki. Razem z blokadą
+    wysyłania wydruków protokołem przeglądarki opisuje dwie drogi, którymi
+    podsystem druku wychodzi poza sieć lokalną.
+  en: |
+    The rule covers fetching straight from the internet, not the system update
+    channel, which stays active and keeps delivering drivers. Together with
+    blocking printing over the browser protocol it describes the two roads by
+    which the printing subsystem leaves the local network.

@@ -1,0 +1,165 @@
+id: win10-print-rpc-outgoing-protocol-tcp
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Połączenia wychodzące podsystemu druku wyłącznie przez gniazda sieciowe
+    en: Outgoing connections of the printing subsystem over network sockets only
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Symetrycznie do nasłuchu, podsystem druku sam nawiązuje połączenia — do
+    serwerów wydruku i do udostępnionych kolejek. Może to robić przez gniazda
+    sieciowe albo przez nazwane potoki, czyli drogą udostępniania plików.
+
+    Wybór drogi wychodzącej ma znaczenie, bo to maszyna decyduje, komu się
+    przedstawia. Połączenie przez nazwane potoki prowadzi przez mechanizm
+    udostępniania plików i daje drugiej stronie okazję do wciągnięcia tożsamości
+    maszyny w rozmowę, której nikt nie zamierzał prowadzić.
+
+    Zasada zostawia wyłącznie gniazda sieciowe. Droga staje się jedna, widoczna
+    na zaporze i niezależna od udostępniania plików.
+  en: |
+    Symmetrically to listening, the printing subsystem opens connections of its
+    own - to print servers and to shared queues. It can do so over network sockets
+    or over named pipes, which is to say through file sharing.
+
+    The choice of outgoing road matters, because it is the machine that decides
+    whom it introduces itself to. A connection over named pipes travels the file
+    sharing mechanism and hands the far side an opening to draw the machine s
+    identity into an exchange nobody meant to have.
+
+    The rule leaves network sockets alone. The road becomes single, visible at the
+    firewall and independent of file sharing.
+
+disruption_description:
+  pl: |
+    Skutek zależy od tego, z czym maszyna się łączy. Współczesne serwery wydruku
+    przyjmują połączenia przez gniazda sieciowe i nie widać żadnej różnicy.
+    Starszy serwer wydruku albo drukarka udostępniona ze starego stanowiska
+    potrafią przyjmować wyłącznie drogą nazwanych potoków — wtedy kolejka po
+    prostu przestanie odpowiadać.
+
+    To jest zmiana odczuwalna dla użytkownika, bo objawia się brakiem drukarki,
+    a nie komunikatem o zasadach. Warto najpierw sprawdzić, czym łączą się
+    drukarki faktycznie używane na maszynie.
+  en: |
+    The effect depends on what the machine connects to. Current print servers
+    accept connections over network sockets and no difference shows. An older
+    print server, or a printer shared from an old station, may accept named pipes
+    alone - and then the queue simply stops answering.
+
+    This is a change the user feels, because it appears as a missing printer
+    rather than as a message about policy. It is worth checking first how the
+    printers actually used on the machine are reached.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - legacy-authentication
+    - file-sharing
+  what_breaks:
+    pl:
+      - Kolejki udostępnione przez starsze serwery wydruku, przyjmujące wyłącznie nazwane potoki, przestaną odpowiadać i znikną z listy działających
+      - Drukarki udostępnione z dawnych stanowisk w sieci lokalnej mogą przestać przyjmować zadania z tej maszyny
+      - Użytkownik zobaczy brak drukarki, a nie komunikat o zasadach, więc zgłoszenie trafi do wsparcia jako awaria sprzętu
+      - Drukowanie na kolejkach lokalnych, dodawanie drukarek i sterowniki pozostają bez zmian
+    en:
+      - Queues shared by older print servers that accept named pipes alone stop answering and drop off the list of working printers
+      - Printers shared from old stations on the local network may stop taking work from this machine
+      - The user sees a missing printer rather than a message about policy, so the ticket reaches support as a hardware fault
+      - Printing on local queues, adding printers and drivers are all unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny drukujące przez stary serwer wydruku, dopóki nie zostanie on wymieniony albo przestawiony
+      - Środowiska, w których drukarki są udostępniane z pojedynczych stanowisk, a nie z serwera
+      - Stanowiska, na których nie sprawdzono jeszcze, czym łączą się używane kolejki wydruku
+    en:
+      - Machines printing through an old print server, until it is replaced or reconfigured
+      - Environments where printers are shared from individual stations rather than from a server
+      - Stations where it has not yet been checked how the print queues in use are reached
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'RpcUseNamedPipeProtocol'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    $name = 'RpcUseNamedPipeProtocol'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RpcUseNamedPipeProtocol' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/printdocs/printer-connections
+
+notes:
+  pl: |
+    Brak wartości nie jest stanem zgodnym. Bez ustawienia drogę wybiera system,
+    a wybór bywa zależny od tego, co odpowie druga strona — czyli od niej właśnie.
+    Zasada dotyczy wyłącznie podsystemu druku; pozostały ruch maszyny korzystający
+    z nazwanych potoków działa bez zmiany.
+  en: |
+    An absent value is not a compliant state. Without the setting the system picks
+    the road, and the pick can depend on what the far side answers - which is to
+    say on the far side. The rule covers the printing subsystem alone; the rest of
+    the machine s traffic over named pipes is unaffected.

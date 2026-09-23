@@ -1,0 +1,167 @@
+id: win10-print-rpc-listener-authentication-negotiate
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Uwierzytelnianie połączeń przychodzących podsystemu druku przez negocjację
+    en: Authentication of incoming connections of the printing subsystem by negotiation
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Połączenie przychodzące do podsystemu druku musi się czymś wykazać. Ustawienie
+    rozstrzyga, czy maszyna godzi się na negocjację mechanizmu, czy żąda wyłącznie
+    mechanizmu domenowego.
+
+    Zasada wybiera negocjację i nie jest to przeoczenie. Wymuszenie mechanizmu
+    domenowego wygląda na wybór twardszy, ale jego skutkiem ubocznym jest
+    odcięcie druku wszędzie tam, gdzie kontroler domeny nie jest w danej chwili
+    osiągalny. Na maszynie przenośnej znaczy to brak druku poza biurem — i to
+    jest cena, której ta reguła nie chce płacić.
+
+    Negocjacja zostawia uwierzytelnienie na miejscu, a jednocześnie nie wiąże
+    drukowania z obecnością w sieci domenowej.
+  en: |
+    An incoming connection to the printing subsystem has to show something for
+    itself. The setting decides whether the machine agrees to negotiate the
+    mechanism or demands the domain one alone.
+
+    The rule picks negotiation, and that is not an oversight. Forcing the domain
+    mechanism looks like the harder choice, but its side effect is cutting off
+    printing wherever a domain controller is not reachable at the moment. On a
+    portable machine that means no printing away from the office - a price this
+    rule is not willing to pay.
+
+    Negotiation keeps authentication in place while not tying printing to being
+    present on the domain network.
+
+disruption_description:
+  pl: |
+    Zapisanie zera zmienia niewiele tam, gdzie i tak nikt nie wymuszał mechanizmu
+    domenowego. Wartość ma wtedy znaczenie porządkujące: decyduje zasada, a nie
+    konfiguracja zastana.
+
+    Odczuje ją natomiast maszyna, na której ktoś świadomie wymusił mechanizm
+    domenowy dla bezpieczeństwa. Tam zmiana jest złagodzeniem i wymaga decyzji, bo
+    przywraca możliwość negocjacji mechanizmu słabszego. To ten rzadki przypadek,
+    w którym reguła zgodności nie jest najtwardszym z dostępnych ustawień.
+  en: |
+    Writing zero changes little where nobody forced the domain mechanism in the
+    first place. The value then serves order - the policy decides rather than
+    whatever configuration was found.
+
+    It is felt on a machine where somebody forced the domain mechanism
+    deliberately for safety. There the change is a loosening and calls for a
+    decision, because it restores the option of negotiating a weaker mechanism.
+    This is the rare case where the compliant rule is not the hardest setting
+    available.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - legacy-authentication
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Maszyna, na której świadomie wymuszono mechanizm domenowy, zacznie znów godzić się na negocjację mechanizmu słabszego
+      - Środowiska wymagające wyłącznie uwierzytelnienia domenowego w całej komunikacji stracą tę gwarancję w podsystemie druku
+      - Dziennik połączeń podsystemu druku zacznie pokazywać mechanizmy inne niż domenowy, co bywa mylone z regresją
+      - Drukowanie, udostępnianie drukarek, kolejki i sterowniki działają jak wcześniej — zmienia się wyłącznie sposób wykazania się przy połączeniu
+    en:
+      - A machine where the domain mechanism was forced deliberately starts agreeing to negotiate a weaker one again
+      - Environments requiring domain authentication alone across all communication lose that guarantee in the printing subsystem
+      - The connection log of the printing subsystem starts showing mechanisms other than the domain one, which is easily mistaken for a regression
+      - Printing, printer sharing, queues and drivers work as before - only the way a connection identifies itself changes
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny stacjonarne w sieci domenowej, gdzie wymuszenie mechanizmu domenowego nic nie kosztuje i zostało wdrożone świadomie
+      - Środowiska objęte wymogiem jednego mechanizmu uwierzytelniania w całym ruchu wewnętrznym
+      - Stanowiska, na których ustawienie zostało przestawione w ramach rozwiązywania innego problemu — warto najpierw ustalić dlaczego
+    en:
+      - Stationary machines on the domain network, where forcing the domain mechanism costs nothing and was deployed deliberately
+      - Environments under a requirement of a single authentication mechanism across all internal traffic
+      - Stations where the setting was changed while solving some other problem - worth establishing why first
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ForceKerberosForRpc'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    $name = 'ForceKerberosForRpc'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ForceKerberosForRpc' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/printdocs/printer-connections
+
+notes:
+  pl: |
+    Wartością oczekiwaną jest zero, czyli negocjacja. Jedynka wymusza mechanizm
+    domenowy i na stanowisku przenośnym odbiera druk poza siecią domenową.
+    Reguła tworzy parę z zasadą o drodze połączeń przychodzących: tamta mówi,
+    którędy wchodzi połączenie, ta — czym się wykazuje.
+  en: |
+    The expected value is zero, meaning negotiation. One forces the domain
+    mechanism and on a portable machine takes printing away outside the domain
+    network. The rule pairs with the one on the road of incoming connections -
+    that says which way a connection comes in, this says what it shows for itself.

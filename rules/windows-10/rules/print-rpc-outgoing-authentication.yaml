@@ -1,0 +1,171 @@
+id: win10-print-rpc-outgoing-authentication
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Printers
+  title:
+    pl: Uwierzytelnianie połączeń wychodzących podsystemu druku wymagane
+    en: Authentication of outgoing connections of the printing subsystem required
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Łącząc się z serwerem wydruku, maszyna może się przedstawić albo odezwać
+    anonimowo. Połączenie bez uwierzytelnienia oznacza, że żadna ze stron nie wie,
+    z kim rozmawia — a kolejka wydruku przyjmuje wtedy zadania i odsyła
+    odpowiedzi w ciemno.
+
+    Ta zasada domaga się uwierzytelnienia połączeń wychodzących. Zysk nie polega
+    na ochronie samego wydruku, tylko na tym, że maszyna przestaje rozmawiać
+    z czymkolwiek, co odpowie pod znanym adresem. Podstawienie fałszywego serwera
+    wydruku przestaje być wystarczające.
+
+    Razem z zasadą o drodze połączeń wychodzących tworzy całość: tamta mówi,
+    którędy maszyna wychodzi, ta — czy po drugiej stronie ktoś musi się wykazać.
+  en: |
+    Connecting to a print server, a machine may introduce itself or speak
+    anonymously. A connection without authentication means neither side knows whom
+    it is talking to, and the print queue then takes work and sends answers back
+    blind.
+
+    This rule demands authentication of outgoing connections. The gain is not
+    protection of the printout itself but that the machine stops talking to
+    whatever answers at a known address. Standing up a false print server stops
+    being enough.
+
+    Together with the rule on the road of outgoing connections it forms a whole -
+    that one says which way the machine goes out, this one says whether the far
+    side has to show anything.
+
+disruption_description:
+  pl: |
+    Wartością oczekiwaną jest zero, czyli obsługa domyślna, w której
+    uwierzytelnienie obowiązuje. Jedynka wymusza je zawsze, również tam, gdzie
+    system dobiera zachowanie sam, i przez to odcina przypadki działające
+    poprawnie. Dwójka jest jedynym stanem, w którym uwierzytelnienia nie ma.
+
+    Praktycznie odczuje to maszyna łącząca się z serwerem wydruku przyjmującym
+    zadania anonimowo — spotykane w prostych rozwiązaniach oddziałowych i
+    w drukarkach udostępnianych bez kont. Tam kolejka przestanie przyjmować
+    zadania z tej maszyny.
+  en: |
+    The expected value is zero, the default handling under which authentication
+    holds. One forces it always, including where the system picks the behaviour
+    itself, and so cuts off cases that work correctly. Two is the only state in
+    which there is no authentication at all.
+
+    In practice it is felt by a machine reaching a print server that accepts work
+    anonymously - seen in simple branch arrangements and on printers shared
+    without accounts. There the queue stops taking work from this machine.
+
+implementation_consequences:
+  impact_areas:
+    - printing
+    - legacy-authentication
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Serwery wydruku przyjmujące zadania anonimowo przestaną je od tej maszyny przyjmować i zgłoszą odmowę dostępu
+      - Drukarki udostępnione bez kont, spotykane w małych sieciach, staną się nieosiągalne z tej maszyny
+      - Zadania wysłane przed zmianą i czekające w kolejce mogą wymagać ponownego wysłania
+      - Drukowanie na kolejkach lokalnych, dodawanie drukarek, sterowniki i wydruk do pliku działają bez zmian
+    en:
+      - Print servers that accept work anonymously stop taking it from this machine and report access denied
+      - Printers shared without accounts, common in small networks, become unreachable from this machine
+      - Jobs sent before the change and waiting in a queue may have to be sent again
+      - Printing on local queues, adding printers, drivers and printing to file all work unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Sieci, w których drukarki są udostępniane bez kont i przyjmują zadania od każdego
+      - Oddziały korzystające z prostego serwera wydruku bez obsługi uwierzytelniania
+      - Stanowiska drukujące u klientów, gdzie druga strona nie jest pod kontrolą organizacji
+    en:
+      - Networks where printers are shared without accounts and take work from anybody
+      - Branches using a simple print server with no support for authentication
+      - Stations printing at customer sites, where the far side is not under the organisation s control
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'RpcAuthentication'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    $name = 'RpcAuthentication'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RpcAuthentication' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/printdocs/printer-connections
+
+notes:
+  pl: |
+    Brak wartości nie jest tym samym co zero, choć zachowanie bywa takie samo:
+    bez ustawienia decyduje konfiguracja lokalna, przy zapisanym zerze decyduje
+    zasada. Reguła należy do czwórki opisującej rozmowę podsystemu druku — dwie
+    reguły dotyczą połączeń wychodzących, dwie przychodzących, a w każdej parze
+    jedna mówi o drodze, druga o uwierzytelnieniu. Wyniki czwórki czyta się razem.
+  en: |
+    An absent value is not the same as zero, though the behaviour can look alike -
+    without the setting the local configuration decides, with zero written down
+    the policy decides. The rule belongs to the four describing how the printing
+    subsystem talks; two cover outgoing connections and two incoming, and in each
+    pair one speaks of the road and the other of authentication. The four are read
+    together.

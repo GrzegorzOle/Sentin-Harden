@@ -1,0 +1,241 @@
+id: fedora44-crontab-restricted
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.4.1.8
+  section: Services > Job Schedulers > Configure cron
+  title:
+    pl: Dostęp do crontab mają tylko uprawnieni użytkownicy
+    en: Ensure crontab is restricted to authorized users
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Polecenie crontab pozwala użytkownikowi zaplanować własne zadania, które
+    demon cron uruchamia regularnie z jego uprawnieniami. Dla intruza, który
+    przejął zwykłe konto, to prosty sposób, żeby jego program działał dalej
+    po wylogowaniu i po restarcie komputera.
+
+    Punkt wymaga pliku /etc/cron.allow z listą użytkowników, którzy mogą
+    używać crontab. Plik ma należeć do roota i grupy root i mieć uprawnienia
+    640 lub bardziej restrykcyjne; te same wymagania dotyczą /etc/cron.deny,
+    jeśli istnieje. Fedora dostarcza tylko pusty /etc/cron.deny
+    z uprawnieniami 644, więc domyślnie crontab może użyć każdy.
+  en: |
+    The crontab command lets a user schedule their own jobs, which the cron
+    daemon runs regularly with that user's rights. For an intruder who took
+    over a regular account, it is a simple way to keep their program running
+    after logout and after a restart.
+
+    The item requires an /etc/cron.allow file listing the users who may use
+    crontab. The file has to be owned by root and the root group, with mode
+    640 or stricter; the same applies to /etc/cron.deny if it exists. Fedora
+    ships only an empty /etc/cron.deny with mode 644, so by default anyone
+    can use crontab.
+
+disruption_description:
+  pl: |
+    Użytkownicy, którzy mają już własne zadania crona, nie zauważą zmiany, bo
+    naprawa wpisuje ich do /etc/cron.allow. Pozostali przy próbie utworzenia
+    zadania poleceniem crontab -e dostaną komunikat o braku uprawnień.
+  en: |
+    Users who already have their own cron jobs will not notice the change,
+    because the remediation lists them in /etc/cron.allow. The others get a
+    permission message when they try to create a job with crontab -e.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Użytkownicy spoza /etc/cron.allow nie mogą tworzyć, zmieniać ani wyświetlać swoich zadań poleceniem crontab
+      - Programy, które same dopisują zadania do crontab użytkownika, kończą się błędem dla użytkowników spoza listy
+    en:
+      - Users not in /etc/cron.allow cannot create, change or list their jobs with crontab
+      - Programs that add jobs to a user's crontab on their own fail for users not on the list
+  interruption: none
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if ! rpm -q --quiet cronie; then echo NOT_INSTALLED; exit 0; fi
+    gids=0
+    state() {
+      ok=""; bad=""
+      for f in /etc/cron.allow /etc/cron.deny; do
+        n=${f##*/}
+        if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+          if [ "$f" = /etc/cron.allow ]; then bad="$bad,$n=absent"; fi
+          continue
+        fi
+        if [ ! -f "$f" ]; then bad="$bad,$n=not-a-file"; continue; fi
+        set -- $(stat -Lc '%a %u %g' "$f")
+        g=no; for x in $gids; do if [ "$3" = "$x" ]; then g=yes; fi; done
+        if [ $(( 0$1 & 07137 )) -eq 0 ] && [ "$2" = 0 ] && [ "$g" = yes ]; then ok="$ok,$n=$1"
+        else bad="$bad,$n=$1:$2:$3"; fi
+      done
+      if [ -n "$bad" ]; then echo "NOT_RESTRICTED:${bad#,}"; else echo "RESTRICTED:${ok#,}"; fi
+    }
+    state
+  expected: '^(RESTRICTED:|NOT_INSTALLED$)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=allow-1
+        for f in /etc/cron.allow /etc/cron.deny; do
+          if [ -e "$f" ]; then echo "$f $(readlink -f "$f") $(stat -Lc '%a %u %g' "$f")"
+          else echo "$f absent"; fi
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if ! rpm -q --quiet cronie; then echo "cronie is not installed, nothing to change"; exit 0; fi
+      gids=0
+      a=/etc/cron.allow; d=/etc/cron.deny
+      for f in "$a" "$d"; do
+        if [ -L "$f" ] && [ ! -e "$f" ]; then echo "$f is a broken symbolic link; fix it by hand" >&2; exit 1; fi
+        if [ -e "$f" ] && [ ! -f "$f" ]; then echo "$f is not a regular file; fix it by hand" >&2; exit 1; fi
+      done
+      if [ ! -e "$a" ]; then
+        # Users who already have crontab jobs stay allowed, unless the deny file
+        # blocked them; root is always allowed and needs no entry.
+        t=$(mktemp "$a.XXXXXX")
+        find /var/spool/cron -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort -u | while read -r u; do
+          [ "$u" = root ] && continue
+          if [ -f "$d" ] && grep -Fqx -- "$u" "$d"; then continue; fi
+          if getent passwd "$u" >/dev/null; then echo "$u"; fi
+        done > "$t"
+        chown 0:0 "$t"; chmod 0640 "$t"
+        mv "$t" "$a"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$a"; fi
+        echo "Created $a with the users: $(tr '\n' ' ' < "$a")"
+      fi
+      for f in "$a" "$d"; do
+        [ -e "$f" ] || continue
+        tg=$(readlink -f "$f")
+        set -- $(stat -c '%a %g' "$tg")
+        g=0; for x in $gids; do if [ "$2" = "$x" ]; then g=$2; fi; done
+        chown "0:$g" "$tg"
+        # Five digits: with fewer, chmod keeps the setuid and setgid bits of a directory.
+        chmod "$(printf '0%04o' $(( 0$1 & 0640 )))" "$tg"
+        echo "Set owner root, group $g and mode $(stat -c '%a' "$tg") on $tg"
+      done
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=allow-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      if [ "$(printf '%s\n' "$lines" | cut -d' ' -f1 | tr '\n' ' ')" != "/etc/cron.allow /etc/cron.deny " ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      while read -r f tg mode uid gid x; do
+        if [ "$tg" = absent ] && [ -z "$mode" ]; then continue; fi
+        bad=0
+        case "$tg" in /*) ;; *) bad=1 ;; esac
+        case "$mode" in ""|*[!0-7]*) bad=1 ;; esac
+        case "$uid:$gid" in :*|*:|*[!0-9:]*) bad=1 ;; esac
+        if [ -n "$x" ]; then bad=1; fi
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      while read -r f tg mode uid gid; do
+        if [ "$tg" = absent ]; then
+          # Only the regular file created by the change is removed, never a link.
+          if [ -f "$f" ] && [ ! -L "$f" ]; then rm -f "$f"; echo "Removed $f"; fi
+          continue
+        fi
+        if [ ! -e "$f" ] || [ "$(readlink -f "$f")" != "$tg" ]; then
+          echo "Skipped $f: it no longer points to $tg"; continue
+        fi
+        chown "$uid:$gid" "$tg"
+        chmod "$(printf '0%04o' $(( 0$mode )))" "$tg"
+        echo "Restored owner and mode of $tg"
+      done <<< "$lines"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man1/crontab.1.html
+  - https://man7.org/linux/man-pages/man8/cron.8.html
+
+notes:
+  pl: |
+    Wynik RESTRICTED podaje uprawnienia sprawdzonych plików, a NOT_RESTRICTED
+    brakujący plik albo uprawnienia, właściciela i grupę (UID i GID) pliku,
+    który nie spełnia wymagań. Plik musi należeć do grupy root.
+
+    Jeśli /etc/cron.allow nie istnieje, naprawa go tworzy i wpisuje do niego
+    użytkowników, którzy mają już zadania w /var/spool/cron, pomijając wymienionych
+    w /etc/cron.deny. Dzięki temu nadal mogą przeglądać i zmieniać swoje zadania,
+    a nowe może tworzyć tylko ktoś z listy. Root nie potrzebuje wpisu. Treść
+    listy należy do administratora: kolejnych użytkowników trzeba dopisywać
+    ręcznie, po jednym w wierszu.
+
+    Lista dotyczy tylko polecenia crontab. Demon cron wykonuje dalej
+    wszystkie zadania zapisane w /var/spool/cron, także użytkowników spoza
+    listy, więc po usunięciu kogoś z listy trzeba też usunąć jego zadania
+    poleceniem crontab -r -u z nazwą użytkownika.
+
+    Istniejący plik /etc/cron.allow zachowuje treść, a naprawa zmienia tylko
+    właściciela na root i usuwa prawa spoza 640. /etc/cron.deny przestaje mieć
+    znaczenie, gdy istnieje /etc/cron.allow, ale jeśli jest, naprawa także ogranicza
+    jego uprawnienia. Plik /etc/cron.deny należy do pakietu cronie, więc rpm -V cronie
+    zgłasza potem zmianę uprawnień.
+
+    Wycofanie przywraca zapisanych właścicieli i uprawnienia, a plik
+    /etc/cron.allow utworzony przez naprawę usuwa razem z późniejszymi dopiskami.
+  en: |
+    The RESTRICTED result gives the modes of the checked files, and
+    NOT_RESTRICTED the missing file or the mode, owner and group (UID and
+    GID) of the file that does not meet the requirements. The file has to belong to the root group.
+
+    If /etc/cron.allow does not exist, the remediation creates it and lists the
+    users who already have jobs in /var/spool/cron, leaving out the ones listed in
+    /etc/cron.deny. They can therefore still list and change their jobs, and only
+    someone on the list can create new ones. Root needs no entry. The
+    content of the list belongs to the administrator: further users have to
+    be added by hand, one per line.
+
+    The list only applies to the crontab command. The cron daemon keeps
+    running every job stored in /var/spool/cron, also those of users not on
+    the list, so after removing someone from the list their jobs have to be
+    removed too, with crontab -r -u and the user name.
+
+    An existing /etc/cron.allow file keeps its content, and the remediation only
+    changes the owner to root and removes the permissions beyond 640.
+    /etc/cron.deny has no effect once /etc/cron.allow exists, but if it is present, the
+    remediation restricts its permissions too. The /etc/cron.deny file belongs to
+    the cronie package, so rpm -V cronie reports the changed mode afterwards.
+
+    Rollback restores the recorded owners and modes, and removes an /etc/cron.allow
+    file created by the remediation together with any later additions.

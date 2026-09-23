@@ -1,0 +1,155 @@
+id: win10-kms-online-validation-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Software Protection Platform
+  title:
+    pl: Sprawdzanie licencji w sieci przez klienta serwera aktywacji wyłączone
+    en: Online licence validation by the activation server s client switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna aktywowana przez wewnętrzny serwer licencji nie potrzebuje kontaktu
+    z producentem, żeby potwierdzić swój stan. Mimo to składnik ochrony
+    oprogramowania sięga po potwierdzenie do sieci zewnętrznej.
+
+    Wartość tej zasady jest porządkowa. Chodzi o to, żeby maszyna w sieci
+    zamkniętej nie próbowała regularnie wychodzić na zewnątrz w sprawie, którą
+    rozstrzyga serwer stojący obok — każde takie połączenie to wpis w dzienniku
+    zapory do wyjaśnienia i jedna rzecz więcej, która może się nie udać.
+
+    Po zmianie aktywacja opiera się wyłącznie na serwerze wewnętrznym.
+  en: |
+    A machine activated through an internal licence server does not need contact
+    with the maker to confirm its state. The software protection component reaches
+    for a confirmation to the outside network all the same.
+
+    The value of this rule is one of good order. The point is that a machine on a
+    closed network should not regularly try to go outside over a matter settled by
+    a server standing beside it - every such connection is an entry in the
+    firewall log to be explained and one more thing that can fail.
+
+    After the change activation rests on the internal server alone.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic na maszynie aktywowanej przez serwer wewnętrzny.
+    Aktywacja działa dalej, nie ma przerwy ani restartu, a cofnięcie jest
+    natychmiastowe.
+
+    Sprawdzenia wymaga wyłącznie to, jaką drogą maszyna jest aktywowana. Na
+    stanowisku z kluczem przypisanym do urządzenia albo z licencją cyfrową
+    zmiana jest bez znaczenia, bo ta droga aktywacji nie korzysta z tego
+    mechanizmu.
+  en: |
+    The change costs nothing on a machine activated through an internal server.
+    Activation carries on, there is no interruption and no restart, and reversing
+    it is immediate.
+
+    The only thing calling for a check is the road by which the machine is
+    activated. On a station with a key tied to the device, or with a digital
+    licence, the change carries no weight, since that road to activation does not
+    use this mechanism.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Składnik ochrony oprogramowania przestanie sięgać po potwierdzenie licencji do sieci zewnętrznej
+      - Rozpoznanie problemu z aktywacją będzie opierało się wyłącznie na dzienniku serwera wewnętrznego
+      - Aktywacja przez serwer wewnętrzny, stan licencji, aktualizacje i praca użytkownika pozostają bez zmian
+    en:
+      - The software protection component stops reaching outside the network for a licence confirmation
+      - Diagnosing an activation problem rests on the internal server s log alone
+      - Activation through the internal server, the licence state, updates and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny aktywowane wprost u producenta, a nie przez serwer wewnętrzny organizacji
+    en:
+      - Machines activated directly with the maker rather than through the organisation s internal server
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The key name holds a space - quoting the whole path is required.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\CurrentVersion\Software Protection Platform'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NoGenTicket'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\CurrentVersion\Software Protection Platform'
+    $name = 'NoGenTicket'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The key name holds a space - quoting the whole path is required.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\CurrentVersion\Software Protection Platform'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NoGenTicket' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/get-started/kms-activation-planning
+
+notes:
+  pl: |
+    Nazwa klucza zawiera spację, więc cała ścieżka musi być ujęta w apostrofy.
+    Punkt jest poziomu drugiego i ma sens wyłącznie w środowisku z własnym
+    serwerem aktywacji.
+  en: |
+    The key name holds a space, so the whole path has to be quoted. The item is of
+    the second level and makes sense only in an environment with an activation
+    server of its own.

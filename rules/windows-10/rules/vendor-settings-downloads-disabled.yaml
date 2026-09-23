@@ -1,0 +1,166 @@
+id: win10-vendor-settings-downloads-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Data Collection and Preview Builds
+  title:
+    pl: Pobieranie ustawień ze zdalnej usługi konfiguracyjnej wyłączone
+    en: Downloading settings from the remote configuration service turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Poza aktualizacjami system sięga do osobnej usługi producenta po ustawienia
+    sterujące zachowaniem własnych składników. Kanał ten działa cicho i nie pojawia
+    się w oknie aktualizacji.
+
+    Z punktu widzenia organizacji jest to droga zmiany konfiguracji maszyny, nad
+    którą nie ma kontroli i której nie widać w żadnym raporcie. Ustawienie
+    zmienione tą drogą nie ma ani daty, ani opisu, ani możliwości wycofania — nie
+    wiadomo nawet, że się zmieniło.
+
+    Zamknięcie kanału sprawia, że zachowanie składników wynika z tego, co zapisano
+    na maszynie, a nie z tego, co przyszło z zewnątrz między jednym uruchomieniem
+    a drugim.
+  en: |
+    Beyond updates, the system reaches to a separate service of the maker for
+    settings governing the behaviour of its own components. That channel works
+    quietly and does not appear in the update window.
+
+    From the organisation s point of view it is a road for altering the machine s
+    configuration over which there is no control and which shows in no report. A
+    setting changed that way carries neither a date, nor a description, nor a way
+    back - it is not even known that it changed.
+
+    Shutting the channel means the behaviour of the components follows from what
+    was written on the machine rather than from what arrived from outside between
+    one start-up and the next.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo tą drogą przychodzą także poprawki zachowania
+    składników wydawane poza rytmem aktualizacji. Zamknięcie kanału zatrzymuje
+    jedno i drugie.
+
+    W praktyce na stanowisku nie widać niczego. Skutek pojawia się dopiero wtedy,
+    gdy producent rozwiązuje problem zmianą ustawienia zdalnego — wtedy maszyna z
+    zamkniętym kanałem zostaje przy zachowaniu dotychczasowym i trzeba poprawić ją
+    osobno.
+
+    Bilans zależy od tego, czy organizacja woli przewidywalność, czy szybkie
+    poprawki bez własnego udziału. Zasada przyjmuje pierwsze.
+  en: |
+    The change calls for a review, since corrections to component behaviour issued
+    outside the update rhythm arrive by the same road. Shutting the channel stops
+    both.
+
+    In practice nothing is visible at the station. The effect appears only when the
+    maker settles a problem by changing a remote setting - then a machine with the
+    channel shut stays with its existing behaviour and has to be corrected apart.
+
+    The balance depends on whether the organisation prefers predictability or quick
+    fixes made without its own part in them. The rule takes the first.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Poprawki zachowania składników wydawane poza rytmem aktualizacji przestaną docierać do maszyny
+      - Problem rozwiązany przez producenta zmianą ustawienia zdalnego będzie wymagał poprawienia tej maszyny osobno
+      - Skutek jest niewidoczny na stanowisku i ujawnia się dopiero przy rozbieżności zachowania wobec innych maszyn
+      - Aktualizacje systemu, poprawki bezpieczeństwa, dane diagnostyczne i praca użytkownika pozostają bez zmian
+    en:
+      - Corrections to component behaviour issued outside the update rhythm stop reaching the machine
+      - A problem settled by the maker through a remote setting calls for this machine to be corrected apart
+      - The effect is invisible at the station and shows only as a divergence in behaviour from other machines
+      - System updates, security fixes, diagnostic data and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska polegające na zdalnych poprawkach zachowania składników jako drodze rozwiązywania zgłoszeń
+      - Stanowiska, na których dział informatyczny nie ma możliwości poprawienia ustawienia własnymi środkami
+    en:
+      - Environments relying on remote corrections to component behaviour as their road to settling tickets
+      - Stations where the IT desk has no means of correcting a setting by itself
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableOneSettingsDownloads'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    $name = 'DisableOneSettingsDownloads'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableOneSettingsDownloads' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-system
+
+notes:
+  pl: |
+    Kanał jest osobny od aktualizacji systemu i jego zamknięcie nie wstrzymuje
+    poprawek. Punkt ocenia się razem z ustawieniami danych diagnostycznych, bo obie
+    pozycje leżą w tej samej gałęzi i dotyczą łączności ze składnikami producenta.
+  en: |
+    The channel is separate from system updates and shutting it does not hold back
+    fixes. The item is judged together with the diagnostic data settings, since
+    both lie in the same branch and concern the link to the maker s components.

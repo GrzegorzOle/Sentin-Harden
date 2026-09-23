@@ -1,0 +1,166 @@
+id: win10-quality-updates-not-deferred
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update > Manage updates offered from Windows Update
+  title:
+    pl: Poprawki jakości instalowane bez opóźnienia
+    en: Quality updates installed without delay
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Poprawki jakości to comiesięczny zestaw napraw, w tym napraw luk
+    bezpieczeństwa. Każdy dzień opóźnienia jest dniem, w którym maszyna ma lukę
+    opisaną już publicznie.
+
+    I na tym polega różnica wobec wydań funkcji. Opis poprawki mówi, co naprawiono,
+    więc wskazuje, co jest do wykorzystania na maszynach jeszcze nienaprawionych.
+    Narzędzia wykorzystujące świeżo opisaną lukę pojawiają się w ciągu dni, czasem
+    godzin. Opóźnienie działa tu wyłącznie na korzyść atakującego.
+
+    Zasada wymaga, żeby stan był zapisany, a opóźnienie wynosiło zero — nie żeby
+    przełącznik był nieustawiony. Chodzi o rozstrzygnięcie, a nie o pozostawienie
+    sprawy domyślnej.
+  en: |
+    Quality updates are the monthly set of repairs, fixes to security flaws
+    included. Every day of delay is a day on which the machine carries a flaw
+    already described in public.
+
+    Therein lies the difference from feature releases. The description of a fix
+    says what was repaired, and so points at what can be used against machines not
+    yet repaired. Tools using a freshly described flaw appear within days,
+    sometimes hours. Delay here works solely in the attacker s favour.
+
+    The rule calls for the state to be written down and the delay to be zero -
+    not for the switch to be left unset. The point is a matter settled rather than
+    left to the default.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic i idzie hurtem. Ustawia rytm, który i tak jest
+    domyślny, i zapisuje go wprost, żeby nie zależał od tego, co przyniesie
+    kolejne wydanie systemu.
+
+    Wdrożenie warto poprzedzić sprawdzeniem, czy opóźnienie nie zostało wprowadzone
+    świadomie. Część organizacji odsuwa poprawki o kilka dni, żeby przeczekać
+    wadliwe wydanie. Jest to decyzja, którą ta zasada odwraca — więc jeżeli
+    istnieje, trzeba ją podjąć na nowo, a nie usunąć przy okazji.
+  en: |
+    The change costs nothing and goes in bulk. It sets a rhythm that is the default
+    anyway and writes it down plainly, so that it does not depend on what the next
+    release of the system brings.
+
+    The rollout is worth preceding with a check of whether the delay was introduced
+    deliberately. Some organisations push fixes back a few days to wait out a
+    faulty release. That is a decision this rule reverses - so where it exists it
+    has to be taken afresh rather than removed in passing.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Ustawione wcześniej opóźnienie poprawek zostanie zniesione, także jeżeli wprowadzono je świadomie
+      - Maszyna zacznie pobierać comiesięczne poprawki w dniu ich wydania, bez okresu na przeczekanie wadliwego zestawu
+      - Wydania funkcji, sterowniki, aktualizacje aplikacji i praca użytkownika pozostają bez zmian
+    en:
+      - A delay on fixes set earlier is lifted, including one introduced deliberately
+      - The machine begins fetching the monthly fixes on the day they are released, with no period for waiting out a faulty set
+      - Feature releases, drivers, application updates and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Organizacje świadomie odsuwające poprawki o kilka dni, dopóki decyzja nie zostanie podjęta na nowo
+      - Stanowiska sterujące procesem, na których każdy zestaw poprawek przechodzi wcześniej przez maszynę kontrolną
+    en:
+      - Organisations deliberately pushing fixes back a few days, until that decision is taken afresh
+      - Process control stations, where every set of fixes passes through a control machine first
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # Two values carry this item: the switch and the number of days. The item
+      # is met only when the switch is set and the number is zero - the setting
+      # written down and the delay none.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $switch = $item.'DeferQualityUpdates'
+        $days = $item.'DeferQualityUpdatesPeriodInDays'
+        if ($null -eq $switch -or $null -eq $days) { 'MISSING' }
+        elseif ([int]$switch -ne 1) { 'NOT_SET' }
+        elseif ([int]$days -ne 0) { 'OTHER ' + [int]$days }
+        else { 'AS_REQUIRED' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+      path           = $path
+      switch         = $item.'DeferQualityUpdates'
+      switch_existed = ($null -ne $item.'DeferQualityUpdates')
+      days           = $item.'DeferQualityUpdatesPeriodInDays'
+      days_existed   = ($null -ne $item.'DeferQualityUpdatesPeriodInDays')
+      key_existed    = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DeferQualityUpdates' -Value 1 -Type DWord
+    Set-ItemProperty -Path $path -Name 'DeferQualityUpdatesPeriodInDays' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.switch_existed) {
+      Set-ItemProperty -Path $b.path -Name 'DeferQualityUpdates' -Value $b.switch -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'DeferQualityUpdates' -ErrorAction SilentlyContinue
+    }
+    if ($b.days_existed) {
+      Set-ItemProperty -Path $b.path -Name 'DeferQualityUpdatesPeriodInDays' -Value $b.days -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name 'DeferQualityUpdatesPeriodInDays' -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/update/waas-configure-wufb
+
+notes:
+  pl: |
+    Punkt niosą dwie wartości: przełącznik i liczba dni. Spełnienie wymaga
+    ustawionego przełącznika i zera dni — ustawienie zapisane, opóźnienie żadne.
+    Inna liczba dni zgłaszana jest wraz z wartością, żeby było widać, jak długie
+    opóźnienie zastano.
+  en: |
+    Two values carry this item - the switch and the number of days. Meeting it
+    calls for the switch set and zero days: the setting written down and the delay
+    none. Another number of days is reported together with its value, so that the
+    length of the delay found is visible.

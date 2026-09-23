@@ -1,0 +1,165 @@
+id: win10-preview-builds-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Update > Manage updates offered from Windows Update
+  title:
+    pl: Wersje zapoznawcze systemu niedostępne
+    en: Preview builds of the system unavailable
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wersja zapoznawcza to wydanie przed wydaniem: system z nieukończonymi
+    składnikami, udostępniany po to, żeby zgłaszać w nim błędy. Poprawki dla niego
+    przychodzą innym rytmem niż dla wydania zwykłego.
+
+    Konsekwencje są dwie i obie ważą. Maszyna pracuje na kodzie, którego producent
+    sam nie uznaje za gotowy — więc wady pozostają w niej dłużej. Druga: udział
+    w programie zapoznawczym podnosi ilość danych diagnostycznych odsyłanych na
+    zewnątrz, bo na tym ten program polega.
+
+    Zamknięcie dostępu utrzymuje maszyny służbowe na wydaniu, które ma pełne
+    wsparcie i zwykły rytm poprawek.
+  en: |
+    A preview build is a release before the release - a system with unfinished
+    components, given out so that faults can be reported in it. Fixes for it come
+    at a different rhythm than for an ordinary release.
+
+    The consequences are two and both weigh. The machine runs on code the maker
+    does not itself call finished, so flaws remain in it longer. The second - taking
+    part in the preview programme raises the amount of diagnostic data sent
+    outside, since that is what the programme rests on.
+
+    Shutting the access keeps work machines on a release that has full support and
+    the ordinary rhythm of fixes.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo na części maszyn udział w programie zapoznawczym
+    jest zamierzony: zespół sprawdzający zgodność aplikacji z kolejnym wydaniem
+    potrzebuje go do pracy.
+
+    Poza takimi stanowiskami zmiana jest niewidoczna. Usuwa pozycję z okna
+    aktualizacji i nie zmienia niczego w rytmie poprawek.
+
+    Maszyna już zapisana do programu wymaga osobnej uwagi. Zasada zamyka dostęp na
+    przyszłość, ale nie cofa maszyny do wydania zwykłego — to trzeba zrobić
+    oddzielnie.
+  en: |
+    The change calls for a review, since on some machines taking part in the
+    preview programme is intended - a team checking applications against the next
+    release needs it for their work.
+
+    Beyond such stations the change is invisible. It removes an entry from the
+    update window and alters nothing in the rhythm of fixes.
+
+    A machine already enrolled in the programme needs separate attention. The rule
+    shuts access for the future but does not take the machine back to an ordinary
+    release - that has to be done apart.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Zapisanie maszyny do programu wersji zapoznawczych przestanie być możliwe
+      - Zespoły sprawdzające zgodność aplikacji z kolejnym wydaniem stracą drogę do wczesnego wydania
+      - Maszyna już zapisana do programu zostanie na wersji zapoznawczej, dopóki nie wycofa się jej osobno
+      - Poprawki bezpieczeństwa, wydania funkcji, aktualizacje aplikacji i praca użytkownika pozostają bez zmian
+    en:
+      - Enrolling the machine in the preview programme stops being possible
+      - Teams checking applications against the next release lose their road to an early build
+      - A machine already enrolled stays on a preview build until it is taken out separately
+      - Security fixes, feature releases, application updates and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska zespołu sprawdzającego zgodność aplikacji z kolejnym wydaniem systemu
+      - Maszyny kontrolne prowadzone świadomie na wydaniu wcześniejszym niż produkcyjne
+    en:
+      - Stations of a team checking applications against the next release of the system
+      - Control machines run deliberately on a build earlier than the production one
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PreviewBuilds'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowBuildPreview'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PreviewBuilds'
+    $name = 'AllowBuildPreview'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PreviewBuilds'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowBuildPreview' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-insider/business/manage-builds
+
+notes:
+  pl: |
+    Zasada zamyka dostęp do programu na przyszłość i nie cofa maszyny już w nim
+    zapisanej — powrót do wydania zwykłego jest osobną operacją. Punkt ocenia się
+    razem z opóźnieniem wydań funkcji, bo oba opisują to, jakie wydanie trafia na
+    stanowisko.
+  en: |
+    The rule shuts access to the programme for the future and does not take back a
+    machine already enrolled - returning to an ordinary release is a separate
+    operation. The item is judged together with putting feature releases off, since
+    both describe which release reaches a station.

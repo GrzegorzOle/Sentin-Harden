@@ -1,0 +1,165 @@
+id: win10-steps-recorder-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Application Compatibility
+  title:
+    pl: Rejestrator czynności użytkownika wyłączony
+    en: The recorder of user actions switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Rejestrator czynności zapisuje każde kliknięcie wraz ze zrzutem ekranu i
+    opisem, a całość pakuje do jednego pliku gotowego do wysłania. Powstał po to,
+    żeby użytkownik mógł pokazać pomocy technicznej, co dokładnie zrobił.
+
+    Plik taki jest jednak pełnym zapisem tego, co było widać na ekranie w trakcie
+    pracy: okna z danymi, adresy, nazwy wewnętrzne, czasem wpisywane wartości.
+    Trafia zwykle pocztą do kogoś spoza działu, a bywa, że poza organizację — bo po
+    to właśnie powstał. Nikt go po drodze nie ogląda.
+
+    Wyłączenie rejestratora zamyka drogę, którą zawartość ekranu opuszcza
+    organizację w dobrej wierze.
+  en: |
+    The action recorder saves every click together with a screen capture and a
+    description, and packs the whole into a single file ready to be sent. It was
+    made so that a user could show technical support exactly what they did.
+
+    Such a file is, however, a full record of what was visible on the screen during
+    the work - windows holding data, addresses, internal names, sometimes the
+    values typed in. It usually goes by mail to somebody outside the department,
+    and sometimes outside the organisation - since that is what it was made for.
+    Nobody looks it over on the way.
+
+    Switching the recorder off shuts the road by which the screen s contents leave
+    the organisation in good faith.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo w części organizacji rejestrator jest właśnie tym
+    narzędziem, którym pomoc techniczna prosi o opis problemu.
+
+    Tam zmiana odcina roboczą drogę zbierania informacji o zgłoszeniu i trzeba
+    wskazać zamiennik: opis słowny, pojedynczy zrzut ekranu, połączenie zdalne.
+    Każdy z nich jest wolniejszy, ale żaden nie wysyła całej historii okien.
+
+    Poza takimi organizacjami zmiana jest niewidoczna — narzędzie leży nieużywane i
+    większość ludzi nie wie o jego istnieniu.
+  en: |
+    The change calls for a review, since in some organisations the recorder is the
+    very tool technical support asks a problem to be described with.
+
+    There the change cuts the working road for gathering information about a ticket
+    and a replacement has to be named - a description in words, a single screen
+    capture, a remote connection. Each is slower, but none of them sends the whole
+    history of windows.
+
+    Beyond such organisations the change is invisible - the tool lies unused and
+    most people do not know it exists.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - user-interface
+  what_breaks:
+    pl:
+      - Nagranie czynności wraz ze zrzutami ekranu przestanie być możliwe do przygotowania
+      - Pomoc techniczna prosząca o taki zapis będzie musiała zebrać opis problemu inną drogą
+      - Pliki nagrane wcześniej pozostaną tam, gdzie je zapisano
+      - Zrzuty ekranu, połączenia zdalne, dzienniki systemu i praca użytkownika pozostają bez zmian
+    en:
+      - Preparing a recording of actions together with screen captures stops being possible
+      - Technical support asking for such a record has to gather the problem description another way
+      - Files recorded earlier stay where they were saved
+      - Screen captures, remote connections, system logs and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Organizacje, w których zgłoszenia serwisowe opisuje się właśnie nagraniem czynności
+      - Środowiska bez innej drogi zebrania opisu problemu od użytkownika zdalnego
+    en:
+      - Organisations where service tickets are described by a recording of actions
+      - Environments with no other road for gathering a problem description from a remote user
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableUAR'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat'
+    $name = 'DisableUAR'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableUAR' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/deployment/planning/compatibility-administrator-users-guide
+
+notes:
+  pl: |
+    Nazwa wpisu odwołuje się do starszego określenia tego narzędzia i nie
+    odpowiada nazwie widocznej w systemie — warto o tym pamiętać przy
+    wyszukiwaniu. Punkt ocenia się razem z nagrywaniem obrazu, bo obie pozycje
+    dotyczą zapisu zawartości ekranu.
+  en: |
+    The entry s name refers to an older term for this tool and does not match the
+    name visible in the system - worth remembering when searching. The item is
+    judged together with picture recording, since both concern a record of the
+    screen s contents.

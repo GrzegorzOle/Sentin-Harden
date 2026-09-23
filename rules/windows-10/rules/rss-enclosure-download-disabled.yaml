@@ -1,0 +1,153 @@
+id: win10-rss-enclosure-download-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > RSS Feeds
+  title:
+    pl: Pobieranie załączników z kanałów informacyjnych wyłączone
+    en: Downloading enclosures from news feeds switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kanał informacyjny może nieść nie tylko tekst, ale i załącznik — plik
+    pobierany na maszynę automatycznie, gdy tylko pojawi się nowy wpis.
+
+    Jest to pobieranie bez decyzji użytkownika. Plik trafia na dysk dlatego, że
+    ktoś dodał wpis po drugiej stronie, a nie dlatego, że ktoś tutaj kliknął.
+    Adres kanału bywa zapisany w profilu od lat i nikt go nie ogląda, więc
+    przejęcie strony po tamtej stronie daje drogę podania pliku wprost na
+    maszyny subskrybentów.
+
+    Wyłączenie pobierania zostawia same nagłówki. Plik nadal da się pobrać, ale
+    świadomie.
+  en: |
+    A news feed may carry not only text but an enclosure - a file fetched to the
+    machine automatically as soon as a new entry appears.
+
+    This is fetching with no decision by the user. The file lands on the disk
+    because somebody added an entry on the other side, not because anybody clicked
+    here. The feed s address is often saved in a profile from years back and nobody
+    looks at it, so taking over the site on that side gives a road for handing a
+    file straight to subscribers machines.
+
+    Switching the fetching off leaves the headings alone. The file can still be
+    fetched, but deliberately.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic na stanowisku, na którym nikt kanałów informacyjnych
+    nie subskrybuje — a to dziś zdecydowana większość. Nie ma przerwy, nie ma
+    restartu, cofnięcie jest natychmiastowe.
+
+    Tam, gdzie kanały są używane, zostają nagłówki i odnośniki. Znika wyłącznie
+    automatyczne pobieranie załącznika, czyli najczęściej nagrania dźwiękowego
+    albo dokumentu.
+  en: |
+    The change costs nothing on a station where nobody subscribes to news feeds -
+    and today that is the great majority. There is no interruption, no restart, and
+    reversing it is immediate.
+
+    Where feeds are used, the headings and links remain. Only the automatic
+    fetching of an enclosure disappears - most often a sound recording or a
+    document.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - user-interface
+  what_breaks:
+    pl:
+      - Załączniki z kanałów informacyjnych przestaną pobierać się automatycznie wraz z nowym wpisem
+      - Nagrania dźwiękowe subskrybowane kanałem nie pojawią się na dysku bez pobrania ich ręcznie
+      - Nagłówki wpisów, odnośniki, subskrypcje kanałów i praca użytkownika pozostają bez zmian
+    en:
+      - Enclosures from news feeds stop being fetched automatically with a new entry
+      - Sound recordings subscribed to by a feed do not appear on the disk unless fetched by hand
+      - Entry headings, links, feed subscriptions and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których materiały robocze rozsyłane są kanałem informacyjnym z załącznikiem
+    en:
+      - Stations where working material is distributed by a news feed with an enclosure
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Feeds'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableEnclosureDownload'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Feeds'
+    $name = 'DisableEnclosureDownload'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Feeds'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableEnclosureDownload' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-inetres
+
+notes:
+  pl: |
+    Wartość leży w gałęzi starszej przeglądarki, ale mechanizm kanałów jest
+    składnikiem systemu i korzystają z niego także inne programy. Zasada dotyczy
+    pobierania załącznika, a nie samej subskrypcji.
+  en: |
+    The value lies in the older browser s branch, but the feed mechanism is a
+    component of the system and other programs use it as well. The rule concerns
+    the fetching of an enclosure rather than the subscription itself.

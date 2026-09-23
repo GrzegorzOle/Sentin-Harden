@@ -1,0 +1,166 @@
+id: win10-linux-subsystem-service-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: System Services
+  title:
+    pl: Usługa podsystemu obcego systemu operacyjnego wyłączona
+    en: The service of the foreign operating system subsystem disabled
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podsystem obcego systemu operacyjnego uruchamia na maszynie pełne środowisko
+    z własnym zestawem narzędzi, własnym menedżerem pakietów i własnym dostępem do
+    dysku maszyny.
+
+    Dla obrony jest to obszar poza zasięgiem. Narzędzia pracujące wewnątrz
+    podsystemu nie przechodzą przez te same mechanizmy sprawdzania co programy
+    uruchamiane zwykłą drogą, a rejestrowanie ich czynności jest niepełne.
+    Atakujący, który raz dostanie się na maszynę, ma w podsystemie gotowy zestaw
+    narzędzi sieciowych i miejsce do pracy, którego nikt nie ogląda.
+
+    Wyłączenie usługi zamyka to środowisko na maszynach, na których nikomu nie
+    jest ono potrzebne — a to zwykle jest większość stanowisk.
+  en: |
+    The subsystem of a foreign operating system runs a full environment on the
+    machine, with a toolset of its own, a package manager of its own and access of
+    its own to the machine s disk.
+
+    For the defence it is an area out of reach. Tools working inside the subsystem
+    do not pass through the same checking mechanisms as programs started the
+    ordinary way, and the recording of their actions is incomplete. An attacker who
+    once reaches the machine has in the subsystem a ready set of network tools and
+    a place to work that nobody looks at.
+
+    Switching the service off shuts that environment on machines where nobody needs
+    it - and that is usually most of the stations.
+
+disruption_description:
+  pl: |
+    To jest zmiana wymagająca świadomego wdrożenia, bo dla osób pracujących
+    w podsystemie jest to całe środowisko pracy, a nie jedno narzędzie.
+
+    Zatrzymanie usługi kończy każdą uruchomioną dystrybucję. Praca niezapisana
+    w środowisku przepada — dlatego zmiana należy do okna serwisowego i wymaga
+    uprzedzenia ludzi, a nie tylko zgody.
+
+    Przed wdrożeniem trzeba ustalić, czy podsystem nie jest częścią łańcucha
+    budowania oprogramowania albo narzędziem działu technicznego. Skrypty
+    uruchamiane z harmonogramu potrafią sięgać do niego niewidocznie i zgłoszą
+    awarię dopiero po czasie.
+
+    Same pliki dystrybucji zostają na dysku. Zasada wyłącza usługę, a nie usuwa
+    środowiska.
+  en: |
+    This is a change calling for a planned rollout, since for those working in the
+    subsystem it is a whole working environment rather than a single tool.
+
+    Stopping the service ends every running distribution. Work unsaved in the
+    environment is lost - hence the change belongs in a service window and calls
+    for people to be warned rather than merely consenting.
+
+    Before the rollout it has to be established whether the subsystem is part of a
+    software build chain or a tool of the technical desk. Scripts run from a
+    schedule can reach into it invisibly and report a fault only later.
+
+    The distribution files themselves stay on the disk. The rule switches the
+    service off rather than removing the environment.
+
+implementation_consequences:
+  impact_areas:
+    - virtualization-and-containers
+    - scripting-and-automation
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Każda uruchomiona dystrybucja podsystemu zostanie zatrzymana, a praca w niej niezapisana przepadnie
+      - Uruchomienie powłoki podsystemu przestanie być możliwe do czasu ponownego włączenia usługi
+      - Skrypty i łańcuchy budowania sięgające do podsystemu z harmonogramu zgłoszą awarię, często dopiero po czasie
+      - Kontenery i narzędzia opierające się na tym podsystemie przestaną się uruchamiać
+      - Pliki dystrybucji pozostaną na dysku, a programy uruchamiane zwykłą drogą, dostęp do plików i praca użytkownika pozostają bez zmian
+    en:
+      - Every running distribution of the subsystem is stopped, and work unsaved in it is lost
+      - Starting a subsystem shell stops being possible until the service is switched on again
+      - Scripts and build chains reaching into the subsystem from a schedule report a fault, often only later
+      - Containers and tools resting on this subsystem stop starting
+      - The distribution files stay on the disk, and programs started the ordinary way, access to files and user work are all unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska deweloperskie, na których podsystem jest środowiskiem pracy, a nie dodatkiem
+      - Maszyny z łańcuchem budowania oprogramowania opartym na narzędziach podsystemu
+      - Środowiska uruchamiające kontenery przez ten podsystem
+    en:
+      - Development stations where the subsystem is the working environment rather than an addition
+      - Machines with a software build chain resting on the subsystem s tools
+      - Environments running containers through this subsystem
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LxssManager'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'NOT_APPLICABLE' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).Start
+        if ($null -eq $value) { 'CHECK_ERROR' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '4'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LxssManager'
+    $current = (Get-ItemProperty -Path $path -Name 'Start' -ErrorAction SilentlyContinue).Start
+    [pscustomobject]@{
+      path    = $path
+      name    = 'Start'
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # Stopping the service ends every running distribution of the subsystem;
+    # work not saved in them will be lost.
+    Stop-Service -Name 'LxssManager' -Force -ErrorAction SilentlyContinue
+    Set-Service -Name 'LxssManager' -StartupType Disabled
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) { throw 'Backup holds no previous value - refusing to guess one.' }
+    Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    if ([int]$b.value -lt 4) { Start-Service -Name 'LxssManager' -ErrorAction SilentlyContinue }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/wsl/
+
+notes:
+  pl: |
+    Brak klucza usługi oznacza maszynę, na której podsystemu nigdy nie zainstalowano
+    — sprawdzenie zgłasza wtedy stan nieadekwatny, a nie niespełnienie. Zasada
+    wyłącza usługę i nie usuwa zainstalowanych dystrybucji.
+  en: |
+    A missing service key means a machine where the subsystem was never installed -
+    the check then reports the state as not applicable rather than unmet. The rule
+    switches the service off and does not remove installed distributions.

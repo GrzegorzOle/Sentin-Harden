@@ -1,0 +1,167 @@
+id: win10-game-recording-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Game Recording and Broadcasting
+  title:
+    pl: Nagrywanie i transmitowanie obrazu z gier wyłączone
+    en: Recording and broadcasting the picture from games switched off
+  level: 2
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mechanizm nagrywania obrazu z gier zapisuje to, co dzieje się na ekranie, a
+    w wariancie transmisji wysyła obraz na zewnątrz w czasie rzeczywistym. Skrót
+    klawiszowy uruchamia go w dowolnym oknie, nie tylko w grze.
+
+    Na tym polega problem: mechanizm nie odróżnia gry od aplikacji służbowej.
+    Nagranie z okna z danymi klientów zapisuje się tak samo jak nagranie rozgrywki,
+    a transmisja wypuszcza zawartość ekranu poza organizację, zanim ktokolwiek się
+    zorientuje. Uruchomienie tego przypadkiem, jednym skrótem klawiszowym, zdarza
+    się częściej niż celowo.
+
+    Wyłączenie mechanizmu zamyka drogę wynoszenia zawartości ekranu, której nikt
+    nie traktuje jak drogi wynoszenia danych.
+  en: |
+    The mechanism for recording the picture from games saves what happens on the
+    screen, and in its broadcast variant sends the picture outside in real time. A
+    keyboard shortcut starts it in any window, not only in a game.
+
+    Therein lies the trouble - the mechanism does not tell a game from a work
+    application. A recording of a window holding client data is saved just like a
+    recording of play, and a broadcast lets the screen s contents out of the
+    organisation before anybody notices. Starting it by accident, with a single
+    shortcut, happens more often than on purpose.
+
+    Switching the mechanism off shuts a road for carrying the screen s contents out
+    that nobody treats as a road for carrying data out.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo tego samego mechanizmu używa się do nagrywania
+    pulpitu przy dokumentowaniu błędów i przygotowywaniu materiałów szkoleniowych.
+
+    Poza tymi zastosowaniami skutek jest niewidoczny: skrót klawiszowy przestaje
+    otwierać pasek nagrywania. Na stanowisku służbowym większość ludzi nigdy z
+    niego nie korzystała.
+
+    Tam, gdzie nagrywanie ekranu jest potrzebne, trzeba wskazać narzędzie
+    zastępcze — najlepiej takie, które zapisuje pliki w miejscu widocznym dla
+    organizacji, a nie w profilu użytkownika.
+  en: |
+    The change calls for a review, since the same mechanism is used for recording
+    the desktop when documenting faults and preparing training material.
+
+    Beyond those uses the effect is invisible - the keyboard shortcut stops opening
+    the recording bar. On a work station most people never used it.
+
+    Where screen recording is needed, a replacement tool has to be named -
+    preferably one saving its files in a place the organisation can see rather than
+    in the user s profile.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Skrót klawiszowy otwierający pasek nagrywania przestanie działać w każdym oknie
+      - Dokumentowanie błędów nagraniem ekranu będzie wymagało narzędzia zastępczego
+      - Transmitowanie obrazu z maszyny przestanie być możliwe tą drogą
+      - Nagrania zapisane wcześniej pozostaną w profilu użytkownika bez zmian
+      - Gry, odtwarzanie obrazu, zrzuty ekranu i praca użytkownika pozostają bez zmian
+    en:
+      - The keyboard shortcut opening the recording bar stops working in every window
+      - Documenting faults by a screen recording calls for a replacement tool
+      - Broadcasting the picture from the machine stops being possible by this road
+      - Recordings saved earlier stay in the user s profile unchanged
+      - Games, picture playback, screen captures and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których nagrywanie ekranu jest drogą dokumentowania zgłoszeń serwisowych
+      - Maszyny przygotowujące materiały szkoleniowe z zapisem pulpitu
+    en:
+      - Stations where screen recording is the road for documenting service tickets
+      - Machines preparing training material with a recording of the desktop
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowGameDVR'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR'
+    $name = 'AllowGameDVR'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowGameDVR' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-gamedvr
+
+notes:
+  pl: |
+    Mechanizm działa w każdym oknie, nie tylko w grze, więc punkt ocenia się jako
+    drogę wynoszenia zawartości ekranu, a nie jako ustawienie rozrywkowe.
+    Nagrania zapisane przed zmianą zostają na dysku.
+  en: |
+    The mechanism works in every window rather than only in a game, so the item is
+    judged as a road for carrying the screen s contents out rather than as a
+    setting about entertainment. Recordings saved before the change stay on the
+    disk.

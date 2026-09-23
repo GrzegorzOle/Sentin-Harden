@@ -1,0 +1,174 @@
+id: win10-optional-subsystems-empty
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Lista opcjonalnych środowisk uruchomieniowych pusta
+    en: The list of optional runtime environments left empty
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obok podstawowego środowiska uruchomieniowego system potrafi wystartować
+    dodatkowe, przeznaczone dla programów pisanych pod inne systemy. Lista tych
+    środowisk czytana jest przy starcie maszyny.
+
+    Środowisko dodatkowe to osobna droga uruchamiania kodu, omijająca część
+    sprawdzeń, które obowiązują drogę podstawową. Kod uruchomiony w ten sposób
+    bywa słabiej widoczny w rejestrowaniu czynności, a mechanizmy kontrolujące
+    uruchamianie programów mogą go nie obejmować.
+
+    Pusta lista oznacza jedną drogę uruchamiania kodu zamiast kilku. Na
+    współczesnym stanowisku nie odbiera to niczego, bo programy pisane pod tamte
+    środowiska dawno zniknęły.
+  en: |
+    Beside the main runtime environment the system can start additional ones, meant
+    for programs written for other systems. The list of those environments is read
+    as the machine starts.
+
+    An additional environment is a separate road for running code, passing by some
+    of the checks that hold for the main road. Code run that way tends to be less
+    visible in the recording of actions, and the mechanisms governing the running
+    of programs may not cover it.
+
+    An empty list means one road for running code instead of several. On a modern
+    station this takes nothing away, since programs written for those environments
+    vanished long ago.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic na stanowisku bez oprogramowania sprzed lat. Lista
+    bywa pusta już z domyślnej instalacji, a zasada utrwala ten stan.
+
+    Wymaga ponownego uruchomienia maszyny, bo lista czytana jest przy starcie.
+    Cofnięcie też obowiązuje dopiero po restarcie, więc pomyłka nie naprawia się
+    od razu — to jedyny realny koszt tej pozycji.
+
+    Sprawdzenia wymaga wyłącznie maszyna, na której faktycznie uruchamia się
+    program pisany pod środowisko dodatkowe. Takie programy są dziś rzadkością,
+    ale bywają w instalacjach przemysłowych i laboratoryjnych.
+  en: |
+    The change costs nothing on a station without software from years back. The
+    list is often empty from a default installation already, and the rule fixes
+    that state in place.
+
+    It calls for a restart of the machine, since the list is read at start-up.
+    Reversing it also holds only after a restart, so a mistake does not repair
+    itself at once - that is this item s only real cost.
+
+    The only thing calling for a check is a machine that really runs a program
+    written for an additional environment. Such programs are rare these days but do
+    occur in industrial and laboratory installations.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Programy pisane pod dodatkowe środowisko uruchomieniowe przestaną się uruchamiać po ponownym starcie maszyny
+      - Cofnięcie zmiany zacznie obowiązywać dopiero po kolejnym ponownym uruchomieniu, więc pomyłka nie naprawia się od razu
+      - Programy uruchamiane zwykłą drogą, usługi systemowe, skrypty powłoki i praca użytkownika pozostają bez zmian
+    en:
+      - Programs written for an additional runtime environment stop running after the machine restarts
+      - Reversing the change holds only after a further restart, so a mistake does not repair itself at once
+      - Programs started the ordinary way, system services, shell scripts and user work are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny uruchamiające oprogramowanie przemysłowe albo laboratoryjne pisane pod dodatkowe środowisko
+      - Środowiska, w których nie da się zaplanować ponownego uruchomienia przed najbliższym oknem serwisowym
+    en:
+      - Machines running industrial or laboratory software written for an additional environment
+      - Environments where a restart cannot be planned before the next service window
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The value holds a list of entries, not a number. A missing value and a
+      # list with nothing on it mean the same thing here - no additional
+      # environment is started - so both are reported as empty.
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems'
+      $name = 'Optional'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        $value = $item.$name
+        if ($null -eq $value) { 'EMPTY' }
+        else {
+          $entries = @($value | Where-Object { $_ -ne '' })
+          if ($entries.Count -eq 0) { 'EMPTY' } else { 'ENTRIES ' + ($entries -join ',') }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'EMPTY'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems'
+    $name = 'Optional'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = @($current)
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'Optional' -Value @() -Type MultiString
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value @($b.value) -Type MultiString
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else
+        # has since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/system-settings-optional-subsystems
+
+notes:
+  pl: |
+    Wartość niesie listę wpisów, a nie liczbę. Brak wartości i lista bez pozycji
+    znaczą tutaj to samo — żadne dodatkowe środowisko nie startuje — więc oba
+    zgłaszane są jako pusta. Zastane wpisy zgłaszane są wraz z ich treścią.
+  en: |
+    The value holds a list of entries rather than a number. A missing value and a
+    list with nothing on it mean the same thing here - no additional environment
+    starts - so both are reported as empty. Entries found are reported together
+    with their contents.

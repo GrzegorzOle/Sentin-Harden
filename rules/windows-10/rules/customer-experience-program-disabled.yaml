@@ -1,0 +1,152 @@
+id: win10-customer-experience-program-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Internet Communication Management > Internet Communication settings
+  title:
+    pl: Udział w programie zbierania danych o sposobie korzystania wyłączony
+    en: Participation in the usage data collection programme switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Program zbierania danych o sposobie korzystania odsyła producentowi wykaz
+    uruchamianych funkcji, konfiguracji sprzętu i napotykanych błędów. Działa w
+    tle, osobno od pozostałych ustawień danych diagnostycznych.
+
+    Zbiór ten opisuje maszynę dokładniej, niż wydaje się przy włączaniu: nazwy
+    zainstalowanych programów, wersje, konfiguracja sprzętowa. Dla organizacji,
+    która nie chce wypuszczać obrazu swojego środowiska na zewnątrz, jest to
+    strumień wychodzący bez odpowiadającej mu korzyści.
+
+    Wyłączenie udziału zamyka ten kanał, nie dotykając ani aktualizacji, ani
+    zgłaszania błędów.
+  en: |
+    The usage data collection programme sends the maker a record of the functions
+    started, the hardware configuration and the faults met. It works in the
+    background, separately from the other diagnostic data settings.
+
+    That collection describes the machine more closely than it seems when it is
+    switched on - the names of installed programs, their versions, the hardware
+    configuration. For an organisation that does not want a picture of its
+    environment leaving, it is an outgoing stream with no matching benefit.
+
+    Switching participation off shuts that channel without touching either updates
+    or the reporting of faults.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic i idzie hurtem. Nie ma przerwy, nie ma restartu,
+    cofnięcie jest natychmiastowe, a na stanowisku nie widać niczego.
+
+    Traci na tym wyłącznie udział maszyny w statystykach producenta. Jest to wkład
+    bezzwrotny i niewidoczny dla użytkownika, więc rezygnacja z niego nie zmienia
+    niczego w pracy.
+  en: |
+    The change costs nothing and goes in bulk. There is no interruption, no
+    restart, reversing it is immediate, and nothing is visible at the station.
+
+    The only loss is the machine s share in the maker s statistics. That is a
+    contribution given without return and invisible to the user, so giving it up
+    alters nothing in the work.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Maszyna przestanie odsyłać wykaz uruchamianych funkcji i konfiguracji sprzętu producentowi
+      - Udział tego stanowiska w statystykach producenta ustanie
+      - Aktualizacje, zgłaszanie błędów, dane diagnostyczne systemu i praca użytkownika pozostają bez zmian
+    en:
+      - The machine stops sending the maker a record of the functions started and the hardware configuration
+      - This station s share in the maker s statistics ends
+      - Updates, the reporting of faults, the system s diagnostic data and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska uczestniczące w programie testowym producenta, w którym odsyłanie tych danych jest warunkiem udziału
+    en:
+      - Environments taking part in a maker s test programme, where sending this data is a condition of joining
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\SQMClient\Windows'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'CEIPEnable'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\SQMClient\Windows'
+    $name = 'CEIPEnable'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\SQMClient\Windows'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'CEIPEnable' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/manage-connections-from-windows-operating-system-components-to-microsoft-services
+
+notes:
+  pl: |
+    Kanał jest osobny od poziomu danych diagnostycznych i od zgłaszania błędów —
+    wyłączenie jednego nie zamyka pozostałych. Punkt ocenia się razem z resztą
+    ustawień łączności ze składnikami producenta.
+  en: |
+    The channel is separate from the diagnostic data level and from the reporting
+    of faults - switching one off shuts neither of the others. The item is judged
+    together with the rest of the settings governing the link to the maker s
+    components.

@@ -1,0 +1,158 @@
+id: win10-news-and-interests-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > News and interests
+  title:
+    pl: Panel wiadomości i zainteresowań na pasku zadań wyłączony
+    en: The news and interests panel on the taskbar switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Panel wiadomości na pasku zadań pobiera i wyświetla treści z sieci: nagłówki,
+    prognozę, materiały dobrane do maszyny. Otwiera się po najechaniu kursorem, a
+    odnośniki prowadzą wprost do przeglądarki.
+
+    Dla obrony jest to kanał treści zewnętrznych wyświetlany w powłoce systemu, a
+    nie w oknie przeglądarki. Użytkownik nie traktuje go jak strony internetowej,
+    bo wygląda jak część systemu — a jest to droga podania odnośnika wprost na
+    pasek zadań stanowiska służbowego. Materiały reklamowe wyświetlane tą drogą
+    bywają kupowane, więc podstawienie odnośnika nie wymaga przejęcia niczego.
+
+    Wyłączenie panelu usuwa treści zewnętrzne z powłoki i zamyka stałe połączenie
+    wychodzące, którym są pobierane.
+  en: |
+    The news panel on the taskbar fetches and shows content from the network -
+    headlines, a forecast, material picked for the machine. It opens when the
+    cursor passes over it, and its links lead straight to a browser.
+
+    For the defence it is a channel of outside content shown in the system s shell
+    rather than in a browser window. The user does not treat it as a web page,
+    since it looks like part of the system - and it is a road for placing a link
+    straight on a work station s taskbar. Advertising shown by this road is bought,
+    so planting a link calls for nothing to be taken over.
+
+    Switching the panel off removes outside content from the shell and shuts the
+    standing outgoing connection by which it is fetched.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna, ale nie dotyka pracy. Z paska zadań znika pogoda i
+    nagłówki, a miejsce po nich zajmują przypięte ikony. Nie ma przerwy, nie ma
+    restartu, cofnięcie jest natychmiastowe.
+
+    Zgłoszenia, jeżeli się pojawią, dotyczą przyzwyczajenia, a nie funkcji:
+    prognoza pogody widoczna kątem oka bywa jedyną rzeczą, za którą ktoś tęskni.
+    Warto uprzedzić, że to decyzja, a nie awaria paska zadań.
+  en: |
+    The change is visible but does not touch the work. The weather and the
+    headlines vanish from the taskbar, and the pinned icons take their place. There
+    is no interruption, no restart, and reversing it is immediate.
+
+    Reports, where they come, are about habit rather than function - a weather
+    forecast seen out of the corner of an eye tends to be the one thing somebody
+    misses. It is worth warning that this is a decision rather than a broken
+    taskbar.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Pogoda i nagłówki wiadomości znikną z paska zadań, a zajęte przez nie miejsce wróci do ikon
+      - Odnośniki do materiałów zewnętrznych przestaną być podawane wprost w powłoce systemu
+      - Użytkownicy przyzwyczajeni do prognozy widocznej kątem oka zgłoszą to jako zmianę na gorsze
+      - Pasek zadań, menu start, wyszukiwanie, przeglądarka i praca użytkownika pozostają bez zmian
+    en:
+      - The weather and news headlines vanish from the taskbar, and the space they took returns to the icons
+      - Links to outside material stop being placed directly in the system s shell
+      - Users used to a forecast seen out of the corner of an eye report it as a change for the worse
+      - The taskbar, the start menu, search, the browser and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska recepcyjne i informacyjne, na których panel wiadomości jest treścią wyświetlaną celowo
+    en:
+      - Reception and information stations, where the news panel is content shown on purpose
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableFeeds'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds'
+    $name = 'EnableFeeds'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableFeeds' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-newsandinterests
+
+notes:
+  pl: |
+    Klucz zasady nosi nazwę mechanizmu kanałów, a nie panelu widocznego na pasku
+    zadań — przy wyszukiwaniu warto o tym pamiętać. Wyłączenie panelu nie zamyka
+    przeglądarki ani dostępu do tych samych treści wpisanych z ręki.
+  en: |
+    The policy key carries the name of the feed mechanism rather than of the panel
+    visible on the taskbar - worth remembering when searching. Switching the panel
+    off shuts neither the browser nor access to the same content typed in by hand.

@@ -1,0 +1,182 @@
+id: win10-defender-asr-wmi-persistence
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Microsoft Defender Exploit Guard > Attack Surface Reduction
+  title:
+    pl: Blokada trwałości przez subskrypcje zdarzeń mechanizmu zarządzania
+    en: Persistence through management event subscriptions blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mechanizm zarządzania wbudowany w system pozwala związać polecenie ze
+    zdarzeniem: uruchomieniem maszyny, zalogowaniem, upływem czasu. Zapis takiej
+    subskrypcji leży w bazie mechanizmu, a nie wśród zadań ani wśród programów
+    uruchamianych przy starcie.
+
+    Dlatego właśnie jest to ulubione miejsce na utrzymanie dostępu. Nie widać go
+    w żadnym z miejsc, w które zagląda się odruchowo, przeżywa ponowne
+    uruchomienie maszyny, a wykonanie polecenia wychodzi od procesu systemowego,
+    więc nie wygląda podejrzanie. Zdarza się, że subskrypcja zostaje na maszynie
+    długo po tym, jak reszta narzędzi atakującego została z niej usunięta.
+
+    Reguła blokuje zakładanie trwałych subskrypcji tą drogą i zamyka miejsce,
+    którego nikt nie sprawdza.
+  en: |
+    The management mechanism built into the system allows a command to be tied to
+    an event - the machine starting, somebody signing in, time passing. The record
+    of such a subscription lies in the mechanism s own database rather than among
+    the scheduled tasks or the programs started at boot.
+
+    That is exactly why it is a favourite place for keeping access. It shows in
+    none of the places one looks at by reflex, it survives a restart of the
+    machine, and the command is run by a system process, so it does not look
+    suspect. A subscription sometimes stays on a machine long after the rest of an
+    attacker s tools have been removed from it.
+
+    The rule blocks the laying of lasting subscriptions by this road and shuts a
+    place nobody checks.
+
+disruption_description:
+  pl: |
+    Zmiana nie kosztuje nic na stanowisku, bo trwałe subskrypcje zdarzeń nie są
+    mechanizmem używanym w pracy biurowej. Nie ma przerwy, nie ma restartu,
+    cofnięcie jest natychmiastowe.
+
+    Sprawdzenia wymaga wyłącznie to, czy któreś narzędzie zarządzania nie zakłada
+    takich subskrypcji samo. Robią tak niektóre systemy inwentaryzacji i
+    monitorowania — zakładają subskrypcję raz i korzystają z niej stale. Takie
+    narzędzie po zmianie przestanie ją odnawiać, a objaw pojawi się dopiero po
+    czasie, bo istniejące subskrypcje działają dalej.
+  en: |
+    The change costs nothing at a station, since lasting event subscriptions are
+    not a mechanism used in office work. There is no interruption, no restart, and
+    reversing it is immediate.
+
+    The only thing calling for a check is whether some management tool lays such
+    subscriptions itself. Certain inventory and monitoring systems do - they lay a
+    subscription once and use it throughout. After the change such a tool stops
+    renewing it, and the symptom appears only later, since existing subscriptions
+    carry on working.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Zakładanie trwałych subskrypcji zdarzeń mechanizmu zarządzania przestanie być możliwe
+      - Narzędzia inwentaryzacji i monitorowania zakładające takie subskrypcje przestaną je odnawiać
+      - Objaw pojawi się dopiero po czasie, bo subskrypcje założone wcześniej działają dalej
+      - Zapytania do mechanizmu zarządzania, skrypty administracyjne, zadania z harmonogramu i praca użytkownika pozostają bez zmian
+    en:
+      - Laying lasting event subscriptions in the management mechanism stops being possible
+      - Inventory and monitoring tools laying such subscriptions stop renewing them
+      - The symptom appears only later, since subscriptions laid earlier carry on working
+      - Queries to the management mechanism, administrative scripts, scheduled tasks and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny obsługiwane przez narzędzie inwentaryzacji zakładające trwałe subskrypcje zdarzeń
+      - Środowiska z monitorowaniem opartym na subskrypcjach zdarzeń mechanizmu zarządzania
+    en:
+      - Machines served by an inventory tool laying lasting event subscriptions
+      - Environments with monitoring built on subscriptions to management mechanism events
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+      $name = 'e6db77e5-3df2-4cf1-b95a-636979351e5b'
+      # Where another product is in charge, these settings are written but idle,
+      # so the honest answer is that the question does not apply here.
+      $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+      $others = @()
+      if ($null -eq $status -or $status.AMRunningMode -ne 'Normal') {
+        $others = @(
+          Get-CimInstance -Namespace 'root\SecurityCenter2' `
+            -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+            Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+        )
+      }
+      if ($others.Count -gt 0) { 'NOT_APPLICABLE' }
+      elseif (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $item = Get-ItemProperty -Path $path -ErrorAction Stop
+        if ($null -eq $item.$name) { 'MISSING' } else { [string]$item.$name }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    $name = 'e6db77e5-3df2-4cf1-b95a-636979351e5b'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The value is written as text, not as a number - the mechanism reads this
+    # entry as a string and a number written here is passed over in silence.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'e6db77e5-3df2-4cf1-b95a-636979351e5b' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key goes only where the change made it and nothing else has since
+        # been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference
+
+notes:
+  pl: |
+    Wartość zapisywana jest jako tekst, a nie liczba — mechanizm czyta ten wpis
+    jako ciąg znaków i liczba zapisana w tym miejscu zostaje pominięta w ciszy.
+    Gdy ochroną zarządza produkt innego producenta, wpisy są zapisane, ale
+    bezczynne, więc sprawdzenie zgłasza stan nieadekwatny.
+  en: |
+    The value is written as text rather than as a number - the mechanism reads
+    this entry as a string and a number written here is passed over in silence.
+    Where another vendor s product is in charge of the protection, the entries are
+    written but idle, so the check reports the state as not applicable.

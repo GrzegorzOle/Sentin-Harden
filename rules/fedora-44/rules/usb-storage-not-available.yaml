@@ -1,0 +1,270 @@
+id: fedora44-usb-storage-not-available
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.1.1.8
+  section: Initial Setup > Filesystem > Configure Filesystem Kernel Modules
+  title:
+    pl: Moduł jądra usb-storage niedostępny
+    en: Ensure usb-storage kernel module is not available
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usb-storage to sterownik jądra dla pamięci masowych USB: pendrive'ów,
+    dysków zewnętrznych i czytników kart podłączanych przez USB. Sterownik uas,
+    obsługujący szybsze dyski zewnętrzne, zależy od niego, więc blokada obejmuje
+    oba.
+
+    Taka pamięć otwiera dwie drogi. Dane mogą wyjść z maszyny bez śladu
+    w usługach sieciowych, a nośnik przyniesiony z zewnątrz może przynieść
+    złośliwe pliki albo spreparowany system plików, który jądro zaczyna czytać
+    zaraz po podłączeniu, bo środowisko graficzne montuje go samo.
+
+    Punkt zamyka obie: po podłączeniu urządzenia sterownik się nie ładuje,
+    więc system w ogóle nie widzi dysku. Kategoria jest średnia, bo to realna
+    droga wycieku i infekcji na stacjach w biurze, ale do jej użycia potrzebny
+    jest fizyczny dostęp do portu.
+  en: |
+    Usb-storage is the kernel driver for USB mass storage: USB sticks, external
+    drives and card readers connected over USB. The uas driver, which handles
+    faster external drives, depends on it, so the block covers both.
+
+    Such storage opens two paths. Data can leave the machine without a trace in
+    network services, and a medium brought in from outside can bring malicious
+    files or a crafted file system that the kernel starts reading right after it
+    is plugged in, because the desktop mounts it by itself.
+
+    The item closes both: when a device is plugged in, the driver does not load,
+    so the system does not see the drive at all. The category is medium because
+    this is a real path for leaks and infection on office workstations, but
+    using it needs physical access to a port.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia, bo odcina jeden z najczęstszych
+    sposobów przenoszenia plików. Użytkownicy muszą wiedzieć wcześniej, czym
+    zastąpić pendrive, a kopie zapasowe na dysk zewnętrzny trzeba przenieść
+    w inne miejsce.
+
+    Blokada nie dotyczy urządzeń USB innych klas. Klawiatura, mysz, drukarka,
+    kamera, klucz sprzętowy i telefon podłączony w trybie MTP działają dalej.
+    Nie dotyczy też czytników kart wbudowanych w laptop na magistrali PCIe ani
+    obudów NVMe przez Thunderbolt, bo korzystają z innych sterowników.
+
+    Dysk podłączony w chwili zmiany działa do odłączenia. Naprawa odmawia
+    zmiany, jeśli system, /boot lub inny podstawowy katalog leży na dysku USB,
+    bo system przestałby się uruchamiać.
+  en: |
+    The change needs a planned rollout because it cuts off one of the most common
+    ways of moving files. Users have to know in advance what replaces the USB
+    stick, and backups to an external drive have to move somewhere else.
+
+    The block does not affect USB devices of other classes. A keyboard, mouse,
+    printer, camera, hardware security key and a phone connected in MTP mode keep
+    working. It also does not affect card readers built into a laptop on the PCIe
+    bus, nor NVMe enclosures over Thunderbolt, because they use other drivers.
+
+    A drive connected at the time of the change keeps working until it is
+    unplugged. The remediation refuses the change if the system, /boot or another
+    core directory is on a USB drive, because the system would stop starting.
+
+implementation_consequences:
+  impact_areas:
+    - removable-media
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Pendrive podłączony do stacji nie pojawia się w menedżerze plików ani w lsblk, więc nie da się z niego skopiować pliku
+      - Kopia zapasowa robiona na dysk zewnętrzny USB, np. przez Déjà Dup, kończy się błędem, bo dysk docelowy nie jest widoczny
+      - Przygotowanie pendrive'a instalacyjnego programem Fedora Media Writer na tej stacji się nie udaje, bo program nie widzi nośnika
+      - Karta pamięci z aparatu włożona do czytnika na USB nie jest widoczna; czytnik wbudowany w laptop na PCIe działa dalej
+    en:
+      - A USB stick plugged into the workstation does not appear in the file manager or in lsblk, so no file can be copied from it
+      - A backup to an external USB drive, for example with Déjà Dup, fails because the target drive is not visible
+      - Preparing an installation stick with Fedora Media Writer on this workstation fails, because the program does not see the medium
+      - A camera memory card in a USB card reader is not visible; a card reader built into a laptop on PCIe keeps working
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - System, /boot lub inny podstawowy katalog leży na dysku podłączonym przez USB; naprawa w tej sytuacji odmawia zmiany
+      - Użytkownicy przenoszą pliki pendrive'ami lub robią kopie zapasowe na dyski zewnętrzne i nie mają innego sposobu
+      - Stacja służy do przygotowywania nośników instalacyjnych albo do odczytu dysków zewnętrznych w ramach pracy
+    en:
+      - The system, /boot or another core directory is on a drive connected over USB; the remediation refuses the change in that case
+      - Users move files with USB sticks or back up to external drives and have no other way to do it
+      - The workstation is used to prepare installation media or to read external drives as part of the job
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    m=usb-storage
+    n=usb_storage
+    mods=/usr/lib/modules
+    if [ ! -d "$mods" ] || [ ! -r /proc/modules ] || ! command -v modprobe >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if grep -q "^$n " /proc/modules; then echo LOADED; exit 0; fi
+    for list in "$mods"/*/modules.builtin; do
+      [ -e "$list" ] || continue
+      [ -r "$list" ] || { echo CHECK_ERROR; exit 0; }
+      if grep -Eq "/$m\.ko$" "$list"; then echo BUILTIN; exit 0; fi
+    done
+    if ! found=$(find "$mods" -name "$m.ko*" -print -quit 2>/dev/null); then
+      echo CHECK_ERROR; exit 0
+    fi
+    if [ -z "$found" ]; then echo NOT_PRESENT; exit 0; fi
+    if ! config=$(modprobe --showconfig 2>/dev/null); then echo CHECK_ERROR; exit 0; fi
+    blocked=no; listed=no
+    if printf '%s\n' "$config" | grep -Eq "^install $n (/usr)?/bin/(false|true)$"; then blocked=yes; fi
+    if printf '%s\n' "$config" | grep -qx "blacklist $n"; then listed=yes; fi
+    case "$blocked$listed" in
+      yesyes) echo BLOCKED ;;
+      yesno)  echo NOT_BLACKLISTED ;;
+      noyes)  echo LOADABLE_ON_REQUEST ;;
+      *)      echo AVAILABLE ;;
+    esac
+  expected: '^(BLOCKED|NOT_PRESENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      m=usb-storage
+      n=usb_storage
+      f=/etc/modprobe.d/sentin-harden-usb-storage.conf
+      mkdir -p "$(dirname '{{backup_file}}')"
+      {
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        if grep -q "^$n " /proc/modules; then echo loaded=1; else echo loaded=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > '{{backup_file}}'
+      echo "Saved previous state to {{backup_file}}"
+    )
+
+  change_command: |
+    (
+      set -e
+      m=usb-storage
+      n=usb_storage
+      f=/etc/modprobe.d/sentin-harden-usb-storage.conf
+      for mp in / /boot /boot/efi /usr /var /home; do
+        src=$(findmnt -kn -v -o SOURCE --mountpoint "$mp" 2>/dev/null) || continue
+        if lsblk -sno TRAN "$src" 2>/dev/null | grep -qx usb; then
+          echo "$mp is on a USB disk; blocking usb-storage would leave the system unable to start" >&2
+          exit 1
+        fi
+      done
+      printf '%s\n' \
+        '# Sentin-Harden: fedora44-usb-storage-not-available' \
+        "install $m /bin/false" \
+        "blacklist $n" > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      if grep -q "^$n " /proc/modules; then
+        if ! modprobe -r "$n"; then
+          echo "Module $m is in use and stays loaded until the file system using it is unmounted" >&2
+        fi
+      fi
+      echo "Wrote $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      m=usb-storage
+      n=usb_storage
+      f=/etc/modprobe.d/sentin-harden-usb-storage.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      existed=$(sed -n 's/^existed=//p' "$b" | head -n 1)
+      loaded=$(sed -n 's/^loaded=//p' "$b" | head -n 1)
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f" ;;
+        0) rm -f "$f" ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      if [ "$loaded" = 1 ] && ! grep -q "^$n " /proc/modules; then modprobe "$m"; fi
+      echo "Restored previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/modprobe.d.5.html
+  - https://usbguard.github.io/documentation/rule-language.html
+
+notes:
+  pl: |
+    Sprawdzenie czyta wynikową konfigurację modprobe, a nie jeden wybrany
+    plik. Blokada zapisana wcześniej gdzie indziej, np. w
+    /etc/modprobe.d/usb-storage.conf, także spełnia punkt, a naprawa jej nie
+    dubluje, bo przy spełnionym punkcie nie jest uruchamiana.
+
+    Potrzebne są obie linie. Wpis blacklist powstrzymuje tylko ładowanie po
+    aliasie, czyli wtedy, gdy jądro samo prosi o sterownik przy montowaniu;
+    modprobe wywołane z nazwą modułu go omija. Linia install zastępuje
+    ładowanie uruchomieniem /bin/false, więc każda taka próba kończy się
+    błędem. Obu mechanizmów nie zatrzymuje insmod z pełną ścieżką do pliku,
+    ale to wymaga roota i świadomego działania.
+
+    Punkt jest spełniony także wtedy, gdy żadne zainstalowane jądro nie
+    zawiera modułu. Moduł załadowany w chwili sprawdzenia daje wynik
+    niespełniony nawet przy obecnej blokadzie; naprawa próbuje go wyładować,
+    a jeśli jest w użyciu, zostaje w pamięci do odmontowania systemu plików
+    albo do restartu. Jeśli punkt pozostaje niespełniony po naprawie
+    i restarcie, sterownik jest wkompilowany w jądro: plikiem konfiguracji
+    nie da się go zablokować i zostaje zapisanie wyjątku.
+
+    W przypadku usb-storage żądanie ładowania nie przychodzi przy montowaniu,
+    lecz przy podłączeniu urządzenia: udev ładuje sterownik po aliasie USB,
+    który pasuje do klasy pamięci masowej.
+
+    Gdy potrzebna jest zgoda na wybrane nośniki zamiast pełnej blokady, Fedora
+    dostarcza pakiet usbguard, który dopuszcza urządzenia z listy według
+    identyfikatora i numeru seryjnego. Wtedy tej reguły nie należy stosować,
+    bo zablokowany sterownik nie obsłuży także dopuszczonego nośnika.
+  en: |
+    The check reads the effective modprobe configuration rather than one
+    chosen file. A block written earlier somewhere else, for example in
+    /etc/modprobe.d/usb-storage.conf, also meets the item, and the remediation does
+    not duplicate it, because it is not run when the item is met.
+
+    Both lines are needed. The blacklist entry only stops loading by alias,
+    that is, when the kernel itself asks for the driver while mounting; running
+    modprobe with the module name bypasses it. The install line replaces loading
+    with running /bin/false, so every such attempt fails. Neither mechanism
+    stops insmod with the full path to the file, but that needs root and a
+    deliberate action.
+
+    The item is also met when no installed kernel contains the module. A
+    module that is loaded at the time of the check gives a non-compliant result
+    even when the block is in place; the remediation tries to unload it, and if
+    it is in use it stays in memory until the file system is unmounted or the
+    machine restarts. If the item is still non-compliant after the remediation
+    and a restart, the driver is compiled into the kernel: a configuration file
+    cannot block it, and the remaining option is to record an exception.
+
+    For usb-storage the load request does not come when mounting but when the
+    device is plugged in: udev loads the driver by the USB alias that matches the
+    mass storage class.
+
+    When selected media should be allowed instead of a full block, Fedora ships
+    the usbguard package, which admits devices from a list by identifier and
+    serial number. In that case this rule should not be applied, because a
+    blocked driver cannot serve an allowed medium either.

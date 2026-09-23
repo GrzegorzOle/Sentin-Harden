@@ -1,0 +1,137 @@
+id: fedora44-issue-access
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.7.5
+  section: Initial Setup > Configure Command Line Warning Banners
+  title:
+    pl: Dostęp do /etc/issue jest ograniczony
+    en: Ensure access to /etc/issue is configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Treść /etc/issue widzi każdy przed zalogowaniem w konsoli tekstowej.
+    Jeśli plik może zmienić zwykły użytkownik, może usunąć ostrzeżenie albo
+    wpisać fałszywe instrukcje dla innych, np. zachętę do podania hasła
+    w niewłaściwym miejscu.
+
+    Punkt wymaga, żeby /etc/issue należał do roota i grupy root i miał tryb
+    0644 lub bardziej restrykcyjny. Tak jest domyślnie.
+  en: |
+    Everyone sees the content of /etc/issue before signing in on a text
+    console. If a regular user can change the file, they can remove the
+    warning or write false instructions for others, such as an invitation to
+    enter a password in the wrong place.
+
+    The item requires /etc/issue to be owned by the root user and group and to
+    have mode 0644 or stricter. This is the default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: plik czytają wszyscy, a zmienia go tylko
+    administrator.
+  en: |
+    Nobody will notice: everyone reads the file and only an administrator
+    changes it.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    f=/etc/issue
+    if [ ! -e "$f" ]; then echo ABSENT; exit 0; fi
+    set -- $(stat -Lc '%a %u %g' "$f")
+    if [ $(( 0$1 & 07133 )) -eq 0 ] && [ "$2" = 0 ] && [ "$3" = 0 ]; then echo "RESTRICTED:$1"; else echo "TOO_OPEN:$1:$2:$3"; fi
+  expected: '^(RESTRICTED:|ABSENT$)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/issue
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=access-1
+        if [ -e "$f" ]; then echo "$(readlink -f "$f") $(stat -Lc '%a %u %g' "$f")"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/issue
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if [ ! -e "$f" ]; then echo "$f does not exist, nothing to change"; exit 0; fi
+      tg=$(readlink -f "$f")
+      set -- $(stat -c '%a' "$tg")
+      chown 0:0 "$tg"
+      chmod "$(printf '%o' $(( 0$1 & 0644 )))" "$tg"
+      echo "Set owner root:root and mode $(stat -c '%a' "$tg") on $tg"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=access-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      tail -n +2 "$b" | while read -r f mode uid gid; do
+        [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
+        chown "$uid:$gid" "$f"
+        chmod "$mode" "$f"
+        echo "Restored owner and mode of $f"
+      done
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/agetty.8.html
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje właściciela i tryb pliku, na który wskazuje /etc/issue,
+    i podaje je w wyniku. Na Fedorze /etc/issue to domyślnie link do /usr/lib/issue, więc
+    sprawdzenie i naprawa dotyczą tego pliku. Zmiana trybu w /usr/lib będzie
+    widoczna w rpm -V fedora-release-common, a aktualizacja pakietu
+    przywróci tryb z pakietu, czyli 0644, który spełnia punkt.
+
+    Naprawa ustawia właściciela root:root i usuwa prawa wykonywania, zapisu
+    dla grupy i innych oraz bity specjalne, zostawiając pozostałe prawa.
+    Wycofanie przywraca poprzedniego właściciela i tryb.
+  en: |
+    The check reads the owner and mode of the file /etc/issue points to and gives
+    them in the result. On Fedora /etc/issue is by default a link to /usr/lib/issue, so the
+    check and the remediation apply to that file. A mode change in /usr/lib
+    shows up in rpm -V fedora-release-common, and a package update restores
+    the packaged mode, 0644, which meets the item.
+
+    The remediation sets the owner to root:root and removes execute
+    permission, write permission for group and others, and special bits,
+    keeping the other permissions. Rollback restores the previous owner and
+    mode.

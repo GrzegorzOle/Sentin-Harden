@@ -1,0 +1,163 @@
+id: win10-font-providers-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Fonts
+  title:
+    pl: Pobieranie czcionek z sieci wyłączone
+    en: Fetching fonts from the network switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Dokument odwołujący się do czcionki, której na maszynie nie ma, potrafi
+    spowodować jej pobranie z sieci. Dzieje się to przy otwieraniu dokumentu, bez
+    pytania i bez czynności, którą użytkownik rozpoznałby jako pobieranie
+    czegokolwiek.
+
+    Dwie rzeczy są tu istotne. Pierwsza to sam plik czcionki — jest przetwarzany
+    przez składnik systemu działający nisko, a takie składniki bywają miejscem
+    błędów wykorzystywanych do przejęcia kontroli. Druga to sygnał: pobranie
+    czcionki mówi stronie trzeciej, że konkretna maszyna właśnie otworzyła
+    konkretny dokument.
+
+    Wyłączenie tej drogi sprawia, że otwarcie dokumentu nie otwiera połączenia.
+  en: |
+    A document referring to a font the machine does not hold can cause it to be
+    fetched from the network. That happens as the document is opened, with no
+    question asked and no act the user would recognise as fetching anything.
+
+    Two things matter here. The first is the font file itself - it is processed by
+    a system component working low down, and such components tend to be a place
+    for the kind of faults used to take control. The second is the signal -
+    fetching a font tells a third party that a particular machine has just opened
+    a particular document.
+
+    Switching that road off means opening a document does not open a connection.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo widać ją w dokumentach. Tekst złożony czcionką
+    nieobecną na maszynie zostanie wyświetlony zamiennikiem, co zmienia szerokość
+    liter, a przez to układ stron i podziały wierszy.
+
+    Uderza to przede wszystkim w dokumenty przygotowane gdzie indziej i
+    przeznaczone do druku: oferty, umowy, materiały z gotowym układem. Warto
+    sprawdzić, czy czcionki używane w organizacji są zainstalowane lokalnie —
+    jeżeli tak, zmiana nie kosztuje nic.
+  en: |
+    The change calls for a review, because it shows in documents. Text set in a
+    font absent from the machine is displayed with a substitute, which alters the
+    width of the letters and with it the page layout and line breaks.
+
+    It strikes above all at documents prepared elsewhere and meant for print -
+    quotations, contracts, materials with a finished layout. It is worth checking
+    whether the fonts used in the organisation are installed locally - if they
+    are, the change costs nothing.
+
+implementation_consequences:
+  impact_areas:
+    - macros-and-documents
+    - user-interface
+    - printing
+  what_breaks:
+    pl:
+      - Dokumenty odwołujące się do czcionek nieobecnych na maszynie zostaną wyświetlone zamiennikiem
+      - Układ stron i podziały wierszy w takich dokumentach zmienią się, co widać przede wszystkim w druku
+      - Materiały przygotowane poza organizacją, z gotowym układem, mogą wyglądać inaczej niż u autora
+      - Aplikacje pobierające czcionki własnym mechanizmem tego ustawienia nie widzą i działają bez zmian
+      - Czcionki zainstalowane lokalnie, drukowanie, edycja dokumentów i praca użytkownika pozostają bez zmian
+    en:
+      - Documents referring to fonts absent from the machine are displayed with a substitute
+      - The page layout and line breaks in such documents change, which shows above all in print
+      - Materials prepared outside the organisation, with a finished layout, may look different from how their author saw them
+      - Applications fetching fonts by a mechanism of their own do not see this setting and work unchanged
+      - Fonts installed locally, printing, editing documents and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska składu i druku, na których wierność układu dokumentu jest treścią pracy
+      - Środowiska przyjmujące dokumenty z zewnątrz, w których czcionek nie da się zainstalować lokalnie
+    en:
+      - Typesetting and print stations, where fidelity of document layout is the substance of the work
+      - Environments taking in documents from outside, where the fonts cannot be installed locally
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableFontProviders'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'EnableFontProviders'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableFontProviders' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-grouppolicy
+
+notes:
+  pl: |
+    Zasada dotyczy mechanizmu systemowego. Aplikacje pobierające czcionki własną
+    drogą tego ustawienia nie widzą i działają bez zmian — to osobna sprawa,
+    rozstrzygana po stronie tych programów.
+  en: |
+    The rule covers the system mechanism. Applications fetching fonts by a route
+    of their own do not see this setting and work unchanged - that is a separate
+    matter, settled on the side of those programs.

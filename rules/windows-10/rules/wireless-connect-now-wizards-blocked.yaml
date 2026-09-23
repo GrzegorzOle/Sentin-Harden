@@ -1,0 +1,161 @@
+id: win10-wireless-connect-now-wizards-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Windows Connect Now
+  title:
+    pl: Dostęp do kreatorów uproszczonego parowania sieci zablokowany
+    en: Access to the simplified network pairing wizards blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kreatory uproszczonego parowania prowadzą użytkownika przez dołączanie
+    urządzeń do sieci bezprzewodowej i przez zapisanie ustawień sieci na nośniku
+    wymiennym. Drugie z tych zastosowań jest tu istotniejsze.
+
+    Ustawienia zapisane na nośniku to hasło sieci w pliku, który da się przenieść,
+    skopiować i zgubić. Powstaje w ten sposób kopia poświadczenia sieciowego poza
+    wszelką kontrolą, założona przez użytkownika, który chciał po prostu podłączyć
+    drugie urządzenie.
+
+    Zablokowanie kreatorów odbiera tę możliwość w miejscu, w którym się ją
+    wywołuje.
+  en: |
+    The simplified pairing wizards lead a user through joining devices to a
+    wireless network and through saving the network settings onto removable media.
+    The second of those uses matters more here.
+
+    Settings saved onto a medium are the network password in a file that can be
+    carried, copied and lost. A copy of a network credential thus comes into being
+    beyond any control, made by a user who merely wanted to connect a second
+    device.
+
+    Blocking the wizards takes that possibility away at the place it is raised
+    from.
+
+disruption_description:
+  pl: |
+    Na stanowisku roboczym kreatory leżą nieużywane, więc zablokowanie ich nie
+    kosztuje nic. Nie wymaga przerwy, nie jest widoczne w pracy i cofa się
+    natychmiast.
+
+    Jedynym odczuwalnym skutkiem jest brak pozycji w oknie ustawień sieci. Osoba
+    szukająca jej celowo zobaczy okno bez tego wyboru, a nie komunikat o
+    zablokowaniu — warto to wiedzieć, bo takie zgłoszenie bywa opisywane jako
+    zniknięcie funkcji.
+  en: |
+    On a workstation the wizards lie unused, so blocking them costs nothing. It
+    calls for no interruption, is invisible in daily work and reverses at once.
+
+    The one perceptible consequence is a missing entry in the network settings
+    window. Somebody looking for it on purpose sees a window without that choice
+    rather than a message about a block - that is worth knowing, since such a
+    ticket tends to be described as a function having vanished.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - removable-media
+    - user-interface
+  what_breaks:
+    pl:
+      - Kreatory dołączania urządzeń do sieci bezprzewodowej przestaną być dostępne z okna ustawień
+      - Zapisanie ustawień sieci na nośniku wymiennym przestanie być możliwe tą drogą
+      - Osoba szukająca tej funkcji zobaczy okno bez tego wyboru, a nie komunikat o zablokowaniu
+      - Połączenie z siecią bezprzewodową, wpisanie hasła ręcznie, zapisane profile i praca użytkownika pozostają bez zmian
+    en:
+      - The wizards for joining devices to a wireless network stop being available from the settings window
+      - Saving the network settings onto removable media stops being possible by this route
+      - Somebody looking for that function sees a window without the choice rather than a message about a block
+      - Connecting to a wireless network, typing the password by hand, saved profiles and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których użytkownik sam dołącza urządzenia do sieci tą drogą i nie ma innej
+      - Środowiska przenoszące ustawienia sieci na nośniku wymiennym między urządzeniami
+    en:
+      - Stations where the user joins devices to the network this way and has no other route
+      - Environments carrying network settings on removable media between devices
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WCN\UI'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DisableWcnUi'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WCN\UI'
+    $name = 'DisableWcnUi'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WCN\UI'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DisableWcnUi' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/drivers/mobilebroadband/
+
+notes:
+  pl: |
+    Punkt zamyka kreatory, a osobna zasada zamyka sam mechanizm przekazywania
+    ustawień. Kreator bez mechanizmu nie ma czego wywołać, ale mechanizm bez
+    kreatora nadal odpowiada na prośby z sieci — dlatego obie zasady ocenia się
+    razem, a nie zamiennie.
+  en: |
+    The item shuts the wizards, while a separate rule shuts the mechanism of
+    handing settings over. A wizard without the mechanism has nothing to raise,
+    but the mechanism without a wizard still answers requests from the network -
+    hence the two rules are judged together rather than one instead of the other.

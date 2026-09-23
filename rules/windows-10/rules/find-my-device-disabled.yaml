@@ -1,0 +1,159 @@
+id: win10-find-my-device-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Find My Device
+  title:
+    pl: Odnajdywanie urządzenia przez konto producenta wyłączone
+    en: Locating the device through the maker s account disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Mechanizm odnajdywania przesyła położenie maszyny do konta producenta systemu,
+    skąd odczytuje je właściciel konta. Pomyślany jest dla sprzętu prywatnego i w
+    tej roli bywa przydatny.
+
+    W maszynie służbowej rzecz wygląda inaczej. Położenie sprzętu jest jednocześnie
+    położeniem człowieka, który przy nim pracuje, a odczytuje je właściciel konta —
+    niekoniecznie ten, kto odpowiada za sprzęt. Powstaje w ten sposób strumień
+    danych o ludziach, zbierany przy okazji i przechowywany poza organizacją.
+
+    Wyłączenie mechanizmu zamyka ten strumień. Sprzęt służbowy odnajduje się
+    środkami organizacji, a nie kontem prywatnym.
+  en: |
+    The locating mechanism sends the machine s position to the account of the
+    maker of the system, where the owner of that account reads it. It is meant for
+    private hardware and in that role it is sometimes useful.
+
+    On a work machine the matter looks different. The position of the hardware is
+    at the same time the position of the person working at it, and it is read by
+    the owner of the account - not necessarily whoever answers for the hardware. A
+    stream of data about people thus comes into being, gathered in passing and
+    held outside the organisation.
+
+    Switching the mechanism off shuts that stream. Work hardware is located by the
+    organisation s own means rather than through a private account.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo odbiera realną funkcję: odnalezienie laptopa
+    zgubionego albo skradzionego. Przed wdrożeniem warto ustalić, czy organizacja
+    ma własny sposób lokalizowania sprzętu — jeżeli nie ma, ten punkt zdejmuje
+    jedyny.
+
+    Poza tym zmiana nic nie kosztuje. Nie wymaga przerwy, nie dotyka pracy
+    użytkownika i cofa się natychmiast.
+  en: |
+    The change calls for a review, because it takes away a real function - finding
+    a laptop lost or stolen. Before the rollout it is worth establishing whether
+    the organisation has a way of locating hardware of its own - if it has not,
+    this item removes the only one.
+
+    Beyond that the change costs nothing. It calls for no interruption, does not
+    touch the user s work and reverses at once.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Odnalezienie zgubionego albo skradzionego laptopa przez konto producenta przestanie być możliwe
+      - Zdalne zablokowanie sprzętu tą drogą przestanie działać, jeżeli było używane
+      - Położenie maszyny przestanie być widoczne dla właściciela konta, także wtedy, gdy jest to użytkownik
+      - Lokalizowanie sprzętu własnym rozwiązaniem organizacji, szyfrowanie dysku i praca użytkownika pozostają bez zmian
+    en:
+      - Finding a laptop lost or stolen through the maker s account stops being possible
+      - Locking the hardware remotely by that route stops working, if it was used
+      - The machine s position stops being visible to the owner of the account, including where that is the user
+      - Locating hardware by the organisation s own solution, disk encryption and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Organizacje bez własnego sposobu lokalizowania sprzętu, gdzie to jest jedyna droga odnalezienia laptopa
+      - Sprzęt prywatny używany służbowo, którego właściciel polega na tej funkcji
+    en:
+      - Organisations with no way of locating hardware of their own, where this is the only route to finding a laptop
+      - Private hardware used for work, whose owner relies on this function
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FindMyDevice'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowFindMyDevice'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FindMyDevice'
+    $name = 'AllowFindMyDevice'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\FindMyDevice'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowFindMyDevice' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-experience
+
+notes:
+  pl: |
+    Punkt nie zastępuje szyfrowania dysku ani zdalnego kasowania — chroni dane o
+    położeniu, a nie dane na dysku. Ocenia się go razem z pozostałymi punktami
+    opisującymi to, co maszyna wysyła na zewnątrz bez polecenia użytkownika.
+  en: |
+    The item is no substitute for disk encryption or remote wiping - it protects
+    data about position rather than data on the disk. It is judged together with
+    the other items describing what the machine sends outwards without the user
+    telling it to.

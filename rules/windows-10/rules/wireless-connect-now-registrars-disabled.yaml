@@ -1,0 +1,166 @@
+id: win10-wireless-connect-now-registrars-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Windows Connect Now
+  title:
+    pl: Konfigurowanie ustawień sieci bezprzewodowej przez uproszczone parowanie wyłączone
+    en: Configuring wireless settings by simplified pairing switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uproszczone parowanie powstało po to, żeby podłączyć drukarkę albo punkt
+    dostępowy bez wpisywania hasła sieci. Urządzenie prosi o dołączenie, ktoś
+    naciska przycisk i ustawienia przechodzą same.
+
+    Cała ochrona tego mechanizmu sprowadza się do naciśnięcia przycisku, czyli do
+    tego, że ktoś fizycznie był przy urządzeniu. Nie ma tu uwierzytelnienia stron
+    ani dowodu, że urządzenie proszące o dołączenie jest tym, za które się podaje.
+    Skutkiem bywa przekazanie hasła sieci sprzętowi, który akurat stał w zasięgu i
+    poprosił w odpowiednim momencie.
+
+    Wyłączenie tej drogi sprawia, że ustawienia sieci wprowadza się świadomie, a
+    nie przekazuje w odpowiedzi na prośbę.
+  en: |
+    Simplified pairing came about so that a printer or an access point could be
+    connected without typing the network password. A device asks to join,
+    somebody presses a button and the settings pass across by themselves.
+
+    The whole protection of that mechanism comes down to a button being pressed,
+    that is to somebody having been physically at the device. There is no
+    authentication of the parties here and no proof that the device asking to join
+    is the one it claims to be. The consequence is sometimes a network password
+    handed to hardware that happened to stand within range and asked at the right
+    moment.
+
+    Switching that road off means network settings are entered deliberately rather
+    than handed over in answer to a request.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo w części organizacji tą drogą podłącza się
+    drukarki sieciowe i sprzęt biurowy. Po wdrożeniu trzeba je podłączać przez
+    wpisanie hasła sieci albo przez profil rozprowadzany centralnie.
+
+    Na stanowisku roboczym mechanizm zwykle leży nieużywany, bo to sprzęt sieciowy
+    z niego korzysta, a nie laptop. Warto jednak sprawdzić, zanim zablokowana
+    drukarka trafi do zgłoszeń jako awaria sieci — objaw jest mylący.
+  en: |
+    The change calls for a review, because in some organisations network printers
+    and office hardware are connected this way. After the rollout they have to be
+    connected by typing the network password or through a profile distributed
+    centrally.
+
+    On a workstation the mechanism usually lies unused, since it is network
+    hardware that relies on it rather than a laptop. It is worth checking
+    nonetheless, before a blocked printer turns up in the tickets as a network
+    fault - the symptom is misleading.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - drivers-and-devices
+    - printing
+  what_breaks:
+    pl:
+      - Podłączenie drukarki albo punktu dostępowego przyciskiem uproszczonego parowania przestanie działać
+      - Sprzęt biurowy dołączany dotąd tą drogą będzie wymagał wpisania hasła sieci albo profilu rozprowadzanego centralnie
+      - Zgłoszenia o niedziałającej drukarce mogą wyglądać na awarię sieci, choć przyczyną jest ta zasada
+      - Połączenie z siecią bezprzewodową, zapisane profile, drukowanie na już podłączonych drukarkach i praca użytkownika pozostają bez zmian
+    en:
+      - Connecting a printer or an access point with the simplified pairing button stops working
+      - Office hardware joined this way so far needs the network password typed or a profile distributed centrally
+      - Tickets about a printer that does not work may look like a network fault, though this rule is the cause
+      - Connecting to a wireless network, saved profiles, printing on printers already connected and user work are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska podłączające drukarki sieciowe i sprzęt biurowy wyłącznie tą drogą
+      - Stanowiska obsługiwane przez osoby bez dostępu do hasła sieci bezprzewodowej
+    en:
+      - Environments connecting network printers and office hardware by this route alone
+      - Stations operated by people with no access to the wireless network password
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WCN\Registrars'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableRegistrars'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WCN\Registrars'
+    $name = 'EnableRegistrars'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WCN\Registrars'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableRegistrars' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-hardware/drivers/mobilebroadband/
+
+notes:
+  pl: |
+    Punkt zamyka samo przekazywanie ustawień, a osobna zasada zamyka kreatory
+    prowadzące użytkownika przez tę czynność. Same w sobie nie domykają sprawy:
+    kreator bez mechanizmu nie ma czego wywołać, a mechanizm bez kreatora wciąż
+    odpowiada na prośby przychodzące z sieci. Ocenia się je razem.
+  en: |
+    The item shuts the handing over of settings itself, while a separate rule
+    shuts the wizards leading a user through that act. Alone they do not settle
+    the matter - a wizard without the mechanism has nothing to raise, and the
+    mechanism without a wizard still answers requests arriving over the network.
+    The two are judged together.

@@ -1,0 +1,175 @@
+id: win10-wireless-display-pairing-pin-required
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Connect
+  title:
+    pl: Parowanie z wyświetlaczem bezprzewodowym wymaga kodu
+    en: Pairing with a wireless display requires a code
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wyświetlacz bezprzewodowy przejmuje obraz z maszyny i przekazuje go dalej.
+    Parowanie bez kodu oznacza, że przejęcie obrazu zależy wyłącznie od tego, kto
+    pierwszy się zgłosi w zasięgu.
+
+    W sali konferencyjnej z kilkoma odbiornikami trudno odróżnić własny od
+    sąsiedniego. Pomyłka kończy się wyświetleniem prezentacji, poczty albo
+    dokumentu w pomieszczeniu obok — i nie jest to atak, tylko codzienna
+    konsekwencja braku potwierdzenia. Atak wygląda tak samo, z tą różnicą, że
+    odbiornik podstawia się celowo.
+
+    Kod przy parowaniu przywiązuje połączenie do urządzenia, które ktoś widzi.
+  en: |
+    A wireless display takes over the picture from a machine and passes it on.
+    Pairing with no code means taking over that picture rests solely on who
+    announces themselves first within range.
+
+    In a meeting room with several receivers it is hard to tell one s own from the
+    neighbouring one. A mistake ends with a presentation, mail or document shown
+    in the room next door - and that is not an attack but the everyday consequence
+    of there being no confirmation. An attack looks the same, with the difference
+    that the receiver is put there on purpose.
+
+    A code at pairing ties the connection to a device somebody can see.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo dotyka sposobu prowadzenia spotkań. Po wdrożeniu
+    podłączenie do wyświetlacza wymaga odczytania kodu z ekranu odbiornika, co
+    wydłuża rozpoczęcie prezentacji o kilkanaście sekund.
+
+    Warto wybrać wariant świadomie. Pytanie przy pierwszym parowaniu wystarcza w
+    sali, do której wchodzą wyłącznie pracownicy, i nie przeszkadza w codziennym
+    użyciu. Pytanie za każdym razem ma sens tam, gdzie do sali wchodzą osoby z
+    zewnątrz. Sprawdzenie dopuszcza oba warianty i odrzuca wyłącznie brak
+    pytania.
+
+    Osobno trzeba pomyśleć o odbiornikach bez ekranu, na których kodu po prostu
+    nie ma gdzie wyświetlić.
+  en: |
+    The change calls for a review, because it touches how meetings are run. After
+    the rollout connecting to a display means reading a code off the receiver s
+    screen, which lengthens the start of a presentation by a dozen or so seconds.
+
+    The variant is worth choosing deliberately. Asking at the first pairing is
+    enough in a room only staff enter, and does not get in the way of daily use.
+    Asking every time makes sense where outsiders come into the room. The check
+    admits both variants and rejects only the absence of any question.
+
+    Receivers with no screen, which have nowhere to show a code, need separate
+    thought.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - network-and-firewall
+    - drivers-and-devices
+  what_breaks:
+    pl:
+      - Podłączenie do wyświetlacza bezprzewodowego będzie wymagało odczytania kodu z ekranu odbiornika
+      - Odbiorniki bez własnego ekranu nie wyświetlą kodu i połączenie z nimi przestanie być możliwe
+      - Rozpoczęcie prezentacji wydłuży się o kilkanaście sekund, odczuwalnie przy spotkaniach jedno po drugim
+      - W wariancie pytającym za każdym razem kod trzeba będzie odczytywać także przy znanym odbiorniku
+      - Obraz na monitorze przewodowym, drukowanie, sieć i praca użytkownika pozostają bez zmian
+    en:
+      - Connecting to a wireless display calls for reading a code off the receiver s screen
+      - Receivers with no screen of their own cannot show a code and connecting to them stops being possible
+      - Starting a presentation takes a dozen or so seconds longer, perceptibly with meetings one after another
+      - In the variant asking every time the code has to be read even with a known receiver
+      - The picture on a wired monitor, printing, the network and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Sale wyposażone w odbiorniki bez własnego ekranu, na których nie ma gdzie wyświetlić kodu
+      - Stanowiska pokazowe łączące się z wyświetlaczem samoczynnie, bez osoby mogącej odczytać kod
+    en:
+      - Rooms fitted with receivers that have no screen of their own and nowhere to show a code
+      - Demonstration stations connecting to a display by themselves, with nobody to read the code
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry takes values from a set: zero never asks for a code,
+    # one asks at the first pairing, two asks every time.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Connect'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'RequirePinForPairing'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(1|2)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Connect'
+    $name = 'RequirePinForPairing'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # One asks for a code at the first pairing and lets a known receiver through
+    # afterwards. Two asks every time and suits places open to outsiders.
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Connect'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'RequirePinForPairing' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-wirelessdisplay
+
+notes:
+  pl: |
+    Wpis przyjmuje wartości ze zbioru: zero nie pyta o kod nigdy, jeden pyta przy
+    pierwszym parowaniu, dwa pyta za każdym razem. Sprawdzenie dopuszcza oba
+    warianty pytające, bo oba spełniają sens punktu, a wybór między nimi zależy od
+    tego, kto wchodzi do sali.
+  en: |
+    The entry takes values from a set - zero never asks for a code, one asks at
+    the first pairing, two asks every time. The check admits both asking variants,
+    since both meet the point of the item, and the choice between them rests on
+    who comes into the room.

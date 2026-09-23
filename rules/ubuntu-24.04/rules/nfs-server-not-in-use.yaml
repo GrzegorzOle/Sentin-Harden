@@ -1,0 +1,245 @@
+id: ubuntu2404-nfs-server-not-in-use
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.1.9
+  section: Services > Configure Server Services
+  title:
+    pl: Serwer NFS nie jest używany
+    en: Ensure network file system services are not in use
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Serwer NFS udostępnia katalogi tego komputera innym komputerom według
+    /etc/exports. W starszych wersjach protokołu dostęp opiera się na adresie
+    klienta i identyfikatorach użytkowników, które klient podaje sam, więc
+    źle ustawiony udział łatwo otworzyć dla niepowołanych.
+
+    Punkt wymaga, żeby pakiet nfs-kernel-server nie był zainstalowany albo
+    żeby usługa nfs-server nie była włączona ani uruchomiona. Na Ubuntu
+    pakiet domyślnie nie jest zainstalowany.
+  en: |
+    An NFS server shares this computer's folders with other computers
+    according to /etc/exports. In older protocol versions access relies on
+    the client address and on user IDs that the client states itself, so a
+    badly configured share is easy to open to the wrong people.
+
+    The item requires that the nfs-kernel-server package is not installed or
+    that the nfs-server service is neither enabled nor running. On Ubuntu the
+    package is not installed by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli komputer niczego nie udostępniał przez NFS.
+    W przeciwnym razie klienci stracą dostęp do jego udziałów, a zamontowane
+    udziały przestaną odpowiadać.
+  en: |
+    Nobody will notice if the computer shared nothing over NFS. Otherwise the
+    clients lose access to its shares, and mounted shares stop responding.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+  what_breaks:
+    pl:
+      - Katalogi udostępnione z tego komputera przez NFS są niedostępne, a u klientów zamontowane udziały przestają odpowiadać
+    en:
+      - Folders shared from this computer over NFS are unavailable, and mounted shares stop responding on the clients
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || ! command -v dpkg-query >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      inst=""
+      for p in nfs-kernel-server; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
+      bad=""
+      for u in nfs-server.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        a=$(systemctl is-active "$u" 2>/dev/null) || true
+        case "$a" in
+          active|activating|reloading) ;;
+          *)
+            [ -n "$inst" ] || continue
+            case "$e" in enabled|enabled-runtime|linked|linked-runtime) ;; *) continue ;; esac ;;
+        esac
+        bad="$bad,$u=${e:-none}/${a:-unknown}"
+      done
+      if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+      elif [ -z "$inst" ]; then echo NOT_INSTALLED
+      else echo "NOT_IN_USE:${inst#,}"; fi
+    }
+    state
+  expected: '^(NOT_INSTALLED$|NOT_IN_USE:)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=units-1
+        for u in nfs-server.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "$u ${e:--} ${a:--}"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        inst=""
+        for p in nfs-kernel-server; do if [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ]; then inst="$inst,$p"; fi; done
+        bad=""
+        for u in nfs-server.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          case "$a" in
+            active|activating|reloading) ;;
+            *)
+              [ -n "$inst" ] || continue
+              case "$e" in enabled|enabled-runtime|linked|linked-runtime) ;; *) continue ;; esac ;;
+          esac
+          bad="$bad,$u=${e:-none}/${a:-unknown}"
+        done
+        if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+        elif [ -z "$inst" ]; then echo NOT_INSTALLED
+        else echo "NOT_IN_USE:${inst#,}"; fi
+      }
+      m=""
+      for u in nfs-server.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        case "$e" in ""|not-found) continue ;; esac
+        l=/etc/systemd/system/$u
+        if { [ -e "$l" ] || [ -L "$l" ]; } && [ "$(readlink "$l")" != /dev/null ]; then
+          echo "$l is a unit file or link of its own, not masking $u" >&2; exit 1
+        fi
+        m="$m $u"
+      done
+      if [ -z "$m" ]; then
+        s=$(state)
+        case "$s" in IN_USE:*) echo "Running without a unit file, stop the processes by hand ($s)" >&2; exit 1 ;; esac
+        echo "None of the units is installed, nothing to change"; exit 0
+      fi
+      systemctl mask --now $m
+      s=$(state)
+      case "$s" in IN_USE:*) echo "The units are still in use ($s)" >&2; exit 1 ;; esac
+      echo "Stopped and masked:$m ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      [ -n "$lines" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r u e a x; do
+        case " nfs-server.service " in *" $u "*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      start=""
+      while read -r u e a; do
+        case "$e" in
+          -|not-found|masked) continue ;;
+          masked-runtime) systemctl unmask "$u"; systemctl mask --runtime "$u"; continue ;;
+        esac
+        systemctl unmask "$u"
+        case "$e" in
+          enabled) systemctl enable "$u" ;;
+          enabled-runtime) systemctl enable --runtime "$u" ;;
+          linked|linked-runtime) echo "Could not link $u again; link its unit file by hand" >&2 ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$lines"
+      if [ -n "$start" ]; then systemctl start $start; fi
+      echo "Restored the previous state of the units"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/nfsd.8.html
+  - https://man7.org/linux/man-pages/man5/exports.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Punkt jest spełniony, gdy pakiet nie jest zainstalowany albo gdy żadna
+    z jednostek nfs-server.service nie jest włączona ani uruchomiona. Wynik IN_USE
+    wymienia jednostki w użyciu razem ze stanem z systemctl is-enabled
+    i is-active, a NOT_IN_USE pakiety, które są zainstalowane, ale nie
+    działają. Pakiet usunięty bez --purge, z pozostawionymi plikami
+    konfiguracyjnymi, liczy się jako niezainstalowany. Gdy żaden z pakietów
+    nie jest zainstalowany, wynik IN_USE daje tylko jednostka, która nadal
+    działa.
+
+    Naprawa nie usuwa pakietów, bo mogą od nich zależeć inne programy.
+    Zatrzymuje i maskuje jednostki poleceniem systemctl mask --now, więc nie
+    da się ich uruchomić ręcznie, przez gniazdo ani jako zależność.
+    Aktualizacja pakietu przez apt nie zdejmuje maski. Kopia zapisuje stan
+    każdej jednostki, a wycofanie zdejmuje maskę, włącza jednostki, które
+    były włączone, i uruchamia te, które działały. Jednostki zamaskowane
+    wcześniej zostają zamaskowane. Naprawa odmawia, gdy w /etc/systemd/system
+    leży własny plik jednostki o tej samej nazwie.
+
+    Jeśli usługa ma zniknąć całkiem, można usunąć pakiet przez apt purge po
+    sprawdzeniu, co jeszcze zostałoby usunięte.
+
+    Jednostka nfs-kernel-server.service jest tylko drugą nazwą
+    nfs-server.service, więc maska blokuje też start pod tą nazwą.
+    Maskowanie nie dotyczy klienta NFS z pakietu nfs-common: montowanie
+    udziałów z innych serwerów działa dalej.
+  en: |
+    The item is met when the package is not installed or when none of the
+    nfs-server.service units is enabled or running. The IN_USE result lists the units in
+    use with their state from systemctl is-enabled and is-active, and
+    NOT_IN_USE lists the packages that are installed but not running. A
+    package removed without --purge, with its configuration files left,
+    counts as not installed. When none of the packages is installed, only a
+    unit that is still running gives the IN_USE result.
+
+    The remediation does not remove packages, because other programs may
+    depend on them. It stops and masks the units with systemctl mask --now,
+    so they cannot be started by hand, through a socket or as a dependency.
+    A package upgrade through apt does not remove the mask. The backup
+    records the state of every unit, and rollback removes the mask, enables
+    the units that were enabled and starts the ones that were running. Units
+    that were masked before stay masked. The remediation refuses when
+    /etc/systemd/system holds a unit file of its own with the same name.
+
+    If the service should be gone completely, the package can be removed with
+    apt purge after checking what else would be removed.
+
+    The nfs-kernel-server.service unit is only another name for
+    nfs-server.service, so the mask also blocks a start under that name.
+    Masking does not affect the NFS client from the nfs-common package:
+    mounting shares from other servers keeps working.

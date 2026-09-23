@@ -1,0 +1,235 @@
+id: fedora44-send-redirects-disabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 3.3.2
+  section: Network > Configure Network Kernel Parameters
+  title:
+    pl: Wysyłanie przekierowań ICMP jest wyłączone
+    en: Ensure packet redirect sending is disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Router wysyła komunikat ICMP redirect, gdy zauważy, że nadawca może
+    dotrzeć do celu krótszą drogą przez inną bramę w tej samej sieci.
+    Komputer, który nie jest routerem, nie ma powodu tego robić, a jeśli
+    przekazuje pakiety, np. dla kontenerów, takie komunikaty mogą zmieniać
+    trasy innych komputerów w sieci.
+
+    Punkt wymaga wartości 0 parametrów net.ipv4.conf.all.send_redirects
+    i net.ipv4.conf.default.send_redirects. Jądro domyślnie ma 1, a Fedora
+    tego nie zmienia.
+  en: |
+    A router sends an ICMP redirect message when it notices that the sender
+    can reach the destination by a shorter path through another gateway in
+    the same network. A computer that is not a router has no reason to do
+    that, and if it forwards packets, for example for containers, such
+    messages can change the routes of other computers in the network.
+
+    The item requires the value 0 for net.ipv4.conf.all.send_redirects and
+    net.ipv4.conf.default.send_redirects. The kernel default is 1, and
+    Fedora does not change it.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: jądro wysyła przekierowania tylko przy
+    przekazywaniu pakietów, a ich brak nie przerywa żadnego połączenia.
+  en: |
+    Nobody will notice: the kernel sends redirects only while forwarding
+    packets, and not sending them does not break any connection.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/lib/systemd/systemd-sysctl ] || [ ! -d /proc/sys/net/ipv4 ]; then echo CHECK_ERROR; exit 0; fi
+    ok=""; bad=""
+    while read -r k want dflt; do
+      p=/proc/sys/$(printf '%s' "$k" | tr . /)
+      n=${k#net.}
+      if [ ! -r "$p" ]; then
+        case "$k" in net.ipv6.*) if [ ! -d /proc/sys/net/ipv6 ]; then ok="$ok,$n=no-ipv6"; continue; fi ;; esac
+        echo CHECK_ERROR; exit 0
+      fi
+      r=$(tr -s ' \t' ' ' < "$p")
+      c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ -z "$c" ] && [ "$dflt" = 1 ]; then c=default; fi
+      if [ "$r" = "$want" ] && { [ "$c" = "$want" ] || [ "$c" = default ]; }; then ok="$ok,$n=$r"
+      else bad="$bad;$n:runtime=$r,config=${c:-none}"; fi
+    done <<'EOF'
+    net.ipv4.conf.all.send_redirects 0 0
+    net.ipv4.conf.default.send_redirects 0 0
+    EOF
+    if [ -n "$bad" ]; then echo "NOT_OK:${bad#;}"; else echo "OK:${ok#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-send-redirects.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sysctl-2
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        for k in net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects ; do
+          p=/proc/sys/$(printf '%s' "$k" | tr . /)
+          if [ -r "$p" ]; then echo "rt $k $(tr -s ' \t' ' ' < "$p")"; fi
+        done
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-send-redirects.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      command -v sysctl >/dev/null 2>&1 || { echo "sysctl is not installed" >&2; exit 1; }
+      # Writing some keys makes the kernel reset others; those keep their value.
+      keep=""
+      for k in ; do
+        p=/proc/sys/$(printf '%s' "$k" | tr . /)
+        if [ -r "$p" ]; then keep="$keep $k=$(cat "$p")"; fi
+      done
+      printf '%s\n' '# Sentin-Harden: fedora44-send-redirects-disabled' 'net.ipv4.conf.all.send_redirects = 0' 'net.ipv4.conf.default.send_redirects = 0' > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      for kv in net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0; do
+        k=${kv%%=*}
+        [ -e "/proc/sys/$(printf '%s' "$k" | tr . /)" ] || { echo "Skipped $k: IPv6 is disabled"; continue; }
+        sysctl -q -w "$kv"
+      done
+      for kv in $keep; do sysctl -q -w "$kv"; done
+      late=""
+      for kv in net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0; do
+        k=${kv%%=*}
+        c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+        [ "$c" = "${kv#*=}" ] || late="$late $k=$c"
+      done
+      if [ -n "$late" ]; then
+        echo "Another sysctl.d file is applied after $f and the next start will set:$late" >&2; exit 1
+      fi
+      echo "Set net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.default.send_redirects=0 now and in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-send-redirects.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sysctl-2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      grep -qx -- --- "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      rts=$(sed -n '3,/^---$/p' "$b" | sed '$d')
+      [ -n "$rts" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r t k v; do
+        bad=0
+        [ "$t" = rt ] || bad=1
+        case " net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects  " in *" $k "*) ;; *) bad=1 ;; esac
+        case "$v" in ""|*[!0-9-]*) bad=1 ;; esac
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$rts"
+      if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
+      # The kept keys go last, because writing the others can reset them.
+      while read -r t k v; do
+        case "  " in *" $k "*) continue ;; esac
+        sysctl -q -w "$k=$v"
+      done <<< "$rts"
+      while read -r t k v; do
+        case "  " in *" $k "*) sysctl -q -w "$k=$v" ;; esac
+      done <<< "$rts"
+      echo "Restored the previous values and the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/networking/ip-sysctl.html
+  - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
+
+notes:
+  pl: |
+    Sprawdzenie porównuje dla każdego parametru wartość bieżącą z /proc/sys
+    z wartością, którą ustawi następny start. Tę drugą wyznacza
+    systemd-sysctl --cat-config, które wypisuje pliki z /usr/lib/sysctl.d,
+    /run/sysctl.d i /etc/sysctl.d w kolejności stosowania, więc liczy się
+    ostatnie przypisanie. Brak wpisu oznacza wartość jądra 1,
+    więc punkt wymaga jawnego ustawienia. Wynik NOT_OK podaje obie wartości każdego
+    parametru, który nie spełnia punktu.
+
+    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-send-redirects.conf
+    i od razu je stosuje. Nazwa bez numeru na początku sortuje się po plikach
+    typu 99-*.conf, więc ustawienia wygrywają z nimi; jeśli mimo to inny
+    plik nadpisuje wartość, naprawa kończy się błędem. Wycofanie przywraca
+    poprzednią zawartość pliku i poprzednie wartości bieżące.
+
+    Jądro przenosi zmianę wartości default od razu na istniejące interfejsy,
+    którym nikt nie ustawił jej osobno, a interfejsy tworzone później
+    dostają ją przy utworzeniu. Jądro wysyła przekierowania, gdy włączone jest to w all albo
+    w ustawieniu interfejsu, więc interfejs z ręcznie ustawioną wartością 1
+    wysyła je dalej.
+  en: |
+    For each parameter, the check compares the current value from /proc/sys
+    with the value the next start will set. The latter comes from
+    systemd-sysctl --cat-config, which prints the files from
+    /usr/lib/sysctl.d, /run/sysctl.d and /etc/sysctl.d in the order they are
+    applied, so the last assignment counts. No entry means the kernel value 1, so
+    the item needs an explicit setting. The NOT_OK result gives
+    both values of every parameter that does not meet the item.
+
+    The remediation writes the settings to
+    /etc/sysctl.d/sentin-harden-send-redirects.conf and applies them at once. A name
+    without a leading number sorts after files such as 99-*.conf, so the
+    settings win over them; if another file still overrides a value, the
+    remediation ends with an error. Rollback restores the previous file
+    content and the previous current values.
+
+    The kernel carries a change of the default value over at once to
+    existing interfaces whose value nobody set separately, and interfaces
+    created later get it when they are created.
+    The kernel sends redirects when this is turned on in all or in the
+    interface setting, so an interface with the value 1 set by hand keeps
+    sending them.

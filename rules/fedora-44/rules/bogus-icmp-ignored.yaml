@@ -1,0 +1,221 @@
+id: fedora44-bogus-icmp-ignored
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 3.3.3
+  section: Network > Configure Network Kernel Parameters
+  title:
+    pl: Fałszywe odpowiedzi ICMP o błędach są ignorowane
+    en: Ensure bogus icmp responses are ignored
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Niektóre routery odpowiadają na ramki rozgłoszeniowe komunikatami ICMP
+    o błędach, choć standard RFC 1122 tego zabrania. Jądro zapisuje wtedy
+    ostrzeżenie w dzienniku. Kto zasypie komputer takimi komunikatami, może
+    zapełnić dziennik i ukryć w nim ślady innych działań.
+
+    Punkt wymaga wartości 1 parametru
+    net.ipv4.icmp_ignore_bogus_error_responses, przy której jądro ignoruje
+    te komunikaty bez ostrzeżeń. To wartość domyślna jądra; punkt sprawdza,
+    że żaden plik w sysctl.d jej nie zmienia.
+  en: |
+    Some routers answer broadcast frames with ICMP error messages, although
+    the RFC 1122 standard forbids it. The kernel then writes a warning to
+    the log. Someone who floods the computer with such messages can fill
+    the log and hide the traces of other actions in it.
+
+    The item requires the value 1 for
+    net.ipv4.icmp_ignore_bogus_error_responses, with which the kernel
+    ignores these messages without warnings. This is the kernel default; the
+    item checks that no sysctl.d file changes it.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: to wartość domyślna, a jedyną różnicą jest brak
+    ostrzeżeń o błędnych komunikatach w dzienniku jądra.
+  en: |
+    Nobody will notice: it is the default value, and the only difference is
+    that the kernel log has no warnings about the bogus messages.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/lib/systemd/systemd-sysctl ] || [ ! -d /proc/sys/net/ipv4 ]; then echo CHECK_ERROR; exit 0; fi
+    ok=""; bad=""
+    while read -r k want dflt; do
+      p=/proc/sys/$(printf '%s' "$k" | tr . /)
+      n=${k#net.}
+      if [ ! -r "$p" ]; then
+        case "$k" in net.ipv6.*) if [ ! -d /proc/sys/net/ipv6 ]; then ok="$ok,$n=no-ipv6"; continue; fi ;; esac
+        echo CHECK_ERROR; exit 0
+      fi
+      r=$(tr -s ' \t' ' ' < "$p")
+      c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ -z "$c" ] && [ "$dflt" = 1 ]; then c=default; fi
+      if [ "$r" = "$want" ] && { [ "$c" = "$want" ] || [ "$c" = default ]; }; then ok="$ok,$n=$r"
+      else bad="$bad;$n:runtime=$r,config=${c:-none}"; fi
+    done <<'EOF'
+    net.ipv4.icmp_ignore_bogus_error_responses 1 1
+    EOF
+    if [ -n "$bad" ]; then echo "NOT_OK:${bad#;}"; else echo "OK:${ok#,}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-bogus-icmp.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sysctl-2
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        for k in net.ipv4.icmp_ignore_bogus_error_responses ; do
+          p=/proc/sys/$(printf '%s' "$k" | tr . /)
+          if [ -r "$p" ]; then echo "rt $k $(tr -s ' \t' ' ' < "$p")"; fi
+        done
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-bogus-icmp.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      command -v sysctl >/dev/null 2>&1 || { echo "sysctl is not installed" >&2; exit 1; }
+      # Writing some keys makes the kernel reset others; those keep their value.
+      keep=""
+      for k in ; do
+        p=/proc/sys/$(printf '%s' "$k" | tr . /)
+        if [ -r "$p" ]; then keep="$keep $k=$(cat "$p")"; fi
+      done
+      printf '%s\n' '# Sentin-Harden: fedora44-bogus-icmp-ignored' 'net.ipv4.icmp_ignore_bogus_error_responses = 1' > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      for kv in net.ipv4.icmp_ignore_bogus_error_responses=1; do
+        k=${kv%%=*}
+        [ -e "/proc/sys/$(printf '%s' "$k" | tr . /)" ] || { echo "Skipped $k: IPv6 is disabled"; continue; }
+        sysctl -q -w "$kv"
+      done
+      for kv in $keep; do sysctl -q -w "$kv"; done
+      late=""
+      for kv in net.ipv4.icmp_ignore_bogus_error_responses=1; do
+        k=${kv%%=*}
+        c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+        [ "$c" = "${kv#*=}" ] || late="$late $k=$c"
+      done
+      if [ -n "$late" ]; then
+        echo "Another sysctl.d file is applied after $f and the next start will set:$late" >&2; exit 1
+      fi
+      echo "Set net.ipv4.icmp_ignore_bogus_error_responses=1 now and in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-bogus-icmp.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sysctl-2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      grep -qx -- --- "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      rts=$(sed -n '3,/^---$/p' "$b" | sed '$d')
+      [ -n "$rts" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r t k v; do
+        bad=0
+        [ "$t" = rt ] || bad=1
+        case " net.ipv4.icmp_ignore_bogus_error_responses  " in *" $k "*) ;; *) bad=1 ;; esac
+        case "$v" in ""|*[!0-9-]*) bad=1 ;; esac
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$rts"
+      if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
+      # The kept keys go last, because writing the others can reset them.
+      while read -r t k v; do
+        case "  " in *" $k "*) continue ;; esac
+        sysctl -q -w "$k=$v"
+      done <<< "$rts"
+      while read -r t k v; do
+        case "  " in *" $k "*) sysctl -q -w "$k=$v" ;; esac
+      done <<< "$rts"
+      echo "Restored the previous values and the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/networking/ip-sysctl.html
+  - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
+
+notes:
+  pl: |
+    Sprawdzenie porównuje dla każdego parametru wartość bieżącą z /proc/sys
+    z wartością, którą ustawi następny start. Tę drugą wyznacza
+    systemd-sysctl --cat-config, które wypisuje pliki z /usr/lib/sysctl.d,
+    /run/sysctl.d i /etc/sysctl.d w kolejności stosowania, więc liczy się
+    ostatnie przypisanie. Brak wpisu oznacza wartość wbudowaną
+    w jądro, czyli 1, i też spełnia punkt. Wynik NOT_OK podaje obie wartości każdego
+    parametru, który nie spełnia punktu.
+
+    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-bogus-icmp.conf
+    i od razu je stosuje. Nazwa bez numeru na początku sortuje się po plikach
+    typu 99-*.conf, więc ustawienia wygrywają z nimi; jeśli mimo to inny
+    plik nadpisuje wartość, naprawa kończy się błędem. Wycofanie przywraca
+    poprzednią zawartość pliku i poprzednie wartości bieżące.
+  en: |
+    For each parameter, the check compares the current value from /proc/sys
+    with the value the next start will set. The latter comes from
+    systemd-sysctl --cat-config, which prints the files from
+    /usr/lib/sysctl.d, /run/sysctl.d and /etc/sysctl.d in the order they are
+    applied, so the last assignment counts. No entry means the value built into the
+    kernel, which is 1, and also meets the item. The NOT_OK result gives
+    both values of every parameter that does not meet the item.
+
+    The remediation writes the settings to
+    /etc/sysctl.d/sentin-harden-bogus-icmp.conf and applies them at once. A name
+    without a leading number sorts after files such as 99-*.conf, so the
+    settings win over them; if another file still overrides a value, the
+    remediation ends with an error. Rollback restores the previous file
+    content and the previous current values.

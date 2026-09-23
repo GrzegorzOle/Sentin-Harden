@@ -1,0 +1,199 @@
+id: fedora44-sctp-not-available
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 3.2.4
+  section: Network > Configure Network Kernel Modules
+  title:
+    pl: Moduł jądra sctp niedostępny
+    en: Ensure sctp kernel module is not available
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    SCTP to protokół transportowy, który przesyła komunikaty w kilku
+    strumieniach jednego połączenia i może korzystać z kilku adresów naraz.
+    Używa się go głównie w sieciach telekomunikacyjnych. Moduł ładuje się
+    sam, gdy dowolny program, także bez uprawnień, otworzy gniazdo SCTP,
+    a w jego kodzie znajdowano błędy, np. CVE-2019-8956, który pozwalał
+    uszkodzić pamięć jądra.
+
+    Punkt wymaga, żeby modułu nie dało się załadować. Na Fedorze 44 moduł
+    jest w pakiecie kernel-modules i nic go nie blokuje.
+  en: |
+    SCTP is a transport protocol that carries messages in several streams of
+    one connection and can use several addresses at once. It is used mainly
+    in telecom networks. The module loads on its own when any program, also
+    an unprivileged one, opens an SCTP socket, and bugs have been found in
+    its code, such as CVE-2019-8956, which allowed corrupting kernel memory.
+
+    The item requires that the module cannot be loaded. On Fedora 44 the
+    module is in the kernel-modules package and nothing blocks it.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy na stacji roboczej: z gniazd SCTP jądra korzystają
+    tylko oprogramowanie telekomunikacyjne i narzędzia testowe.
+  en: |
+    Nobody will notice on a workstation: kernel SCTP sockets are used only
+    by telecom software and test tools.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Programy korzystające z gniazd SCTP jądra, np. narzędzia z pakietu lksctp-tools, nie mogą otworzyć gniazda SCTP
+    en:
+      - Programs that use kernel SCTP sockets, such as the tools from the lksctp-tools package, cannot open an SCTP socket
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na komputerze działa albo jest testowane oprogramowanie telekomunikacyjne korzystające z SCTP
+    en:
+      - Telecom software that uses SCTP runs or is tested on the computer
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    m=sctp
+    mods=/usr/lib/modules
+    if [ ! -d "$mods" ] || [ ! -r /proc/modules ] || ! command -v modprobe >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if grep -q "^$m " /proc/modules; then echo LOADED; exit 0; fi
+    for list in "$mods"/*/modules.builtin; do
+      [ -e "$list" ] || continue
+      [ -r "$list" ] || { echo CHECK_ERROR; exit 0; }
+      if grep -Eq "/$m\.ko$" "$list"; then echo BUILTIN; exit 0; fi
+    done
+    if ! found=$(find "$mods" -name "$m.ko*" -print -quit 2>/dev/null); then
+      echo CHECK_ERROR; exit 0
+    fi
+    if [ -z "$found" ]; then echo NOT_PRESENT; exit 0; fi
+    if ! config=$(modprobe --showconfig 2>/dev/null); then echo CHECK_ERROR; exit 0; fi
+    blocked=no; listed=no
+    if printf '%s\n' "$config" | grep -Eq "^install $m (/usr)?/bin/(false|true)$"; then blocked=yes; fi
+    if printf '%s\n' "$config" | grep -qx "blacklist $m"; then listed=yes; fi
+    case "$blocked$listed" in
+      yesyes) echo BLOCKED ;;
+      yesno)  echo NOT_BLACKLISTED ;;
+      noyes)  echo LOADABLE_ON_REQUEST ;;
+      *)      echo AVAILABLE ;;
+    esac
+  expected: '^(BLOCKED|NOT_PRESENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      m=sctp
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=kmod-1
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        if grep -q "^$m " /proc/modules; then echo loaded=1; else echo loaded=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      m=sctp
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      printf '%s\n' \
+        '# Sentin-Harden: fedora44-sctp-not-available' \
+        "install $m /bin/false" \
+        "blacklist $m" > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      if grep -q "^$m " /proc/modules; then
+        if ! modprobe -r "$m"; then
+          echo "Module $m is in use and stays loaded until it is released or the machine restarts" >&2
+        fi
+      fi
+      echo "Wrote $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      m=sctp
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=kmod-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      loaded=$(sed -n '3s/^loaded=//p' "$b")
+      case "$existed:$loaded" in [01]:[01]) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
+      if [ "$loaded" = 1 ] && ! grep -q "^$m " /proc/modules; then modprobe "$m"; fi
+      echo "Restored previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/modprobe.d.5.html
+  - https://docs.kernel.org/networking/sctp.html
+  - https://nvd.nist.gov/vuln/detail/CVE-2019-8956
+
+notes:
+  pl: |
+    Sprawdzenie czyta wynikową konfigurację modprobe, więc blokada zapisana
+    wcześniej w innym pliku też się liczy. Wynik BLOCKED oznacza obie linie,
+    NOT_BLACKLISTED samą linię install, LOADABLE_ON_REQUEST sam wpis
+    blacklist, AVAILABLE żadnej z nich, a NOT_PRESENT brak modułu we
+    wszystkich zainstalowanych jądrach. Linia install może wskazywać
+    /bin/false albo /bin/true.
+
+    Naprawa zapisuje /etc/modprobe.d/sentin-harden-sctp.conf z obiema
+    liniami. Wpis blacklist wyłącza ładowanie po aliasie, czyli wtedy, gdy
+    jądro samo prosi o moduł przy otwieraniu gniazda; linia install
+    powstrzymuje też modprobe sctp wywołane z nazwą modułu. Obu nie omija nic
+    poza insmod z pełną ścieżką, które wymaga roota.
+
+    Załadowany moduł daje wynik LOADED także przy obecnej blokadzie. Naprawa
+    próbuje go wyładować, a jeśli jest w użyciu, zostaje w pamięci do
+    zwolnienia albo do restartu. Wynik BUILTIN oznacza moduł wkompilowany
+    w jądro, którego plik konfiguracji nie zablokuje.
+  en: |
+    The check reads the effective modprobe configuration, so a block written
+    earlier in another file also counts. The BLOCKED result means both
+    lines, NOT_BLACKLISTED only the install line, LOADABLE_ON_REQUEST only
+    the blacklist entry, AVAILABLE neither, and NOT_PRESENT that no
+    installed kernel has the module. The install line may point to
+    /bin/false or /bin/true.
+
+    The remediation writes /etc/modprobe.d/sentin-harden-sctp.conf with both
+    lines. The blacklist entry disables loading by alias, that is when the
+    kernel itself asks for the module while a socket is opened; the install
+    line also stops modprobe sctp run with the module name. Nothing gets past
+    both except insmod with the full path, which needs root.
+
+    A loaded module gives the LOADED result even when the block is in place.
+    The remediation tries to unload it, and if it is in use, it stays in
+    memory until it is released or the machine restarts. The BUILTIN result
+    means the module is compiled into the kernel, and a configuration file
+    cannot block it.

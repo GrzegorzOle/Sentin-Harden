@@ -1,0 +1,160 @@
+id: win10-undock-without-logon-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Wysunięcie maszyny ze stacji dokującej bez zalogowania zablokowane
+    en: Releasing the machine from its dock without signing in blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Stacja dokująca potrafi zwolnić maszynę na żądanie, również z ekranu
+    logowania. Osoba postronna może więc wypiąć laptopa i wyjść z nim, nie mając
+    na nim konta ani nie dotykając blokady mechanicznej.
+
+    Jest to zabezpieczenie przed kradzieżą, a nie przed dostępem do danych, i
+    stąd niska kategoria ryzyka. Warto jednak pamiętać, że skradziony sprzęt
+    uśpiony w torbie jest wart dokładnie tyle, ile warte są zabezpieczenia
+    opisane w pozostałych punktach tego bloku.
+
+    Wymaganie zalogowania przed wysunięciem sprawia, że zabranie maszyny wymaga
+    albo poświadczeń, albo siły.
+  en: |
+    A docking station can release the machine on request, from the sign-in screen
+    as well. An outsider may therefore unclip a laptop and walk off with it,
+    holding no account on it and touching no mechanical lock.
+
+    It is a safeguard against theft rather than against access to data, and hence
+    the low risk rating. It is worth remembering, though, that stolen hardware
+    asleep in a bag is worth exactly as much as the safeguards described in the
+    other items of this block.
+
+    Requiring a sign-in before release means taking the machine calls for either
+    credentials or force.
+
+disruption_description:
+  pl: |
+    Zasada nie ma zastosowania na maszynach bez stacji dokującej i tam nic nie
+    kosztuje. Na stanowiskach dokowanych zmienia codzienny odruch: żeby zabrać
+    laptopa, trzeba się najpierw zalogować.
+
+    Uciążliwe bywa to przy pracy zmianowej i w biurach ze stanowiskami
+    współdzielonymi, gdzie sprzęt przenosi się między miejscami kilka razy
+    dziennie. Warto sprawdzić, czy stacje w ogóle mają zwalnianie programowe —
+    część zwalnia się wyłącznie mechanicznie i wtedy punkt jest bezkosztowy.
+  en: |
+    The rule does not apply on machines with no docking station, and there it
+    costs nothing. On docked stations it changes a daily reflex - to take the
+    laptop one has to sign in first.
+
+    It becomes a nuisance in shift work and in offices with shared desks, where
+    the hardware moves between places several times a day. It is worth checking
+    whether the docks have a software release at all - some release only
+    mechanically, and then the item costs nothing.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - user-interface
+  what_breaks:
+    pl:
+      - Wysunięcie maszyny ze stacji dokującej z poziomu ekranu logowania przestanie być możliwe
+      - Stanowiska współdzielone, na których sprzęt przenosi się kilka razy dziennie, dostaną dodatkowy krok
+      - Osoba bez konta na danej maszynie nie zwolni jej ze stacji, nawet stojąc przy niej
+      - Zwalnianie mechaniczne stacji, praca po zalogowaniu, ładowanie i urządzenia podłączone do stacji działają bez zmian
+    en:
+      - Releasing the machine from the dock from the sign-in screen stops being possible
+      - Shared desks where the hardware moves several times a day gain an extra step
+      - A person with no account on a given machine cannot release it from the dock, even standing at it
+      - Mechanical release of the dock, work after signing in, charging and devices attached to the dock all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Biura ze stanowiskami współdzielonymi, gdzie sprzęt przenosi się między miejscami wielokrotnie w ciągu dnia
+      - Środowiska pracy zmianowej, w których sprzęt przejmuje kolejna osoba bez logowania się na poprzednim koncie
+    en:
+      - Offices with shared desks, where hardware moves between places many times a day
+      - Shift-work environments, where the hardware is taken over by the next person without signing in to the previous account
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'UndockWithoutLogon'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'UndockWithoutLogon'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'UndockWithoutLogon' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/devices-allow-undock-without-having-to-log-on
+
+notes:
+  pl: |
+    Zasada dotyczy zwalniania programowego, a nie mechanicznego — stacja z dźwignią
+    zwolni sprzęt niezależnie od ustawienia. Punkt ocenia się razem z pozostałymi
+    zasadami tego bloku, bo wszystkie opisują maszynę zostawioną bez opieki.
+  en: |
+    The rule covers software release rather than mechanical - a dock with a lever
+    releases the hardware whatever the setting. The item is judged together with
+    the other rules of this block, since all of them describe a machine left
+    unattended.

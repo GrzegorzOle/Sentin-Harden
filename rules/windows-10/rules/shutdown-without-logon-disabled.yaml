@@ -1,0 +1,157 @@
+id: win10-shutdown-without-logon-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Zamykanie systemu bez logowania wyłączone
+    en: Shutting down the system without signing in disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przycisk zamykania systemu na ekranie logowania pozwala wyłączyć maszynę
+    komuś, kto nie ma na niej konta. Samo w sobie nie daje dostępu do danych, więc
+    kategoria ryzyka jest niska — ale daje możliwość przerwania pracy.
+
+    Znaczenie pojawia się tam, gdzie maszyna coś robi bez udziału człowieka:
+    przetwarza dane, prowadzi nagranie, pełni rolę serwera pomocniczego, wykonuje
+    kopię zapasową. Wyłączenie jej w złym momencie kosztuje więcej niż
+    niejedno włamanie, a nie wymaga żadnych uprawnień.
+
+    Wyłączenie przycisku sprawia, że maszynę zamyka ten, kto się na niej
+    zalogował.
+  en: |
+    The shutdown button on the sign-in screen lets somebody with no account on the
+    machine switch it off. By itself it gives no access to data, so the risk
+    rating is low - but it does give the ability to interrupt work.
+
+    It matters where the machine does something with no person involved -
+    processing data, making a recording, serving as an auxiliary server, running a
+    backup. Switching it off at the wrong moment costs more than many a break-in,
+    and calls for no privileges at all.
+
+    Removing the button means the machine is shut down by whoever signed in to it.
+
+disruption_description:
+  pl: |
+    Zmiana jest dotkliwa w miejscu, w którym nikt jej nie oczekuje: przy
+    stanowiskach wspólnych i w salach, gdzie ludzie wyłączają sprzęt na koniec
+    dnia bez logowania się do niego. Po zmianie trzeba się zalogować, żeby
+    wyłączyć maszynę.
+
+    Skutkiem bywa sprzęt zostawiany włączony, bo nikomu nie chce się logować dla
+    samego wyłączenia. Warto to przewidzieć i rozstrzygnąć świadomie: albo
+    wyłączanie harmonogramem, albo pogodzenie się z maszynami pracującymi nocą.
+  en: |
+    The change bites in a place nobody expects - at shared stations and in rooms
+    where people switch the hardware off at the end of the day without signing in
+    to it. After the change one has to sign in in order to switch the machine off.
+
+    The consequence tends to be hardware left running, because nobody bothers to
+    sign in merely to switch it off. That is worth foreseeing and settling
+    deliberately - either shutdown on a schedule, or accepting machines that run
+    overnight.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl:
+      - Wyłączenie maszyny z ekranu logowania przestanie być możliwe i wymaga zalogowania się
+      - Stanowiska wspólne i sale, w których sprzęt wyłącza się na koniec dnia, zostaną włączone na noc
+      - Osoby bez konta na danej maszynie nie zamkną jej, nawet jeśli fizycznie przy niej stoją
+      - Wyłączenie przyciskiem zasilania, zamykanie po zalogowaniu, restart zdalny i praca użytkownika pozostają bez zmian
+    en:
+      - Switching the machine off from the sign-in screen stops being possible and calls for signing in
+      - Shared stations and rooms where the hardware is switched off at the end of the day are left running overnight
+      - People with no account on a given machine cannot shut it down, even standing right at it
+      - Switching off by the power button, shutting down after signing in, a remote restart and user work are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Sale szkoleniowe i stanowiska wspólne, gdzie sprzęt wyłącza obsługa niemająca na nim konta
+      - Środowiska bez wyłączania harmonogramem, w których maszyny zostawione włączone są kosztem realnym
+    en:
+      - Training rooms and shared stations, where the hardware is switched off by staff with no account on it
+      - Environments with no scheduled shutdown, where machines left running are a real cost
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ShutdownWithoutLogon'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'ShutdownWithoutLogon'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'ShutdownWithoutLogon' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/shutdown-allow-system-to-be-shut-down-without-having-to-log-on
+
+notes:
+  pl: |
+    Ustawienie dotyczy przycisku na ekranie logowania, a nie samego zamykania
+    systemu — po zalogowaniu maszynę zamyka się jak wcześniej. Wyłączenie
+    przyciskiem zasilania obudowy pozostaje poza zasięgiem tej zasady.
+  en: |
+    The setting covers the button on the sign-in screen rather than shutting the
+    system down as such - after signing in the machine is shut down as before.
+    Switching off by the case power button lies outside the reach of this rule.

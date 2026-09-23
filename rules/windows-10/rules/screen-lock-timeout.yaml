@@ -1,0 +1,179 @@
+id: win10-screen-lock-timeout
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Blokada ekranu po okresie bezczynności
+    en: Screen lock after an inactivity period
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maszyna zostawiona odblokowana jest maszyną oddaną do dyspozycji każdemu, kto
+    przy niej przejdzie. Nie trzeba przy tym łamać hasła, bo sesja jest już
+    otwarta — wystarczy usiąść.
+
+    Zagrożenie jest codzienne i banalne: wyjście po kawę, spotkanie w sali obok,
+    rozmowa na korytarzu. W tym czasie z maszyny da się przeczytać pocztę,
+    skopiować dokumenty, uruchomić polecenie albo zostawić coś, co zadziała
+    później. Nic z tego nie zostawia śladu odróżnialnego od pracy właściciela,
+    bo formalnie to właśnie jego praca.
+
+    Automatyczna blokada po kwadransie bezczynności zamyka tę drogę, nie licząc
+    na pamięć człowieka.
+  en: |
+    A machine left unlocked is a machine handed to whoever walks past it. No
+    password needs breaking, because the session is already open - sitting down is
+    enough.
+
+    The threat is everyday and banal - a walk for coffee, a meeting in the next
+    room, a conversation in the corridor. In that time mail can be read off the
+    machine, documents copied, a command run, or something left behind that will
+    act later. None of it leaves a trace distinguishable from the owner s work,
+    because formally it is their work.
+
+    An automatic lock after a quarter of an hour of inactivity closes that road
+    without relying on a person s memory.
+
+disruption_description:
+  pl: |
+    To jest zmiana, którą odczuwają wszyscy i codziennie, więc wymaga świadomego
+    wdrożenia — nie ze względu na ryzyko techniczne, tylko dlatego, że dotyka
+    nawyku całej organizacji naraz.
+
+    Najgłośniejsze zgłoszenia przychodzą ze stanowisk, przy których pracuje się z
+    przerwami: czytanie dokumentu, analiza wykresu, prowadzenie rozmowy przez
+    telefon. Z punktu widzenia systemu to bezczynność, z punktu widzenia
+    użytkownika — praca.
+
+    Osobno trzeba przejrzeć maszyny wyświetlające coś w sposób ciągły: pulpity
+    nadzoru, ekrany informacyjne, stanowiska sterujące. Tam blokada ekranu
+    przerywa funkcję, do której sprzęt został postawiony, i trzeba dla nich
+    przewidzieć wyjątek.
+  en: |
+    This is a change everybody feels every day, so it calls for a planned rollout -
+    not because of technical risk, but because it touches the habit of the whole
+    organisation at once.
+
+    The loudest tickets come from stations where the work goes in bursts - reading
+    a document, studying a chart, holding a conversation on the telephone. From
+    the system s point of view that is inactivity; from the user s, it is work.
+
+    Machines displaying something continuously need a separate review - monitoring
+    dashboards, information screens, control stations. There a screen lock breaks
+    the very function the hardware was put there for, and an exception has to be
+    planned for them.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Ekran zablokuje się po kwadransie bezczynności, a powrót do pracy będzie wymagał podania hasła
+      - Pulpity nadzoru, ekrany informacyjne i stanowiska sterujące przestaną wyświetlać obraz w sposób ciągły
+      - Praca polegająca na czytaniu i analizie, bez dotykania klawiatury, będzie przerywana blokadą
+      - Prezentacje i pokazy prowadzone z maszyny zostaną przerwane, jeżeli nikt nie dotknie sprzętu przez kwadrans
+      - Otwarte pliki, połączenia sieciowe, zadania w tle i sesje zdalne działają dalej — blokowany jest wyłącznie dostęp do ekranu
+    en:
+      - The screen locks after a quarter of an hour of inactivity, and returning to work calls for a password
+      - Monitoring dashboards, information screens and control stations stop showing a picture continuously
+      - Work that consists of reading and study, without touching the keyboard, is interrupted by the lock
+      - Presentations and demonstrations run from the machine are interrupted if nobody touches the hardware for a quarter of an hour
+      - Open files, network connections, background tasks and remote sessions carry on - only access to the screen is blocked
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Pulpity nadzoru i ekrany informacyjne, na których obraz ma być widoczny bez przerwy
+      - Stanowiska sterujące procesem, gdzie zablokowany ekran oznacza utratę widoku na proces
+      - Sale konferencyjne i stanowiska pokazowe, dopóki nie zostanie dla nich przewidziany wyjątek
+    en:
+      - Monitoring dashboards and information screens, where the picture is meant to stay visible without a break
+      - Process control stations, where a locked screen means losing sight of the process
+      - Meeting rooms and demonstration stations, until an exception is made for them
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      $name = 'InactivityTimeoutSecs'
+      $value = $null
+      if (Test-Path -Path $path -ErrorAction Stop) {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).$name
+      }
+      # Zero means never lock and is a misconfiguration, not a large timeout -
+      # it must not slip through a numeric comparison as a small value.
+      if ($null -eq $value -or [int]$value -eq 0) { 'NEVER' } else { [string]$value }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '900'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'InactivityTimeoutSecs'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'InactivityTimeoutSecs' -Value 900 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-machine-inactivity-limit
+
+notes:
+  pl: |
+    Zero oznacza tu „nigdy nie blokuj", a nie bardzo długi czas — sprawdzenie
+    zgłasza taki stan osobno, żeby nie przeszedł przez porównanie liczbowe jako
+    wartość mała. Wartość podaje się w sekundach; kwadrans to wartość graniczna,
+    nie zalecana.
+  en: |
+    Zero here means never lock rather than a very long time - the check reports
+    that state apart, so it cannot slip through the numeric comparison as a small
+    value. The value is given in seconds; a quarter of an hour is the boundary
+    rather than a recommendation.

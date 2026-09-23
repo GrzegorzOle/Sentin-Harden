@@ -1,0 +1,156 @@
+id: win10-smartcard-removal-behavior
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > Security Options
+  title:
+    pl: Zachowanie po wyjęciu karty inteligentnej
+    en: Behaviour on smart card removal
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Logowanie kartą inteligentną opiera się na założeniu, że karta jest przy
+    człowieku, a nie przy maszynie. Wyjęcie karty ma więc znaczyć koniec obecności
+    — i dopóki system na to nie reaguje, założenie jest fikcją.
+
+    Bez tego ustawienia można wyjąć kartę, odejść od maszyny i zostawić sesję
+    otwartą. Karta wraca do kieszeni właściciela, poczucie bezpieczeństwa jest
+    pełne, a stanowisko stoi zalogowane. Jest to szczególnie dotkliwe tam, gdzie
+    kartą loguje się do czynności wymagających wysokich uprawnień.
+
+    Reakcja na wyjęcie karty — zablokowanie sesji albo wylogowanie — domyka ten
+    mechanizm.
+  en: |
+    Signing in with a smart card rests on the assumption that the card is with the
+    person rather than with the machine. Removing the card is therefore meant to
+    mean the end of presence - and as long as the system does not react to it, the
+    assumption is a fiction.
+
+    Without this setting one can pull the card out, walk away from the machine and
+    leave the session open. The card returns to its owner s pocket, the sense of
+    security is complete, and the station stands signed in. That bites hardest
+    where a card is used to sign in for acts calling for high privileges.
+
+    A reaction to the card being removed - locking the session or signing out -
+    completes the mechanism.
+
+disruption_description:
+  pl: |
+    Na maszynie, na której kart nie używa się w ogóle, ustawienie leży bez skutku
+    i nie kosztuje nic. Tam, gdzie karty są w użyciu, zmiana jest widoczna od
+    pierwszego wyjęcia.
+
+    Warto wybrać wariant świadomie. Zablokowanie sesji jest łagodne i pozwala
+    wrócić do pracy po włożeniu karty. Wylogowanie zamyka sesję razem z
+    niezapisaną pracą i bywa właściwe tylko tam, gdzie z jednego stanowiska
+    korzysta wielu ludzi po kolei. Sprawdzenie dopuszcza oba, bo oba spełniają
+    sens punktu.
+  en: |
+    On a machine where cards are not used at all the setting sits without effect
+    and costs nothing. Where cards are in use the change is visible from the first
+    removal.
+
+    The variant is worth choosing deliberately. Locking the session is mild and
+    lets the work resume once the card is back in. Signing out closes the session
+    along with unsaved work and is right only where many people use one station in
+    turn. The check admits both, since both meet the point of the item.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Wyjęcie karty zablokuje sesję albo ją zamknie, zależnie od wybranego wariantu
+      - W wariancie z wylogowaniem niezapisana praca przepadnie w chwili wyjęcia karty
+      - Osoby wyjmujące kartę odruchowo, żeby użyć jej gdzie indziej, będą traciły dostęp do własnej sesji
+      - Czytniki zgłaszające chwilowy zanik obecności karty mogą blokować sesję bez powodu
+      - Samo logowanie kartą, dostęp do zasobów, drukowanie i praca bez karty pozostają bez zmian
+    en:
+      - Removing the card locks the session or closes it, depending on the variant chosen
+      - In the sign-out variant unsaved work is lost the moment the card comes out
+      - People who pull the card out by reflex to use it elsewhere keep losing access to their own session
+      - Readers reporting a momentary loss of the card may lock the session for no reason
+      - Signing in with a card, access to resources, printing and work without a card are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska z czytnikami zgłaszającymi chwilowy zanik obecności karty, dopóki sprzęt nie zostanie wymieniony
+      - Środowiska, w których karta służy również poza maszyną i bywa wyjmowana w trakcie pracy
+    en:
+      - Stations with readers reporting a momentary loss of the card, until the hardware is replaced
+      - Environments where the card is also used away from the machine and gets pulled out during work
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'ScRemoveOption'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^[123]$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'ScRemoveOption'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The value is text, not a number, despite looking like one - writing it as
+    # a number leaves an entry the system quietly ignores.
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+      -Name 'ScRemoveOption' -Value '1' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value ([string]$b.value) -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-smart-card-removal-behavior
+
+notes:
+  pl: |
+    Wartość jest tekstowa mimo wyglądu liczby — zapisana jako liczba zostawia wpis,
+    który system po cichu pomija. Sprawdzenie dopuszcza trzy warianty reakcji i
+    odrzuca wyłącznie brak reakcji, bo o tym właśnie mówi punkt.
+  en: |
+    The value is text despite looking like a number - written as a number it
+    leaves an entry the system quietly passes over. The check admits three
+    variants of reaction and rejects only no reaction at all, since that is what
+    the item is about.

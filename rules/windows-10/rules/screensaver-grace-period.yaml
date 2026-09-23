@@ -1,0 +1,156 @@
+id: win10-screensaver-grace-period
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > MSS (Legacy)
+  title:
+    pl: Okres karencji przed zablokowaniem wygaszacza ekranu
+    en: Grace period before the screen saver locks
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Między włączeniem wygaszacza ekranu a faktycznym zablokowaniem sesji upływa
+    okres karencji. Przez ten czas dotknięcie klawiatury wraca do pulpitu bez
+    podania hasła — funkcja pomyślana dla kogoś, kto odsunął się od maszyny na
+    moment.
+
+    Wydłużenie tego okresu zamienia blokadę ekranu w coś, czego właściwie nie ma.
+    Maszyna wygląda na zabezpieczoną, ekran jest wygaszony, a każdy, kto naciśnie
+    klawisz w ciągu kilku minut, trafia wprost do otwartej sesji. Jest to gorsze
+    niż brak blokady, bo daje fałszywe poczucie, że sprawa jest załatwiona.
+
+    Ograniczenie karencji do pięciu sekund sprawia, że wygaszacz rzeczywiście
+    blokuje.
+  en: |
+    Between the screen saver starting and the session actually locking there
+    passes a grace period. During it a touch of the keyboard returns to the
+    desktop with no password - a function meant for somebody who stepped away from
+    the machine for a moment.
+
+    Lengthening that period turns the screen lock into something that is not
+    really there. The machine looks protected, the screen is blank, and anybody
+    pressing a key within a few minutes lands straight in an open session. That is
+    worse than having no lock, because it gives a false sense that the matter is
+    settled.
+
+    Limiting the grace period to five seconds makes the screen saver genuinely
+    lock.
+
+disruption_description:
+  pl: |
+    Pięć sekund jest wartością domyślną systemu, więc na większości maszyn ta
+    zmiana niczego nie zmienia. Uderza wyłącznie tam, gdzie karencję ktoś
+    świadomie wydłużył.
+
+    Skutek dla użytkownika jest drobny i jednorazowy: wracając do maszyny po
+    chwili, trzeba podać hasło zamiast wcisnąć dowolny klawisz. Wartość zaczyna
+    obowiązywać po ponownym uruchomieniu maszyny.
+  en: |
+    Five seconds is the system default, so on most machines this change alters
+    nothing. It bites only where somebody deliberately lengthened the grace
+    period.
+
+    The effect on the user is small and one-off - returning to the machine after a
+    moment calls for a password rather than any key. The value takes effect after
+    a restart of the machine.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Powrót do maszyny po włączeniu wygaszacza będzie wymagał podania hasła, a nie wciśnięcia dowolnego klawisza
+      - Stanowiska, na których karencję wydłużono świadomie dla wygody, stracą tę wygodę
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny
+      - Czas do włączenia wygaszacza, blokada po bezczynności, otwarte pliki i zadania w tle pozostają bez zmian
+    en:
+      - Returning to the machine after the screen saver started calls for a password rather than any key
+      - Stations where the grace period was deliberately lengthened for convenience lose that convenience
+      - The change takes effect only after a restart of the machine
+      - The time before the screen saver starts, the inactivity lock, open files and background tasks are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska, na których karencja została wydłużona z powodu wymagań dostępności
+      - Maszyny obsługiwane bez klawiatury, gdzie podanie hasła jest kłopotliwe
+    en:
+      - Stations where the grace period was lengthened for accessibility reasons
+      - Machines operated without a keyboard, where entering a password is awkward
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      $name = 'ScreenSaverGracePeriod'
+      $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+      # Absence means the system default of five seconds. The report describes
+      # the machine, so the effective value is what gets reported.
+      if ($null -eq $current) { '5' }
+      elseif ([string]$current -match '^\d+$') { [string]$current }
+      else { 'CHECK_ERROR' }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '5'
+  comparison: not-greater-than
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $name = 'ScreenSaverGracePeriod'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path    = $path
+      name    = $name
+      value   = $current
+      existed = ($null -ne $current)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+      -Name 'ScreenSaverGracePeriod' -Value '5' -Type String
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value ([string]$b.value) -Type String
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/troubleshoot/windows-server/user-profiles-and-logon/screen-saver-grace-period
+
+notes:
+  pl: |
+    Brak wpisu oznacza domyślne pięć sekund i tak właśnie zgłasza go sprawdzenie —
+    raport opisuje maszynę, a nie rejestr, więc pokazuje wartość obowiązującą.
+    Wartość jest tekstowa mimo wyglądu liczby. Punkt ocenia się razem z blokadą
+    ekranu po bezczynności: tamta ustala, kiedy ekran się zablokuje, ta — czy
+    blokada faktycznie nastąpi.
+  en: |
+    A missing entry means the default five seconds, and that is how the check
+    reports it - the report describes the machine rather than the registry, so it
+    shows the value in force. The value is text despite looking like a number. The
+    item is judged together with the inactivity lock - that one settles when the
+    screen locks, this one whether the lock actually happens.

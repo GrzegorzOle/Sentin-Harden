@@ -1,0 +1,312 @@
+id: ubuntu2404-home-dirs-configured
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 7.2.9
+  section: System Maintenance > Local User and Group Settings
+  title:
+    pl: Katalogi domowe kont interaktywnych są poprawnie skonfigurowane
+    en: Ensure local interactive user home directories are configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    W katalogu domowym leżą klucze SSH, historia poleceń, pliki startowe
+    powłoki i dane użytkownika. Jeśli inni mogą do niego zapisywać, mogą
+    podrzucić własny plik .bashrc albo authorized_keys; jeśli mogą czytać,
+    widzą prywatne pliki. Katalog należący do kogoś innego pozwala tej
+    osobie zmienić jego uprawnienia.
+
+    Punkt wymaga, żeby każde konto interaktywne miało istniejący katalog
+    domowy, którego właścicielem jest to konto, z trybem 750 lub bardziej
+    restrykcyjnym.
+  en: |
+    The home directory holds SSH keys, command history, shell startup files
+    and the user's data. If others can write to it, they can plant their own
+    .bashrc or authorized_keys; if they can read it, they see private files.
+    A directory owned by someone else lets that person change its
+    permissions.
+
+    The item requires every interactive account to have an existing home
+    directory owned by that account, with mode 750 or stricter.
+
+disruption_description:
+  pl: |
+    Ubuntu 24.04 tworzy katalogi domowe z trybem 750 (HOME_MODE
+    w /etc/login.defs dla useradd, a dla adduser domyślna wartość DIR_MODE,
+    którą można zmienić w /etc/adduser.conf), więc na świeżym serwerze nikt
+    tego nie zauważy. Trzeba
+    sprawdzić wynik testu na systemach zaktualizowanych ze starszych wydań,
+    które tworzyły katalogi z trybem 755, i wtedy, gdy inne konta lub
+    usługi korzystają z cudzych katalogów domowych, na przykład serwer WWW
+    z ~/public_html albo udział Samba.
+  en: |
+    Ubuntu 24.04 creates home directories with mode 750 (HOME_MODE in
+    /etc/login.defs for useradd, and for adduser the default DIR_MODE,
+    which /etc/adduser.conf can change), so nobody notices on a fresh
+    server. The test result needs
+    checking on systems upgraded from older releases, which created the
+    directories with mode 755, and when other accounts or services use
+    someone else's home directory, for example a web server with
+    ~/public_html or a Samba share.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - file-sharing
+  what_breaks:
+    pl:
+      - Inne konta i usługi tracą dostęp do cudzych katalogów domowych (np. ~/public_html, udziały Samba)
+    en:
+      - Other accounts and services lose access to other users' home directories (e.g. ~/public_html, Samba shares)
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # homes: "user:uid:gid:home" of the interactive accounts
+    homes() {
+      awk -F: -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        ($NF in v) { print $1 ":" $3 ":" $4 ":" $6 }' /etc/passwd
+    }
+    # odd_homes: "user:reason" for homes no rule may change: / or none (root-dir),
+    # the same as or above another interactive account's home (shared)
+    odd_homes() {
+      homes | awk -F: '{ u[NR] = $1; h[NR] = $4; sub(/\/+$/, "", h[NR]) } END {
+        for (i = 1; i <= NR; i++) {
+          if (h[i] == "") { print u[i] ":root-dir"; continue }
+          for (j = 1; j <= NR; j++) if (i != j && (h[j] == h[i] || index(h[j], h[i] "/") == 1)) { print u[i] ":shared"; break }
+        }
+      }'
+    }
+    odd_of() { awk -F: -v u="$1" '$1 == u { print $2; exit }' <<< "$2"; }
+    evaluate() {
+      local u id g h m o r bad="" odd
+      odd=$(odd_homes)
+      while IFS=: read -r u id g h; do
+        r=$(odd_of "$u" "$odd")
+        [ -z "$r" ] || { bad="$bad,$u=$r"; continue; }
+        [ -d "$h" ] || { bad="$bad,$u=missing"; continue; }
+        read -r m o <<< "$(stat -Lc '%a %u' -- "$h")"
+        [ "$o" = "$id" ] || bad="$bad,$u=owner-$o"
+        [ $(( 0$m & 027 )) -eq 0 ] || bad="$bad,$u=mode-$m"
+      done < <(homes)
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:homes=$(homes | wc -l)"; fi
+    }
+    # blocked: accounts the remediation cannot fix: odd homes and missing homes
+    blocked() {
+      local u id g h odd
+      odd=$(odd_homes)
+      while IFS=: read -r u id g h; do
+        if [ -n "$(odd_of "$u" "$odd")" ] || [ ! -d "$h" ]; then echo "$u"; fi
+      done < <(homes)
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # homes: "user:uid:gid:home" of the interactive accounts
+    homes() {
+      awk -F: -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        ($NF in v) { print $1 ":" $3 ":" $4 ":" $6 }' /etc/passwd
+    }
+    # odd_homes: "user:reason" for homes no rule may change: / or none (root-dir),
+    # the same as or above another interactive account's home (shared)
+    odd_homes() {
+      homes | awk -F: '{ u[NR] = $1; h[NR] = $4; sub(/\/+$/, "", h[NR]) } END {
+        for (i = 1; i <= NR; i++) {
+          if (h[i] == "") { print u[i] ":root-dir"; continue }
+          for (j = 1; j <= NR; j++) if (i != j && (h[j] == h[i] || index(h[j], h[i] "/") == 1)) { print u[i] ":shared"; break }
+        }
+      }'
+    }
+    odd_of() { awk -F: -v u="$1" '$1 == u { print $2; exit }' <<< "$2"; }
+    evaluate() {
+      local u id g h m o r bad="" odd
+      odd=$(odd_homes)
+      while IFS=: read -r u id g h; do
+        r=$(odd_of "$u" "$odd")
+        [ -z "$r" ] || { bad="$bad,$u=$r"; continue; }
+        [ -d "$h" ] || { bad="$bad,$u=missing"; continue; }
+        read -r m o <<< "$(stat -Lc '%a %u' -- "$h")"
+        [ "$o" = "$id" ] || bad="$bad,$u=owner-$o"
+        [ $(( 0$m & 027 )) -eq 0 ] || bad="$bad,$u=mode-$m"
+      done < <(homes)
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:homes=$(homes | wc -l)"; fi
+    }
+    # blocked: accounts the remediation cannot fix: odd homes and missing homes
+    blocked() {
+      local u id g h odd
+      odd=$(odd_homes)
+      while IFS=: read -r u id g h; do
+        if [ -n "$(odd_of "$u" "$odd")" ] || [ ! -d "$h" ]; then echo "$u"; fi
+      done < <(homes)
+    }
+      odd=$(odd_homes)
+      {
+        echo format=homes-1
+        homes | while IFS=: read -r u id g h; do
+          [ -z "$(odd_of "$u" "$odd")" ] && [ -d "$h" ] || continue
+          p=$(readlink -f -- "$h")
+          printf '%s %s %s\n' "$u" "$(stat -c '%a %u %g' -- "$p")" "$p"
+        done
+      } > "$b.tmp"
+      mv "$b.tmp" "$b"
+      echo "Saved the owner and mode of $(( $(wc -l < "$b") - 1 )) home directories"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=homes-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # homes: "user:uid:gid:home" of the interactive accounts
+    homes() {
+      awk -F: -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        ($NF in v) { print $1 ":" $3 ":" $4 ":" $6 }' /etc/passwd
+    }
+    # odd_homes: "user:reason" for homes no rule may change: / or none (root-dir),
+    # the same as or above another interactive account's home (shared)
+    odd_homes() {
+      homes | awk -F: '{ u[NR] = $1; h[NR] = $4; sub(/\/+$/, "", h[NR]) } END {
+        for (i = 1; i <= NR; i++) {
+          if (h[i] == "") { print u[i] ":root-dir"; continue }
+          for (j = 1; j <= NR; j++) if (i != j && (h[j] == h[i] || index(h[j], h[i] "/") == 1)) { print u[i] ":shared"; break }
+        }
+      }'
+    }
+    odd_of() { awk -F: -v u="$1" '$1 == u { print $2; exit }' <<< "$2"; }
+    evaluate() {
+      local u id g h m o r bad="" odd
+      odd=$(odd_homes)
+      while IFS=: read -r u id g h; do
+        r=$(odd_of "$u" "$odd")
+        [ -z "$r" ] || { bad="$bad,$u=$r"; continue; }
+        [ -d "$h" ] || { bad="$bad,$u=missing"; continue; }
+        read -r m o <<< "$(stat -Lc '%a %u' -- "$h")"
+        [ "$o" = "$id" ] || bad="$bad,$u=owner-$o"
+        [ $(( 0$m & 027 )) -eq 0 ] || bad="$bad,$u=mode-$m"
+      done < <(homes)
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:homes=$(homes | wc -l)"; fi
+    }
+    # blocked: accounts the remediation cannot fix: odd homes and missing homes
+    blocked() {
+      local u id g h odd
+      odd=$(odd_homes)
+      while IFS=: read -r u id g h; do
+        if [ -n "$(odd_of "$u" "$odd")" ] || [ ! -d "$h" ]; then echo "$u"; fi
+      done < <(homes)
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "Already meets the item, nothing to change"; exit 0 ;; esac
+      x=$(blocked | paste -sd, -)
+      [ -z "$x" ] || { echo "These accounts have a missing, shared or / home; fix them by hand first: $x" >&2; exit 1; }
+      n=0
+      while IFS= read -r x; do
+        read -r u m o g _ <<< "$x"; p=${x#* * * * }
+        id=$(awk -F: -v u="$u" '$1 == u { print $3; exit }' /etc/passwd)
+        [ -n "$id" ] && [ -d "$p" ] && [ ! -L "$p" ] || continue
+        read -r cm co cg <<< "$(stat -c '%a %u %g' -- "$p")"
+        [ "$co $cg" = "$o $g" ] || { echo "Skipped $p: its owner changed since the backup"; continue; }
+        if [ "$co" = "$id" ] && [ $(( 0$cm & 027 )) -eq 0 ]; then continue; fi
+        [ "$co" = "$id" ] || chown "$id" -- "$p"
+        chmod "$(printf '0%04o' $(( 0$cm & 07750 )))" -- "$p"
+        echo "Corrected $p ($u)"; n=$((n + 1))
+      done < <(tail -n +2 "$b")
+      echo "Corrected $n home directories"
+      r=$(evaluate)
+      case "$r" in OK:*) ;; *) echo "Home directories still not as required ($r); run backup again" >&2; exit 1 ;; esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=homes-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if tail -n +2 "$b" | grep -qvE '^[^ ]+ [0-7]+ [0-9]+ [0-9]+ /'; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      n=0
+      while IFS= read -r x; do
+        read -r u m o g _ <<< "$x"; p=${x#* * * * }
+        [ -d "$p" ] && [ ! -L "$p" ] || { echo "Skipped $p: it is no longer a directory"; continue; }
+        read -r cm co cg <<< "$(stat -c '%a %u %g' -- "$p")"
+        [ "$cm $co" != "$m $o" ] || continue
+        id=$(awk -F: -v u="$u" '$1 == u { print $3; exit }' /etc/passwd)
+        if [ "$co" != "$o" ] && [ "$co" != "$id" ]; then echo "Skipped $p: its owner changed since the change"; continue; fi
+        [ "$co" = "$o" ] || chown "$o" -- "$p"
+        chmod "$(printf '0%04o' $(( 0$m )))" -- "$p"
+        echo "Restored $p"; n=$((n + 1))
+      done < <(tail -n +2 "$b")
+      [ "$n" -gt 0 ] || echo "Nothing to restore"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/passwd.5.html
+  - https://man7.org/linux/man-pages/man1/chmod.1.html
+  - https://man7.org/linux/man-pages/man1/chown.1.html
+
+notes:
+  pl: |
+    Konta interaktywne to, tak jak w CIS, konta z powłoką wymienioną
+    w /etc/shells innej niż nologin, więc także root. Katalogów domowych
+    równych / albo wspólnych dla kilku kont (także takich, w których leży
+    katalog domowy innego konta) reguła nie zmienia i zgłasza je jako
+    root-dir albo shared; trzeba je poprawić ręcznie.
+    Wynik NOT_OK podaje konta z powodem: missing, owner-UID, mode-TRYB,
+    root-dir albo shared. Naprawa nie tworzy brakujących katalogów (to
+    wymaga plików z /etc/skel) i kończy się błędem bez
+    zmian, gdy taki katalog albo katalog root-dir lub shared istnieje.
+    Pozostałym zmienia właściciela na konto i odbiera prawo zapisu grupie
+    oraz wszystkie prawa innym, zostawiając bity setgid i sticky. Test
+    odczytuje tylko atrybuty katalogów, więc działa bez roota. Wycofanie
+    przywraca właściciela i tryb z kopii, ale pomija katalogi, których
+    właściciela ktoś zmienił po naprawie.
+  en: |
+    Interactive accounts are, as in CIS, the accounts with a shell listed in
+    /etc/shells other than nologin, so root is included. The rule does not
+    change home directories that are / or shared by several accounts
+    (including those that hold another account's home) and reports them as
+    root-dir or shared; they need fixing by hand.
+    The NOT_OK result gives the accounts with a reason: missing, owner-UID,
+    mode-MODE, root-dir or shared. The remediation does not create missing
+    directories (that needs the files from /etc/skel) and fails without changes while such a directory, or a
+    root-dir or shared one, exists. For the others it sets the owner to the
+    account and removes write access for the group and all access for
+    others, keeping the setgid and sticky bits. The test only reads the
+    directory attributes, so it works without root. Rollback restores the
+    owner and mode from the backup, but skips directories whose owner
+    someone changed after the remediation.

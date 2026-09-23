@@ -1,0 +1,369 @@
+id: ubuntu2404-dot-files-access
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 7.2.10
+  section: System Maintenance > Local User and Group Settings
+  title:
+    pl: Pliki kropkowe kont interaktywnych mają poprawne uprawnienia
+    en: Ensure local interactive user dot files access is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pliki, których nazwy zaczynają się od kropki, sterują powłoką, Gitem,
+    SSH i innymi programami użytkownika. Zapis do nich przez innych pozwala
+    wykonać kod na koncie ofiary przy następnym logowaniu. .netrc
+    i .bash_history mogą zawierać hasła, a .forward i .rhosts przekazują
+    pocztę poza system albo pozwalają logować się bez hasła przez rsh.
+
+    Punkt wymaga, żeby w katalogach domowych kont interaktywnych nie było
+    plików .forward ani .rhosts, żeby .netrc i .bash_history miały tryb 600
+    lub bardziej restrykcyjny, pozostałe pliki kropkowe tryb 644 lub
+    bardziej restrykcyjny, a wszystkie należały do konta i jego grupy
+    głównej.
+  en: |
+    Files whose names start with a dot control the shell, Git, SSH and other
+    programs of the user. Write access for others lets them run code in the
+    victim's account at the next login. .netrc and .bash_history may hold
+    passwords, and .forward and .rhosts forward mail off the system or allow
+    password-less logins through rsh.
+
+    The item requires that the home directories of interactive accounts hold
+    no .forward or .rhosts files, that .netrc and .bash_history have mode
+    600 or stricter, the other dot files mode 644 or stricter, and that all
+    of them belong to the account and its primary group.
+
+disruption_description:
+  pl: |
+    Zwykle nikt tego nie zauważy. Tryb 644 odbiera też bit wykonania, więc
+    pliki kropkowe uruchamiane bezpośrednio (np. .xsession) przestaną się
+    uruchamiać, a pliki z prawem zapisu dla grupy w katalogach wspólnych
+    projektów przestaną być zapisywalne dla pozostałych członków grupy.
+  en: |
+    Usually nobody notices. Mode 644 also removes the execute bit, so dot
+    files run directly (e.g. .xsession) will no longer run, and group
+    writable files in shared project directories will no longer be writable
+    by the other group members.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Pliki kropkowe uruchamiane bezpośrednio (np. .xsession) tracą bit wykonania
+      - Pliki kropkowe w katalogach projektów przestają być zapisywalne dla grupy
+      - Pliki kropkowe utworzone przez roota (np. przez sudo make) przechodzą na własność użytkownika
+    en:
+      - Dot files run directly (e.g. .xsession) lose the execute bit
+      - Dot files in project directories are no longer group writable
+      - Dot files created by root (e.g. through sudo make) become owned by the user
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # homes: "user:uid:gid:home" of the interactive accounts
+    homes() {
+      awk -F: -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        ($NF in v) { print $1 ":" $3 ":" $4 ":" $6 }' /etc/passwd
+    }
+    # odd_homes: "user:reason" for homes no rule may change: / or none (root-dir),
+    # the same as or above another interactive account's home (shared)
+    odd_homes() {
+      homes | awk -F: '{ u[NR] = $1; h[NR] = $4; sub(/\/+$/, "", h[NR]) } END {
+        for (i = 1; i <= NR; i++) {
+          if (h[i] == "") { print u[i] ":root-dir"; continue }
+          for (j = 1; j <= NR; j++) if (i != j && (h[j] == h[i] || index(h[j], h[i] "/") == 1)) { print u[i] ":shared"; break }
+        }
+      }'
+    }
+    odd_of() { awk -F: -v u="$1" '$1 == u { print $2; exit }' <<< "$2"; }
+    # dot_bad: "reason tuid tgid mode uid gid path" of the dot files that break the item.
+    # find ends each path with a NUL, so a newline in a name cannot forge a line;
+    # such names are reported as "name" with ? for the newline and left alone.
+    dot_bad() {
+      local u id g h odd
+      odd=$(odd_homes)
+      homes | while IFS=: read -r u id g h; do
+        [ -z "$(odd_of "$u" "$odd")" ] && [ -d "$h" ] || continue
+        find -H "$h" -xdev -path '*/containers/storage' -prune -o -type f -name '.*' -printf '%m %U %G %p\0' 2>/dev/null |
+          awk -v id="$id" -v g="$g" 'BEGIN { RS = "\0" } {
+            p = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", p); b = p; sub(/.*\//, "", b)
+            s = sprintf("%04d", $1); o = substr(s, 2, 1) + 0; gr = substr(s, 3, 1) + 0; ot = substr(s, 4, 1) + 0
+            if (index(p, "\n")) { r = "name"; gsub(/\n/, "?", p) }
+            else if (b == ".forward" || b == ".rhosts") r = "exists"
+            else {
+              if (b == ".netrc" || b == ".bash_history") bad = (o % 2) || gr || ot
+              else bad = (o % 2) || (gr % 4) || (ot % 4)
+              r = bad ? "mode" : ""
+              if ($2 != id) r = r (r == "" ? "" : "+") "owner"
+              if ($3 != g) r = r (r == "" ? "" : "+") "group"
+            }
+            if (r != "") print r, id, g, $1, $2, $3, p
+          }'
+      done
+    }
+    evaluate() {
+      local l o n
+      [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
+      o=$(odd_homes | cut -d: -f1 | paste -sd+ -)
+      l=$(dot_bad)
+      n=$(grep -c . <<< "$l" || true)
+      if [ -n "$o" ]; then echo "NOT_OK:unchecked-homes=$o,files=$n"
+      elif [ -n "$l" ]; then echo "NOT_OK:files=$n,$({ grep -m 1 -E '^(exists|name) ' <<< "$l" || head -n 1 <<< "$l"; } | awk '{ r = $1; sub(/^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ /, ""); print r ":" $0 }')"
+      else echo "OK:dot-files"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # homes: "user:uid:gid:home" of the interactive accounts
+    homes() {
+      awk -F: -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        ($NF in v) { print $1 ":" $3 ":" $4 ":" $6 }' /etc/passwd
+    }
+    # odd_homes: "user:reason" for homes no rule may change: / or none (root-dir),
+    # the same as or above another interactive account's home (shared)
+    odd_homes() {
+      homes | awk -F: '{ u[NR] = $1; h[NR] = $4; sub(/\/+$/, "", h[NR]) } END {
+        for (i = 1; i <= NR; i++) {
+          if (h[i] == "") { print u[i] ":root-dir"; continue }
+          for (j = 1; j <= NR; j++) if (i != j && (h[j] == h[i] || index(h[j], h[i] "/") == 1)) { print u[i] ":shared"; break }
+        }
+      }'
+    }
+    odd_of() { awk -F: -v u="$1" '$1 == u { print $2; exit }' <<< "$2"; }
+    # dot_bad: "reason tuid tgid mode uid gid path" of the dot files that break the item.
+    # find ends each path with a NUL, so a newline in a name cannot forge a line;
+    # such names are reported as "name" with ? for the newline and left alone.
+    dot_bad() {
+      local u id g h odd
+      odd=$(odd_homes)
+      homes | while IFS=: read -r u id g h; do
+        [ -z "$(odd_of "$u" "$odd")" ] && [ -d "$h" ] || continue
+        find -H "$h" -xdev -path '*/containers/storage' -prune -o -type f -name '.*' -printf '%m %U %G %p\0' 2>/dev/null |
+          awk -v id="$id" -v g="$g" 'BEGIN { RS = "\0" } {
+            p = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", p); b = p; sub(/.*\//, "", b)
+            s = sprintf("%04d", $1); o = substr(s, 2, 1) + 0; gr = substr(s, 3, 1) + 0; ot = substr(s, 4, 1) + 0
+            if (index(p, "\n")) { r = "name"; gsub(/\n/, "?", p) }
+            else if (b == ".forward" || b == ".rhosts") r = "exists"
+            else {
+              if (b == ".netrc" || b == ".bash_history") bad = (o % 2) || gr || ot
+              else bad = (o % 2) || (gr % 4) || (ot % 4)
+              r = bad ? "mode" : ""
+              if ($2 != id) r = r (r == "" ? "" : "+") "owner"
+              if ($3 != g) r = r (r == "" ? "" : "+") "group"
+            }
+            if (r != "") print r, id, g, $1, $2, $3, p
+          }'
+      done
+    }
+    evaluate() {
+      local l o n
+      [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
+      o=$(odd_homes | cut -d: -f1 | paste -sd+ -)
+      l=$(dot_bad)
+      n=$(grep -c . <<< "$l" || true)
+      if [ -n "$o" ]; then echo "NOT_OK:unchecked-homes=$o,files=$n"
+      elif [ -n "$l" ]; then echo "NOT_OK:files=$n,$({ grep -m 1 -E '^(exists|name) ' <<< "$l" || head -n 1 <<< "$l"; } | awk '{ r = $1; sub(/^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ /, ""); print r ":" $0 }')"
+      else echo "OK:dot-files"; fi
+    }
+      [ "$(id -u)" = 0 ] || { echo "Root privileges are required" >&2; exit 1; }
+      { echo format=dots-1; dot_bad | awk '$1 != "exists" && $1 != "name"' | cut -d' ' -f2-; } > "$b.tmp"
+      mv "$b.tmp" "$b"
+      echo "Saved the owner and mode of $(( $(wc -l < "$b") - 1 )) dot files"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dots-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # homes: "user:uid:gid:home" of the interactive accounts
+    homes() {
+      awk -F: -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        ($NF in v) { print $1 ":" $3 ":" $4 ":" $6 }' /etc/passwd
+    }
+    # odd_homes: "user:reason" for homes no rule may change: / or none (root-dir),
+    # the same as or above another interactive account's home (shared)
+    odd_homes() {
+      homes | awk -F: '{ u[NR] = $1; h[NR] = $4; sub(/\/+$/, "", h[NR]) } END {
+        for (i = 1; i <= NR; i++) {
+          if (h[i] == "") { print u[i] ":root-dir"; continue }
+          for (j = 1; j <= NR; j++) if (i != j && (h[j] == h[i] || index(h[j], h[i] "/") == 1)) { print u[i] ":shared"; break }
+        }
+      }'
+    }
+    odd_of() { awk -F: -v u="$1" '$1 == u { print $2; exit }' <<< "$2"; }
+    # dot_bad: "reason tuid tgid mode uid gid path" of the dot files that break the item.
+    # find ends each path with a NUL, so a newline in a name cannot forge a line;
+    # such names are reported as "name" with ? for the newline and left alone.
+    dot_bad() {
+      local u id g h odd
+      odd=$(odd_homes)
+      homes | while IFS=: read -r u id g h; do
+        [ -z "$(odd_of "$u" "$odd")" ] && [ -d "$h" ] || continue
+        find -H "$h" -xdev -path '*/containers/storage' -prune -o -type f -name '.*' -printf '%m %U %G %p\0' 2>/dev/null |
+          awk -v id="$id" -v g="$g" 'BEGIN { RS = "\0" } {
+            p = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", p); b = p; sub(/.*\//, "", b)
+            s = sprintf("%04d", $1); o = substr(s, 2, 1) + 0; gr = substr(s, 3, 1) + 0; ot = substr(s, 4, 1) + 0
+            if (index(p, "\n")) { r = "name"; gsub(/\n/, "?", p) }
+            else if (b == ".forward" || b == ".rhosts") r = "exists"
+            else {
+              if (b == ".netrc" || b == ".bash_history") bad = (o % 2) || gr || ot
+              else bad = (o % 2) || (gr % 4) || (ot % 4)
+              r = bad ? "mode" : ""
+              if ($2 != id) r = r (r == "" ? "" : "+") "owner"
+              if ($3 != g) r = r (r == "" ? "" : "+") "group"
+            }
+            if (r != "") print r, id, g, $1, $2, $3, p
+          }'
+      done
+    }
+    evaluate() {
+      local l o n
+      [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
+      o=$(odd_homes | cut -d: -f1 | paste -sd+ -)
+      l=$(dot_bad)
+      n=$(grep -c . <<< "$l" || true)
+      if [ -n "$o" ]; then echo "NOT_OK:unchecked-homes=$o,files=$n"
+      elif [ -n "$l" ]; then echo "NOT_OK:files=$n,$({ grep -m 1 -E '^(exists|name) ' <<< "$l" || head -n 1 <<< "$l"; } | awk '{ r = $1; sub(/^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+ /, ""); print r ":" $0 }')"
+      else echo "OK:dot-files"; fi
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item, nothing to change"; exit 0 ;;
+        *needs-root*) echo "Root privileges are required" >&2; exit 1 ;;
+        *unchecked-homes*) echo "Some accounts have a shared or / home; fix them by hand first ($r)" >&2; exit 1 ;;
+      esac
+      x=$(dot_bad | awk '$1 == "exists" || $1 == "name"' | cut -d' ' -f7- | paste -sd, -)
+      [ -z "$x" ] || { echo "Remove, move or rename these files by hand first: $x" >&2; exit 1; }
+      n=0
+      while IFS= read -r x; do
+        read -r tu tg m u g _ <<< "$x"; p=${x#* * * * * }
+        [ -f "$p" ] && [ ! -L "$p" ] || continue
+        read -r cm cu cg cn <<< "$(stat -c '%a %u %g %h' -- "$p")"
+        [ "$cu $cg" = "$u $g" ] && [ "$cn" = 1 ] || { echo "Skipped $p: it changed since the backup"; continue; }
+        case "${p##*/}" in .netrc|.bash_history) k=0600 ;; *) k=0644 ;; esac
+        [ "$cu $cg" = "$tu $tg" ] || chown -h "$tu:$tg" -- "$p"
+        chmod "$(printf '0%04o' $(( 0$cm & k )))" -- "$p"
+        n=$((n + 1))
+      done < <(tail -n +2 "$b")
+      echo "Corrected $n dot files"
+      r=$(evaluate)
+      case "$r" in OK:*) ;; *) echo "Dot files still not as required ($r); run backup again" >&2; exit 1 ;; esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dots-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if tail -n +2 "$b" | grep -qvE '^[0-9]+ [0-9]+ [0-7]+ [0-9]+ [0-9]+ /'; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      n=0
+      while IFS= read -r x; do
+        read -r tu tg m u g _ <<< "$x"; p=${x#* * * * * }
+        [ -f "$p" ] && [ ! -L "$p" ] || { echo "Skipped $p: it is no longer a regular file"; continue; }
+        read -r cm cu cg cn <<< "$(stat -c '%a %u %g %h' -- "$p")"
+        [ "$cm $cu $cg" != "$m $u $g" ] || continue
+        if [ "$cu $cg" != "$tu $tg" ] && [ "$cu $cg" != "$u $g" ] || [ "$cn" != 1 ]; then echo "Skipped $p: it changed since the change"; continue; fi
+        [ "$cu $cg" = "$u $g" ] || chown -h "$u:$g" -- "$p"
+        chmod "$(printf '0%04o' $(( 0$m )))" -- "$p"
+        echo "Restored $p"; n=$((n + 1))
+      done < <(tail -n +2 "$b")
+      [ "$n" -gt 0 ] || echo "Nothing to restore"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man1/find.1.html
+  - https://man7.org/linux/man-pages/man1/chmod.1.html
+  - https://man7.org/linux/man-pages/man1/chown.1.html
+  - https://www.gnu.org/software/bash/manual/html_node/Bash-Startup-Files.html
+
+notes:
+  pl: |
+    Konta interaktywne to, tak jak w CIS, konta z powłoką wymienioną
+    w /etc/shells innej niż nologin, więc także root. Katalogów domowych
+    równych / albo wspólnych dla kilku kont (także takich, w których leży
+    katalog domowy innego konta) reguła nie zmienia i zgłasza je jako
+    root-dir albo shared; trzeba je poprawić ręcznie.
+    Tak jak skrypt CIS, test przeszukuje cały katalog domowy (find -xdev)
+    i sprawdza każdy plik z nazwą zaczynającą się od kropki, także
+    w podkatalogach, na przykład .gitignore w repozytoriach. Pomija warstwy
+    obrazów kontenerów (containers/storage), jak w regule 7.1.11. Wynik
+    NOT_OK podaje liczbę plików oraz powód i ścieżkę pierwszego, a jeśli
+    jest .forward lub .rhosts, to jego: exists, mode, owner lub group.
+    Plik ze znakiem nowej linii w nazwie ma powód name, a w wyniku znak ?
+    w miejscu nowej linii. Naprawa nie usuwa plików: gdy istnieje .forward
+    albo .rhosts, kończy się błędem bez zmian i trzeba je usunąć lub
+    przenieść ręcznie. Tak samo jest z plikiem ze znakiem nowej linii
+    w nazwie, któremu trzeba ręcznie zmienić nazwę. Pozostałym plikom ustawia konto i jego grupę główną
+    (chown -h) i tryb ograniczony do 644, a dla .netrc i .bash_history do
+    600. Zmienia tylko pliki z kopii, które nadal są zwykłymi plikami
+    z jednym dowiązaniem i tym samym właścicielem, bo użytkownik mógł je
+    podmienić. Test i naprawa czytają cudze katalogi domowe, więc bez roota
+    wynik to NOT_OK:needs-root. Reguła 7.1.11 też zmienia tryb plików
+    zapisywalnych dla wszystkich, więc przy wycofywaniu obu reguł trzeba
+    zachować odwrotną kolejność.
+  en: |
+    Interactive accounts are, as in CIS, the accounts with a shell listed in
+    /etc/shells other than nologin, so root is included. The rule does not
+    change home directories that are / or shared by several accounts
+    (including those that hold another account's home) and reports them as
+    root-dir or shared; they need fixing by hand.
+    Like the CIS script, the test searches the whole home directory (find
+    -xdev) and checks every file whose name starts with a dot, also in
+    subdirectories, for example .gitignore in repositories. It skips
+    container image layers (containers/storage), as the 7.1.11 rule does.
+    The NOT_OK result gives the number of files and the reason and path of
+    the first, or of a .forward or .rhosts file if there is one: exists,
+    mode, owner or group. A file with a newline in its name has the reason
+    name and a ? in place of the newline. The remediation does not delete
+    files: while .forward or .rhosts exists, it fails without changes and
+    they need removing or moving by hand. The same applies to a dot file
+    with a newline in its name, which needs renaming by hand. For the other files it sets the
+    account and its primary group (chown -h) and limits the mode to 644, or
+    600 for .netrc and .bash_history. It changes only the files from the
+    backup that are still regular files with one link and the same owner,
+    because the user could have swapped them. The test and remediation read
+    other users' home directories, so without root the result is
+    NOT_OK:needs-root. The 7.1.11 rule also changes the mode of
+    world-writable files, so rolling back both rules needs the reverse
+    order.

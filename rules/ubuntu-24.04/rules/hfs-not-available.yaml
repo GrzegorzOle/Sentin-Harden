@@ -1,0 +1,264 @@
+id: ubuntu2404-hfs-not-available
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.1.1.3
+  section: Initial Setup > Filesystem > Configure Filesystem Kernel Modules
+  title:
+    pl: Moduł jądra hfs niedostępny
+    en: Ensure hfs kernel module is not available
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    HFS to system plików klasycznych komputerów Macintosh, zastąpiony przez
+    HFS+ w 1998 roku. Dyskietki, dyski i płyty w tym formacie to dziś
+    rzadkość, a sterownik jądra przez długi czas nie miał opiekuna.
+    Automatyczne testy jądra wciąż znajdują w nim błędy w obsłudze
+    uszkodzonych struktur.
+
+    Każdy sterownik systemu plików to kod jądra, który czyta strukturę zapisaną
+    na nośniku. Jeśli nośnik przygotował napastnik, to on decyduje, co ten kod
+    dostaje na wejście, a błąd w obsłudze uszkodzonej struktury wykonuje się
+    z pełnymi uprawnieniami jądra. Jądro ładuje sterownik samo, gdy ktoś poprosi
+    o zamontowanie danego typu, więc nikt nie musi świadomie tego sterownika
+    uruchamiać.
+
+    Punkt zamyka tę drogę: moduł hfs nie ładuje się ani na żądanie jądra,
+    ani wywołany wprost.
+
+    Na Ubuntu moduł hfs jest w pakiecie linux-modules-extra, który
+    instaluje się razem z domyślnym jądrem linux-generic, więc na zwykłej
+    instalacji serwera jest dostępny. Jądro linux-virtual, spotykane
+    w maszynach wirtualnych, nie ma tego pakietu i wtedy punkt jest
+    spełniony od razu. Kategoria jest niska, bo
+    Ubuntu Server nie montuje sam podłączonych nośników, bo nie ma pulpitu,
+    który by o to prosił. Usługę udisks2 instaluje się wprawdzie z fwupd,
+    ale zwykłe konto może przez nią zamontować nośnik bez hasła
+    administratora tylko w aktywnej sesji przy fizycznej konsoli; przez SSH
+    nie, a we własnej przestrzeni nazw użytkownika tego systemu plików nie
+    zamontuje wcale. Do uruchomienia sterownika potrzebny jest więc dostęp
+    do konsoli maszyny albo administrator, który sam zamontuje przygotowany
+    nośnik lub obraz. Na maszynie z pulpitem, na której udisks2 montuje
+    nośniki za zalogowanego użytkownika, do uruchomienia tego słabego
+    sterownika wystarczy podłączenie przygotowanego pendrive'a i tam
+    ryzyko jest większe.
+  en: |
+    HFS is the file system of classic Macintosh computers, replaced by HFS+
+    in 1998. Floppies, disks and discs in this format are rare today, and
+    the kernel driver went without a maintainer for a long time. Automated
+    kernel testing still finds bugs in how it handles damaged structures.
+
+    Every file system driver is kernel code that reads a structure stored on a
+    medium. If an attacker prepared the medium, the attacker decides what that
+    code gets as input, and a bug in handling a damaged structure runs with full
+    kernel privileges. The kernel loads the driver by itself when something asks
+    to mount that type, so nobody has to start the driver on purpose.
+
+    The item closes that path: the hfs module does not load, neither on the
+    kernel's request nor when called directly.
+
+    On Ubuntu the hfs module ships in the linux-modules-extra package,
+    which comes with the default linux-generic kernel, so an ordinary
+    server installation has it. The linux-virtual kernel, used in virtual
+    machines, does not have that package, and the item is then met from
+    the start. The category is low because
+    Ubuntu Server does not mount attached media by itself, because there is
+    no desktop to ask for it. The udisks2 service does come with fwupd, but
+    an ordinary account can mount a medium through it without the
+    administrator password only in an active session at the physical
+    console; not over SSH, and it cannot mount this file system in its own
+    user namespace at all. Running the driver therefore takes access to the
+    machine's console or an administrator who mounts a prepared medium or
+    image. On a machine with a desktop, where udisks2 mounts
+    media for the signed-in user, plugging in a prepared USB stick is
+    enough to run this weak driver, and the risk there is higher.
+
+disruption_description:
+  pl: |
+    W praktyce nic nie przestaje działać. Nośniki HFS pochodzą z komputerów
+    sprzed ćwierć wieku, a współczesne Maki i ich dyski zewnętrzne używają
+    HFS+ albo APFS, których ten punkt nie dotyczy.
+
+    Zmiana nie wymaga restartu ani wylogowania.
+  en: |
+    In practice nothing stops working. HFS media come from computers a
+    quarter of a century old, and current Macs and their external drives
+    use HFS+ or APFS, which this item does not touch.
+
+    The change needs no restart and no sign-out.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - removable-media
+  what_breaks:
+    pl:
+      - Dyskietka, płyta lub dysk sformatowany na klasycznym Macintoshu w formacie HFS nie montuje się
+    en:
+      - A floppy, disc or disk formatted on a classic Macintosh as HFS does not mount
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyna służy do odzyskiwania danych z archiwalnych nośników klasycznych Macintoshy
+    en:
+      - The machine is used to recover data from archived media of classic Macintosh computers
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    m=hfs
+    n=hfs
+    mods=/usr/lib/modules
+    if [ ! -d "$mods" ] || [ ! -r /proc/modules ] || ! command -v modprobe >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if grep -q "^$n " /proc/modules; then echo LOADED; exit 0; fi
+    for list in "$mods"/*/modules.builtin; do
+      [ -e "$list" ] || continue
+      [ -r "$list" ] || { echo CHECK_ERROR; exit 0; }
+      if grep -Eq "/$m\.ko$" "$list"; then echo BUILTIN; exit 0; fi
+    done
+    if ! found=$(find "$mods" -name "$m.ko*" -print -quit 2>/dev/null); then
+      echo CHECK_ERROR; exit 0
+    fi
+    if [ -z "$found" ]; then echo NOT_PRESENT; exit 0; fi
+    if ! config=$(modprobe --showconfig 2>/dev/null); then echo CHECK_ERROR; exit 0; fi
+    blocked=no; listed=no
+    if printf '%s\n' "$config" | grep -Eq "^install $n (/usr)?/bin/(false|true)$"; then blocked=yes; fi
+    if printf '%s\n' "$config" | grep -qx "blacklist $n"; then listed=yes; fi
+    case "$blocked$listed" in
+      yesyes) echo BLOCKED ;;
+      yesno)  echo NOT_BLACKLISTED ;;
+      noyes)  echo LOADABLE_ON_REQUEST ;;
+      *)      echo AVAILABLE ;;
+    esac
+  expected: '^(BLOCKED|NOT_PRESENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      m=hfs
+      n=hfs
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        if grep -q "^$n " /proc/modules; then echo loaded=1; else echo loaded=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b.tmp"
+      mv "$b.tmp" "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      m=hfs
+      n=hfs
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      printf '%s\n' \
+        '# Sentin-Harden: ubuntu2404-hfs-not-available' \
+        "install $n /bin/false" \
+        "blacklist $n" > "$f.tmp"
+      chmod 0644 "$f.tmp"
+      mv "$f.tmp" "$f"
+      if grep -q "^$n " /proc/modules; then
+        if ! modprobe -r "$n"; then
+          echo "Module $m is in use and stays loaded until whatever uses it is stopped or the machine restarts" >&2
+        fi
+      fi
+      echo "Wrote $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      m=hfs
+      n=hfs
+      f=/etc/modprobe.d/sentin-harden-$m.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      grep -qx -- --- "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n 's/^existed=//p' "$b" | head -n 1)
+      loaded=$(sed -n 's/^loaded=//p' "$b" | head -n 1)
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f.tmp"; chmod 0644 "$f.tmp"; mv "$f.tmp" "$f" ;;
+        0) rm -f "$f" ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      if [ "$loaded" = 1 ] && ! grep -q "^$n " /proc/modules; then modprobe "$n"; fi
+      echo "Restored previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/modprobe.d.5.html
+  - https://docs.kernel.org/filesystems/hfs.html
+
+notes:
+  pl: |
+    Sprawdzenie czyta wynikową konfigurację modprobe, a nie jeden wybrany
+    plik. Blokada zapisana wcześniej gdzie indziej, np. w
+    /etc/modprobe.d/hfs.conf, także spełnia punkt, a naprawa jej nie
+    dubluje, bo przy spełnionym punkcie nie jest uruchamiana. Naprawa
+    zapisuje plik /etc/modprobe.d/sentin-harden-hfs.conf, a wycofanie
+    przywraca go z kopii albo usuwa.
+
+    Potrzebne są obie linie. Wpis blacklist powstrzymuje tylko ładowanie po
+    aliasie, czyli wtedy, gdy jądro samo prosi o sterownik; modprobe
+    wywołane z nazwą modułu go omija. Linia install zastępuje ładowanie
+    uruchomieniem /bin/false, więc każda taka próba kończy się błędem.
+    Obu mechanizmów nie zatrzymuje insmod z pełną ścieżką do pliku, ale to
+    wymaga roota i świadomego działania.
+
+    Test szuka modułu we wszystkich jądrach w /usr/lib/modules, także
+    w pakietach .ko.zst, w których Ubuntu je dostarcza. Punkt jest
+    spełniony także wtedy, gdy żadne zainstalowane jądro nie zawiera
+    modułu. Moduł załadowany w chwili sprawdzenia daje wynik niespełniony
+    nawet przy obecnej blokadzie; naprawa próbuje go wyładować, a jeśli
+    jest w użyciu, zostaje w pamięci do zakończenia tego, co go używa, albo
+    do restartu. Sterownika wkompilowanego w jądro (wynik BUILTIN) plikiem
+    konfiguracji nie da się zablokować i zostaje zapisanie wyjątku.
+  en: |
+    The check reads the effective modprobe configuration rather than one
+    chosen file. A block written earlier somewhere else, for example in
+    /etc/modprobe.d/hfs.conf, also meets the item, and the remediation
+    does not duplicate it, because it is not run when the item is met. The
+    remediation writes /etc/modprobe.d/sentin-harden-hfs.conf, and
+    rollback restores it from the backup or removes it.
+
+    Both lines are needed. The blacklist entry only stops loading by alias,
+    that is, when the kernel itself asks for the driver; running modprobe
+    with the module name bypasses it. The install line replaces loading
+    with running /bin/false, so every such attempt fails. Neither mechanism
+    stops insmod with the full path to the file, but that needs root and a
+    deliberate action.
+
+    The test looks for the module in every kernel under /usr/lib/modules,
+    including the .ko.zst files Ubuntu ships them as. The item is also met
+    when no installed kernel contains the module. A module that is loaded
+    at the time of the check gives a non-compliant result even when the
+    block is in place; the remediation tries to unload it, and if it is in
+    use it stays in memory until whatever uses it stops or the machine
+    restarts. A driver compiled into the kernel (the BUILTIN result) cannot
+    be blocked by a configuration file, and the remaining option is to
+    record an exception.

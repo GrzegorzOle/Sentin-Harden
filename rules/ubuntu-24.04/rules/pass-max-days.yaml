@@ -1,0 +1,408 @@
+id: ubuntu2404-pass-max-days
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.4.1.1
+  section: Access Control > User Accounts and Environment > Configure shadow password suite parameters
+  title:
+    pl: Maksymalny wiek hasła jest skonfigurowany
+    en: Ensure password expiration is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Hasło, które nigdy nie wygasa, działa bez końca także po wycieku, o którym
+    nikt nie wie. PASS_MAX_DAYS w /etc/login.defs mówi, po ilu dniach nowe
+    konta muszą zmienić hasło, a pole w /etc/shadow ustala to samo dla
+    istniejących kont.
+
+    Punkt wymaga, żeby PASS_MAX_DAYS i to pole kont z hasłem wynosiły od 1
+    do 365 dni.
+  en: |
+    A password that never expires keeps working forever, also after a leak
+    nobody knows about. PASS_MAX_DAYS in /etc/login.defs sets after how many
+    days new accounts have to change the password, and a field in
+    /etc/shadow sets the same for existing accounts.
+
+    The item requires PASS_MAX_DAYS and this field of accounts with a
+    password to be between 1 and 365 days.
+
+disruption_description:
+  pl: |
+    Ubuntu domyślnie ustawia 99999 dni, czyli hasła nie wygasają. Naprawa
+    ustawia 365 dni w login.defs i kontom z hasłem. Konto, którego hasło
+    zmieniono ponad rok temu, musi je zmienić przy najbliższym logowaniu,
+    a przez tydzień przed terminem użytkownik widzi ostrzeżenie.
+  en: |
+    Ubuntu uses 99999 days by default, so passwords do not expire. The
+    remediation sets 365 days in login.defs and for accounts with a
+    password. An account whose password was changed over a year ago has to
+    change it at the next login, and for a week before the date the user
+    sees a warning.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Użytkownicy muszą zmieniać hasło co rok; konto z hasłem starszym niż rok musi je zmienić przy najbliższym logowaniu
+      - "Konta z hasłem używane przez skrypty bez interakcji, np. przez su albo ssh z hasłem: po wygaśnięciu hasła logowanie się nie uda"
+    en:
+      - Users have to change the password every year; an account with a password older than a year has to change it at the next login
+      - "Accounts with a password used by scripts without interaction, for example through su or ssh with a password: after the password expires the login fails"
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Konta usługowe z hasłem, którego nikt nie zmienia; lepiej przejść na klucze i zablokować im hasło
+    en:
+      - Service accounts with a password that nobody changes; it is better to move them to keys and lock the password
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    # ua_get KEY: "file value" of the last KEY=value line in /etc/default/useradd
+    ua_get() {
+      [ -f /etc/default/useradd ] || return 1
+      awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); n = 1 }
+        END { if (!n) exit 1; print "/etc/default/useradd " v }' /etc/default/useradd
+    }
+    ok() { awk -v v="$1" 'BEGIN { exit !((v ~ /^(0|[1-9][0-9]*)$/) && v + 0 >= 1 && v + 0 <= 365) }'; }
+    # shadow_bad: name=value of accounts with a password hash whose field does not meet the item
+    shadow_bad() {
+      awk -F: -v fld=5 '$2 ~ /^\$.+\$/ { v = $fld; if (!(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 365)) { printf "%s%s=%s", s, $1, v; s = "," } }' /etc/shadow
+    }
+    evaluate() {
+      local r v s bad="" u=""
+      if r=$(defs_get PASS_MAX_DAYS); then
+        v=${r#* }; s="PASS_MAX_DAYS=$v"
+        [ "${r%% *}" = /etc/login.defs ] || s="$s(${r%% *})"
+      else
+        v=""; s="PASS_MAX_DAYS=not-set"
+      fi
+      ok "$v" || bad=1
+      if [ -n "5" ]; then
+        if [ ! -r /etc/shadow ]; then echo "NOT_OK:$s,shadow-unreadable"; return; fi
+        u=$(shadow_bad)
+      fi
+      if [ -z "$bad" ] && [ -z "$u" ]; then echo "OK:$s"; else echo "NOT_OK:$s${u:+,users=$u}"; fi
+    }
+    # restore_users: accounts that still have the value of this rule get the saved value back
+    restore_users() {
+      local tag n v cur
+      while read -r tag n v; do
+        [ "$tag" = user ] || continue
+        cur=$(awk -F: -v n="$n" -v fld=5 '$1 == n { print $fld; exit }' /etc/shadow)
+        if [ "$cur" = "365" ] && [ "$v" != "365" ]; then chage -M "${v:--1}" "$n"; echo "Restored the previous value for $n"; fi
+      done < "$b"
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=shadowdefs-1
+        if [ -e /etc/login.defs ]; then echo existed=1; else echo existed=0; fi
+        if [ -n "5" ]; then awk -F: -v fld=5 '$2 ~ /^\$.+\$/ { print "user", $1, $fld }' /etc/shadow; fi
+      } > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/login.defs
+      mark='# Sentin-Harden: ubuntu2404-pass-max-days'
+      line='PASS_MAX_DAYS 365'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=shadowdefs-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    # ua_get KEY: "file value" of the last KEY=value line in /etc/default/useradd
+    ua_get() {
+      [ -f /etc/default/useradd ] || return 1
+      awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); n = 1 }
+        END { if (!n) exit 1; print "/etc/default/useradd " v }' /etc/default/useradd
+    }
+    ok() { awk -v v="$1" 'BEGIN { exit !((v ~ /^(0|[1-9][0-9]*)$/) && v + 0 >= 1 && v + 0 <= 365) }'; }
+    # shadow_bad: name=value of accounts with a password hash whose field does not meet the item
+    shadow_bad() {
+      awk -F: -v fld=5 '$2 ~ /^\$.+\$/ { v = $fld; if (!(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 365)) { printf "%s%s=%s", s, $1, v; s = "," } }' /etc/shadow
+    }
+    evaluate() {
+      local r v s bad="" u=""
+      if r=$(defs_get PASS_MAX_DAYS); then
+        v=${r#* }; s="PASS_MAX_DAYS=$v"
+        [ "${r%% *}" = /etc/login.defs ] || s="$s(${r%% *})"
+      else
+        v=""; s="PASS_MAX_DAYS=not-set"
+      fi
+      ok "$v" || bad=1
+      if [ -n "5" ]; then
+        if [ ! -r /etc/shadow ]; then echo "NOT_OK:$s,shadow-unreadable"; return; fi
+        u=$(shadow_bad)
+      fi
+      if [ -z "$bad" ] && [ -z "$u" ]; then echo "OK:$s"; else echo "NOT_OK:$s${u:+,users=$u}"; fi
+    }
+    # restore_users: accounts that still have the value of this rule get the saved value back
+    restore_users() {
+      local tag n v cur
+      while read -r tag n v; do
+        [ "$tag" = user ] || continue
+        cur=$(awk -F: -v n="$n" -v fld=5 '$1 == n { print $fld; exit }' /etc/shadow)
+        if [ "$cur" = "365" ] && [ "$v" != "365" ]; then chage -M "${v:--1}" "$n"; echo "Restored the previous value for $n"; fi
+      done < "$b"
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        *shadow-unreadable*) echo "Cannot read /etc/shadow; run as root" >&2; exit 1 ;;
+      esac
+      fix=0
+      if g=$(defs_get PASS_MAX_DAYS); then
+        if ! ok "${g#* }"; then
+          [ "${g%% *}" = "$f" ] || { echo "PASS_MAX_DAYS is set in ${g%% *}, which overrides $f; change it there by hand" >&2; exit 1; }
+          fix=1
+        fi
+      else
+        fix=1
+      fi
+      users=""
+      if [ -n "5" ]; then
+        users=$(awk -F: -v fld=5 '$2 ~ /^\$.+\$/ { v = $fld; if (!(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 365)) print $1 }' /etc/shadow)
+        lock=$(awk -F: -v fld=5 -v nv=365 -v today=$today '
+          function lk(l, m, i) { return l ~ /^[0-9]+$/ && l + 0 > 0 && m ~ /^[0-9]+$/ && i ~ /^[0-9]+$/ && today - l > m + 0 && today - l - m > i + 0 }
+          $2 ~ /^\$.+\$/ { v = $fld; if (v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 365) next; was = lk($3, $5, $7); $fld = nv
+            if (!was && lk($3, $5, $7)) { printf "%s%s", s, $1; s = "," } }' /etc/shadow)
+        if [ -n "$lock" ]; then
+          echo "These accounts would be locked right away because their password is too old: $lock; set them a new password first, nothing changed" >&2; exit 1
+        fi
+      fi
+      d=$(dirname "$f")
+      old=$(mktemp "$d/.sentin-harden-old.XXXXXX")
+      t=$(mktemp "$d/.sentin-harden.XXXXXX")
+      trap 'rm -f "$old" "$t"' EXIT
+      if [ -e "$f" ]; then had=1; cat "$f" > "$old"; else had=0; fi
+      undo() {
+        if [ "$fix" = 1 ]; then if [ "$had" = 1 ]; then cat "$old" > "$f"; else rm -f "$f"; fi; fi
+        if [ -n "5" ]; then restore_users >/dev/null; fi
+      }
+      if [ "$fix" = 1 ]; then
+        { if [ "$had" = 1 ]; then awk -v mark="$mark" -v line="$line" 'skip { skip = 0; if ($0 == line) next } $0 == mark { skip = 1; next } { print }' "$f"; fi
+          echo "$mark"; echo "$line"; } > "$t"
+        if [ "$had" = 1 ]; then chmod --reference="$f" "$t"; chown --reference="$f" "$t"; else chmod 644 "$t"; chown root:root "$t"; fi
+        mv -f "$t" "$f"
+        echo "Set $line in $f"
+      fi
+      for u in $users; do
+        chage -M 365 "$u" || { undo; echo "chage failed for $u; restored the previous state" >&2; exit 1; }
+        echo "Set the maximum password age 365 for $u"
+      done
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) undo; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/login.defs
+      mark='# Sentin-Harden: ubuntu2404-pass-max-days'
+      line='PASS_MAX_DAYS 365'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=shadowdefs-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      e=$(sed -n '2s/^existed=//p' "$b")
+      case "$e" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    # ua_get KEY: "file value" of the last KEY=value line in /etc/default/useradd
+    ua_get() {
+      [ -f /etc/default/useradd ] || return 1
+      awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); n = 1 }
+        END { if (!n) exit 1; print "/etc/default/useradd " v }' /etc/default/useradd
+    }
+    ok() { awk -v v="$1" 'BEGIN { exit !((v ~ /^(0|[1-9][0-9]*)$/) && v + 0 >= 1 && v + 0 <= 365) }'; }
+    # shadow_bad: name=value of accounts with a password hash whose field does not meet the item
+    shadow_bad() {
+      awk -F: -v fld=5 '$2 ~ /^\$.+\$/ { v = $fld; if (!(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 365)) { printf "%s%s=%s", s, $1, v; s = "," } }' /etc/shadow
+    }
+    evaluate() {
+      local r v s bad="" u=""
+      if r=$(defs_get PASS_MAX_DAYS); then
+        v=${r#* }; s="PASS_MAX_DAYS=$v"
+        [ "${r%% *}" = /etc/login.defs ] || s="$s(${r%% *})"
+      else
+        v=""; s="PASS_MAX_DAYS=not-set"
+      fi
+      ok "$v" || bad=1
+      if [ -n "5" ]; then
+        if [ ! -r /etc/shadow ]; then echo "NOT_OK:$s,shadow-unreadable"; return; fi
+        u=$(shadow_bad)
+      fi
+      if [ -z "$bad" ] && [ -z "$u" ]; then echo "OK:$s"; else echo "NOT_OK:$s${u:+,users=$u}"; fi
+    }
+    # restore_users: accounts that still have the value of this rule get the saved value back
+    restore_users() {
+      local tag n v cur
+      while read -r tag n v; do
+        [ "$tag" = user ] || continue
+        cur=$(awk -F: -v n="$n" -v fld=5 '$1 == n { print $fld; exit }' /etc/shadow)
+        if [ "$cur" = "365" ] && [ "$v" != "365" ]; then chage -M "${v:--1}" "$n"; echo "Restored the previous value for $n"; fi
+      done < "$b"
+    }
+      if [ -n "5" ]; then restore_users; fi
+      if [ ! -f "$f" ] || ! grep -qxF "$mark" "$f"; then echo "The line of this rule is not in $f, nothing to restore there"; exit 0; fi
+      t=$(mktemp "$(dirname "$f")/.sentin-harden.XXXXXX")
+      trap 'rm -f "$t"' EXIT
+      # Only the marked line of this rule goes; the rest of the file stays as it is now.
+      awk -v mark="$mark" -v line="$line" 'skip { skip = 0; if ($0 == line) next } $0 == mark { skip = 1; next } { print }' "$f" > "$t"
+      if grep -A 1 -xF "$mark" "$f" | grep -qxF "$line"; then kept=0; else kept=1; fi
+      if [ "$e" = 0 ] && ! grep -q '[^[:space:]]' "$t"; then
+        rm -f "$f"; echo "Removed $f, which this rule created"; exit 0
+      fi
+      chmod --reference="$f" "$t"; chown --reference="$f" "$t"; mv -f "$t" "$f"
+      if [ "$kept" = 1 ]; then
+        echo "Removed the comment of this rule from $f; the line under it was changed by hand and stays"
+      else
+        echo "Removed the PASS_MAX_DAYS line of this rule from $f"
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/login.defs.5.html
+  - https://man7.org/linux/man-pages/man5/shadow.5.html
+  - https://man7.org/linux/man-pages/man1/chage.1.html
+
+notes:
+  pl: |
+    PASS_MAX_DAYS i PASS_WARN_AGE czyta useradd przy tworzeniu konta. Na
+    Ubuntu 24.04 czyta on tylko /etc/login.defs, bez katalogu
+    login.defs.d, i wygrywa ostatni wpis klucza, także z niepoprawną
+    wartością, która daje wtedy puste pole w /etc/shadow. Wartość stoi po
+    nazwie oddzielona spacją albo tabulatorem; zapis KEY=wartość i nazwa
+    małymi literami są pomijane, a komentarz na końcu wiersza psuje
+    wartość. Liczbę trzeba zapisać dziesiętnie bez zera na początku, bo
+    useradd czyta 010 jako 8, a 0x20 jako 32. Sprawdziłem to w kontenerze
+    Ubuntu 24.04.
+
+    Naprawa dopisuje wiersz tej reguły na końcu /etc/login.defs pod
+    komentarzem Sentin-Harden, żeby był ostatnim wpisem, a wcześniejsze
+    wpisy zostawia bez zmian. Wycofanie usuwa tylko te dwa wiersze.
+
+    Ustawienie w /etc/login.defs dotyczy tylko kont tworzonych później,
+    więc sprawdzenie obejmuje też odpowiednie pole w /etc/shadow kont, które
+    mają skrót hasła (konta zablokowane i bez hasła pomija, tak jak CIS).
+    Naprawa ustawia to pole poleceniem chage kontom, które nie spełniają
+    punktu, a stare wartości zapisuje w kopii zapasowej. Wycofanie przywraca
+    je kontom, które nadal mają wartość ustawioną przez regułę. Sprawdzenie
+    wymaga odczytu /etc/shadow, więc bez uprawnień roota daje wynik NOT_OK
+    z dopiskiem shadow-unreadable.
+
+    Naprawa odmawia, gdy nowe wartości zablokowałyby któreś konto od razu,
+    czyli gdy jego hasło wygasłoby dawniej niż liczba dni z pola nieaktywności
+    (INACTIVE). Wtedy trzeba najpierw nadać temu kontu nowe hasło.
+    Sprawdziłem w kontenerze, że konto z wygasłym hasłem musi je zmienić
+    przy logowaniu, a po okresie nieaktywności jest odrzucane.
+
+    Konto root na Ubuntu domyślnie nie ma hasła (* w /etc/shadow), więc go to
+    nie dotyczy.
+
+    Wartość 0 w PASS_MAX_DAYS wymusza zmianę przy każdym logowaniu i też nie
+    spełnia punktu.
+  en: |
+    useradd reads PASS_MAX_DAYS and PASS_WARN_AGE when it creates an
+    account. On Ubuntu 24.04 it reads only /etc/login.defs, without a
+    login.defs.d directory, and the last entry of a key wins, even one with
+    a wrong value, which then gives an empty field in /etc/shadow. The value
+    follows the name after a space or tab; KEY=value and a lower case name
+    are skipped, and a comment at the end of the line spoils the value. A
+    number has to be written in decimal without a leading zero, because
+    useradd reads 010 as 8 and 0x20 as 32. This was checked in an Ubuntu
+    24.04 container.
+
+    The remediation appends the line of this rule at the end of
+    /etc/login.defs under a Sentin-Harden comment, so that it is the last
+    entry, and leaves the earlier entries as they are. Rollback removes only
+    these two lines.
+
+    The setting in /etc/login.defs only applies to accounts created later,
+    so the check also covers the matching field in /etc/shadow of accounts
+    that have a password hash (it skips locked accounts and accounts without
+    a password, as CIS does). The remediation sets this field with chage for
+    accounts that do not meet the item and saves the old values in the
+    backup. Rollback gives them back to accounts that still have the value
+    set by the rule. The check needs to read /etc/shadow, so without root
+    privileges it gives the NOT_OK result with a shadow-unreadable note.
+
+    The remediation refuses when the new values would lock an account at
+    once, that is when its password would have expired longer ago than the
+    number of days in the inactivity field (INACTIVE). Then give that
+    account a new password first. A container showed that an account with
+    an expired password has to change it at login, and after the inactivity
+    period it is rejected.
+
+    The root account on Ubuntu has no password by default (* in
+    /etc/shadow), so this does not apply to it.
+
+    The value 0 in PASS_MAX_DAYS forces a change at every login and does
+    not meet the item either.

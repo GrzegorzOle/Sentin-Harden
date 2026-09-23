@@ -6,7 +6,7 @@ benchmark:
   item: 1.5.3
   section: Initial Setup > Configure Additional Process Hardening
   title:
-    pl: Przetwarzanie zrzutów pamięci po awarii programu jest wyłączone
+    pl: Generowanie śladu stosu ze zrzutów pamięci jest wyłączone
     en: Ensure core dump backtraces are disabled
   level: 1
   profile: workstation
@@ -21,57 +21,61 @@ assessment_state: assessed-impact-described
 description:
   pl: |
     Gdy program kończy się awarią, jądro przekazuje obraz jego pamięci do
-    systemd-coredump. Ten go analizuje, zapisuje ślad stosu w dzienniku
-    systemowym i, zależnie od ustawień, przechowuje cały zrzut na dysku. Obraz
-    pamięci może zawierać hasła, klucze sesji i treść dokumentów, które program
-    miał otwarte w chwili awarii.
+    systemd-coredump. Ten analizuje obraz jako root i zapisuje w dzienniku
+    systemowym ślad stosu każdego wątku: nazwy funkcji, bibliotek i adresy, pod
+    którymi były załadowane. Analiza danych z procesu, który właśnie uległ
+    awarii, np. po celowo przygotowanych danych wejściowych, to dodatkowa
+    powierzchnia ataku, a adresy w dzienniku zdradzają rozmieszczenie pamięci,
+    które ASLR ma ukrywać.
 
     Parametr ProcessSizeMax w [Coredump] określa, do jakiego rozmiaru zrzuty są
-    w ogóle przetwarzane. Punkt wymaga wartości 0, przy której systemd-coredump
-    odrzuca każdy zrzut: nie powstaje ani ślad stosu, ani plik. Domyślnie
-    Fedora przetwarza zrzuty do kilku gigabajtów.
+    analizowane; domyślnie to 32 GiB na systemach 64-bitowych. Punkt wymaga
+    wartości 0, przy której ślad stosu nie powstaje. Sam zrzut może nadal
+    zostać zapisany na dysku; o tym decyduje punkt 1.5.4.
   en: |
     When a program crashes, the kernel hands an image of its memory to
-    systemd-coredump. It analyses the image, writes a stack trace to the system
-    journal and, depending on the settings, keeps the whole dump on disk. The
-    memory image may hold passwords, session keys and the content of documents
-    the program had open at the moment of the crash.
+    systemd-coredump. It analyses the image as root and writes the stack trace
+    of every thread to the system journal: the names of functions and
+    libraries and the addresses they were loaded at. Analysing data from a
+    process that has just crashed, for example on purposely crafted input, is
+    extra attack surface, and the addresses in the journal reveal the memory
+    layout that ASLR is meant to hide.
 
     The ProcessSizeMax setting in [Coredump] sets up to which size dumps are
-    processed at all. The item requires value 0, at which systemd-coredump
-    drops every dump: neither a stack trace nor a file is produced. By default
-    Fedora processes dumps up to several gigabytes.
+    analysed; the default is 32 GiB on 64-bit systems. The item requires value
+    0, at which no stack trace is produced. The dump itself may still be
+    stored on disk; item 1.5.4 decides that.
 
 disruption_description:
   pl: |
-    Klasa wymaga przeglądu, bo zmiana odbiera materiał do diagnozy awarii.
-    Zwykły użytkownik tego nie zauważy, ale okno zgłaszania problemów w GNOME
-    (ABRT) przestaje pokazywać awarie programów, a programista nie odczyta
-    zrzutu przez coredumpctl. Zmiana działa od następnej awarii, bez restartu.
+    Klasa wymaga przeglądu, bo zmiana odbiera gotowy materiał do diagnozy
+    awarii. Zwykły użytkownik tego nie zauważy; programista lub administrator
+    nie znajdzie w dzienniku śladu stosu i musi otworzyć zapisany zrzut
+    w debuggerze. Zmiana działa od następnej awarii, bez restartu.
   en: |
-    The class needs review because the change removes material for crash
-    diagnosis. A regular user will not notice, but the GNOME problem reporting
-    window (ABRT) stops showing program crashes, and a developer cannot read a
-    dump with coredumpctl. The change takes effect from the next crash, without
-    a restart.
+    The class needs review because the change removes ready material for
+    crash diagnosis. A regular user will not notice; a developer or
+    administrator finds no stack trace in the journal and has to open the
+    stored dump in a debugger. The change takes effect from the next crash,
+    without a restart.
 
 implementation_consequences:
   impact_areas:
     - diagnostics-and-reporting
   what_breaks:
     pl:
-      - ABRT i okno zgłaszania problemów w GNOME nie wykrywają awarii programów, więc nie da się ich zgłosić do Fedory ani producenta
-      - Polecenia coredumpctl list, info i debug nie pokazują nowych awarii, a dziennik systemowy nie zawiera śladu stosu programu, który się zakończył
+      - Dziennik systemowy i polecenie coredumpctl info pokazują tylko informację o awarii programu, bez śladu stosu
+      - Ustalenie przyczyny awarii wymaga otwarcia zapisanego zrzutu w debuggerze, np. poleceniem coredumpctl debug, o ile zrzut jest przechowywany
     en:
-      - ABRT and the GNOME problem reporting window do not detect program crashes, so they cannot be reported to Fedora or the vendor
-      - The coredumpctl list, info and debug commands show no new crashes, and the system journal holds no stack trace of the program that ended
+      - The system journal and the coredumpctl info command show only a note about the program crash, without a stack trace
+      - Finding the cause of a crash requires opening the stored dump in a debugger, for example with the coredumpctl debug command, as long as the dump is kept
   interruption: none
   user_visible: false
   do_not_apply_when:
     pl:
-      - Stacja programisty lub testera, który diagnozuje awarie własnych programów na podstawie zrzutów pamięci
+      - Stacja programisty lub testera, który diagnozuje awarie własnych programów na podstawie śladów stosu w dzienniku
     en:
-      - A developer or tester workstation where crashes of one's own programs are diagnosed from memory dumps
+      - A developer or tester workstation where crashes of one's own programs are diagnosed from stack traces in the journal
   reversibility: immediate
 
 audit:
@@ -153,7 +157,6 @@ runnable: true
 sources:
   - https://www.freedesktop.org/software/systemd/man/latest/coredump.conf.html
   - https://www.freedesktop.org/software/systemd/man/latest/coredumpctl.html
-  - https://abrt.readthedocs.io/en/latest/
 
 notes:
   pl: |
@@ -169,8 +172,10 @@ notes:
     konfigurację przy każdej awarii, więc nie trzeba niczego restartować.
     Wycofanie przywraca poprzedni stan pliku.
 
-    Ustawienie działa tylko wtedy, gdy parametr jądra kernel.core_pattern
-    przekazuje zrzuty do systemd-coredump, co jest domyślne na Fedorze.
+    Razem z Storage=none z punktu 1.5.4 ustawienie wyłącza całą obsługę
+    zrzutów poza krótkim wpisem w dzienniku. Działa tylko wtedy, gdy parametr
+    jądra kernel.core_pattern przekazuje zrzuty do systemd-coredump, co jest
+    domyślne na Fedorze.
   en: |
     The check reads the value systemd-coredump sees from the systemd-analyze
     cat-config systemd/coredump.conf command. It prints the main file and the
@@ -184,5 +189,7 @@ notes:
     configuration on every crash, so nothing has to be restarted. Rollback
     restores the previous state of the file.
 
-    The setting only works when the kernel.core_pattern kernel parameter hands
-    dumps to systemd-coredump, which is the Fedora default.
+    Together with Storage=none from item 1.5.4 the setting turns off all
+    dump handling except a short journal entry. It only works when the
+    kernel.core_pattern kernel parameter hands dumps to systemd-coredump, which
+    is the Fedora default.

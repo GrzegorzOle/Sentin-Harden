@@ -1,62 +1,61 @@
-id: fedora44-faillock-deny
+id: fedora44-pwquality-difok
 
 benchmark:
   name: CIS Red Hat Enterprise Linux 9 Benchmark
   version: 2.0.0
-  item: 5.3.3.1.1
-  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_faillock module
+  item: 5.3.3.2.1
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_pwquality module
   title:
-    pl: Blokada po nieudanych próbach logowania jest skonfigurowana
-    en: Ensure password failed attempts lockout is configured
+    pl: Liczba zmienionych znaków w nowym haśle jest skonfigurowana
+    en: Ensure password number of changed characters is configured
   level: 1
   profile: workstation
 
 platform:
   system: fedora-44
 
-risk_category: medium
+risk_category: low
 disruption: needs-review
 assessment_state: assessed-impact-described
 
 description:
   pl: |
-    Parametr deny modułu pam_faillock mówi, po ilu kolejnych nieudanych
-    próbach konto zostaje zablokowane. Duża wartość albo 0, które wyłącza
-    blokadę, pozwala zgadywać hasło przez długi czas.
+    Parametr difok mówi, ile znaków nowego hasła nie może występować
+    w starym. Przy wartości 1 wystarczy zmienić jeden znak, np. dopisać
+    cyfrę na końcu, i hasło znane atakującemu prawie się nie zmienia.
 
-    Punkt wymaga, żeby deny wynosił od 1 do 5.
+    Punkt wymaga, żeby difok wynosił co najmniej 2.
   en: |
-    The deny parameter of pam_faillock sets after how many consecutive
-    failed attempts the account is locked. A large value, or 0, which turns
-    the lock off, allows guessing the password for a long time.
+    The difok parameter sets how many characters of the new password must
+    not be present in the old one. With the value 1 it is enough to change
+    one character, for example add a digit at the end, and a password known
+    to an attacker hardly changes.
 
-    The item requires deny to be between 1 and 5.
+    The item requires difok to be at least 2.
 
 disruption_description:
   pl: |
-    Fedora domyślnie ustawia deny=3, więc bez wcześniejszych zmian nic się
-    nie dzieje. Jeśli ustawiono więcej niż 5 albo 0, naprawa ustawia 5
-    i konto blokuje się szybciej niż dotąd.
+    Fedora domyślnie ustawia difok=1. Naprawa ustawia 2, więc przy zmianie
+    hasła trzeba zmienić co najmniej dwa znaki.
   en: |
-    Fedora uses deny=3 by default, so nothing happens without earlier
-    changes. If more than 5 or 0 was set, the remediation sets 5 and the
-    account is locked sooner than before.
+    Fedora uses difok=1 by default. The remediation sets 2, so a password
+    change has to change at least two characters.
 
 implementation_consequences:
   impact_areas:
     - accounts-and-passwords
   what_breaks:
     pl:
-      - "Użytkownicy, którzy często mylą hasło: konto blokuje się po pięciu błędach zamiast po większej liczbie"
+      - Użytkownicy, którzy przy zmianie hasła zmieniają tylko jeden znak
     en:
-      - "Users who often mistype the password: the account is locked after five errors instead of more"
+      - Users who change only one character when they change the password
   interruption: none
   user_visible: true
   do_not_apply_when:
     pl:
-      - Konto używane przez automatyzację z hasłem, którą kilka błędnych prób zatrzymałoby na czas blokady
+      - Konta, których hasła zmienia automatyzacja wybierająca hasła według własnych, słabszych zasad
     en:
-      - An account used by password-based automation that a few failed attempts would stop for the lock time
+      - Accounts whose passwords are changed by automation that picks passwords by its own, weaker rules
   reversibility: immediate
 
 audit:
@@ -89,11 +88,11 @@ audit:
           { for (i = 4; i <= NF; i++) if (index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
-    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 5) }'; }
+    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 2) }'; }
     evaluate() {
       local v s a bad=""
-      if v=$(conf_get deny /etc/security/faillock.conf); then s="deny=$v"; else v='3'; s="deny=$v(default)"; fi
-      for a in $(pam_args pam_faillock.so deny); do
+      if v=$(conf_get difok /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf); then s="difok=$v"; else v='1'; s="difok=$v(default)"; fi
+      for a in $(pam_args pam_pwquality.so difok); do
         case "${a#*:}" in
           conf=*) bad="$bad,$a" ;;
           *) ok "${a#*=}" || bad="$bad,$a" ;;
@@ -116,7 +115,7 @@ remediation:
       mkdir -p "$(dirname "$b")"
       {
         echo format=secconf-1
-        if [ -e /etc/security/faillock.conf ]; then echo existed=1; else echo existed=0; fi
+        if [ -e /etc/security/pwquality.conf ]; then echo existed=1; else echo existed=0; fi
       } > "$b"
       echo "Saved previous state to $b"
     )
@@ -125,9 +124,9 @@ remediation:
     (
       set -e
       b='{{backup_file}}'
-      f=/etc/security/faillock.conf
-      mark='# Sentin-Harden: fedora44-faillock-deny'
-      line='deny = 5'
+      f=/etc/security/pwquality.conf
+      mark='# Sentin-Harden: fedora44-pwquality-difok'
+      line='difok = 2'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
     # conf_get KEY FILE...: value of the last entry in the files read in this order.
@@ -157,11 +156,11 @@ remediation:
           { for (i = 4; i <= NF; i++) if (index($i, k "=") == 1 || index($i, "conf=") == 1) print f ":" $i }' "/etc/pam.d/$f"
       done
     }
-    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 1 && v + 0 <= 5) }'; }
+    ok() { awk -v v="$1" 'BEGIN { exit !(v ~ /^[0-9]+$/ && v + 0 >= 2) }'; }
     evaluate() {
       local v s a bad=""
-      if v=$(conf_get deny /etc/security/faillock.conf); then s="deny=$v"; else v='3'; s="deny=$v(default)"; fi
-      for a in $(pam_args pam_faillock.so deny); do
+      if v=$(conf_get difok /etc/security/pwquality.conf.d/*.conf /etc/security/pwquality.conf); then s="difok=$v"; else v='1'; s="difok=$v(default)"; fi
+      for a in $(pam_args pam_pwquality.so difok); do
         case "${a#*:}" in
           conf=*) bad="$bad,$a" ;;
           *) ok "${a#*=}" || bad="$bad,$a" ;;
@@ -174,7 +173,7 @@ remediation:
       r=$(evaluate)
       case "$r" in
         OK*) echo "$f already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
-        *by-hand:*) echo "The pam_faillock lines in the PAM files have arguments that decide it instead of $f (${r##*by-hand:}); change the authselect profile by hand" >&2; exit 1 ;;
+        *by-hand:*) echo "The pam_pwquality lines in the PAM files have arguments that decide it instead of $f (${r##*by-hand:}); change the authselect profile by hand" >&2; exit 1 ;;
       esac
       d=$(dirname "$f")
       old=$(mktemp "$d/.sentin-harden-old.XXXXXX")
@@ -201,9 +200,9 @@ remediation:
     (
       set -e
       b='{{backup_file}}'
-      f=/etc/security/faillock.conf
-      mark='# Sentin-Harden: fedora44-faillock-deny'
-      line='deny = 5'
+      f=/etc/security/pwquality.conf
+      mark='# Sentin-Harden: fedora44-pwquality-difok'
+      line='difok = 2'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
       e=$(sed -n '2s/^existed=//p' "$b")
@@ -222,7 +221,7 @@ remediation:
       if [ "$kept" = 1 ]; then
         echo "Removed the comment of this rule from $f; the line under it was changed by hand and stays"
       else
-        echo "Removed the deny line of this rule from $f"
+        echo "Removed the difok line of this rule from $f"
       fi
     )
 
@@ -230,43 +229,48 @@ privileges: root
 runnable: true
 
 sources:
-  - https://man7.org/linux/man-pages/man5/faillock.conf.5.html
-  - https://man7.org/linux/man-pages/man8/pam_faillock.8.html
+  - https://github.com/libpwquality/libpwquality
 
 notes:
   pl: |
-    pam_faillock czyta najpierw /etc/security/faillock.conf, a potem
-    argumenty ze swoich wierszy w /etc/pam.d/system-auth i password-auth,
-    więc argument w pliku PAM wygrywa z plikiem faillock.conf. W pliku
-    wygrywa ostatni wpis danego klucza. Sprawdzenie bierze ostatni wpis
-    z faillock.conf, a gdy go nie ma, wartość domyślną modułu. Argument
-    w wierszu pam_faillock z niepoprawną wartością albo argument conf= daje
-    wynik NOT_OK z dopiskiem by-hand; naprawa wtedy niczego nie zmienia, bo
-    te wiersze pochodzą z szablonu profilu authselect i trzeba je poprawić
-    ręcznie.
+    pam_pwquality czyta najpierw pliki /etc/security/pwquality.conf.d/*.conf
+    w kolejności alfabetycznej, potem /etc/security/pwquality.conf, a na
+    końcu argumenty ze swojego wiersza w /etc/pam.d/system-auth
+    i password-auth. Wygrywa ostatni wpis, więc argument w pliku PAM wygrywa
+    ze wszystkimi plikami. Sprawdziłem to na Fedorze 44. Sprawdzenie bierze
+    ostatni wpis z tych plików, a gdy go nie ma, wartość domyślną modułu.
+    Argument w wierszu pam_pwquality z niepoprawną wartością daje wynik
+    NOT_OK z dopiskiem by-hand; naprawa wtedy niczego nie zmienia, bo ten
+    wiersz pochodzi z szablonu profilu authselect.
 
-    Naprawa dopisuje na końcu faillock.conf wiersz tej reguły pod
-    komentarzem Sentin-Harden, a wcześniejsze wpisy zostawia bez zmian.
-    Wycofanie usuwa tylko te dwa wiersze. Ustawienie działa dopiero wtedy,
-    gdy pam_faillock jest włączony (punkt 5.3.2.2).
+    Naprawa dopisuje wiersz tej reguły na końcu pwquality.conf pod
+    komentarzem Sentin-Harden, bo ten plik jest czytany po katalogu
+    pwquality.conf.d. Wycofanie usuwa tylko te dwa wiersze. Zasady
+    obowiązują przy każdej zmianie hasła przez użytkownika, np. passwd albo
+    okno zmiany hasła w GNOME; obecne hasła zostają ważne. Hasła ustawiane
+    przez roota nie są sprawdzane, dopóki nie włączy się enforce_for_root
+    (punkt 5.3.3.2.7).
 
-    Domyślnie deny=3. Naprawa ustawia deny = 5, czyli najłagodniejszą
-    wartość zgodną z punktem; mniejszą można wpisać ręcznie.
+    difok jest sprawdzane tylko wtedy, gdy użytkownik podaje stare hasło,
+    czyli nie przy haśle ustawianym przez roota.
   en: |
-    pam_faillock reads /etc/security/faillock.conf first and then the
-    arguments on its lines in /etc/pam.d/system-auth and password-auth, so
-    an argument in the PAM file wins over faillock.conf. In the file the
-    last entry of a key wins. The check takes the last entry in
-    faillock.conf and, when there is none, the default of the module. An
-    argument on a pam_faillock line with a wrong value, or a conf= argument,
-    gives the NOT_OK result with a by-hand note; the remediation then
-    changes nothing, because these lines come from the authselect profile
-    template and have to be fixed by hand.
+    pam_pwquality reads the /etc/security/pwquality.conf.d/*.conf files in
+    alphabetical order first, then /etc/security/pwquality.conf, and last
+    the arguments on its line in /etc/pam.d/system-auth and password-auth.
+    The last entry wins, so an argument in the PAM file wins over all files.
+    This was checked on Fedora 44. The check takes the last entry in these
+    files and, when there is none, the default of the module. An argument on
+    the pam_pwquality line with a wrong value gives the NOT_OK result with a
+    by-hand note; the remediation then changes nothing, because this line
+    comes from the authselect profile template.
 
     The remediation appends the line of this rule at the end of
-    faillock.conf under a Sentin-Harden comment and leaves earlier entries
-    as they are. Rollback removes only these two lines. The setting only
-    works when pam_faillock is enabled (item 5.3.2.2).
+    pwquality.conf under a Sentin-Harden comment, because this file is read
+    after the pwquality.conf.d directory. Rollback removes only these two
+    lines. The rules apply to every password change by a user, for example
+    passwd or the GNOME password dialog; current passwords stay valid.
+    Passwords that root sets are not checked unless enforce_for_root is
+    turned on (item 5.3.3.2.7).
 
-    The default is deny=3. The remediation sets deny = 5, the mildest value
-    that meets the item; a smaller one can be set by hand.
+    difok is only checked when the user gives the old password, so not for
+    a password that root sets.

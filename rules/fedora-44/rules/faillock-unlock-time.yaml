@@ -64,15 +64,19 @@ implementation_consequences:
 audit:
   shell: bash
   test_command: |
+    # conf_get KEY FILE...: value of the last entry in the files read in this order.
     conf_get() {
-      [ -r "$1" ] || return 1
-      awk -v k="$2" '
+      local k=$1 f
+      shift
+      set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
+      [ $# -gt 0 ] || return 1
+      awk -v k="$k" '
         { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
         name != k || name == "" { next }
         { v = substr(n, length(name) + 1); sub(/^[ \t]*/, "", v)
           if (v ~ /^=/) sub(/^=[ \t]*/, "", v); else v = ""
           sub(/[ \t]+$/, "", v); val = v; seen = 1 }
-        END { if (seen) print val; exit !seen }' "$1"
+        END { if (seen) print val; exit !seen }' "$@"
     }
     # Arguments KEY=value and conf=... on active lines of a module, one
     # "file:KEY=value" item each.
@@ -90,7 +94,7 @@ audit:
     ok() { awk -v v="$1" 'BEGIN { exit !(v == "never" || (v ~ /^[0-9]+$/ && (v + 0 == 0 || v + 0 >= 900))) }'; }
     evaluate() {
       local v s a bad=""
-      if v=$(conf_get /etc/security/faillock.conf unlock_time); then s="unlock_time=$v"; else v='600'; s="unlock_time=$v(default)"; fi
+      if v=$(conf_get unlock_time /etc/security/faillock.conf); then s="unlock_time=$v"; else v='600'; s="unlock_time=$v(default)"; fi
       for a in $(pam_args pam_faillock.so unlock_time); do
         case "${a#*:}" in
           conf=*) bad="$bad,$a" ;;
@@ -128,15 +132,19 @@ remediation:
       line='unlock_time = 900'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=secconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    # conf_get KEY FILE...: value of the last entry in the files read in this order.
     conf_get() {
-      [ -r "$1" ] || return 1
-      awk -v k="$2" '
+      local k=$1 f
+      shift
+      set -- $(for f in "$@"; do if [ -r "$f" ]; then printf '%s\n' "$f"; fi; done)
+      [ $# -gt 0 ] || return 1
+      awk -v k="$k" '
         { sub(/#.*/, ""); n = $0; sub(/^[ \t]+/, "", n); name = n; sub(/[ \t=].*/, "", name) }
         name != k || name == "" { next }
         { v = substr(n, length(name) + 1); sub(/^[ \t]*/, "", v)
           if (v ~ /^=/) sub(/^=[ \t]*/, "", v); else v = ""
           sub(/[ \t]+$/, "", v); val = v; seen = 1 }
-        END { if (seen) print val; exit !seen }' "$1"
+        END { if (seen) print val; exit !seen }' "$@"
     }
     # Arguments KEY=value and conf=... on active lines of a module, one
     # "file:KEY=value" item each.
@@ -154,7 +162,7 @@ remediation:
     ok() { awk -v v="$1" 'BEGIN { exit !(v == "never" || (v ~ /^[0-9]+$/ && (v + 0 == 0 || v + 0 >= 900))) }'; }
     evaluate() {
       local v s a bad=""
-      if v=$(conf_get /etc/security/faillock.conf unlock_time); then s="unlock_time=$v"; else v='600'; s="unlock_time=$v(default)"; fi
+      if v=$(conf_get unlock_time /etc/security/faillock.conf); then s="unlock_time=$v"; else v='600'; s="unlock_time=$v(default)"; fi
       for a in $(pam_args pam_faillock.so unlock_time); do
         case "${a#*:}" in
           conf=*) bad="$bad,$a" ;;
@@ -168,7 +176,7 @@ remediation:
       r=$(evaluate)
       case "$r" in
         OK*) echo "$f already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
-        *by-hand:*) echo "The pam_faillock lines in the PAM files set unlock_time or conf themselves (${r##*by-hand:}), so $f does not decide it; change the authselect profile by hand" >&2; exit 1 ;;
+        *by-hand:*) echo "The pam_faillock lines in the PAM files have arguments that decide it instead of $f (${r##*by-hand:}); change the authselect profile by hand" >&2; exit 1 ;;
       esac
       d=$(dirname "$f")
       old=$(mktemp "$d/.sentin-harden-old.XXXXXX")

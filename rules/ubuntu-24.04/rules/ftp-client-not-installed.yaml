@@ -1,0 +1,213 @@
+id: ubuntu2404-ftp-client-not-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.2.6
+  section: Services > Configure Client Services
+  title:
+    pl: Klient FTP nie jest zainstalowany
+    en: Ensure ftp client is not installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    FTP przesyła login, hasło i pliki otwartym tekstem. Klient na
+    komputerze zachęca do przesyłania danych w ten sposób zamiast przez SFTP
+    lub HTTPS.
+
+    Punkt wymaga, żeby pakiety ftp i tnftp nie były zainstalowane. Ubuntu
+    Server instaluje je domyślnie jako zależność metapakietu ubuntu-standard,
+    więc na typowej instalacji punkt nie jest spełniony.
+  en: |
+    FTP sends the login, the password and the files in clear text. A client
+    on the computer encourages transferring data this way instead of over
+    SFTP or HTTPS.
+
+    The item requires that the ftp and tnftp packages are not installed.
+    Ubuntu Server installs them by default as a dependency of the
+    ubuntu-standard metapackage, so on a typical installation the item is
+    not met.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli nikt nie używał polecenia ftp. Na typowej
+    instalacji naprawa i tak niczego nie zmienia, bo razem z klientem
+    musiałyby zniknąć metapakiety Ubuntu.
+  en: |
+    Nobody will notice if nobody used the ftp command. On a typical
+    installation the remediation changes nothing anyway, because the Ubuntu
+    metapackages would have to go together with the client.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Polecenie ftp nie jest dostępne; skrypty, które z niego korzystają, kończą się błędem
+    en:
+      - The ftp command is not available; scripts that use it fail
+  interruption: none
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    found=""
+    for p in ftp tnftp; do
+      s=$(st "$p")
+      case "$s" in ""|not-installed) ;; installed) found="$found,$p" ;; *) found="$found,$p:$s" ;; esac
+    done
+    if [ -n "$found" ]; then echo "INSTALLED:${found#,}"; else echo NOT_INSTALLED; fi
+  expected: '^NOT_INSTALLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e -o pipefail
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      keep=""
+      for p in ftp tnftp; do
+        case "$(st "$p")" in ""|not-installed) continue ;; esac
+        for f in $(dpkg-query -W -f='${Conffiles}\n' "$p" | awk '{ print $1 }'); do
+          if [ -e "$f" ] || [ -L "$f" ]; then keep="$keep ${f#/}"; fi
+        done
+      done
+      data=-
+      if [ -n "$keep" ]; then data=$(tar -C / -czf - $keep | base64 -w 0); fi
+      {
+        echo format=dpkg-off-1
+        for p in ftp tnftp; do s=$(st "$p"); echo "pkg $p ${s:-not-installed}"; done
+        echo "conffiles $data"
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""
+      for p in ftp tnftp; do case "$(st "$p")" in ""|not-installed) ;; *) rm="$rm $p" ;; esac; done
+      if [ -z "$rm" ]; then echo "Nothing to remove"; exit 0; fi
+      # apt-get also removes the packages that depend on these; do not take them along.
+      extra=$(LC_ALL=C apt-get -s purge $rm | awk '$1 == "Purg" || $1 == "Remv" { sub(/:.*/, "", $2); print $2 }' |
+        grep -vxF -e ftp -e tnftp || true)
+      if [ -n "$extra" ]; then
+        echo "Removing$rm would also remove: $(echo $extra); nothing changed" >&2; exit 1
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get purge -y -qq $rm
+      for p in $rm; do
+        case "$(st "$p")" in ""|not-installed) ;; *) echo "$p is still installed" >&2; exit 1 ;; esac
+      done
+      echo "Removed and purged:$rm"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-off-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(sed -n 's/^pkg \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "ftp tnftp " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      data=$(sed -n 's/^conffiles //p' "$b")
+      case "$data" in ""|*[!A-Za-z0-9+/=-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      inst=""; cfonly=""
+      while read -r tag p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != not-installed ] || continue
+        case "$(st "$p")" in ""|not-installed) ;; *) continue ;; esac
+        inst="$inst $p"
+        [ "$s" = installed ] || cfonly="$cfonly $p"
+      done < <(grep '^pkg ' "$b")
+      if [ -z "$inst" ]; then echo "Nothing to restore"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      # The removal left the recommended packages in place; do not add new ones.
+      o="-y -qq --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $inst; then apt-get update -qq; apt-get install $o $inst; fi
+      # The configuration files as they were, with the administrator's changes.
+      if [ "$data" != - ]; then printf '%s' "$data" | base64 -d | tar -C / -xzf -; fi
+      # A package that only had its configuration files left goes back to that state.
+      if [ -n "$cfonly" ]; then dpkg -r $cfonly >/dev/null; fi
+      echo "Installed again:$inst"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man1/tnftp.1.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-mark.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+
+notes:
+  pl: |
+    Na Ubuntu polecenie ftp daje pakiet tnftp, a pakiet ftp tylko go
+    instaluje. Metapakiet ubuntu-standard, od którego zależy też
+    ubuntu-server, wymaga jednego z klientów FTP, więc na typowej instalacji
+    apt usunąłby razem z nimi te metapakiety. Naprawa wtedy kończy się
+    błędem bez zmian. Jeśli organizacja się na to godzi, można usunąć
+    pakiety ręcznie poleceniem apt purge ftp tnftp, ale najpierw warto
+    oznaczyć zależności metapakietów jako zainstalowane ręcznie poleceniem
+    apt-mark manual, żeby apt autoremove ich później nie usunął. Bez
+    metapakietów aktualizacja do nowego wydania nie doinstaluje nowych
+    pakietów standardowych.
+
+    Klient lftp obsługuje też SFTP i FTPS, więc reguła go nie usuwa.
+
+    Sprawdzenie odczytuje stan pakietów z dpkg-query. Wynik INSTALLED podaje
+    pakiety, a przy stanie innym niż installed także ten stan, np.
+    tnftp:config-files.
+
+    Naprawa usuwa pakiety z plikami konfiguracyjnymi poleceniem apt-get
+    purge. Kończy się błędem bez zmian, jeśli razem z nimi musiałyby zniknąć
+    inne pakiety. Kopia zapisuje stan pakietów i ich pliki konfiguracyjne;
+    wycofanie instaluje je ponownie i przywraca te pliki, więc wymaga dostępu
+    do repozytoriów.
+  en: |
+    On Ubuntu the ftp command comes from the tnftp package, and the ftp
+    package only installs it. The ubuntu-standard metapackage, which
+    ubuntu-server also depends on, requires one of the FTP clients, so on a
+    typical installation apt would remove these metapackages together with
+    them. The remediation then ends with an error without changes. If the
+    organization accepts it, the packages can be removed by hand with apt
+    purge ftp tnftp, but first it is worth marking the dependencies of the
+    metapackages as manually installed with apt-mark manual, so that apt
+    autoremove does not remove them later. Without the metapackages an
+    upgrade to a new release does not add new standard packages.
+
+    The lftp client also supports SFTP and FTPS, so the rule does not remove
+    it.
+
+    The check reads the package state from dpkg-query. The INSTALLED result
+    gives the packages and, for a state other than installed, the state too,
+    for example tnftp:config-files.
+
+    The remediation removes the packages with their configuration files with
+    apt-get purge. It ends with an error without changes if other packages
+    would have to go with them. The backup records the package state and
+    their configuration files; rollback installs them again and restores
+    these files, so it needs access to the repositories.

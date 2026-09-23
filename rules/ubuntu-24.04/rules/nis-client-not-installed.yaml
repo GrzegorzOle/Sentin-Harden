@@ -1,0 +1,228 @@
+id: ubuntu2404-nis-client-not-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.2.1
+  section: Services > Configure Client Services
+  title:
+    pl: Klient NIS nie jest zainstalowany
+    en: Ensure NIS Client is not installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Klient NIS (ypbind) pobiera konta, grupy i skróty haseł z serwera NIS
+    i ufa każdej odpowiedzi, bo protokół nie uwierzytelnia serwera. Ktoś
+    w tej samej sieci może podszyć się pod serwer i podsunąć własne konta.
+
+    Punkt wymaga, żeby klient NIS nie był zainstalowany. Ubuntu go domyślnie
+    nie instaluje.
+  en: |
+    The NIS client (ypbind) fetches accounts, groups and password hashes from
+    a NIS server and trusts every answer, because the protocol does not
+    authenticate the server. Someone on the same network can impersonate the
+    server and slip in their own accounts.
+
+    The item requires that the NIS client is not installed. Ubuntu does not
+    install it by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli komputer nie korzystał z NIS. W przeciwnym
+    razie użytkownicy z kontami NIS nie zalogują się, dopóki komputer nie
+    przejdzie na inne źródło kont, np. LDAP przez SSSD.
+  en: |
+    Nobody will notice if the computer did not use NIS. Otherwise users with
+    NIS accounts cannot sign in until the computer moves to another account
+    source, such as LDAP through SSSD.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Użytkownicy z kontami NIS nie mogą się zalogować do tego komputera
+      - Polecenia ypcat, ypmatch i ypwhich nie są dostępne
+    en:
+      - Users with NIS accounts cannot sign in to this computer
+      - The ypcat, ypmatch and ypwhich commands are not available
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Komputer pobiera konta użytkowników z serwera NIS
+    en:
+      - The computer gets user accounts from a NIS server
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    found=""
+    for p in nis ypbind-mt yp-tools; do
+      s=$(st "$p")
+      case "$s" in ""|not-installed) ;; installed) found="$found,$p" ;; *) found="$found,$p:$s" ;; esac
+    done
+    if [ -n "$found" ]; then echo "INSTALLED:${found#,}"; else echo NOT_INSTALLED; fi
+  expected: '^NOT_INSTALLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e -o pipefail
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      keep=""
+      for p in nis ypbind-mt yp-tools; do
+        case "$(st "$p")" in ""|not-installed) continue ;; esac
+        for f in $(dpkg-query -W -f='${Conffiles}\n' "$p" | awk '{ print $1 }'); do
+          if [ -e "$f" ] || [ -L "$f" ]; then keep="$keep ${f#/}"; fi
+        done
+      done
+      data=-
+      if [ -n "$keep" ]; then data=$(tar -C / -czf - $keep | base64 -w 0); fi
+      {
+        echo format=dpkg-off-1
+        for p in nis ypbind-mt yp-tools; do s=$(st "$p"); echo "pkg $p ${s:-not-installed}"; done
+        for u in ypbind.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "unit $u ${e:-none} ${a:-unknown}"
+        done
+        echo "conffiles $data"
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""
+      for p in nis ypbind-mt yp-tools; do case "$(st "$p")" in ""|not-installed) ;; *) rm="$rm $p" ;; esac; done
+      if [ -z "$rm" ]; then echo "Nothing to remove"; exit 0; fi
+      # apt-get also removes the packages that depend on these; do not take them along.
+      extra=$(LC_ALL=C apt-get -s purge $rm | awk '$1 == "Purg" || $1 == "Remv" { sub(/:.*/, "", $2); print $2 }' |
+        grep -vxF -e nis -e ypbind-mt -e yp-tools || true)
+      if [ -n "$extra" ]; then
+        echo "Removing$rm would also remove: $(echo $extra); nothing changed" >&2; exit 1
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get purge -y -qq $rm
+      for p in $rm; do
+        case "$(st "$p")" in ""|not-installed) ;; *) echo "$p is still installed" >&2; exit 1 ;; esac
+      done
+      echo "Removed and purged:$rm"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-off-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(sed -n 's/^pkg \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "nis ypbind-mt yp-tools " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      data=$(sed -n 's/^conffiles //p' "$b")
+      case "$data" in ""|*[!A-Za-z0-9+/=-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      [ "$(sed -n 's/^unit \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "ypbind.service " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r tag u e a x; do
+        case "$e$a" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -n "$a" ] && [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      done < <(grep '^unit ' "$b")
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      inst=""; cfonly=""
+      while read -r tag p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != not-installed ] || continue
+        case "$(st "$p")" in ""|not-installed) ;; *) continue ;; esac
+        inst="$inst $p"
+        [ "$s" = installed ] || cfonly="$cfonly $p"
+      done < <(grep '^pkg ' "$b")
+      if [ -z "$inst" ]; then echo "Nothing to restore"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      # The removal left the recommended packages in place; do not add new ones.
+      o="-y -qq --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $inst; then apt-get update -qq; apt-get install $o $inst; fi
+      # The configuration files as they were, with the administrator's changes.
+      if [ "$data" != - ]; then printf '%s' "$data" | base64 -d | tar -C / -xzf -; fi
+      # A package that only had its configuration files left goes back to that state.
+      if [ -n "$cfonly" ]; then dpkg -r $cfonly >/dev/null; fi
+      systemctl daemon-reload
+      while read -r tag u e a x; do
+        [ -n "$(systemctl list-unit-files --no-legend "$u" 2>/dev/null)" ] || continue
+        case "$e" in
+          enabled|enabled-runtime) systemctl enable -q "$u" ;;
+          masked|masked-runtime) systemctl mask -q "$u" ;;
+          disabled) systemctl disable -q "$u" ;;
+        esac
+        case "$a" in
+          active|activating|reloading) systemctl start "$u" ;;
+          *) systemctl stop "$u" ;;
+        esac
+      done < <(grep '^unit ' "$b")
+      echo "Restored the state of the units: ypbind.service"
+      echo "Installed again:$inst"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://manpages.ubuntu.com/manpages/noble/man8/ypbind.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+
+notes:
+  pl: |
+    Klient NIS to na Ubuntu pakiety ypbind-mt i yp-tools, a pakiet nis tylko
+    je instaluje razem z serwerem ypserv. Sprawdzam wszystkie trzy, bo
+    usunięcie ypbind-mt i tak usunęłoby pozostałe dwa. Serwer ypserv zostaje
+    i dotyczy go punkt 2.1.10. Ponowna instalacja włącza ypbind.service
+    według ustawień pakietu, dlatego kopia zapisuje też stan tej jednostki,
+    a wycofanie go przywraca.
+
+    Sprawdzenie odczytuje stan pakietów z dpkg-query. Wynik INSTALLED podaje
+    pakiety, a przy stanie innym niż installed także ten stan, np.
+    ypbind-mt:config-files.
+
+    Naprawa usuwa pakiety z plikami konfiguracyjnymi poleceniem apt-get
+    purge. Kończy się błędem bez zmian, jeśli razem z nimi musiałyby zniknąć
+    inne pakiety. Kopia zapisuje stan pakietów i ich pliki konfiguracyjne;
+    wycofanie instaluje je ponownie i przywraca te pliki, więc wymaga dostępu
+    do repozytoriów.
+  en: |
+    On Ubuntu the NIS client is the ypbind-mt and yp-tools packages, and the
+    nis package only installs them together with the ypserv server. I check
+    all three, because removing ypbind-mt would remove the other two anyway.
+    The ypserv server stays and is covered by item 2.1.10. Installing again
+    enables ypbind.service by the package defaults, so the backup also
+    records the state of this unit, and rollback brings it back.
+
+    The check reads the package state from dpkg-query. The INSTALLED result
+    gives the packages and, for a state other than installed, the state too,
+    for example ypbind-mt:config-files.
+
+    The remediation removes the packages with their configuration files with
+    apt-get purge. It ends with an error without changes if other packages
+    would have to go with them. The backup records the package state and
+    their configuration files; rollback installs them again and restores
+    these files, so it needs access to the repositories.

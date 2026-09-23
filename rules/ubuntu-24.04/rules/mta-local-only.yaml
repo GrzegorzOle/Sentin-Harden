@@ -1,0 +1,231 @@
+id: ubuntu2404-mta-local-only
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 2.1.21
+  section: Services > Configure Server Services
+  title:
+    pl: Serwer poczty przyjmuje połączenia tylko lokalnie
+    en: Ensure mail transfer agent is configured for local-only mode
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Serwer poczty (MTA) na komputerze, który nie obsługuje poczty, potrzebny
+    jest najwyżej do wysyłania powiadomień systemowych. Jeśli nasłuchuje na
+    adresie sieciowym, przyjmuje pocztę od innych komputerów, co otwiera
+    drogę do nadużyć, np. rozsyłania spamu, i wystawia na ataki kolejną
+    usługę.
+
+    Punkt wymaga, żeby na portach 25, 465 i 587 nic nie nasłuchiwało albo
+    żeby nasłuchiwało tylko na adresie pętli zwrotnej, a zainstalowany
+    Postfix nie był ustawiony na wszystkie adresy. Ubuntu domyślnie nie
+    instaluje serwera poczty, ale Postfix zainstalowany przez apt jako
+    Internet Site nasłuchuje na wszystkich adresach.
+  en: |
+    A mail transfer agent (MTA) on a computer that does not handle mail is at
+    most needed to send system notifications. If it listens on a network
+    address, it accepts mail from other computers, which opens the way to
+    abuse, such as sending spam, and exposes one more service to attacks.
+
+    The item requires that nothing listens on ports 25, 465 and 587 or that
+    it listens only on the loopback address, and that an installed Postfix is
+    not set to all addresses. Ubuntu does not install a mail server by
+    default, but Postfix installed through apt as an Internet Site listens on
+    all addresses.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli komputer nie odbierał poczty z sieci.
+    W przeciwnym razie inne komputery nie dostarczą do niego poczty przez
+    SMTP. Wysyłanie poczty z tego komputera i doręczanie lokalne działają
+    dalej. Zmiana na chwilę restartuje działający Postfix.
+  en: |
+    Nobody will notice if the computer did not receive mail from the network.
+    Otherwise other computers cannot deliver mail to it over SMTP. Sending
+    mail from this computer and local delivery keep working. The change
+    briefly restarts a running Postfix.
+
+implementation_consequences:
+  impact_areas:
+    - email-and-attachments
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Inne komputery nie mogą dostarczać poczty do tego komputera przez SMTP
+    en:
+      - Other computers cannot deliver mail to this computer over SMTP
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Komputer jest serwerem poczty, który odbiera pocztę z sieci
+    en:
+      - The computer is a mail server that receives mail from the network
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v ss >/dev/null 2>&1 || ! command -v dpkg-query >/dev/null 2>&1 || ! ss -Hltn >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      l=$(ss -Hltn | awk '{
+        a = $4; p = a; sub(/.*:/, "", p)
+        if (p != "25" && p != "465" && p != "587") next
+        h = a; sub(/:[^:]*$/, "", h); gsub(/[][]/, "", h); sub(/%.*/, "", h)
+        if (h ~ /^127\./ || h == "::1" || h ~ /^::ffff:127\./) { lo = 1; next }
+        bad = bad "," a
+      } END { if (bad != "") print "LISTENING:" substr(bad, 2); else if (lo) print "LOCAL_ONLY" }')
+      pf=""
+      if [ "$(dpkg-query -W -f='${db:Status-Status}' postfix 2>/dev/null)" = installed ] && command -v postconf >/dev/null 2>&1 &&
+         [ "$(postconf -h inet_interfaces 2>/dev/null)" = all ]; then pf=1; fi
+      case "$l" in
+        LISTENING:*) echo "$l" ;;
+        *) if [ -n "$pf" ]; then echo POSTFIX_ALL_INTERFACES
+           elif [ -n "$l" ]; then echo "$l"
+           elif dpkg-query -W -f='${db:Status-Status} ${Provides}\n' 2>/dev/null | grep -q '^installed .*mail-transport-agent'; then echo NO_LISTENER
+           else echo NO_MTA; fi ;;
+      esac
+    }
+    state
+  expected: '^(LOCAL_ONLY|NO_LISTENER|NO_MTA)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/postfix/main.cf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=file-1
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/postfix/main.cf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      command -v ss >/dev/null 2>&1 || { echo "The ss command is not available" >&2; exit 1; }
+      state() {
+        l=$(ss -Hltn | awk '{
+          a = $4; p = a; sub(/.*:/, "", p)
+          if (p != "25" && p != "465" && p != "587") next
+          h = a; sub(/:[^:]*$/, "", h); gsub(/[][]/, "", h); sub(/%.*/, "", h)
+          if (h ~ /^127\./ || h == "::1" || h ~ /^::ffff:127\./) { lo = 1; next }
+          bad = bad "," a
+        } END { if (bad != "") print "LISTENING:" substr(bad, 2); else if (lo) print "LOCAL_ONLY" }')
+        pf=""
+        if [ "$(dpkg-query -W -f='${db:Status-Status}' postfix 2>/dev/null)" = installed ] && command -v postconf >/dev/null 2>&1 &&
+           [ "$(postconf -h inet_interfaces 2>/dev/null)" = all ]; then pf=1; fi
+        case "$l" in
+          LISTENING:*) echo "$l" ;;
+          *) if [ -n "$pf" ]; then echo POSTFIX_ALL_INTERFACES
+             elif [ -n "$l" ]; then echo "$l"
+             elif dpkg-query -W -f='${db:Status-Status} ${Provides}\n' 2>/dev/null | grep -q '^installed .*mail-transport-agent'; then echo NO_LISTENER
+             else echo NO_MTA; fi ;;
+        esac
+      }
+      s=$(state)
+      case "$s" in
+        LISTENING:*|POSTFIX_ALL_INTERFACES) ;;
+        *) echo "No mail server listens on a network address ($s), nothing to change"; exit 0 ;;
+      esac
+      if [ "$(dpkg-query -W -f='${db:Status-Status}' postfix 2>/dev/null)" != installed ] || [ ! -f "$f" ]; then
+        echo "The mail server is not Postfix ($s); set it to listen on the loopback address by hand" >&2
+        exit 1
+      fi
+      postconf -e 'inet_interfaces = loopback-only'
+      # This setting needs a restart; a stopped Postfix stays stopped.
+      m="Postfix is not running"
+      if systemctl is-active -q postfix.service; then systemctl restart postfix.service; m="restarted Postfix"; fi
+      s=$(state)
+      case "$s" in LISTENING:*|POSTFIX_ALL_INTERFACES) echo "A mail port still listens on a network address ($s)" >&2; exit 1 ;; esac
+      echo "Set inet_interfaces = loopback-only in $f, $m ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/postfix/main.cf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=file-1 ] && [ "$(sed -n 3p "$b")" = --- ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in
+        1) ;;
+        0) echo "$f did not exist before the change, nothing to restore"; exit 0 ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      [ -d "$(dirname "$f")" ] || { echo "Postfix is no longer installed, nothing to restore"; exit 0; }
+      tmp=$(mktemp)
+      trap 'rm -f "$tmp"' EXIT
+      sed '1,/^---$/d' "$b" > "$tmp"
+      if [ -f "$f" ] && cmp -s "$tmp" "$f"; then echo "$f is unchanged, nothing to restore"; exit 0; fi
+      cat "$tmp" > "$f"
+      systemctl try-restart postfix.service
+      echo "Restored the previous content of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.postfix.org/postconf.5.html#inet_interfaces
+  - https://manpages.ubuntu.com/manpages/noble/man5/postconf.5.html
+  - https://www.postfix.org/postconf.1.html
+  - https://man7.org/linux/man-pages/man8/ss.8.html
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje poleceniem ss gniazda TCP nasłuchujące na portach
+    25, 465 i 587 i traktuje adresy 127.0.0.0/8, ::1 oraz
+    ::ffff:127.0.0.0/104 jako lokalne. Wynik LISTENING wymienia adresy
+    sieciowe, na których nasłuchuje serwer. POSTFIX_ALL_INTERFACES oznacza
+    zainstalowany Postfix, którego ustawienie inet_interfaces ma wartość all,
+    także domyślną, choć teraz nie nasłuchuje. LOCAL_ONLY oznacza nasłuch
+    tylko lokalny, NO_LISTENER zainstalowany serwer poczty, który nie
+    nasłuchuje, a NO_MTA brak serwera poczty.
+
+    Naprawa obsługuje tylko Postfix, bo tak opisuje ją CIS: ustawia
+    inet_interfaces = loopback-only w /etc/postfix/main.cf poleceniem
+    postconf -e i restartuje działający Postfix, bo tego ustawienia nie da
+    się przeładować. Gdy na tych portach nasłuchuje inny serwer, np. Exim,
+    naprawa kończy się błędem bez zmian i trzeba go ustawić ręcznie. Kopia
+    zapisuje cały plik main.cf, a wycofanie przywraca jego treść
+    i restartuje działający Postfix.
+  en: |
+    The check reads the TCP sockets listening on ports 25, 465 and 587 with
+    ss and treats the addresses 127.0.0.0/8, ::1 and ::ffff:127.0.0.0/104 as
+    local. The LISTENING result lists the network addresses the server
+    listens on. POSTFIX_ALL_INTERFACES means an installed Postfix whose
+    inet_interfaces setting is all, also by default, although it does not
+    listen now. LOCAL_ONLY means it listens only locally, NO_LISTENER an
+    installed mail server that does not listen, and NO_MTA no mail server.
+
+    The remediation handles only Postfix, as CIS describes it: it sets
+    inet_interfaces = loopback-only in /etc/postfix/main.cf with postconf -e
+    and restarts a running Postfix, because this setting cannot be reloaded.
+    When a different server, such as Exim, listens on these ports, the
+    remediation fails without changes and that server has to be set by hand.
+    The backup keeps the whole main.cf file, and rollback restores its
+    content and restarts a running Postfix.

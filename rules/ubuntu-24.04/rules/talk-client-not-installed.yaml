@@ -1,13 +1,13 @@
-id: ubuntu2404-prelink-not-installed
+id: ubuntu2404-talk-client-not-installed
 
 benchmark:
   name: CIS Ubuntu Linux 24.04 LTS Benchmark
   version: 1.0.0
-  item: 1.5.4
-  section: Initial Setup > Configure Additional Process Hardening
+  item: 2.2.3
+  section: Services > Configure Client Services
   title:
-    pl: Program prelink nie jest zainstalowany
-    en: Ensure prelink is not installed
+    pl: Klient talk nie jest zainstalowany
+    en: Ensure talk client is not installed
   level: 1
   profile: server
 
@@ -15,49 +15,41 @@ platform:
   system: ubuntu-24.04
 
 risk_category: low
-disruption: none
-assessment_state: assessed-no-impact
+disruption: needs-review
+assessment_state: assessed-impact-described
 
 description:
   pl: |
-    prelink zapisuje w plikach programów i bibliotek z góry wyliczone adresy
-    bibliotek, żeby przyspieszyć start programów. Zmienia przy tym same pliki
-    binarne, więc narzędzia kontroli integralności, takie jak AIDE czy debsums,
-    widzą je jako zmienione, a stałe adresy osłabiają losowe rozmieszczenie
-    pamięci (ASLR). Biblioteka glibc w Ubuntu 24.04 nie korzysta już z tych
-    danych, więc program nie daje żadnej korzyści.
+    talk pozwala rozmawiać na żywo z użytkownikami innych komputerów przez
+    terminal. Protokół nie szyfruje rozmowy i nie uwierzytelnia rozmówcy,
+    a dziś nie ma powodu, żeby z niego korzystać.
 
-    Punkt wymaga, żeby pakietu prelink nie było w systemie, także w stanie
-    samych plików konfiguracyjnych po zwykłym usunięciu. Ubuntu go domyślnie
+    Punkt wymaga, żeby klient talk nie był zainstalowany. Ubuntu go domyślnie
     nie instaluje.
   en: |
-    prelink writes precomputed library addresses into program and library
-    files to speed up program start. In doing so it changes the binary files
-    themselves, so integrity checking tools such as AIDE or debsums see them as
-    modified, and fixed addresses weaken address space layout randomization
-    (ASLR). The glibc library in Ubuntu 24.04 no longer uses this data, so the
-    program brings no benefit.
+    talk lets users chat live with users of other computers through the
+    terminal. The protocol neither encrypts the conversation nor
+    authenticates the other party, and today there is no reason to use it.
 
-    The item requires the prelink package to be absent, also in the state of
-    configuration files only that a plain removal leaves. Ubuntu does not
+    The item requires that the talk client is not installed. Ubuntu does not
     install it by default.
 
 disruption_description:
   pl: |
-    Nikt tego nie zauważy: Ubuntu domyślnie nie instaluje prelink, a na
-    Ubuntu 24.04 i tak nie przyspiesza on startu programów.
+    Nikt tego nie zauważy, jeśli nikt nie używał polecenia talk.
   en: |
-    Nobody will notice: Ubuntu does not install prelink by default, and on
-    Ubuntu 24.04 it no longer speeds up program start anyway.
+    Nobody will notice if nobody used the talk command.
 
 implementation_consequences:
   impact_areas:
-    - updates-and-servicing
+    - legacy-applications
   what_breaks:
-    pl: []
-    en: []
+    pl:
+      - Polecenie talk nie jest dostępne, więc nie da się nim rozmawiać z użytkownikami innych komputerów
+    en:
+      - The talk command is not available, so it cannot be used to chat with users of other computers
   interruption: none
-  user_visible: false
+  user_visible: true
   reversibility: immediate
 
 audit:
@@ -66,7 +58,7 @@ audit:
     if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
     st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
     found=""
-    for p in prelink; do
+    for p in talk inetutils-talk; do
       s=$(st "$p")
       case "$s" in ""|not-installed) ;; installed) found="$found,$p" ;; *) found="$found,$p:$s" ;; esac
     done
@@ -83,7 +75,7 @@ remediation:
       mkdir -p "$(dirname "$b")"
       st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
       keep=""
-      for p in prelink; do
+      for p in talk inetutils-talk; do
         case "$(st "$p")" in ""|not-installed) continue ;; esac
         for f in $(dpkg-query -W -f='${Conffiles}\n' "$p" | awk '{ print $1 }'); do
           if [ -e "$f" ] || [ -L "$f" ]; then keep="$keep ${f#/}"; fi
@@ -93,7 +85,7 @@ remediation:
       if [ -n "$keep" ]; then data=$(tar -C / -czf - $keep | base64 -w 0); fi
       {
         echo format=dpkg-off-1
-        for p in prelink; do s=$(st "$p"); echo "pkg $p ${s:-not-installed}"; done
+        for p in talk inetutils-talk; do s=$(st "$p"); echo "pkg $p ${s:-not-installed}"; done
         echo "conffiles $data"
       } > "$b"
       echo "Saved previous state to $b"
@@ -106,15 +98,14 @@ remediation:
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
       rm=""
-      for p in prelink; do case "$(st "$p")" in ""|not-installed) ;; *) rm="$rm $p" ;; esac; done
+      for p in talk inetutils-talk; do case "$(st "$p")" in ""|not-installed) ;; *) rm="$rm $p" ;; esac; done
       if [ -z "$rm" ]; then echo "Nothing to remove"; exit 0; fi
       # apt-get also removes the packages that depend on these; do not take them along.
       extra=$(LC_ALL=C apt-get -s purge $rm | awk '$1 == "Purg" || $1 == "Remv" { sub(/:.*/, "", $2); print $2 }' |
-        grep -vxF -e prelink || true)
+        grep -vxF -e talk -e inetutils-talk || true)
       if [ -n "$extra" ]; then
         echo "Removing$rm would also remove: $(echo $extra); nothing changed" >&2; exit 1
       fi
-      if command -v prelink >/dev/null 2>&1; then prelink -ua; fi
       export DEBIAN_FRONTEND=noninteractive
       apt-get purge -y -qq $rm
       for p in $rm; do
@@ -129,7 +120,7 @@ remediation:
       b='{{backup_file}}'
       [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
       [ "$(head -n 1 "$b")" = format=dpkg-off-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
-      [ "$(sed -n 's/^pkg \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "prelink " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(sed -n 's/^pkg \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "talk inetutils-talk " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
       data=$(sed -n 's/^conffiles //p' "$b")
       case "$data" in ""|*[!A-Za-z0-9+/=-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
       st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
@@ -159,30 +150,36 @@ privileges: root
 runnable: true
 
 sources:
-  - https://manpages.ubuntu.com/manpages/noble/man8/prelink.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man1/talk.1.html
   - https://manpages.ubuntu.com/manpages/noble/man1/dpkg-query.1.html
   - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
 
 notes:
   pl: |
-    Sprawdzenie odczytuje stan pakietu z dpkg-query. Wynik INSTALLED podaje
-    pakiet, a przy stanie innym niż installed także ten stan, np.
-    prelink:config-files.
+    Sprawdzam pakiety talk i inetutils-talk, czyli oba klienty talk
+    z repozytoriów Ubuntu. Serwer talkd jest w osobnych pakietach i punkt go
+    nie obejmuje.
 
-    Naprawa najpierw wykonuje prelink -ua, które przywraca pierwotną postać
-    plików zmienionych przez prelink, a potem usuwa pakiet z plikami
-    konfiguracyjnymi poleceniem apt-get purge. Kończy się błędem bez zmian,
-    jeśli razem z nim musiałyby zniknąć inne pakiety. Kopia zapisuje stan
-    pakietu i jego pliki konfiguracyjne; wycofanie instaluje go ponownie
-    i przywraca te pliki, ale nie zmienia z powrotem plików programów.
+    Sprawdzenie odczytuje stan pakietów z dpkg-query. Wynik INSTALLED podaje
+    pakiety, a przy stanie innym niż installed także ten stan, np.
+    talk:config-files.
+
+    Naprawa usuwa pakiety z plikami konfiguracyjnymi poleceniem apt-get
+    purge. Kończy się błędem bez zmian, jeśli razem z nimi musiałyby zniknąć
+    inne pakiety. Kopia zapisuje stan pakietów i ich pliki konfiguracyjne;
+    wycofanie instaluje je ponownie i przywraca te pliki, więc wymaga dostępu
+    do repozytoriów.
   en: |
-    The check reads the package state from dpkg-query. The INSTALLED result
-    gives the package and, for a state other than installed, the state too,
-    for example prelink:config-files.
+    I check the talk and inetutils-talk packages, which are both talk
+    clients in the Ubuntu repositories. The talkd server is in separate
+    packages and this item does not cover it.
 
-    The remediation first runs prelink -ua, which restores the original form of
-    the files prelink changed, and then removes the package with its
-    configuration files with apt-get purge. It ends with an error without
-    changes if other packages would have to go with it. The backup records the
-    package state and its configuration files; rollback installs it again and
-    restores these files, but does not change the program files back.
+    The check reads the package state from dpkg-query. The INSTALLED result
+    gives the packages and, for a state other than installed, the state too,
+    for example talk:config-files.
+
+    The remediation removes the packages with their configuration files with
+    apt-get purge. It ends with an error without changes if other packages
+    would have to go with them. The backup records the package state and
+    their configuration files; rollback installs them again and restores
+    these files, so it needs access to the repositories.

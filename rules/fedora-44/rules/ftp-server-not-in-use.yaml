@@ -1,0 +1,230 @@
+id: fedora44-ftp-server-not-in-use
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.1.7
+  section: Services > Configure Server Services
+  title:
+    pl: Serwer FTP nie jest używany
+    en: Ensure ftp server services are not in use
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    FTP przesyła pliki, a w podstawowej postaci także login i hasło,
+    otwartym tekstem. Serwer FTP na stacji roboczej daje z sieci dostęp do
+    plików i kont użytkowników, a do przesyłania plików lepiej nadaje się
+    SFTP przez SSH.
+
+    Punkt wymaga, żeby serwer FTP nie był zainstalowany albo żeby jego
+    usługi nie były włączone ani uruchomione. Na Fedorze Workstation serwer
+    domyślnie nie jest zainstalowany.
+  en: |
+    FTP transfers files, and in its basic form also the login and password,
+    in clear text. An FTP server on a workstation gives network access to
+    files and user accounts, and SFTP over SSH is better suited to
+    transferring files.
+
+    The item requires that an FTP server is not installed or that its
+    services are neither enabled nor running. On Fedora Workstation the
+    server is not installed by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli serwer FTP nie był używany. W przeciwnym
+    razie programy i urządzenia, które wysyłały lub pobierały pliki z tego
+    komputera przez FTP, np. skanery sieciowe, przestaną działać.
+  en: |
+    Nobody will notice if the FTP server was not in use. Otherwise programs
+    and devices that sent or fetched files from this computer over FTP, such
+    as network scanners, stop working.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+  what_breaks:
+    pl:
+      - Programy i urządzenia, np. skanery sieciowe, nie mogą wysyłać ani pobierać plików z tego komputera przez FTP
+    en:
+      - Programs and devices, such as network scanners, cannot send or fetch files from this computer over FTP
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || ! command -v rpm >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      bad=""
+      for u in vsftpd.service vsftpd.target proftpd.socket proftpd.service pure-ftpd.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        a=$(systemctl is-active "$u" 2>/dev/null) || true
+        case "$e" in
+          enabled|enabled-runtime|linked|linked-runtime) ;;
+          *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+        esac
+        bad="$bad,$u=${e:-none}/${a:-unknown}"
+      done
+      inst=""
+      for p in vsftpd proftpd pure-ftpd; do if rpm -q --quiet "$p"; then inst="$inst,$p"; fi; done
+      if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+      elif [ -z "$inst" ]; then echo NOT_INSTALLED
+      else echo "NOT_IN_USE:${inst#,}"; fi
+    }
+    state
+  expected: '^(NOT_INSTALLED$|NOT_IN_USE:)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=units-1
+        for u in vsftpd.service vsftpd.target proftpd.socket proftpd.service pure-ftpd.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "$u ${e:--} ${a:--}"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        bad=""
+        for u in vsftpd.service vsftpd.target proftpd.socket proftpd.service pure-ftpd.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          case "$e" in
+            enabled|enabled-runtime|linked|linked-runtime) ;;
+            *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+          esac
+          bad="$bad,$u=${e:-none}/${a:-unknown}"
+        done
+        inst=""
+        for p in vsftpd proftpd pure-ftpd; do if rpm -q --quiet "$p"; then inst="$inst,$p"; fi; done
+        if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+        elif [ -z "$inst" ]; then echo NOT_INSTALLED
+        else echo "NOT_IN_USE:${inst#,}"; fi
+      }
+      m=""
+      for u in vsftpd.service vsftpd.target proftpd.socket proftpd.service pure-ftpd.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        case "$e" in ""|not-found) continue ;; esac
+        l=/etc/systemd/system/$u
+        if { [ -e "$l" ] || [ -L "$l" ]; } && [ "$(readlink "$l")" != /dev/null ]; then
+          echo "$l is a unit file or link of its own, not masking $u" >&2; exit 1
+        fi
+        m="$m $u"
+      done
+      if [ -z "$m" ]; then echo "None of the units is installed, nothing to change"; exit 0; fi
+      systemctl mask --now $m
+      s=$(state)
+      case "$s" in IN_USE:*) echo "The units are still in use ($s)" >&2; exit 1 ;; esac
+      echo "Stopped and masked:$m ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      [ -n "$lines" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r u e a x; do
+        case " vsftpd.service vsftpd.target proftpd.socket proftpd.service pure-ftpd.service " in *" $u "*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      start=""
+      while read -r u e a; do
+        case "$e" in
+          -|not-found|masked) continue ;;
+          masked-runtime) systemctl unmask "$u"; systemctl mask --runtime "$u"; continue ;;
+        esac
+        systemctl unmask "$u"
+        case "$e" in
+          enabled) systemctl enable "$u" ;;
+          enabled-runtime) systemctl enable --runtime "$u" ;;
+          linked|linked-runtime) echo "Could not link $u again; link its unit file by hand" >&2 ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$lines"
+      if [ -n "$start" ]; then systemctl start $start; fi
+      echo "Restored the previous state of the units"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://security.appspot.com/vsftpd.html
+  - http://www.proftpd.org/docs/
+  - https://www.pureftpd.org/project/pure-ftpd/
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Punkt jest spełniony, gdy pakiet nie jest zainstalowany albo gdy żadna
+    z jednostek vsftpd.service, vsftpd.target, proftpd.socket, proftpd.service, pure-ftpd.service nie jest włączona ani uruchomiona. Wynik IN_USE
+    wymienia jednostki w użyciu razem ze stanem z systemctl is-enabled
+    i is-active, a NOT_IN_USE pakiety, które są zainstalowane, ale nie
+    działają.
+
+    Naprawa nie usuwa pakietów, bo mogą od nich zależeć inne programy.
+    Zatrzymuje i maskuje jednostki poleceniem systemctl mask --now, więc nie
+    da się ich uruchomić ręcznie, przez gniazdo ani jako zależność. Kopia
+    zapisuje stan każdej jednostki, a wycofanie zdejmuje maskę, włącza
+    jednostki, które były włączone, i uruchamia te, które działały.
+    Jednostki zamaskowane wcześniej zostają zamaskowane. Naprawa odmawia,
+    gdy w /etc/systemd/system leży własny plik jednostki o tej samej nazwie.
+
+    Jeśli usługa ma zniknąć całkiem, można usunąć pakiet przez dnf remove
+    po sprawdzeniu, co jeszcze zostałoby usunięte.
+
+    Sprawdzam trzy serwery FTP z repozytoriów Fedory: vsftpd razem z celem
+    vsftpd.target, który uruchamia instancje vsftpd@, ProFTPD razem z jego
+    gniazdem i Pure-FTPd. Klienty FTP i SFTP działają dalej.
+  en: |
+    The item is met when the package is not installed or when none of the
+    vsftpd.service, vsftpd.target, proftpd.socket, proftpd.service, pure-ftpd.service units is enabled or running. The IN_USE result lists the units in
+    use with their state from systemctl is-enabled and is-active, and
+    NOT_IN_USE lists the packages that are installed but not running.
+
+    The remediation does not remove packages, because other programs may
+    depend on them. It stops and masks the units with systemctl mask --now,
+    so they cannot be started by hand, through a socket or as a dependency.
+    The backup records the state of every unit, and rollback removes the
+    mask, enables the units that were enabled and starts the ones that were
+    running. Units that were masked before stay masked. The remediation
+    refuses when /etc/systemd/system holds a unit file of its own with the
+    same name.
+
+    If the service should be gone completely, the package can be removed with
+    dnf remove after checking what else would be removed.
+
+    I check three FTP servers from the Fedora repositories: vsftpd together
+    with vsftpd.target, which starts the vsftpd@ instances, ProFTPD together
+    with its socket, and Pure-FTPd. FTP and SFTP clients keep working.

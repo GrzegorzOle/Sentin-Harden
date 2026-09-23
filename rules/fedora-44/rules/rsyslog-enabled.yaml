@@ -1,0 +1,209 @@
+id: fedora44-rsyslog-enabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.2.3.2
+  section: Logging and Auditing > System Logging > Configure rsyslog
+  title:
+    pl: Usługa rsyslog jest włączona i działa
+    en: Ensure rsyslog service is enabled and active
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy dzienniki prowadzi rsyslog, usługa musi startować z systemem
+    i działać. Wyłączona albo zatrzymana usługa oznacza, że pliki
+    w /var/log, takie jak messages i secure, przestają się zapełniać
+    i zdarzenia nie są nigdzie zapisywane poza dziennikiem journald.
+
+    Punkt wymaga, żeby rsyslog.service był włączony i uruchomiony.
+  en: |
+    When rsyslog keeps the logs, the service has to start with the system
+    and run. A disabled or stopped service means that the files in /var/log,
+    such as messages and secure, stop filling and events are not recorded
+    anywhere except the journald journal.
+
+    The item requires rsyslog.service to be enabled and started.
+
+disruption_description:
+  pl: |
+    Użytkownicy tego nie zauważą: naprawa uruchamia usługę, która na Fedorze
+    jest domyślnie włączona. Pliki w /var/log znów zaczynają rosnąć.
+  en: |
+    Users will not notice it: the remediation starts a service that is
+    enabled by default on Fedora. The files in /var/log start growing again.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Pliki w /var/log znów zajmują miejsce na dysku; ich rotacją zajmuje się logrotate
+    en:
+      - The files in /var/log take up disk space again; logrotate rotates them
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    in_use() { case "$(systemctl is-enabled "$1.service" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active --quiet "$1.service" 2>/dev/null; }
+    if ! in_use rsyslog; then echo NOT_APPLICABLE; exit 0; fi
+    if ! command -v systemctl >/dev/null 2>&1 || ! command -v rpm >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if ! rpm -q --quiet rsyslog; then echo NOT_INSTALLED; exit 0; fi
+    e=$(systemctl is-enabled rsyslog.service 2>/dev/null) || true
+    a=$(systemctl is-active rsyslog.service 2>/dev/null) || true
+    if [ "$e" = enabled ] && [ "$a" = active ]; then echo ENABLED_ACTIVE
+    else echo "NOT_RUNNING:${e:-none}/${a:-unknown}"; fi
+  expected: '^(ENABLED_ACTIVE|NOT_INSTALLED)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=svc-on-1
+        if rpm -q --quiet rsyslog; then echo installed=1; else echo installed=0; fi
+        for u in rsyslog.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "$u ${e:--} ${a:--}"
+        done
+        find /etc/systemd/system /run/systemd/system -type l \( -name rsyslog.service -o -lname '*/rsyslog.service' \) \
+          -printf 'link %p %l\n' 2>/dev/null | sort
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      in_use() { case "$(systemctl is-enabled "$1.service" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active --quiet "$1.service" 2>/dev/null; }
+      if ! in_use rsyslog; then
+        echo "rsyslog is switched off, so this item does not apply; nothing to change"; exit 0
+      fi
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      if ! rpm -q --quiet rsyslog; then echo "rsyslog is not installed, nothing to change"; exit 0; fi
+      for u in ; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        a=$(systemctl is-active "$u" 2>/dev/null) || true
+        case "$e" in enabled|enabled-runtime) systemctl disable -q "$u"; echo "Disabled $u" ;; esac
+        case "$a" in active|activating|reloading) systemctl stop "$u"; echo "Stopped $u" ;; esac
+      done
+      e=$(systemctl is-enabled rsyslog.service 2>/dev/null) || true
+      case "$e" in
+        masked) systemctl unmask -q rsyslog.service ;;
+        masked-runtime) systemctl unmask -q --runtime rsyslog.service ;;
+      esac
+      systemctl enable -q --now rsyslog.service
+      e=$(systemctl is-enabled rsyslog.service 2>/dev/null) || true
+      a=$(systemctl is-active rsyslog.service 2>/dev/null) || true
+      if [ "$e" != enabled ] || [ "$a" != active ]; then
+        echo "rsyslog.service is still not running ($e/$a)" >&2; exit 1
+      fi
+      echo "Enabled and started rsyslog.service"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=svc-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      inst=$(sed -n '2s/^installed=//p' "$b")
+      case "$inst" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      lines=$(tail -n +3 "$b" | grep -v '^link ') || true
+      links=$(grep '^link ' "$b") || true
+      if [ "$(printf '%s\n' "$lines" | cut -d' ' -f1 | tr '\n' ' ')" != "rsyslog.service " ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      while read -r u e a x; do
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      if [ -n "$links" ]; then
+        while read -r k p t x; do
+          bad=0
+          if [ -z "$t" ] || [ -n "$x" ]; then bad=1; fi
+          case "$p" in /etc/systemd/system/*|/run/systemd/system/*) ;; *) bad=1 ;; esac
+          case "$p$t" in *..*) bad=1 ;; esac
+          if [ "${p##*/}" != rsyslog.service ] && [ "${t##*/}" != rsyslog.service ]; then bad=1; fi
+          if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+        done <<< "$links"
+      fi
+      read -r u e a <<< "$(printf '%s\n' "$lines" | head -n 1)"
+      # The unit links in /etc and /run are restored as they were, which also
+      # brings back the enabled state hidden under a mask.
+      if [ "$inst" = 1 ] && rpm -q --quiet rsyslog; then
+        case "$a" in active|activating|reloading) ;; *) systemctl stop rsyslog.service ;; esac
+        find /etc/systemd/system /run/systemd/system -type l \( -name rsyslog.service -o -lname '*/rsyslog.service' \) -delete 2>/dev/null || true
+        if [ -n "$links" ]; then
+          while read -r k p t; do
+            mkdir -p "$(dirname "$p")"
+            ln -s "$t" "$p"
+            if command -v restorecon >/dev/null 2>&1; then restorecon "$p"; fi
+          done <<< "$links"
+        fi
+        systemctl daemon-reload
+      fi
+      start=""
+      while read -r u e a; do
+        [ "$u" = rsyslog.service ] && continue
+        case "$e" in
+          enabled) systemctl enable -q "$u" ;;
+          enabled-runtime) systemctl enable -q --runtime "$u" ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$lines"
+      if [ -n "$start" ]; then systemctl start $start; fi
+      echo "Restored the previous state of rsyslog.service"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.rsyslog.com/doc/
+  - https://www.rsyslog.com/doc/configuration/modules/imjournal.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Punkty 6.2.3 dotyczą komputerów, na których dzienniki prowadzi rsyslog.
+    Uznaję go za używany, gdy jest włączony albo działa (tak samo rozstrzyga
+    punkt 6.2.1.4); w przeciwnym razie wynik to NOT_APPLICABLE i obowiązują
+    punkty 6.2.2. Reguła wychwytuje więc stan połowiczny: usługę włączoną,
+    ale zatrzymaną, albo uruchomioną, ale niewłączoną. Wynik ENABLED_ACTIVE
+    spełnia punkt, a NOT_RUNNING podaje stan z systemctl is-enabled
+    i is-active.
+
+    Naprawa odmaskowuje, włącza i uruchamia rsyslog.service; wycofanie
+    przywraca poprzednie dowiązania jednostki i jej stan.
+  en: |
+    Items 6.2.3 apply to computers where rsyslog keeps the logs. It counts as
+    used when it is enabled or running (item 6.2.1.4 decides the same way);
+    otherwise the result is NOT_APPLICABLE and items 6.2.2 apply. The rule
+    therefore catches a half state: the service enabled but stopped, or
+    started but not enabled. The ENABLED_ACTIVE result meets the item, and
+    NOT_RUNNING gives the state from systemctl is-enabled and is-active.
+
+    The remediation unmasks, enables and starts rsyslog.service; rollback
+    restores the previous unit links and state.

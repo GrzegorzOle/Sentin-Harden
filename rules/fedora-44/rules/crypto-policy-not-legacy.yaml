@@ -1,0 +1,172 @@
+id: fedora44-crypto-policy-not-legacy
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.6.1
+  section: Initial Setup > Configure system wide crypto policy
+  title:
+    pl: Systemowa polityka kryptograficzna nie jest ustawiona na LEGACY
+    en: Ensure system wide crypto policy is not set to legacy
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Fedora ustawia algorytmy i długości kluczy dla OpenSSL, GnuTLS, NSS,
+    OpenSSH, Kerberos i innych bibliotek jednym miejscem: systemową polityką
+    kryptograficzną. Polityka DEFAULT dopuszcza tylko algorytmy uznawane dziś
+    za bezpieczne. LEGACY przywraca m.in. TLS 1.0 i 1.1, klucze RSA i DH
+    krótsze niż 2048 bitów oraz podpisy SHA-1, żeby dało się połączyć ze
+    starymi serwerami i urządzeniami.
+
+    Na takich protokołach atakujący w sieci może w pewnych warunkach odszyfrować
+    lub podrobić połączenie. Punkt wymaga, żeby polityka bazowa była inna niż
+    LEGACY.
+  en: |
+    Fedora sets the algorithms and key sizes for OpenSSL, GnuTLS, NSS, OpenSSH,
+    Kerberos and other libraries in one place: the system-wide crypto policy.
+    The DEFAULT policy allows only algorithms considered secure today. LEGACY
+    brings back, among others, TLS 1.0 and 1.1, RSA and DH keys shorter than
+    2048 bits and SHA-1 signatures, so that old servers and devices can still
+    be reached.
+
+    On such protocols an attacker on the network can under some conditions
+    decrypt or forge a connection. The item requires the base policy to be
+    anything other than LEGACY.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo LEGACY rzadko jest ustawiana bez powodu:
+    zwykle ktoś potrzebował połączenia ze starym urządzeniem lub serwerem.
+    Po zmianie takie połączenia przestają działać z błędem uzgadniania
+    protokołu. Naprawa zmienia LEGACY na DEFAULT i zostawia podpolityki bez
+    zmian. Programy przejmują nową politykę po restarcie systemu.
+  en: |
+    The class needs review because LEGACY is rarely set without a reason:
+    usually someone needed a connection to an old device or server. After the
+    change such connections stop working with a handshake error. The
+    remediation changes LEGACY to DEFAULT and keeps the sub-policies. Programs
+    pick up the new policy after a system restart.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - legacy-applications
+    - remote-management
+  what_breaks:
+    pl:
+      - Przeglądarka i klienci poczty nie łączą się z serwerami, które obsługują tylko TLS 1.0 lub 1.1 albo mają certyfikat z kluczem RSA krótszym niż 2048 bitów
+      - SSH nie łączy się ze starymi urządzeniami sieciowymi i serwerami, które znają tylko wycofane algorytmy wymiany kluczy lub podpisy ssh-rsa z SHA-1
+      - Stare drukarki, zasilacze awaryjne i panele zarządzania z przestarzałym HTTPS przestają być dostępne z tej stacji
+    en:
+      - The browser and email clients do not connect to servers that support only TLS 1.0 or 1.1 or have a certificate with an RSA key shorter than 2048 bits
+      - SSH does not connect to old network devices and servers that know only withdrawn key exchange algorithms or ssh-rsa signatures with SHA-1
+      - Old printers, UPS units and management panels with outdated HTTPS become unreachable from this workstation
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stacja służy do zarządzania starymi urządzeniami, które nie obsługują nowszych protokołów, i nie ma dla niej innego stanowiska
+    en:
+      - The workstation is used to manage old devices that do not support newer protocols, and there is no other station for that
+  reversibility: after-restart
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v update-crypto-policies >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    p=$(update-crypto-policies --show 2>/dev/null)
+    if [ -z "$p" ]; then echo CHECK_ERROR; exit 0; fi
+    case "$(printf %s "${p%%:*}" | tr a-z A-Z)" in
+      LEGACY) echo "LEGACY:$p" ;;
+      *) echo "NOT_LEGACY:$p" ;;
+    esac
+  expected: '^NOT_LEGACY:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      p=$(update-crypto-policies --show)
+      [ -n "$p" ] || { echo "Cannot read the system crypto policy" >&2; exit 1; }
+      {
+        echo "policy=$p"
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      cur=$(update-crypto-policies --show)
+      [ -n "$cur" ] || { echo "Cannot read the system crypto policy" >&2; exit 1; }
+      mod=0
+      new="${cur%%:*}"
+      case "$(printf %s "$new" | tr a-z A-Z)" in LEGACY) new=DEFAULT ;; esac
+      subs=""
+      case "$cur" in *:*) subs=$(printf '%s' "${cur#*:}" | tr ':' ' ') ;; esac
+      for s in $subs; do
+        case "  " in *" $s "*) ;; *) new="$new:$s" ;; esac
+      done
+      if [ "$new" = "$cur" ] && [ "$mod" = 0 ]; then echo "The system crypto policy is already $cur"; exit 0; fi
+      update-crypto-policies --set "$new" >/dev/null
+      echo "Set the system crypto policy to $new; restart the system so that all programs use it"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      p=$(sed -n 's/^policy=//p' "$b" | head -n 1)
+      [ -n "$p" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      update-crypto-policies --set "$p" >/dev/null
+      echo "Restored the system crypto policy $p; restart the system so that all programs use it"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/security_hardening/using-the-system-wide-cryptographic-policies_security-hardening
+  - https://gitlab.com/redhat-crypto/fedora-crypto-policies
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje ustawioną politykę poleceniem
+    update-crypto-policies --show i porównuje jej część przed pierwszym
+    dwukropkiem. Wynik podaje całą politykę razem z podpolitykami, np.
+    NOT_LEGACY:DEFAULT:NO-SHA1.
+
+    Naprawa zmienia politykę poleceniem update-crypto-policies --set, które
+    generuje na nowo pliki w /etc/crypto-policies/back-ends. Programy czytają
+    je przy starcie, więc działające usługi i otwarte programy używają starych
+    ustawień do czasu ich ponownego uruchomienia; dlatego po naprawie i po
+    wycofaniu trzeba zrestartować system. Kopia zapisuje wynik
+    update-crypto-policies --show, a wycofanie ustawia go z powrotem.
+  en: |
+    The check reads the configured policy with the update-crypto-policies
+    --show command and compares its part before the first colon. The result
+    gives the whole policy with its sub-policies, for example
+    NOT_LEGACY:DEFAULT:NO-SHA1.
+
+    The remediation changes the policy with the update-crypto-policies --set
+    command, which regenerates the files in /etc/crypto-policies/back-ends.
+    Programs read them at start, so running services and open programs use the
+    old settings until they are started again; that is why the system has to be
+    restarted after the remediation and after rollback. The backup records the
+    output of update-crypto-policies --show, and rollback sets it back.

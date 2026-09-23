@@ -1,0 +1,137 @@
+id: fedora44-nftables-loopback-configured
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 4.3.4
+  section: Host Based Firewall > Configure nftables
+  title:
+    pl: Ruch pętli zwrotnej w nftables jest skonfigurowany
+    en: Ensure nftables loopback traffic is configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Adresy 127.0.0.0/8 i ::1 należą tylko do interfejsu pętli zwrotnej lo,
+    przez który rozmawiają ze sobą programy na tym samym komputerze. Pakiet
+    z takim adresem nadawcy przychodzący z sieci jest podrobiony.
+
+    Punkt wymaga, żeby łańcuch bazowy input przepuszczał ruch na interfejsie
+    lo, a pakiety z adresem nadawcy 127.0.0.0/8 i ::1 z innych interfejsów
+    odrzucał.
+  en: |
+    The 127.0.0.0/8 and ::1 addresses belong only to the loopback interface
+    lo, through which programs on the same computer talk to each other. A
+    packet with such a sender address arriving from the network is forged.
+
+    The item requires the input base chain to allow traffic on the lo
+    interface and to drop packets with the sender address 127.0.0.0/8 and
+    ::1 from other interfaces.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli reguła przepuszczająca lo stoi przed
+    regułami odrzucającymi; jądro i tak odrzuca takie pakiety, chyba że
+    interfejs ma włączony parametr route_localnet.
+  en: |
+    Nobody will notice if the rule allowing lo comes before the drop rules;
+    the kernel drops such packets anyway, unless an interface has
+    route_localnet enabled.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    # With firewalld as the firewall its rules are assessed by the firewalld items.
+    if [ "$(systemctl is-active firewalld.service 2>/dev/null)" = active ]; then echo NOT_APPLICABLE; exit 0; fi
+    if ! command -v nft >/dev/null 2>&1; then echo NOT_INSTALLED; exit 0; fi
+    rs=$(nft list ruleset 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    hp=$(printf '%s\n' "$rs" | sed -nE 's/.*type filter hook (input|forward|output) .*policy (accept|drop);.*/\1 \2/p')
+    v6=0
+    [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = 0 ] && v6=1
+    printf '%s\n' "$rs" | awk -v v6="$v6" '
+      /^[ \t]*chain / { inb = 0; next }
+      /type filter hook input / { inb = 1; next }
+      !inb { next }
+      { n++ }
+      /^[ \t]*(iif|iifname) "lo" (counter packets [0-9]+ bytes [0-9]+ )?accept$/ { if (!lo) lo = n }
+      /ip saddr 127\.0\.0\.0\/8 / && / drop$/ && !/(iif|iifname) "lo"/ { if (!d4) d4 = n }
+      /ip6 saddr ::1 / && / drop$/ && !/(iif|iifname) "lo"/ { if (!d6) d6 = n }
+      END {
+        ok = ""; miss = ""
+        if (lo) ok = ok ",lo-accept"; else miss = miss ",lo-accept"
+        if (d4) ok = ok ",ipv4-loopback-drop"; else miss = miss ",ipv4-loopback-drop"
+        if (v6 == 1) { if (d6) ok = ok ",ipv6-loopback-drop"; else miss = miss ",ipv6-loopback-drop" }
+        # A drop before the loopback accept would also drop local traffic.
+        if (lo && ((d4 && d4 < lo) || (d6 && d6 < lo))) miss = miss ",lo-accept-after-drop"
+        if (miss == "") print "OK:" substr(ok, 2); else print "NOT_OK:missing=" substr(miss, 2)
+      }'
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains
+  - https://www.netfilter.org/projects/nftables/manpage.html
+  - https://docs.kernel.org/networking/ip-sysctl.html
+
+notes:
+  pl: |
+    Punkty o nftables dotyczą komputera, na którym zaporę tworzy sama usługa
+    nftables z regułami w /etc/sysconfig/nftables.conf. Gdy działa firewalld,
+    sprawdzenie zwraca NOT_APPLICABLE, bo jego reguły ocenia punkt o firewalld.
+    Sprawdzenie odczytuje bieżący zestaw reguł poleceniem nft list ruleset,
+    które wymaga uprawnień roota.
+
+    Reguła tylko sprawdza stan: zestaw reguł zapory projektuje administrator,
+    a jego automatyczna zmiana na zdalnym komputerze grozi odcięciem dostępu.
+    Reguły zapisuje się w pliku ładowanym przez usługę nftables i wczytuje
+    poleceniem systemctl reload nftables.
+
+    Sprawdzenie ocenia reguły bezpośrednio w łańcuchach bazowych input:
+    iif lub iifname "lo" accept, drop dla ip saddr 127.0.0.0/8 i, gdy IPv6
+    jest włączony, dla ip6 saddr ::1. Reguła przepuszczająca lo musi stać
+    przed regułami drop, inaczej odrzucałyby one też ruch lokalny. Reguły
+    w łańcuchach wywoływanych skokiem nie są sprawdzane. Przykład: nft add
+    rule inet filter input iif lo accept, a potem nft add rule inet filter
+    input ip saddr 127.0.0.0/8 drop i nft add rule inet filter input ip6
+    saddr ::1 drop.
+  en: |
+    The nftables items concern a computer whose firewall is built by the
+    nftables service itself, with rules in /etc/sysconfig/nftables.conf.
+    When firewalld runs, the check returns NOT_APPLICABLE, because its rules
+    are assessed by the firewalld item. The check reads the current ruleset
+    with nft list ruleset, which needs root privileges.
+
+    The rule only checks the state: the firewall ruleset is designed by the
+    administrator, and changing it automatically on a remote computer risks
+    cutting off access. The rules are written to the file loaded by the
+    nftables service and loaded with systemctl reload nftables.
+
+    The check assesses the rules directly in the input base chains: iif or
+    iifname "lo" accept, drop for ip saddr 127.0.0.0/8 and, when IPv6 is
+    enabled, for ip6 saddr ::1. The rule allowing lo has to come before the
+    drop rules, otherwise they would drop local traffic too. Rules in chains
+    reached by a jump are not checked. An example: nft add rule inet filter
+    input iif lo accept, then nft add rule inet filter input ip saddr
+    127.0.0.0/8 drop and nft add rule inet filter input ip6 saddr ::1 drop.

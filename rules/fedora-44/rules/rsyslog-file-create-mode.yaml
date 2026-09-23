@@ -1,0 +1,306 @@
+id: fedora44-rsyslog-file-create-mode
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.2.3.4
+  section: Logging and Auditing > System Logging > Configure rsyslog
+  title:
+    pl: rsyslog tworzy pliki dzienników z prawami 0640
+    en: Ensure rsyslog log file creation mode is configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy rsyslog tworzy nowy plik dziennika, na przykład po rotacji albo dla
+    nowej reguły, domyślnie nadaje mu prawa 0644, więc każdy użytkownik może
+    go przeczytać, jeśli usługa nie ma węższej maski praw. Dzienniki zawierają nazwy kont, adresy i treść błędów,
+    które pomagają w ataku.
+
+    Punkt wymaga ustawienia $FileCreateMode na 0640 albo ostrzej i braku
+    słabszych ustawień w konfiguracji rsysloga.
+  en: |
+    When rsyslog creates a new log file, for example after rotation or for a
+    new rule, it gives it the 0644 mode by default, so every user can read
+    it unless the service has a narrower permission mask. Logs contain account names, addresses and error details that help
+    an attack.
+
+    The item requires $FileCreateMode to be set to 0640 or stricter and no
+    weaker settings in the rsyslog configuration.
+
+disruption_description:
+  pl: |
+    Użytkownicy tego nie zauważą: na Fedorze jednostka rsyslog.service ma
+    UMask=0066, więc nowe pliki dzienników i tak powstają z prawami 0600.
+    Ustawienie jest drugą linią obrony na wypadek zmiany maski, na przykład
+    w nadpisaniu jednostki. Restart rsysloga trwa ułamek sekundy i nie gubi komunikatów, bo imjournal
+    czyta dalej od zapisanej pozycji.
+  en: |
+    Users will not notice it: on Fedora the rsyslog.service unit has
+    UMask=0066, so new log files are created with the 0600 mode anyway. The
+    setting is a second line of defense in case the mask changes, for
+    example in a unit override. The rsyslog restart takes a fraction of a second
+    and loses no messages, because imjournal continues from the saved
+    position.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Nowo tworzone pliki dzienników rsysloga nie są czytelne dla zwykłych użytkowników ani programów bez uprawnień roota
+    en:
+      - Newly created rsyslog log files cannot be read by normal users or programs without root privileges
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    in_use() { case "$(systemctl is-enabled "$1.service" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active --quiet "$1.service" 2>/dev/null; }
+    if ! in_use rsyslog; then echo NOT_APPLICABLE; exit 0; fi
+    export LC_ALL=C
+    # rs_files: the main rsyslog file and the drop-ins it includes by default
+    rs_files() {
+      local f
+      [ -f /etc/rsyslog.conf ] && echo /etc/rsyslog.conf
+      for f in /etc/rsyslog.d/*.conf; do [ -f "$f" ] && echo "$f"; done
+      return 0
+    }
+    f_own=/etc/rsyslog.d/sentin-harden-filecreatemode.conf
+    mark='# Sentin-Harden: fedora44-rsyslog-file-create-mode'
+    # fcm_values: "global|action MODE FILE" for every file creation mode set for
+    # log files; the state file mode of imjournal is not about log files
+    fcm_values() {
+      local f s v
+      for f in $(rs_files); do
+        awk -v f="$f" 'tolower($1) == "$filecreatemode" { print "global", $2, f }' "$f"
+        sed -e 's/#.*//' -e '/^[[:space:]]*\$/d' "$f" | tr '\n' ' ' | tr ')' '\n' | grep -i 'filecreatemode' | grep -vi 'imjournal' |
+        while IFS= read -r s; do
+          v=$(printf '%s\n' "$s" | grep -oiE 'filecreatemode[[:space:]]*=[[:space:]]*"?[0-7]+' | grep -oE '[0-7]+$' | tail -n 1)
+          [ -n "$v" ] || continue
+          if printf '%s\n' "$s" | grep -qi 'builtin:omfile'; then echo "global $v $f"; else echo "action $v $f"; fi
+        done
+      done
+    }
+    evaluate() {
+      local k m f g="" bad=""
+      while read -r k m f; do
+        [ -n "$k" ] || continue
+        if ! printf '%s\n' "$m" | grep -qxE '0?[0-7]{3}' || [ $(( 0$m & 0137 )) -ne 0 ]; then bad="$bad${bad:+,}$m@$f"
+        elif [ "$k" = global ]; then g="$g${g:+,}$m"; fi
+      done <<< "$(fcm_values)"
+      if [ -n "$bad" ]; then echo "NOT_OK:$bad"
+      elif [ -z "$g" ]; then echo "NOT_OK:not-set"
+      else echo "OK:$g"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/rsyslog.d/sentin-harden-filecreatemode.conf
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=rsfcm-1
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      in_use() { case "$(systemctl is-enabled "$1.service" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active --quiet "$1.service" 2>/dev/null; }
+      if ! in_use rsyslog; then
+        echo "rsyslog is switched off, so this item does not apply; nothing to change"; exit 0
+      fi
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rsfcm-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    export LC_ALL=C
+    # rs_files: the main rsyslog file and the drop-ins it includes by default
+    rs_files() {
+      local f
+      [ -f /etc/rsyslog.conf ] && echo /etc/rsyslog.conf
+      for f in /etc/rsyslog.d/*.conf; do [ -f "$f" ] && echo "$f"; done
+      return 0
+    }
+    f_own=/etc/rsyslog.d/sentin-harden-filecreatemode.conf
+    mark='# Sentin-Harden: fedora44-rsyslog-file-create-mode'
+    # fcm_values: "global|action MODE FILE" for every file creation mode set for
+    # log files; the state file mode of imjournal is not about log files
+    fcm_values() {
+      local f s v
+      for f in $(rs_files); do
+        awk -v f="$f" 'tolower($1) == "$filecreatemode" { print "global", $2, f }' "$f"
+        sed -e 's/#.*//' -e '/^[[:space:]]*\$/d' "$f" | tr '\n' ' ' | tr ')' '\n' | grep -i 'filecreatemode' | grep -vi 'imjournal' |
+        while IFS= read -r s; do
+          v=$(printf '%s\n' "$s" | grep -oiE 'filecreatemode[[:space:]]*=[[:space:]]*"?[0-7]+' | grep -oE '[0-7]+$' | tail -n 1)
+          [ -n "$v" ] || continue
+          if printf '%s\n' "$s" | grep -qi 'builtin:omfile'; then echo "global $v $f"; else echo "action $v $f"; fi
+        done
+      done
+    }
+    evaluate() {
+      local k m f g="" bad=""
+      while read -r k m f; do
+        [ -n "$k" ] || continue
+        if ! printf '%s\n' "$m" | grep -qxE '0?[0-7]{3}' || [ $(( 0$m & 0137 )) -ne 0 ]; then bad="$bad${bad:+,}$m@$f"
+        elif [ "$k" = global ]; then g="$g${g:+,}$m"; fi
+      done <<< "$(fcm_values)"
+      if [ -n "$bad" ]; then echo "NOT_OK:$bad"
+      elif [ -z "$g" ]; then echo "NOT_OK:not-set"
+      else echo "OK:$g"; fi
+    }
+    undo() {
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f_own" ;;
+        0) rm -f "$f_own" ;;
+      esac
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        NOT_OK:not-set) ;;
+        *) echo "A weaker file creation mode is set (${r#NOT_OK:}); correct it by hand" >&2; exit 1 ;;
+      esac
+      mkdir -p /etc/rsyslog.d
+      printf '%s\n' "$mark" '$FileCreateMode 0640' > "$f_own"
+      chmod 0644 "$f_own"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f_own"; fi
+      if command -v rsyslogd >/dev/null 2>&1 && ! rsyslogd -N1 >/dev/null 2>&1; then
+        undo; echo "rsyslogd -N1 rejects the configuration; restored the previous state" >&2; exit 1
+      fi
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) undo; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Set \$FileCreateMode 0640 in $f_own"
+      if [ -d /run/systemd/system ]; then
+        systemctl reset-failed rsyslog.service >/dev/null 2>&1 || true
+        systemctl try-restart rsyslog.service
+        echo "Restarted rsyslog if it was running"
+      fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rsfcm-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    export LC_ALL=C
+    # rs_files: the main rsyslog file and the drop-ins it includes by default
+    rs_files() {
+      local f
+      [ -f /etc/rsyslog.conf ] && echo /etc/rsyslog.conf
+      for f in /etc/rsyslog.d/*.conf; do [ -f "$f" ] && echo "$f"; done
+      return 0
+    }
+    f_own=/etc/rsyslog.d/sentin-harden-filecreatemode.conf
+    mark='# Sentin-Harden: fedora44-rsyslog-file-create-mode'
+    # fcm_values: "global|action MODE FILE" for every file creation mode set for
+    # log files; the state file mode of imjournal is not about log files
+    fcm_values() {
+      local f s v
+      for f in $(rs_files); do
+        awk -v f="$f" 'tolower($1) == "$filecreatemode" { print "global", $2, f }' "$f"
+        sed -e 's/#.*//' -e '/^[[:space:]]*\$/d' "$f" | tr '\n' ' ' | tr ')' '\n' | grep -i 'filecreatemode' | grep -vi 'imjournal' |
+        while IFS= read -r s; do
+          v=$(printf '%s\n' "$s" | grep -oiE 'filecreatemode[[:space:]]*=[[:space:]]*"?[0-7]+' | grep -oE '[0-7]+$' | tail -n 1)
+          [ -n "$v" ] || continue
+          if printf '%s\n' "$s" | grep -qi 'builtin:omfile'; then echo "global $v $f"; else echo "action $v $f"; fi
+        done
+      done
+    }
+    evaluate() {
+      local k m f g="" bad=""
+      while read -r k m f; do
+        [ -n "$k" ] || continue
+        if ! printf '%s\n' "$m" | grep -qxE '0?[0-7]{3}' || [ $(( 0$m & 0137 )) -ne 0 ]; then bad="$bad${bad:+,}$m@$f"
+        elif [ "$k" = global ]; then g="$g${g:+,}$m"; fi
+      done <<< "$(fcm_values)"
+      if [ -n "$bad" ]; then echo "NOT_OK:$bad"
+      elif [ -z "$g" ]; then echo "NOT_OK:not-set"
+      else echo "OK:$g"; fi
+    }
+    undo() {
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f_own" ;;
+        0) rm -f "$f_own" ;;
+      esac
+    }
+      undo
+      echo "Restored the previous state of $f_own"
+      if [ -d /run/systemd/system ]; then
+        systemctl reset-failed rsyslog.service >/dev/null 2>&1 || true
+        systemctl try-restart rsyslog.service
+        echo "Restarted rsyslog if it was running"
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.rsyslog.com/doc/configuration/modules/omfile.html
+  - https://man7.org/linux/man-pages/man8/rsyslogd.8.html
+
+notes:
+  pl: |
+    Sprawdzenie zbiera wszystkie ustawienia trybu tworzenia plików
+    w /etc/rsyslog.conf i /etc/rsyslog.d/*.conf: dyrektywę $FileCreateMode,
+    parametr fileCreateMode modułu builtin:omfile i akcji omfile. Pomija
+    parametr FileCreateMode modułu imjournal, bo dotyczy on pliku stanu, a nie
+    dzienników. Wynik OK podaje ustawienia ogólne; NOT_OK:not-set oznacza
+    brak ustawienia ogólnego (rsyslog przyjmuje wtedy 0644), a NOT_OK
+    z listą wartość słabszą niż 0640 i plik, w którym jest.
+
+    Naprawa tworzy /etc/rsyslog.d/sentin-harden-filecreatemode.conf
+    z $FileCreateMode 0640. Fedora wczytuje /etc/rsyslog.d/*.conf przed
+    regułami zapisu, więc ustawienie obejmuje wszystkie pliki z
+    /etc/rsyslog.conf. Słabsze ustawienie w innym pliku powoduje odmowę, bo
+    jego poprawa wymaga decyzji administratora. Naprawa sprawdza nową
+    konfigurację poleceniem rsyslogd -N1 i restartuje rsyslog, jeśli działa.
+    Wycofanie przywraca poprzedni stan pliku i również restartuje usługę.
+    Gdy rsyslog nie jest używany, wynik to NOT_APPLICABLE.
+  en: |
+    The check collects all file creation mode settings in /etc/rsyslog.conf
+    and /etc/rsyslog.d/*.conf: the $FileCreateMode directive and the
+    fileCreateMode parameter of the builtin:omfile module and of omfile
+    actions. It skips the FileCreateMode parameter of the imjournal module,
+    because it concerns the state file, not logs. The OK result gives the
+    general settings; NOT_OK:not-set means that there is no general setting
+    (rsyslog then uses 0644), and NOT_OK with a list gives a value weaker
+    than 0640 and the file it is in.
+
+    The remediation creates /etc/rsyslog.d/sentin-harden-filecreatemode.conf
+    with $FileCreateMode 0640. Fedora reads /etc/rsyslog.d/*.conf before the
+    write rules, so the setting covers all files from /etc/rsyslog.conf. A
+    weaker setting in another file causes a refusal, because correcting it
+    needs a decision by the administrator. The remediation checks the new
+    configuration with rsyslogd -N1 and restarts rsyslog if it runs.
+    Rollback restores the previous state of the file and also restarts the
+    service. When rsyslog is not used, the result is NOT_APPLICABLE.

@@ -1,0 +1,134 @@
+id: fedora44-nftables-installed
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 4.1.1
+  section: Host Based Firewall > Configure a firewall utility
+  title:
+    pl: Pakiet nftables jest zainstalowany
+    en: Ensure nftables is installed
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    nftables to podsystem jądra do filtrowania pakietów i narzędzie nft do
+    zarządzania jego regułami. Na nim działają zapory systemu: firewalld
+    w Fedorze zapisuje swoje reguły właśnie przez nftables, a bez pakietu
+    nie da się też samodzielnie ustawić ani sprawdzić reguł.
+
+    Punkt wymaga, żeby pakiet nftables był zainstalowany. Na Fedorze
+    Workstation jest zainstalowany domyślnie jako zależność firewalld.
+  en: |
+    nftables is the kernel packet filtering subsystem and the nft tool that
+    manages its rules. The system firewalls work on top of it: firewalld in
+    Fedora writes its rules through nftables, and without the package the
+    rules cannot be set or inspected directly either.
+
+    The item requires the nftables package to be installed. On Fedora
+    Workstation it is installed by default as a dependency of firewalld.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: instalacja pakietu nie zmienia reguł zapory ani
+    nie uruchamia żadnej usługi.
+  en: |
+    Nobody will notice: installing the package does not change the firewall
+    rules or start any service.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if rpm -q --quiet nftables; then echo "INSTALLED:$(rpm -q nftables | head -n 1)"; else echo NOT_INSTALLED; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=pkg-on-1
+        if rpm -q --quiet nftables; then echo installed=1; else echo installed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if rpm -q --quiet nftables; then echo "nftables is already installed"; exit 0; fi
+      dnf -y -q install nftables
+      rpm -q --quiet nftables || { echo "nftables is still not installed" >&2; exit 1; }
+      echo "Installed nftables"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pkg-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      inst=$(sed -n '2s/^installed=//p' "$b")
+      case "$inst" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$inst" = 1 ] || ! rpm -q --quiet nftables; then echo "Nothing to restore"; exit 0; fi
+      # Packages installed since then may need it; then it stays.
+      rm=nftables
+      for p in nftables-services; do if rpm -q --quiet "$p"; then rm="$rm $p"; fi; done
+      if ! rpm -e --test $rm >/dev/null 2>&1; then
+        echo "Kept nftables: other installed packages need it now"; exit 0
+      fi
+      dnf -y -q remove --no-autoremove $rm
+      echo "Removed again:" $rm
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://wiki.nftables.org/wiki-nftables/index.php/Main_Page
+  - https://dnf5.readthedocs.io/en/latest/commands/install.8.html
+
+notes:
+  pl: |
+    Sprawdzenie odpytuje bazę rpm i podaje zainstalowaną wersję pakietu.
+
+    Naprawa instaluje pakiet, co wymaga dostępu do repozytoriów; razem
+    z nim instaluje się nftables-services, bo oba pakiety wymagają siebie
+    nawzajem. Wycofanie usuwa te dwa pakiety, chyba że potrzebują ich już
+    inne zainstalowane pakiety, np. firewalld. Biblioteki doinstalowane jako
+    zależności zostają; dnf autoremove usuwa je po przejrzeniu listy.
+  en: |
+    The check queries the rpm database and gives the installed version of
+    the package.
+
+    The remediation installs the package, which needs access to the
+    repositories; nftables-services is installed with it, because the two
+    packages require each other. Rollback removes these two packages unless
+    other installed packages, such as firewalld, need them by then. Libraries
+    pulled in as dependencies stay; dnf autoremove removes them after a
+    review of the list.

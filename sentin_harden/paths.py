@@ -56,12 +56,23 @@ def data_dir() -> Path:
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", "/var/lib"))
     path = base / APP_NAME
-    path.mkdir(parents=True, exist_ok=True)
+    _try_mkdir(path)
     return path
 
 
 def backup_dir() -> Path:
     """Directory for backups taken before a change."""
     path = data_dir() / "backups"
-    path.mkdir(parents=True, exist_ok=True)
+    _try_mkdir(path)
     return path
+
+
+def _try_mkdir(path: Path) -> None:
+    # On Linux the audit runs as an ordinary user, who cannot create anything
+    # under /var/lib. The path is still the right one for commands later run as
+    # root, which create it themselves, so failing here must not take down the
+    # window that only displays it.
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass

@@ -1,0 +1,274 @@
+id: fedora44-aide-check-scheduled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.1.2
+  section: Logging and Auditing > Configure Integrity Checking
+  title:
+    pl: Integralność plików jest regularnie sprawdzana
+    en: Ensure filesystem integrity is regularly checked
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Baza AIDE nic nie daje, jeśli nikt nie porównuje z nią systemu. Regularne
+    sprawdzenie uruchamiane automatycznie pokazuje zmiany w plikach
+    systemowych krótko po tym, jak się pojawią.
+
+    Punkt wymaga zadania cron albo timera systemd, który regularnie
+    uruchamia aide --check.
+  en: |
+    The AIDE database is of no use if nobody compares the system with it. A
+    regular check started automatically shows changes in system files soon
+    after they appear.
+
+    The item requires a cron job or a systemd timer that runs aide --check
+    regularly.
+
+disruption_description:
+  pl: |
+    Sprawdzenie raz dziennie czyta pliki systemowe przez kilka minut,
+    z najniższym priorytetem procesora i dysku. Gdy AIDE znajdzie zmiany,
+    na przykład po aktualizacji pakietów, jednostka aidecheck.service
+    kończy się błędem i jest widoczna w systemctl --failed, dopóki baza nie
+    zostanie zaktualizowana.
+  en: |
+    Once a day the check reads the system files for a few minutes, with the
+    lowest processor and disk priority. When AIDE finds changes, for example
+    after a package update, the aidecheck.service unit ends with an error and
+    is shown in systemctl --failed until the database is updated.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Po aktualizacjach jednostka aidecheck.service jest oznaczona jako nieudana, dopóki baza AIDE nie zostanie zaktualizowana
+    en:
+      - After updates the aidecheck.service unit is marked as failed until the AIDE database is updated
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Komputer, na którym nikt nie będzie przeglądał wyników sprawdzenia
+    en:
+      - A computer where nobody will review the check results
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    svc=/etc/systemd/system/aidecheck.service
+    tmr=/etc/systemd/system/aidecheck.timer
+    mark='# Sentin-Harden: fedora44-aide-check-scheduled'
+    # cron_jobs: cron files with a job that runs aide --check
+    cron_jobs() {
+      local f
+      for f in /etc/crontab /etc/anacrontab /etc/cron.d/* /etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/* /var/spool/cron/root; do
+        [ -f "$f" ] && [ -r "$f" ] || continue
+        if grep -Eqs '^[^#]*aide[^#]*(--check|[[:space:]]-C([[:space:]]|$))' "$f"; then echo "$f"; fi
+      done
+    }
+    # timer_jobs: enabled timers whose service runs aide --check, with (inactive) when not running
+    timer_jobs() {
+      local t u
+      systemctl list-unit-files --type=timer --state=enabled --no-legend 2>/dev/null | awk '{ print $1 }' | while read -r t; do
+        u=$(systemctl show -p Unit --value "$t" 2>/dev/null)
+        [ -n "$u" ] || continue
+        systemctl show -p ExecStart --value "$u" 2>/dev/null | grep -Eq 'aide[^;]*(--check|[[:space:]]-C([[:space:]]|$))' || continue
+        if systemctl is-active --quiet "$t"; then echo "$t"; else echo "$t(inactive)"; fi
+      done
+    }
+    evaluate() {
+      local j good
+      rpm -q --quiet aide 2>/dev/null || { echo "NOT_OK:aide-not-installed"; return; }
+      j=$( { cron_jobs; timer_jobs; } | paste -sd, -)
+      good=$(printf '%s\n' "$j" | tr , '\n' | grep -v '(inactive)$' | paste -sd, -)
+      if [ -n "$good" ]; then echo "OK:$good"
+      elif [ -n "$j" ]; then echo "NOT_OK:$j"
+      else echo "NOT_OK:not-scheduled"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      echo format=aidecheck-1 > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aidecheck-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    svc=/etc/systemd/system/aidecheck.service
+    tmr=/etc/systemd/system/aidecheck.timer
+    mark='# Sentin-Harden: fedora44-aide-check-scheduled'
+    # cron_jobs: cron files with a job that runs aide --check
+    cron_jobs() {
+      local f
+      for f in /etc/crontab /etc/anacrontab /etc/cron.d/* /etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/* /var/spool/cron/root; do
+        [ -f "$f" ] && [ -r "$f" ] || continue
+        if grep -Eqs '^[^#]*aide[^#]*(--check|[[:space:]]-C([[:space:]]|$))' "$f"; then echo "$f"; fi
+      done
+    }
+    # timer_jobs: enabled timers whose service runs aide --check, with (inactive) when not running
+    timer_jobs() {
+      local t u
+      systemctl list-unit-files --type=timer --state=enabled --no-legend 2>/dev/null | awk '{ print $1 }' | while read -r t; do
+        u=$(systemctl show -p Unit --value "$t" 2>/dev/null)
+        [ -n "$u" ] || continue
+        systemctl show -p ExecStart --value "$u" 2>/dev/null | grep -Eq 'aide[^;]*(--check|[[:space:]]-C([[:space:]]|$))' || continue
+        if systemctl is-active --quiet "$t"; then echo "$t"; else echo "$t(inactive)"; fi
+      done
+    }
+    evaluate() {
+      local j good
+      rpm -q --quiet aide 2>/dev/null || { echo "NOT_OK:aide-not-installed"; return; }
+      j=$( { cron_jobs; timer_jobs; } | paste -sd, -)
+      good=$(printf '%s\n' "$j" | tr , '\n' | grep -v '(inactive)$' | paste -sd, -)
+      if [ -n "$good" ]; then echo "OK:$good"
+      elif [ -n "$j" ]; then echo "NOT_OK:$j"
+      else echo "NOT_OK:not-scheduled"; fi
+    }
+    undo() {
+      systemctl disable --now aidecheck.timer >/dev/null 2>&1 || true
+      rm -f "$svc" "$tmr"
+      systemctl daemon-reload
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        *aide-not-installed*) echo "aide is not installed; apply item 6.1.1 first" >&2; exit 1 ;;
+      esac
+      for f in "$svc" "$tmr"; do
+        if [ -e "$f" ] && ! grep -qxF "$mark" "$f"; then echo "$f exists and was not created by this rule" >&2; exit 1; fi
+      done
+      a=$(command -v aide)
+      printf '%s\n' "$mark" '[Unit]' 'Description=Check file integrity with AIDE' 'ConditionPathExists=/var/lib/aide/aide.db.gz' '' \
+        '[Service]' 'Type=oneshot' "ExecStart=$a --check" 'Nice=19' 'IOSchedulingClass=idle' > "$svc"
+      printf '%s\n' "$mark" '[Unit]' 'Description=Daily file integrity check with AIDE' '' \
+        '[Timer]' 'OnCalendar=*-*-* 05:00:00' 'RandomizedDelaySec=30min' 'Persistent=true' 'Unit=aidecheck.service' '' \
+        '[Install]' 'WantedBy=timers.target' > "$tmr"
+      chmod 644 "$svc" "$tmr"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$svc" "$tmr"; fi
+      systemctl daemon-reload
+      systemctl enable --now aidecheck.timer >/dev/null 2>&1 || { undo; echo "Could not start aidecheck.timer; removed the units" >&2; exit 1; }
+      echo "Created and started aidecheck.timer (daily at 05:00)"
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) undo; echo "The item is not met after the change ($r); removed the units" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aidecheck-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    svc=/etc/systemd/system/aidecheck.service
+    tmr=/etc/systemd/system/aidecheck.timer
+    mark='# Sentin-Harden: fedora44-aide-check-scheduled'
+    # cron_jobs: cron files with a job that runs aide --check
+    cron_jobs() {
+      local f
+      for f in /etc/crontab /etc/anacrontab /etc/cron.d/* /etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/* /var/spool/cron/root; do
+        [ -f "$f" ] && [ -r "$f" ] || continue
+        if grep -Eqs '^[^#]*aide[^#]*(--check|[[:space:]]-C([[:space:]]|$))' "$f"; then echo "$f"; fi
+      done
+    }
+    # timer_jobs: enabled timers whose service runs aide --check, with (inactive) when not running
+    timer_jobs() {
+      local t u
+      systemctl list-unit-files --type=timer --state=enabled --no-legend 2>/dev/null | awk '{ print $1 }' | while read -r t; do
+        u=$(systemctl show -p Unit --value "$t" 2>/dev/null)
+        [ -n "$u" ] || continue
+        systemctl show -p ExecStart --value "$u" 2>/dev/null | grep -Eq 'aide[^;]*(--check|[[:space:]]-C([[:space:]]|$))' || continue
+        if systemctl is-active --quiet "$t"; then echo "$t"; else echo "$t(inactive)"; fi
+      done
+    }
+    evaluate() {
+      local j good
+      rpm -q --quiet aide 2>/dev/null || { echo "NOT_OK:aide-not-installed"; return; }
+      j=$( { cron_jobs; timer_jobs; } | paste -sd, -)
+      good=$(printf '%s\n' "$j" | tr , '\n' | grep -v '(inactive)$' | paste -sd, -)
+      if [ -n "$good" ]; then echo "OK:$good"
+      elif [ -n "$j" ]; then echo "NOT_OK:$j"
+      else echo "NOT_OK:not-scheduled"; fi
+    }
+    undo() {
+      systemctl disable --now aidecheck.timer >/dev/null 2>&1 || true
+      rm -f "$svc" "$tmr"
+      systemctl daemon-reload
+    }
+      mine=0
+      for f in "$svc" "$tmr"; do if [ -f "$f" ] && grep -qxF "$mark" "$f"; then mine=1; fi; done
+      if [ "$mine" = 0 ]; then echo "The units of this rule were not found, nothing to remove"; exit 0; fi
+      for f in "$svc" "$tmr"; do
+        if [ -e "$f" ] && ! grep -qxF "$mark" "$f"; then echo "$f was replaced by hand; left it in place" >&2; exit 1; fi
+      done
+      undo
+      echo "Stopped and removed aidecheck.timer and aidecheck.service"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://aide.github.io/doc/
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje zadanie z aide --check (albo -C) w /etc/crontab,
+    /etc/anacrontab, /etc/cron.d, katalogach /etc/cron.hourly, daily,
+    weekly i monthly oraz w crontabie roota, albo włączony i działający
+    timer, którego usługa uruchamia aide --check. Crontabu roota bez
+    uprawnień roota nie da się odczytać.
+
+    Naprawa tworzy, tak jak CIS, jednostki aidecheck.service
+    i aidecheck.timer w /etc/systemd/system. Timer uruchamia sprawdzenie
+    codziennie o 5:00 z losowym opóźnieniem do 30 minut, a jeśli komputer
+    był wtedy wyłączony, to po jego włączeniu. Usługa pomija sprawdzenie,
+    gdy nie ma bazy. Wymaga zainstalowanego aide (punkt 6.1.1). Istniejące
+    pliki o tych nazwach, które nie pochodzą z tej reguły, powodują odmowę.
+    Wycofanie zatrzymuje timer i usuwa obie jednostki.
+  en: |
+    The check accepts a job with aide --check (or -C) in /etc/crontab,
+    /etc/anacrontab, /etc/cron.d, the /etc/cron.hourly, daily, weekly and
+    monthly directories and the crontab of root, or an enabled and running
+    timer whose service runs aide --check. The crontab of root cannot be
+    read without root privileges.
+
+    The remediation creates, as CIS does, the aidecheck.service and
+    aidecheck.timer units in /etc/systemd/system. The timer starts the check
+    daily at 5:00 with a random delay of up to 30 minutes, and after the
+    computer is switched on if it was off at that time. The service skips
+    the check when there is no database. It needs aide to be installed (item
+    6.1.1). Existing files with these names that do not come from this rule
+    cause a refusal. Rollback stops the timer and removes both units.

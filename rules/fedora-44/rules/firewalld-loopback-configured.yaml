@@ -1,0 +1,209 @@
+id: fedora44-firewalld-loopback-configured
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 4.2.2
+  section: Host Based Firewall > Configure firewalld
+  title:
+    pl: Ruch pętli zwrotnej w firewalld jest skonfigurowany
+    en: Ensure firewalld loopback traffic is configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Interfejs pętli zwrotnej lo służy programom na tym samym komputerze do
+    rozmowy ze sobą, np. przeglądarce z lokalną usługą. Adresy 127.0.0.0/8
+    i ::1 mają sens tylko na nim. Pakiet z takim adresem nadawcy, który
+    przychodzi z sieci, jest podrobiony i może udawać ruch lokalny, któremu
+    programy często ufają bardziej.
+
+    Punkt wymaga, żeby zapora przepuszczała ruch na interfejsie lo, a pakiety
+    z adresem nadawcy 127.0.0.0/8 lub ::1 przychodzące innymi interfejsami
+    odrzucała. firewalld przepuszcza ruch lo zawsze; odrzucania podrobionych
+    adresów domyślnie nie ma.
+  en: |
+    The loopback interface lo lets programs on the same computer talk to
+    each other, for example a browser to a local service. The 127.0.0.0/8
+    and ::1 addresses only make sense on it. A packet with such a sender
+    address that arrives from the network is forged and can pose as local
+    traffic, which programs often trust more.
+
+    The item requires the firewall to allow traffic on the lo interface and
+    to drop packets with the sender address 127.0.0.0/8 or ::1 that arrive
+    on other interfaces. firewalld always allows lo traffic; dropping forged
+    addresses is not there by default.
+
+disruption_description:
+  pl: |
+    Na co dzień nikt tego nie zauważy: jądro i tak odrzuca takie pakiety,
+    chyba że któryś interfejs ma włączony parametr route_localnet. Naprawa
+    przeładowuje jednak firewalld, a przeładowanie usuwa zmiany wprowadzone
+    bez opcji --permanent, np. porty otwarte tymczasowo poleceniem
+    firewall-cmd. Docker i libvirt odtwarzają swoje reguły same.
+  en: |
+    Day to day nobody will notice: the kernel drops such packets anyway,
+    unless an interface has route_localnet enabled. The remediation reloads
+    firewalld, though, and the reload removes changes made without the
+    --permanent option, for example ports opened temporarily with
+    firewall-cmd. Docker and libvirt restore their own rules.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Przeładowanie firewalld usuwa zmiany zapory wprowadzone tylko w bieżącej konfiguracji, bez opcji --permanent
+      - Programy, które celowo przyjmują z sieci pakiety z adresem 127.0.0.0/8 przy włączonym route_localnet, przestają je dostawać
+    en:
+      - The firewalld reload removes firewall changes made only in the runtime configuration, without the --permanent option
+      - Programs that deliberately accept packets with a 127.0.0.0/8 address from the network with route_localnet enabled stop receiving them
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Na komputerze są tymczasowe zmiany firewalld, które trzeba zachować; najpierw zapisz je na stałe albo zastosuj regułę później
+    en:
+      - The computer has temporary firewalld changes that must be kept; make them permanent first or apply the rule later
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then echo CHECK_ERROR; exit 0; fi
+    if [ "$(systemctl is-active firewalld.service 2>/dev/null)" != active ]; then
+      # With nftables as the firewall the nftables items assess loopback traffic.
+      if [ "$(systemctl is-active nftables.service 2>/dev/null)" = active ]; then echo NOT_APPLICABLE
+      else echo NOT_OK:firewalld-not-running; fi
+      exit 0
+    fi
+    rs=$(nft list table inet firewalld 2>/dev/null) || { echo CHECK_ERROR; exit 0; }
+    v6=0
+    [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = 0 ] && v6=1
+    printf '%s\n' "$rs" | awk -v v6="$v6" '
+      /^\tchain / { c = $2; next }
+      c == "filter_INPUT" && $0 ~ /^\t\tiifname "lo" accept$/ { lo = 1 }
+      # Loopback traffic is accepted before any zone, so the trusted zone of lo never sees it.
+      c ~ /^filter_IN_/ && c !~ /^filter_IN_trusted(_|$)/ && / drop$/ && !/iifname "lo"/ {
+        if ($0 ~ /ip saddr 127\.0\.0\.0\/8 /) d4 = 1
+        if ($0 ~ /ip6 saddr ::1 /) d6 = 1
+      }
+      END {
+        ok = ""; miss = ""
+        if (lo) ok = ok ",lo-accept"; else miss = miss ",lo-accept"
+        if (d4) ok = ok ",ipv4-loopback-drop"; else miss = miss ",ipv4-loopback-drop"
+        if (v6 == 1) { if (d6) ok = ok ",ipv6-loopback-drop"; else miss = miss ",ipv6-loopback-drop" }
+        if (miss == "") print "OK:" substr(ok, 2); else print "NOT_OK:missing=" substr(miss, 2)
+      }'
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      p=/etc/firewalld/policies/sentin-loopback.xml
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=fwlo-1
+        if [ -f "$p" ]; then echo existed=1; cat "$p"; else echo existed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if [ "$(systemctl is-active firewalld.service 2>/dev/null)" != active ]; then
+        echo "firewalld is not running; start it first (single firewall utility rule)" >&2; exit 1
+      fi
+      P=sentin-loopback
+      if ! firewall-cmd --permanent --get-policies | tr ' ' '\n' | grep -qx "$P"; then
+        firewall-cmd -q --permanent --new-policy "$P"
+      fi
+      firewall-cmd -q --permanent --policy "$P" --add-ingress-zone ANY
+      firewall-cmd -q --permanent --policy "$P" --add-egress-zone HOST
+      firewall-cmd -q --permanent --policy "$P" --set-priority -1000
+      firewall-cmd -q --permanent --policy "$P" --add-rich-rule='rule family="ipv4" source address="127.0.0.0/8" drop'
+      firewall-cmd -q --permanent --policy "$P" --add-rich-rule='rule family="ipv6" source address="::1" drop'
+      # A policy only takes effect after a reload, which also drops runtime-only changes.
+      firewall-cmd -q --reload
+      echo "Added firewalld policy $P that drops loopback source addresses arriving on other interfaces"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      p=/etc/firewalld/policies/sentin-loopback.xml
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=fwlo-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$ex" = 1 ]; then
+        case "$(sed -n 3p "$b")" in "<?xml"*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        tail -n +3 "$b" > "$p.sentin-new"
+        chmod 0644 "$p.sentin-new"
+        mv -f "$p.sentin-new" "$p"
+        echo "Restored $p"
+      else
+        # The policy name belongs to this rule, so its .old copy was made by firewalld for it.
+        rm -f "$p" "$p.old"
+        echo "Removed the sentin-loopback policy"
+      fi
+      if [ "$(systemctl is-active firewalld.service 2>/dev/null)" = active ]; then firewall-cmd -q --reload; fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://firewalld.org/documentation/man-pages/firewalld.policies.html
+  - https://firewalld.org/documentation/man-pages/firewall-cmd.html
+  - https://docs.kernel.org/networking/ip-sysctl.html
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje reguły firewalld poleceniem nft list table inet
+    firewalld, które wymaga uprawnień roota. Wymaga przepuszczania lo
+    w łańcuchu filter_INPUT oraz reguł drop dla adresu nadawcy 127.0.0.0/8
+    i, gdy IPv6 jest włączony, ::1 w łańcuchach wejściowych polityk lub
+    stref. Reguły w strefie trusted się nie liczą: firewalld przepuszcza ruch
+    lo, zanim dotrze on do jakiejkolwiek strefy, więc reguły dodane tam dla
+    interfejsu lo nigdy nie działają. Gdy firewalld nie działa, a działa
+    nftables, wynik to NOT_APPLICABLE, bo ten przypadek ocenia punkt
+    o nftables.
+
+    Naprawa tworzy politykę firewalld sentin-loopback dla ruchu z dowolnej
+    strefy do komputera (ANY do HOST) z priorytetem -1000, która odrzuca
+    adresy 127.0.0.0/8 i ::1, i przeładowuje firewalld. Ruch lo zostaje
+    przepuszczony wcześniej, więc polityka go nie dotyczy. Wycofanie usuwa
+    politykę albo przywraca jej poprzednią treść i przeładowuje firewalld.
+  en: |
+    The check reads the firewalld rules with nft list table inet firewalld,
+    which needs root privileges. It requires lo to be allowed in the
+    filter_INPUT chain, and drop rules for the sender address 127.0.0.0/8
+    and, when IPv6 is enabled, ::1 in the input chains of policies or zones.
+    Rules in the trusted zone do not count: firewalld allows lo traffic
+    before it reaches any zone, so rules added there for the lo interface
+    never take effect. When firewalld does not run and nftables does, the
+    result is NOT_APPLICABLE, because the nftables item assesses that case.
+
+    The remediation creates the firewalld policy sentin-loopback for traffic
+    from any zone to the computer (ANY to HOST) with priority -1000, which
+    drops the 127.0.0.0/8 and ::1 addresses, and reloads firewalld. lo
+    traffic is allowed earlier, so the policy does not affect it. Rollback
+    removes the policy or restores its previous content and reloads
+    firewalld.

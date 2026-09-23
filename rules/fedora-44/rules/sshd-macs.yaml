@@ -1,0 +1,242 @@
+id: fedora44-sshd-macs
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.1.6
+  section: Access Control > Configure SSH Server
+  title:
+    pl: Kody MAC sshd są skonfigurowane
+    en: Ensure sshd MACs are configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Kod MAC dołączany do każdego pakietu SSH pozwala wykryć, że ktoś po
+    drodze zmienił dane. Kody oparte na MD5 i RIPEMD-160 oraz skrócone do
+    64 lub 96 bitów dają za słabą ochronę przed podrobieniem pakietu.
+
+    Punkt wymaga, żeby serwer SSH nie oferował kodów MAC hmac-md5,
+    hmac-md5-96, hmac-ripemd160, hmac-sha1-96 i umac-64 ani ich wariantów
+    -etm@openssh.com.
+  en: |
+    The MAC added to every SSH packet reveals that someone on the way has
+    changed the data. MACs based on MD5 and RIPEMD-160, and those cut down to
+    64 or 96 bits, give too weak protection against a forged packet.
+
+    The item requires the SSH server not to offer the hmac-md5,
+    hmac-md5-96, hmac-ripemd160, hmac-sha1-96 and umac-64 MACs or their
+    -etm@openssh.com variants.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, chyba że z tą stacją łączy się bardzo stary klient
+    SSH, który zna tylko słabe kody MAC. Otwarte sesje trwają dalej.
+  en: |
+    Nobody will notice unless a very old SSH client that knows only weak
+    MACs connects to this workstation. Open sessions continue.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - encryption-and-tls
+  what_breaks:
+    pl:
+      - Stare klienty SSH, które obsługują wyłącznie kody MAC z MD5, RIPEMD-160 lub skrócone, nie połączą się z tą stacją
+    en:
+      - Old SSH clients that support only MACs with MD5, RIPEMD-160 or truncated ones do not connect to this workstation
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/sbin/sshd ]; then echo NOT_APPLICABLE; exit 0; fi
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+    w='^(hmac-md5|hmac-ripemd160|hmac-sha1-96|umac-64)'
+    cfg=$(sshd_t) || { echo CHECK_ERROR; exit 0; }
+    l=$(printf '%s\n' "$cfg" | awk '$1 == "macs" { print $2 }')
+    [ -n "$l" ] || { echo CHECK_ERROR; exit 0; }
+    bad=$(printf '%s\n' "$l" | tr ',' '\n' | grep -E -e "$w" | paste -sd, -)
+    if [ -z "$bad" ]; then echo NO_WEAK; else echo "WEAK:$bad"; fi
+  expected: '^NO_WEAK$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-macs.conf
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sshalg-1
+        if [ -f "$f" ]; then echo existed=1; cat "$f"; else echo existed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-macs.conf
+      w='^(hmac-md5|hmac-ripemd160|hmac-sha1-96|umac-64)'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshalg-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+      revert() {
+        if [ "$(sed -n 2p "$b")" = existed=1 ]; then tail -n +3 "$b" > "$f"; chmod 0600 "$f"; else rm -f "$f"; fi
+      }
+      cur=$(sshd_t | awk '$1 == "macs" { print $2 }')
+      [ -n "$cur" ] || { echo "Cannot read the effective sshd configuration with sshd -T" >&2; exit 1; }
+      bad=$(printf '%s\n' "$cur" | tr ',' '\n' | grep -E -e "$w" | paste -sd, -)
+      if [ -z "$bad" ]; then echo "MACs has no weak algorithms, nothing to change"; exit 0; fi
+      new=$(printf '%s\n' "$cur" | tr ',' '\n' | grep -Ev -e "$w" | paste -sd, -)
+      [ -n "$new" ] || { echo "No other MACs would remain; set the list by hand" >&2; exit 1; }
+      t=$(mktemp "$f.XXXXXX")
+      printf '%s\n' '# Sentin-Harden: the effective list without weak algorithms' "MACs $new" > "$t"
+      chmod 0600 "$t"
+      mv -f "$t" "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      if ! out=$(sshd_t); then
+        revert; echo "sshd rejects the new configuration; restored the previous state" >&2; exit 1
+      fi
+      left=$(printf '%s\n' "$out" | awk '$1 == "macs" { print $2 }' | tr ',' '\n' | grep -E -e "$w" | paste -sd, -)
+      if [ -n "$left" ]; then
+        revert; echo "An earlier MACs directive overrides $f ($left remain); restored the previous state" >&2; exit 1
+      fi
+      echo "Removed $bad from MACs in $f"
+      # A reload keeps open sessions; new connections use the new list.
+      if [ "$(systemctl is-active sshd.service 2>/dev/null)" = active ]; then systemctl reload sshd.service; echo "Reloaded sshd"; fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-macs.conf
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshalg-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+      if [ "$ex" = 1 ]; then
+        # Only comments and the one directive of this rule may come back.
+        if tail -n +3 "$b" | grep -Evq -e '^(#.*)?$' -e '^MACs [A-Za-z0-9@.,+-]+$'; then
+          echo "Backup file is damaged: $b" >&2; exit 1
+        fi
+        tail -n +3 "$b" > "$f.sentin-new"
+        chmod 0600 "$f.sentin-new"
+        mv -f "$f.sentin-new" "$f"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+        echo "Restored $f"
+      else
+        rm -f "$f"
+        echo "Removed $f"
+      fi
+      if [ "$(systemctl is-active sshd.service 2>/dev/null)" = active ]; then
+        # A reload with a broken configuration would stop sshd.
+        if sshd_t >/dev/null; then systemctl reload sshd.service; echo "Reloaded sshd"
+        else echo "sshd rejects its configuration, so it was not reloaded; check it with sshd -t" >&2; exit 1; fi
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man.openbsd.org/sshd_config
+  - https://man.openbsd.org/sshd
+  - https://gitlab.com/redhat-crypto/fedora-crypto-policies
+  - https://www.rfc-editor.org/rfc/rfc6668
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje skuteczną konfigurację serwera poleceniem sshd -T,
+    które wymaga uprawnień roota. Gdy na komputerze nie ma jeszcze kluczy
+    hosta, bo sshd nigdy nie działał, sshd -T dostaje klucz tymczasowy
+    w katalogu tymczasowym, usuwany zaraz po odczycie. Brak serwera SSH daje
+    wynik NOT_APPLICABLE.
+
+    Na Fedorze listy algorytmów sshd pochodzą z systemowej polityki
+    kryptograficznej przez plik 40-redhat-crypto-policies.conf. Polityka
+    DEFAULT nie zawiera słabych algorytmów; dodaje je np. LEGACY. W takim
+    przypadku lepszą drogą są punkty 1.6, które zmieniają politykę dla
+    całego systemu.
+
+    Naprawa zapisuje w pliku /etc/ssh/sshd_config.d/01-sentin-harden-macs.conf bieżącą listę bez słabych algorytmów.
+    sshd bierze pierwszą znalezioną wartość, więc ten plik wygrywa z polityką
+    kryptograficzną. Lista zostaje wtedy zamrożona: późniejsza zmiana
+    polityki, np. na FUTURE albo FIPS, nie zmieni jej w sshd, dopóki plik
+    istnieje. Naprawa sprawdza konfigurację poleceniem sshd -T; gdy sshd ją
+    odrzuca albo wcześniejsza dyrektywa nadal podaje słabe algorytmy,
+    przywraca poprzedni stan i kończy się błędem. Działający sshd dostaje
+    polecenie reload, które nie przerywa otwartych sesji. Wycofanie usuwa
+    plik albo przywraca jego poprzednią treść.
+
+    Za słabe sprawdzenie uznaje kody zaczynające się od hmac-md5,
+    hmac-ripemd160, hmac-sha1-96 i umac-64, także w wariantach
+    -etm@openssh.com. Pełny hmac-sha1 zostaje: jako kod MAC nadal jest
+    bezpieczny, a punkt go nie wymienia.
+  en: |
+    The check reads the effective server configuration with sshd -T, which
+    needs root privileges. When the computer has no host keys yet because
+    sshd has never run, sshd -T gets a temporary key in a temporary
+    directory, removed right after the read. No SSH server gives the
+    NOT_APPLICABLE result.
+
+    On Fedora the sshd algorithm lists come from the system-wide crypto
+    policy through the 40-redhat-crypto-policies.conf file. The DEFAULT
+    policy has no weak algorithms; LEGACY, for example, adds them. In that
+    case the 1.6 items, which change the policy for the whole system, are
+    the better way.
+
+    The remediation writes the current list without the weak algorithms to
+    /etc/ssh/sshd_config.d/01-sentin-harden-macs.conf. sshd takes the first value it finds, so this file wins over the
+    crypto policy. The list is then frozen: a later policy change, for
+    example to FUTURE or FIPS, does not change it in sshd while the file
+    exists. The remediation checks the configuration with sshd -T; when sshd
+    rejects it or an earlier directive still gives weak algorithms, it
+    restores the previous state and ends with an error. A running sshd gets
+    a reload, which keeps open sessions. Rollback removes the file or
+    restores its previous content.
+
+    The check treats as weak the MACs starting with hmac-md5,
+    hmac-ripemd160, hmac-sha1-96 and umac-64, also in the -etm@openssh.com
+    variants. Full hmac-sha1 stays: as a MAC it is still secure, and the
+    item does not name it.

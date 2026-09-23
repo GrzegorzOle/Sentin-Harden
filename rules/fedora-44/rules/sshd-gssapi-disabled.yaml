@@ -1,0 +1,284 @@
+id: fedora44-sshd-gssapi-disabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.1.11
+  section: Access Control > Configure SSH Server
+  title:
+    pl: GSSAPIAuthentication sshd jest wyłączone
+    en: Ensure sshd GSSAPIAuthentication is disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uwierzytelnianie GSSAPI pozwala logować się przez SSH biletem Kerberos,
+    np. w domenie FreeIPA lub Active Directory. Gdy komputer z niego nie
+    korzysta, jest to tylko dodatkowy kod uruchamiany przed logowaniem
+    i dodatkowa droga ataku.
+
+    Punkt wymaga ustawienia GSSAPIAuthentication no.
+  en: |
+    GSSAPI authentication lets users log in over SSH with a Kerberos ticket,
+    for example in a FreeIPA or Active Directory domain. When the computer
+    does not use it, it is only extra code run before login and an extra
+    path of attack.
+
+    The item requires GSSAPIAuthentication no.
+
+disruption_description:
+  pl: |
+    Na stacji spoza domeny nikt tego nie zauważy. Na stacji w domenie
+    FreeIPA lub Active Directory użytkownicy tracą logowanie przez SSH bez
+    hasła biletem Kerberos i muszą podawać hasło albo używać klucza.
+  en: |
+    On a workstation outside a domain nobody will notice. On a workstation
+    in a FreeIPA or Active Directory domain, users lose passwordless SSH
+    login with a Kerberos ticket and have to enter a password or use a key.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Logowanie przez SSH biletem Kerberos (GSSAPI) do stacji w domenie FreeIPA lub Active Directory
+    en:
+      - SSH login with a Kerberos ticket (GSSAPI) to a workstation in a FreeIPA or Active Directory domain
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stacja jest w domenie, a użytkownicy logują się do niej przez SSH biletem Kerberos
+    en:
+      - The workstation is in a domain and users log in to it over SSH with a Kerberos ticket
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/sbin/sshd ]; then echo NOT_APPLICABLE; exit 0; fi
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+    # Values set inside Match blocks, one "key<TAB>value<TAB>file" line each.
+    match_vals() {
+      for mf in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [ -f "$mf" ] || continue
+        awk -v F="$mf" '
+          { l = $0; sub(/#.*/, "", l); sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l)
+            if (l == "") next
+            k = tolower(l); sub(/[ \t=].*/, "", k)
+            # sshd -T without -C skips every Match block, Match all too.
+            if (k == "match") { m = 1; next }
+            if (m) { v = l; sub(/^[^ \t=]+[ \t]*=?[ \t]*/, "", v); print k "\t" v "\t" F } }' "$mf"
+      done
+    }
+    good() {
+      lv=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+      case "$1" in
+        gssapiauthentication) [ "$lv" = no ] ;;
+      esac
+    }
+    evaluate() {
+      cfg=$(sshd_t) || { echo CHECK_ERROR; return 0; }
+      ok=""; bad=""
+      for k in gssapiauthentication; do
+        v=$(printf '%s\n' "$cfg" | awk -v k="$k" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }')
+        if good "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=${v:-unset}"; fi
+      done
+      while IFS=$'\t' read -r k v f; do
+        case " gssapiauthentication " in *" $k "*) good "$k" "$v" || bad="$bad,match:$k=$v:$f" ;; esac
+      done <<< "$(match_vals)"
+      if [ -z "$bad" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:${bad#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-gssapi.conf
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sshopt-1
+        if [ -f "$f" ]; then echo existed=1; cat "$f"; else echo existed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-gssapi.conf
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshopt-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+    # Values set inside Match blocks, one "key<TAB>value<TAB>file" line each.
+    match_vals() {
+      for mf in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [ -f "$mf" ] || continue
+        awk -v F="$mf" '
+          { l = $0; sub(/#.*/, "", l); sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l)
+            if (l == "") next
+            k = tolower(l); sub(/[ \t=].*/, "", k)
+            # sshd -T without -C skips every Match block, Match all too.
+            if (k == "match") { m = 1; next }
+            if (m) { v = l; sub(/^[^ \t=]+[ \t]*=?[ \t]*/, "", v); print k "\t" v "\t" F } }' "$mf"
+      done
+    }
+    good() {
+      lv=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+      case "$1" in
+        gssapiauthentication) [ "$lv" = no ] ;;
+      esac
+    }
+    evaluate() {
+      cfg=$(sshd_t) || { echo CHECK_ERROR; return 0; }
+      ok=""; bad=""
+      for k in gssapiauthentication; do
+        v=$(printf '%s\n' "$cfg" | awk -v k="$k" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }')
+        if good "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=${v:-unset}"; fi
+      done
+      while IFS=$'\t' read -r k v f; do
+        case " gssapiauthentication " in *" $k "*) good "$k" "$v" || bad="$bad,match:$k=$v:$f" ;; esac
+      done <<< "$(match_vals)"
+      if [ -z "$bad" ]; then echo "OK:${ok#,}"; else echo "NOT_OK:${bad#,}"; fi
+    }
+      revert() {
+        if [ "$(sed -n 2p "$b")" = existed=1 ]; then tail -n +3 "$b" > "$f"; chmod 0600 "$f"; else rm -f "$f"; fi
+      }
+      r=$(evaluate)
+      case "$r" in
+        OK:*) echo "sshd already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        CHECK_ERROR) echo "Cannot read the effective sshd configuration with sshd -T" >&2; exit 1 ;;
+        *match:*) echo "A Match block sets a value of this item; change it by hand: ${r#NOT_OK:}" >&2; exit 1 ;;
+      esac
+      t=$(mktemp "$f.XXXXXX")
+      printf '%s\n' '# Sentin-Harden' 'GSSAPIAuthentication no' > "$t"
+      chmod 0600 "$t"
+      mv -f "$t" "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      r=$(evaluate)
+      case "$r" in
+        OK:*) ;;
+        *) revert; echo "sshd does not meet the item after the change ($r), for example because an earlier directive wins over $f; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Set GSSAPIAuthentication no in $f"
+      # A reload keeps open sessions; new connections use the new settings.
+      if [ "$(systemctl is-active sshd.service 2>/dev/null)" = active ]; then systemctl reload sshd.service; echo "Reloaded sshd"; fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/ssh/sshd_config.d/01-sentin-harden-gssapi.conf
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sshopt-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      ex=$(sed -n '2s/^existed=//p' "$b")
+      case "$ex" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    sshd_t() {
+      # sshd -T stops when no host key exists yet, for example before sshd first starts.
+      if o=$(sshd -T 2>/dev/null); then printf '%s\n' "$o"; return 0; fi
+      k=$(mktemp -d) || return 1
+      if ssh-keygen -q -t ed25519 -N '' -f "$k/key" >/dev/null 2>&1 && o=$(sshd -T -h "$k/key" 2>/dev/null); then
+        rm -rf "$k"; printf '%s\n' "$o"; return 0
+      fi
+      rm -rf "$k"; return 1
+    }
+      if [ "$ex" = 1 ]; then
+        # Only comments and the directives of this rule may come back.
+        if tail -n +3 "$b" | grep -Evq -e '^(#.*)?$' -e '^(GSSAPIAuthentication) [A-Za-z0-9@.,:/_+-]+$'; then
+          echo "Backup file is damaged: $b" >&2; exit 1
+        fi
+        tail -n +3 "$b" > "$f.sentin-new"
+        chmod 0600 "$f.sentin-new"
+        mv -f "$f.sentin-new" "$f"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+        echo "Restored $f"
+      else
+        rm -f "$f"
+        echo "Removed $f"
+      fi
+      if [ "$(systemctl is-active sshd.service 2>/dev/null)" = active ]; then
+        # A reload with a broken configuration would stop sshd.
+        if sshd_t >/dev/null; then systemctl reload sshd.service; echo "Reloaded sshd"
+        else echo "sshd rejects its configuration, so it was not reloaded; check it with sshd -t" >&2; exit 1; fi
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man.openbsd.org/sshd_config
+  - https://man.openbsd.org/sshd
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje skuteczną konfigurację serwera poleceniem sshd -T,
+    które wymaga uprawnień roota; bez kluczy hosta dostaje ono klucz
+    tymczasowy. Sprawdza też wartości ustawione w blokach Match
+    w /etc/ssh/sshd_config i w plikach .conf z katalogu /etc/ssh/sshd_config.d,
+    bo sshd -T bez parametrów połączenia ich nie stosuje. Brak serwera SSH
+    daje wynik NOT_APPLICABLE.
+
+    Naprawa zapisuje ustawienie w pliku /etc/ssh/sshd_config.d/01-sentin-harden-gssapi.conf z uprawnieniami 0600. sshd
+    bierze pierwszą znalezioną wartość, a ten plik jest czytany przed
+    pozostałymi plikami z katalogu, np. 50-redhat.conf. Gdy blok Match
+    ustawia niezgodną wartość, naprawa nic nie zmienia i prosi o ręczną
+    poprawkę. Po zapisie sprawdza konfigurację jeszcze raz; gdy sshd ją
+    odrzuca albo wcześniejsza dyrektywa w /etc/ssh/sshd_config wygrywa,
+    przywraca poprzedni stan i kończy się błędem. Działający sshd dostaje
+    polecenie reload, które nie przerywa otwartych sesji. Wycofanie usuwa
+    plik albo przywraca jego poprzednią treść.
+
+    Fedora ma domyślnie GSSAPIAuthentication yes w pliku 50-redhat.conf.
+  en: |
+    The check reads the effective server configuration with sshd -T, which
+    needs root privileges; without host keys it gets a temporary key. It
+    also checks values set in Match blocks in /etc/ssh/sshd_config and in the
+    .conf files in the /etc/ssh/sshd_config.d directory, because sshd -T
+    without connection parameters does not apply them. No SSH server gives
+    the NOT_APPLICABLE result.
+
+    The remediation writes the setting to /etc/ssh/sshd_config.d/01-sentin-harden-gssapi.conf with the mode 0600. sshd takes
+    the first value it finds, and this file is read before the other files
+    in the directory, such as 50-redhat.conf. When a Match block sets a
+    non-compliant value, the remediation changes nothing and asks for a
+    manual fix. After writing, it checks the configuration again; when sshd
+    rejects it or an earlier directive in /etc/ssh/sshd_config wins, it
+    restores the previous state and ends with an error. A running sshd gets
+    a reload, which keeps open sessions. Rollback removes the file or
+    restores its previous content.
+
+    Fedora has GSSAPIAuthentication yes by default in the 50-redhat.conf
+    file.

@@ -1,0 +1,110 @@
+id: fedora44-rsyslog-reads-journal
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.2.3.3
+  section: Logging and Auditing > System Logging > Configure rsyslog
+  title:
+    pl: Komunikaty journald trafiają do rsysloga
+    en: Ensure journald is configured to send logs to rsyslog
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Na Fedorze komunikaty programów najpierw odbiera journald. Jeśli nie
+    docierają one do rsysloga, pliki w /var/log i serwer dzienników dostają
+    tylko część zdarzeń, a reszta zostaje w dzienniku journald.
+
+    Punkt wymaga, żeby komunikaty journald trafiały do rsysloga.
+  en: |
+    On Fedora journald receives the messages of programs first. If they do
+    not reach rsyslog, the files in /var/log and the log server get only
+    part of the events, and the rest stays in the journald journal.
+
+    The item requires the journald messages to reach rsyslog.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: reguła tylko sprawdza konfigurację.
+  en: |
+    Nobody will notice: the rule only checks the configuration.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    in_use() { case "$(systemctl is-enabled "$1.service" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active --quiet "$1.service" 2>/dev/null; }
+    if ! in_use rsyslog; then echo NOT_APPLICABLE; exit 0; fi
+    export LC_ALL=C
+    # rs_files: the main rsyslog file and the drop-ins it includes by default
+    rs_files() {
+      local f
+      [ -f /etc/rsyslog.conf ] && echo /etc/rsyslog.conf
+      for f in /etc/rsyslog.d/*.conf; do [ -f "$f" ] && echo "$f"; done
+      return 0
+    }
+    imj=0
+    for f in $(rs_files); do
+      if sed -e 's/#.*//' "$f" | tr '\n' ' ' | grep -qiE '(module[[:space:]]*\([^)]*load[[:space:]]*=[[:space:]]*"?imjournal|\$modload[[:space:]]+imjournal)'; then imj=1; fi
+    done
+    fw=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null | awk '
+      /^[ \t]*[#;]/ { next }
+      { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
+      t ~ /^\[/ { in_s = (t == "[Journal]"); next }
+      in_s && t ~ /^ForwardToSyslog[ \t]*=/ { v = t; sub(/^[^=]*=[ \t]*/, "", v) }
+      END { print v }')
+    if [ "$imj" = 1 ]; then echo "OK:imjournal"
+    elif printf '%s\n' "$fw" | grep -qxiE 'yes|true|on|1'; then echo "OK:ForwardToSyslog=$fw"
+    else echo "NOT_OK:not-connected"; fi
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://www.rsyslog.com/doc/configuration/modules/imjournal.html
+  - https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html
+
+notes:
+  pl: |
+    CIS sprawdza ForwardToSyslog=yes w journald.conf. Fedora łączy obie
+    usługi inaczej: rsyslog wczytuje moduł imjournal i sam czyta dziennik
+    journald, a nasłuch na gnieździe sysloga ma wyłączony (imuxsock
+    z SysSock.Use="off"). Samo ForwardToSyslog=yes nic by tu nie dało, a przy
+    włączonym gnieździe podwajałoby wpisy. Dlatego wynik OK:imjournal
+    oznacza, że moduł jest wczytywany w /etc/rsyslog.conf albo
+    w /etc/rsyslog.d/*.conf, a OK:ForwardToSyslog=yes, że journald przekazuje
+    komunikaty jak w CIS. Wynik NOT_OK:not-connected wymaga ręcznego
+    przywrócenia wiersza module(load="imjournal" ...) z pakietu rsyslog.
+    Gdy rsyslog nie jest używany, wynik to NOT_APPLICABLE.
+  en: |
+    CIS checks ForwardToSyslog=yes in journald.conf. Fedora connects the two
+    services differently: rsyslog loads the imjournal module and reads the
+    journald journal itself, and it has listening on the syslog socket
+    turned off (imuxsock with SysSock.Use="off"). ForwardToSyslog=yes alone
+    would do nothing here, and with the socket on it would duplicate
+    entries. So the OK:imjournal result means that the module is loaded in
+    /etc/rsyslog.conf or /etc/rsyslog.d/*.conf, and OK:ForwardToSyslog=yes
+    that journald forwards messages as in CIS. The NOT_OK:not-connected
+    result requires restoring the module(load="imjournal" ...) line from the
+    rsyslog package by hand. When rsyslog is not used, the result is
+    NOT_APPLICABLE.

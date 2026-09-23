@@ -1,0 +1,283 @@
+id: fedora44-suspicious-packets-logged
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 3.3.9
+  section: Network > Configure Network Kernel Parameters
+  title:
+    pl: Podejrzane pakiety są zapisywane w dzienniku
+    en: Ensure suspicious packets are logged
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Pakiety z niemożliwym adresem nadawcy, np. z sieci lokalnej, a przybyłe
+    z internetu, albo z adresem zarezerwowanym, jądro nazywa marsjańskimi
+    i odrzuca je. Domyślnie robi to po cichu, więc nie widać, że ktoś
+    próbuje wysyłać pakiety z podrobionym adresem.
+
+    Punkt wymaga wartości 1 parametrów net.ipv4.conf.all.log_martians
+    i net.ipv4.conf.default.log_martians, przy której jądro zapisuje takie
+    pakiety w dzienniku. Jądro domyślnie ma 0, a Fedora tego nie zmienia.
+  en: |
+    The kernel calls packets with an impossible sender address, for example
+    from the local network but arriving from the internet, or with a
+    reserved address, martian and drops them. By default it does this
+    silently, so it does not show that someone is trying to send packets
+    with a forged address.
+
+    The item requires the value 1 for net.ipv4.conf.all.log_martians and
+    net.ipv4.conf.default.log_martians, with which the kernel writes such
+    packets to the log. The kernel default is 0, and Fedora does not change
+    it.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: w dzienniku jądra pojawiają się najwyżej
+    pojedyncze wpisy o odrzuconych pakietach.
+  en: |
+    Nobody will notice: at most a few entries about dropped packets appear
+    in the kernel log.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - logging-and-audit
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/lib/systemd/systemd-sysctl ] || [ ! -d /proc/sys/net/ipv4 ]; then echo CHECK_ERROR; exit 0; fi
+    ok=""; bad=""
+    while read -r k want dflt; do
+      p=/proc/sys/$(printf '%s' "$k" | tr . /)
+      n=${k#net.}
+      if [ ! -r "$p" ]; then
+        case "$k" in net.ipv6.*) if [ ! -d /proc/sys/net/ipv6 ]; then ok="$ok,$n=no-ipv6"; continue; fi ;; esac
+        echo CHECK_ERROR; exit 0
+      fi
+      r=$(tr -s ' \t' ' ' < "$p")
+      c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ -z "$c" ] && [ "$dflt" = 1 ]; then c=default; fi
+      if [ "$r" = "$want" ] && { [ "$c" = "$want" ] || [ "$c" = default ]; }; then ok="$ok,$n=$r"
+      else bad="$bad;$n:runtime=$r,config=${c:-none}"; fi
+    done <<'EOF'
+    net.ipv4.conf.all.log_martians 1 0
+    net.ipv4.conf.default.log_martians 1 0
+    EOF
+    # Interfaces with their own value, for information only: the item checks all and default.
+    ifs=""
+    for spec in ; do
+      d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
+      for p in /proc/sys/$d/*/$q; do
+        [ -r "$p" ] || continue
+        i=${p#/proc/sys/$d/}; i=${i%/$q}
+        case "$i" in all|default|lo) continue ;; esac
+        v=$(cat "$p")
+        [ "$v" = "$want" ] || ifs="$ifs,${d#net/}/$i/$q=$v"
+      done
+    done
+    [ -z "$ifs" ] || ifs=";interfaces:${ifs#,}"
+    if [ -n "$bad" ]; then echo "NOT_OK:${bad#;}$ifs"; else echo "OK:${ok#,}$ifs"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-log-martians.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sysctl-2
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        for k in net.ipv4.conf.all.log_martians net.ipv4.conf.default.log_martians ; do
+          p=/proc/sys/$(printf '%s' "$k" | tr . /)
+          if [ -r "$p" ]; then echo "rt $k $(tr -s ' \t' ' ' < "$p")"; fi
+        done
+        # Interface values are stored as paths, because interface names may contain dots.
+        for spec in ; do
+          d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
+          for p in /proc/sys/$d/*/$q; do
+            [ -r "$p" ] || continue
+            case "$p" in */all/$q|*/default/$q) continue ;; esac
+            echo "if ${p#/proc/sys/} $(cat "$p")"
+          done
+        done
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-log-martians.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      command -v sysctl >/dev/null 2>&1 || { echo "sysctl is not installed" >&2; exit 1; }
+      # Writing some keys makes the kernel reset others; those keep their value.
+      keep=""
+      for k in ; do
+        p=/proc/sys/$(printf '%s' "$k" | tr . /)
+        if [ -r "$p" ]; then keep="$keep $k=$(cat "$p")"; fi
+      done
+      printf '%s\n' '# Sentin-Harden: fedora44-suspicious-packets-logged' 'net.ipv4.conf.all.log_martians = 1' 'net.ipv4.conf.default.log_martians = 1' > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      for kv in net.ipv4.conf.all.log_martians=1 net.ipv4.conf.default.log_martians=1; do
+        k=${kv%%=*}
+        [ -e "/proc/sys/$(printf '%s' "$k" | tr . /)" ] || { echo "Skipped $k: IPv6 is disabled"; continue; }
+        sysctl -q -w "$kv"
+      done
+      for kv in $keep; do sysctl -q -w "$kv"; done
+      # The file covers interfaces added later; the existing ones are set here.
+      for spec in ; do
+        d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
+        for p in /proc/sys/$d/*/$q; do
+          [ -e "$p" ] || continue
+          case "$p" in */all/$q|*/default/$q) continue ;; esac
+          # An interface can disappear meanwhile, e.g. a container's veth.
+          printf '%s\n' "$want" 2>/dev/null > "$p" || [ ! -e "$p" ] || { echo "Cannot write $p" >&2; exit 1; }
+        done
+      done
+      late=""
+      for kv in net.ipv4.conf.all.log_martians=1 net.ipv4.conf.default.log_martians=1; do
+        k=${kv%%=*}
+        c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+        [ "$c" = "${kv#*=}" ] || late="$late $k=$c"
+      done
+      if [ -n "$late" ]; then
+        echo "Another sysctl.d file is applied after $f and the next start will set:$late" >&2; exit 1
+      fi
+      echo "Set net.ipv4.conf.all.log_martians=1 net.ipv4.conf.default.log_martians=1 now and in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-log-martians.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sysctl-2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      grep -qx -- --- "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      rts=$(sed -n '3,/^---$/p' "$b" | sed '$d')
+      while read -r t k v; do
+        [ -n "$t$k$v" ] || continue
+        bad=0
+        case "$v" in ""|*[!0-9-]*) bad=1 ;; esac
+        case "$t" in
+          rt) case " net.ipv4.conf.all.log_martians net.ipv4.conf.default.log_martians  " in *" $k "*) ;; *) bad=1 ;; esac ;;
+          if)
+            known=0
+            for spec in ; do
+              d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
+              case "$k" in "$d"/*/"$q") ;; *) continue ;; esac
+              i=${k#"$d"/}; i=${i%/"$q"}
+              case "$i" in ""|*/*|.|..|all|default) ;; *) known=1 ;; esac
+            done
+            [ "$known" = 1 ] || bad=1 ;;
+          *) bad=1 ;;
+        esac
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$rts"
+      if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
+      # The kept keys go after the others, because writing those can reset them.
+      while read -r t k v; do
+        [ "$t" = rt ] || continue
+        case "  " in *" $k "*) continue ;; esac
+        sysctl -q -w "$k=$v"
+      done <<< "$rts"
+      while read -r t k v; do
+        [ "$t" = rt ] || continue
+        case "  " in *" $k "*) sysctl -q -w "$k=$v" ;; esac
+      done <<< "$rts"
+      # Interfaces removed since the backup are skipped.
+      while read -r t k v; do
+        [ "$t" = if ] || continue
+        if [ -e "/proc/sys/$k" ]; then printf '%s\n' "$v" > "/proc/sys/$k"; fi
+      done <<< "$rts"
+      echo "Restored the previous values and the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/networking/ip-sysctl.html
+  - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
+
+notes:
+  pl: |
+    Sprawdzenie porównuje dla każdego parametru wartość bieżącą z /proc/sys
+    z wartością, którą ustawi następny start. Tę drugą wyznacza
+    systemd-sysctl --cat-config, które wypisuje pliki z /usr/lib/sysctl.d,
+    /run/sysctl.d i /etc/sysctl.d w kolejności stosowania, więc liczy się
+    ostatnie przypisanie. Brak wpisu oznacza wartość jądra 0,
+    więc punkt wymaga jawnego ustawienia. Wynik NOT_OK podaje obie wartości każdego
+    parametru, który nie spełnia punktu.
+
+    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-log-martians.conf
+    i od razu je stosuje. Nazwa bez numeru na początku sortuje się po plikach
+    typu 99-*.conf, więc ustawienia wygrywają z nimi; jeśli mimo to inny
+    plik nadpisuje wartość, naprawa kończy się błędem. Wycofanie przywraca
+    poprzednią zawartość pliku i poprzednie wartości bieżące.
+
+    Jądro zapisuje pakiet, gdy włączone jest to w all albo w ustawieniu
+    interfejsu, więc 1 w all wystarcza dla wszystkich interfejsów. Wpisy
+    przechodzą przez ogólny limit komunikatów sieciowych jądra, więc zalew
+    podrobionych pakietów nie zapełni dziennika.
+  en: |
+    For each parameter, the check compares the current value from /proc/sys
+    with the value the next start will set. The latter comes from
+    systemd-sysctl --cat-config, which prints the files from
+    /usr/lib/sysctl.d, /run/sysctl.d and /etc/sysctl.d in the order they are
+    applied, so the last assignment counts. No entry means the kernel value 0, so
+    the item needs an explicit setting. The NOT_OK result gives
+    both values of every parameter that does not meet the item.
+
+    The remediation writes the settings to
+    /etc/sysctl.d/sentin-harden-log-martians.conf and applies them at once. A name
+    without a leading number sorts after files such as 99-*.conf, so the
+    settings win over them; if another file still overrides a value, the
+    remediation ends with an error. Rollback restores the previous file
+    content and the previous current values.
+
+    The kernel logs a packet when this is turned on in all or in the
+    interface setting, so 1 in all is enough for all interfaces. The entries
+    go through the kernel's general rate limit for network messages, so a
+    flood of forged packets does not fill the log.

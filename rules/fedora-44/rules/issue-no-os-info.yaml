@@ -1,0 +1,196 @@
+id: fedora44-issue-no-os-info
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.7.2
+  section: Initial Setup > Configure Command Line Warning Banners
+  title:
+    pl: Ostrzeżenie przed logowaniem lokalnym (/etc/issue) jest ustawione i nie ujawnia informacji o systemie
+    en: Ensure local login warning banner is configured properly
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Plik /etc/issue wyświetla agetty w konsoli tekstowej przed pytaniem
+    o nazwę użytkownika. Domyślny plik Fedory pokazuje tam nazwę i wersję
+    systemu, wersję jądra i architekturę, czyli informacje przydatne
+    atakującemu jeszcze przed zalogowaniem. To miejsce nadaje się za to na
+    ostrzeżenie, że dostęp mają tylko osoby upoważnione, co w wielu krajach
+    ułatwia późniejsze dochodzenie roszczeń wobec intruza.
+
+    Punkt wymaga, żeby plik zawierał tekst i nie zawierał sekwencji \m, \r,
+    \s i \v ani nazwy systemu. Treść ostrzeżenia ustala organizacja.
+  en: |
+    The /etc/issue file is shown by agetty on a text console before the user
+    name prompt. The Fedora default file shows the system name and version,
+    the kernel version and the architecture there, which is information useful
+    to an attacker even before signing in. The place is suitable for a warning
+    that only authorized persons have access, which in many countries makes it
+    easier to pursue claims against an intruder later.
+
+    The item requires the file to hold text and not to contain the \m, \r,
+    \s and \v sequences or the system name. The organization decides the
+    wording of the warning.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy poza osobami, które logują się w konsoli tekstowej:
+    zamiast wersji systemu zobaczą ostrzeżenie. Ekran logowania GNOME nie
+    używa tego pliku. Zmiana działa od następnego wyświetlenia pytania
+    o nazwę użytkownika.
+  en: |
+    Nobody will notice except people signing in on a text console: they see a
+    warning instead of the system version. The GNOME login screen does not use
+    this file. The change takes effect the next time the user name prompt is
+    shown.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl:
+      - Konsola tekstowa przed logowaniem nie pokazuje wersji systemu i jądra ani nazwy terminala, jeśli były w usuniętych wierszach
+    en:
+      - The text console before sign-in does not show the system and kernel version or the terminal name if they were in the removed lines
+  interruption: none
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    f=/etc/issue
+    id=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"' | head -n 1)
+    if [ ! -e "$f" ]; then echo MISSING; exit 0; fi
+    if [ ! -r "$f" ]; then echo CHECK_ERROR; exit 0; fi
+    found=""
+    for e in m r s v; do if grep -qiF "\\$e" "$f"; then found="$found,\\$e"; fi; done
+    if [ -n "$id" ] && grep -qiF "$id" "$f"; then found="$found,$id"; fi
+    if [ -n "$found" ]; then echo "OS_INFO:${found#,}"; exit 0; fi
+    if ! grep -q '[^[:space:]]' "$f"; then echo EMPTY; exit 0; fi
+    echo NO_OS_INFO
+  expected: '^NO_OS_INFO$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/issue
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=banner-1
+        if [ -L "$f" ]; then echo type=symlink; echo "target=$(readlink "$f")"
+        elif [ -f "$f" ]; then echo type=file; echo "mode=$(stat -c '%a %u %g' "$f")"
+        elif [ -e "$f" ]; then echo "$f is not a regular file" >&2; exit 1
+        else echo type=absent; fi
+        echo ---
+        if [ -f "$f" ] && [ ! -L "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/issue
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      id=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"' | head -n 1)
+      t=$(mktemp "$f.XXXXXX")
+      if [ -e "$f" ]; then
+        grep -viF -e '\m' -e '\r' -e '\s' -e '\v' ${id:+-e "$id"} "$f" > "$t" || true
+      fi
+      if ! grep -q '[^[:space:]]' "$t"; then printf '%s\n' 'This system is for authorized users only. All activity may be monitored and recorded.' > "$t"; fi
+      chown 0:0 "$t"
+      chmod 0644 "$t"
+      mv -fT "$t" "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      echo "Wrote $f without lines that reveal the operating system"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/issue
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=banner-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      case "$(sed -n '2s/^type=//p' "$b")" in
+        symlink)
+          tg=$(sed -n '3s/^target=//p' "$b")
+          [ -n "$tg" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+          rm -f "$f"
+          ln -s "$tg" "$f" ;;
+        file)
+          set -- $(sed -n '3s/^mode=//p' "$b")
+          [ $# -eq 3 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+          t=$(mktemp "$f.XXXXXX")
+          sed '1,/^---$/d' "$b" > "$t"
+          chown "$2:$3" "$t"
+          chmod "$1" "$t"
+          mv -fT "$t" "$f"
+          if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi ;;
+        absent) rm -f "$f" ;;
+        *) { echo "Backup file is damaged: $b" >&2; exit 1; } ;;
+      esac
+      echo "Restored the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/agetty.8.html
+
+notes:
+  pl: |
+    Sprawdzenie szuka w pliku sekwencji \m, \r, \s i \v (bez względu na
+    wielkość liter) oraz identyfikatora systemu z pola ID w /etc/os-release,
+    czyli na Fedorze słowa fedora. Wynik OS_INFO podaje, co znalazło.
+
+    Naprawa usuwa z pliku wiersze, które zawierają te elementy, a pozostałe
+    zostawia. Zapisuje wynik jako zwykły plik należący do roota z trybem 0644;
+    jeśli wcześniej był to link symboliczny, zastępuje sam link, a nie plik,
+    na który wskazywał. Wycofanie przywraca poprzednią treść, właściciela
+    i tryb albo link.
+
+    Jeśli po usunięciu tych wierszy plik jest pusty, naprawa wpisuje neutralne
+    ostrzeżenie: "This system is for authorized users only. All activity may be monitored and recorded.". Treść ostrzeżenia warto potem zastąpić
+    tekstem uzgodnionym w organizacji.
+
+    Na Fedorze /etc/issue i /etc/issue.net to linki do plików w /usr/lib,
+    które nie są oznaczone jako konfiguracja pakietu. Zmiana treści przez link
+    zniknie przy następnej aktualizacji pakietu fedora-release-common, dlatego
+    naprawa zapisuje zwykły plik w /etc.
+  en: |
+    The check looks in the file for the \m, \r, \s and \v sequences
+    (regardless of case) and for the system identifier from the ID field in
+    /etc/os-release, which on Fedora is the word fedora. The OS_INFO result
+    tells what it found.
+
+    The remediation removes the lines containing these elements from the file
+    and keeps the rest. It writes the result as a regular file owned by root
+    with mode 0644; if it was a symbolic link before, it replaces the link
+    itself, not the file it pointed to. Rollback restores the previous content,
+    owner and mode, or the link.
+
+    If the file is empty after removing these lines, the remediation writes a
+    neutral warning: "This system is for authorized users only. All activity may be monitored and recorded.". It is worth replacing the warning with
+    text agreed in the organization afterwards.
+
+    On Fedora /etc/issue and /etc/issue.net are links to files in /usr/lib,
+    which are not marked as package configuration. Content changed through the
+    link disappears with the next update of the fedora-release-common package,
+    which is why the remediation writes a regular file in /etc.

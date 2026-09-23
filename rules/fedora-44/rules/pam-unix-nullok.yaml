@@ -1,0 +1,262 @@
+id: fedora44-pam-unix-nullok
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.3.3.4.1
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_unix module
+  title:
+    pl: Moduł pam_unix nie przyjmuje pustych haseł
+    en: Ensure pam_unix does not include nullok
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Z opcją nullok pam_unix wpuszcza konto, które ma w /etc/shadow puste
+    hasło, bez pytania o nie. Takie konto może powstać przez pomyłkę, na
+    przykład po passwd -d, i wtedy każdy, kto zna jego nazwę, zaloguje się
+    na nie albo przełączy przez su.
+
+    Punkt wymaga, żeby żaden wiersz pam_unix w /etc/pam.d/system-auth
+    i password-auth nie miał argumentu nullok.
+  en: |
+    With the nullok option pam_unix lets in an account that has an empty
+    password in /etc/shadow without asking for it. Such an account can come
+    from a mistake, for example after passwd -d, and then anyone who knows
+    its name can log in to it or switch to it with su.
+
+    The item requires that no pam_unix line in /etc/pam.d/system-auth and
+    password-auth has the nullok argument.
+
+disruption_description:
+  pl: |
+    Fedora domyślnie ma nullok w wierszach auth i password. Naprawa włącza
+    funkcję authselect without-nullok, która usuwa ten argument. Konta
+    z pustym hasłem przestają się logować i nie da się na nie przełączyć
+    przez su, dopóki root nie nada im hasła. Konta z hasłem i konta
+    zablokowane (! albo * w /etc/shadow) działają jak dotąd.
+  en: |
+    Fedora has nullok on the auth and password lines by default. The
+    remediation turns on the authselect feature without-nullok, which
+    removes this argument. Accounts with an empty password can no longer
+    log in and cannot be switched to with su until root gives them a
+    password. Accounts with a password and locked accounts (! or * in
+    /etc/shadow) work as before.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konta z pustym hasłem, na przykład konta testowe albo kioskowe logujące się bez hasła
+    en:
+      - Accounts with an empty password, for example test or kiosk accounts that log in without a password
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko kioskowe albo demonstracyjne, na którym konto celowo loguje się bez hasła i nie da się tego zastąpić automatycznym logowaniem GDM
+    en:
+      - A kiosk or demo station where an account logs in without a password on purpose and GDM automatic login cannot replace it
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    as_same() {
+      local cur o f
+      authselect check >/dev/null 2>&1 || return 1
+      cur=$(authselect current --raw 2>/dev/null) || return 1
+      for o in system-auth:system-auth password-auth:password-auth fingerprint-auth:fingerprint-auth \
+        smartcard-auth:smartcard-auth switchable-auth:switchable-auth postlogin:postlogin \
+        nsswitch:nsswitch.conf dconf-db:dconf-db dconf-lock:dconf-locks; do
+        f=/etc/authselect/${o#*:}
+        [ -e "$f" ] || continue
+        if [ "$(LC_ALL=C authselect test $cur --${o%%:*} 2>/dev/null | sed -e '1{/^File /d}' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')" != \
+             "$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$f")" ]; then
+          echo "${o#*:}"; return 1
+        fi
+      done
+    }
+    pam_lines() {
+      [ -r "$1" ] || return 0
+      awk -v m="$2" '
+        { sub(/#.*/, "") }
+        NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        p[n] == m { s = $1; for (i = 4; i <= NF; i++) s = s " " $i; print s }' "$1"
+    }
+    evaluate() {
+      local bad="" f t
+      for f in system-auth password-auth; do
+        for t in $(pam_lines "/etc/pam.d/$f" pam_unix.so | awk '/(^| )nullok( |$)/ { print $1 }'); do
+          bad="$bad,$f:$t"
+        done
+      done
+      if [ -z "$bad" ]; then echo "OK:no-nullok"; else echo "NOT_OK:nullok=${bad#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=authfeat-1
+        if command -v authselect >/dev/null 2>&1 && cur=$(authselect current --raw 2>/dev/null); then
+          case " $cur " in *" without-nullok "*) echo enabled=1 ;; *) echo enabled=0 ;; esac
+        else
+          echo enabled=none
+        fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=authfeat-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    as_same() {
+      local cur o f
+      authselect check >/dev/null 2>&1 || return 1
+      cur=$(authselect current --raw 2>/dev/null) || return 1
+      for o in system-auth:system-auth password-auth:password-auth fingerprint-auth:fingerprint-auth \
+        smartcard-auth:smartcard-auth switchable-auth:switchable-auth postlogin:postlogin \
+        nsswitch:nsswitch.conf dconf-db:dconf-db dconf-lock:dconf-locks; do
+        f=/etc/authselect/${o#*:}
+        [ -e "$f" ] || continue
+        if [ "$(LC_ALL=C authselect test $cur --${o%%:*} 2>/dev/null | sed -e '1{/^File /d}' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')" != \
+             "$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$f")" ]; then
+          echo "${o#*:}"; return 1
+        fi
+      done
+    }
+    pam_lines() {
+      [ -r "$1" ] || return 0
+      awk -v m="$2" '
+        { sub(/#.*/, "") }
+        NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        p[n] == m { s = $1; for (i = 4; i <= NF; i++) s = s " " $i; print s }' "$1"
+    }
+    evaluate() {
+      local bad="" f t
+      for f in system-auth password-auth; do
+        for t in $(pam_lines "/etc/pam.d/$f" pam_unix.so | awk '/(^| )nullok( |$)/ { print $1 }'); do
+          bad="$bad,$f:$t"
+        done
+      done
+      if [ -z "$bad" ]; then echo "OK:no-nullok"; else echo "NOT_OK:nullok=${bad#,}"; fi
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "PAM already uses pam_unix without nullok, nothing to change"; exit 0 ;; esac
+      command -v authselect >/dev/null 2>&1 || { echo "authselect is not installed; add pam_unix without nullok to the PAM files by hand" >&2; exit 1; }
+      authselect current --raw >/dev/null 2>&1 || { echo "authselect does not manage the PAM configuration (no profile or authselect opt-out); add pam_unix without nullok by hand" >&2; exit 1; }
+      # enable-feature writes the PAM files again, so changes made by hand would be lost.
+      if ! x=$(as_same); then echo "Files managed by authselect were changed by hand (${x:-authselect check fails}); nothing changed" >&2; exit 1; fi
+      authselect enable-feature without-nullok >/dev/null
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) if [ "$(sed -n 2p "$b")" = enabled=0 ]; then authselect disable-feature without-nullok >/dev/null || true; fi
+           echo "PAM does not use pam_unix without nullok after enabling without-nullok ($r), for example because the profile has no lines for it; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Enabled the authselect feature without-nullok"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=authfeat-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      e=$(sed -n '2s/^enabled=//p' "$b")
+      case "$e" in 0|1|none) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$e" != 0 ]; then echo "Nothing to restore"; exit 0; fi
+    as_same() {
+      local cur o f
+      authselect check >/dev/null 2>&1 || return 1
+      cur=$(authselect current --raw 2>/dev/null) || return 1
+      for o in system-auth:system-auth password-auth:password-auth fingerprint-auth:fingerprint-auth \
+        smartcard-auth:smartcard-auth switchable-auth:switchable-auth postlogin:postlogin \
+        nsswitch:nsswitch.conf dconf-db:dconf-db dconf-lock:dconf-locks; do
+        f=/etc/authselect/${o#*:}
+        [ -e "$f" ] || continue
+        if [ "$(LC_ALL=C authselect test $cur --${o%%:*} 2>/dev/null | sed -e '1{/^File /d}' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')" != \
+             "$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$f")" ]; then
+          echo "${o#*:}"; return 1
+        fi
+      done
+    }
+      cur=$(authselect current --raw 2>/dev/null) || { echo "authselect no longer manages the PAM configuration; nothing changed" >&2; exit 1; }
+      case " $cur " in *" without-nullok "*) ;; *) echo "Nothing to restore"; exit 0 ;; esac
+      if ! x=$(as_same); then echo "Files managed by authselect were changed by hand (${x:-authselect check fails}); nothing changed" >&2; exit 1; fi
+      authselect disable-feature without-nullok >/dev/null
+      echo "Disabled the authselect feature without-nullok"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_unix.8.html
+  - https://github.com/authselect/authselect
+
+notes:
+  pl: |
+    Na Fedorze plikami /etc/pam.d/system-auth i password-auth zarządza
+    authselect: są to dowiązania do plików w /etc/authselect, tworzonych
+    z szablonu wybranego profilu i włączonych funkcji. Fedora domyślnie
+    używa profilu local.
+
+    Naprawa włącza funkcję without-nullok poleceniem authselect
+    enable-feature. Przed zmianą porównuje pliki w /etc/authselect
+    z wynikiem authselect test i przy ręcznych zmianach niczego nie robi.
+    Wycofanie wyłącza funkcję, jeśli wcześniej była wyłączona. Sprawdziłem
+    w kontenerze Fedora 44, że su na konto z pustym hasłem działa z nullok
+    i jest odrzucane bez niego. Konta z pustym hasłem pokazuje polecenie
+    awk -F: '$2 == ""' /etc/shadow.
+  en: |
+    On Fedora, authselect manages the /etc/pam.d/system-auth and
+    password-auth files: they are links to files in /etc/authselect built
+    from the template of the selected profile and its enabled features.
+    Fedora uses the local profile by default.
+
+    The remediation turns on the without-nullok feature with authselect
+    enable-feature. Before the change it compares the files in
+    /etc/authselect with the output of authselect test and does nothing when
+    they were changed by hand. Rollback turns the feature off if it was off
+    before. A Fedora 44 container showed that su to an account with an empty
+    password works with nullok and is rejected without it. The command
+    awk -F: '$2 == ""' /etc/shadow lists accounts with an empty password.

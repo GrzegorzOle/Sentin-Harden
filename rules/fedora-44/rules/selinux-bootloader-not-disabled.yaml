@@ -1,0 +1,245 @@
+id: fedora44-selinux-bootloader-not-disabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.3.1.2
+  section: Initial Setup > Mandatory Access Control > Configure SELinux
+  title:
+    pl: SELinux nie jest wyłączony w parametrach rozruchu
+    en: Ensure SELinux is not disabled in bootloader configuration
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Parametr jądra selinux=0 wyłącza SELinux całkowicie, a enforcing=0
+    uruchamia go w trybie, w którym tylko zapisuje naruszenia, ale ich nie
+    blokuje. Oba działają niezależnie od /etc/selinux/config i mają pierwszeństwo
+    przed nim, więc system może wyglądać na chroniony w pliku konfiguracyjnym,
+    a po starcie nie być.
+
+    Punkt sprawdza wszystkie miejsca, z których pochodzą parametry rozruchu:
+    wpisy programu rozruchowego w /boot/loader/entries, plik /etc/kernel/cmdline
+    używany przy instalacji nowych jąder oraz zmienne GRUB_CMDLINE_LINUX
+    w /etc/default/grub. Kategoria jest wysoka, bo taki parametr wyłącza całą
+    ochronę SELinux jednym słowem.
+  en: |
+    The selinux=0 kernel parameter turns SELinux off completely, and enforcing=0
+    starts it in a mode where it only records violations but does not block
+    them. Both work regardless of /etc/selinux/config and take precedence over
+    it, so the system can look protected in the configuration file and not be
+    after start.
+
+    The item checks every place boot parameters come from: the boot loader
+    entries in /boot/loader/entries, the /etc/kernel/cmdline file used when new
+    kernels are installed, and the GRUB_CMDLINE_LINUX variables in
+    /etc/default/grub. The category is high because such a parameter turns off
+    all SELinux protection with one word.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia. Jeśli SELinux był wyłączony, pliki
+    utworzone w tym czasie nie mają etykiet: naprawa zleca ponowne etykietowanie
+    całego systemu plików przy następnym starcie, które trwa od kilku do
+    kilkudziesięciu minut, zależnie od liczby plików. Jeśli parametr enforcing=0
+    maskował naruszenia, po restarcie SELinux zacznie je blokować, więc
+    wcześniej trzeba przejrzeć dziennik odmów (ausearch -m avc).
+
+    Zmiana działa dopiero po restarcie.
+  en: |
+    The change needs a planned rollout. If SELinux was off, files created in the
+    meantime have no labels: the remediation schedules relabelling of the whole
+    file system at the next start, which takes from a few to tens of minutes
+    depending on the number of files. If the enforcing=0 parameter was hiding
+    violations, SELinux will start blocking them after the restart, so the denial
+    log (ausearch -m avc) has to be reviewed first.
+
+    The change takes effect only after a restart.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Pierwszy start po zmianie trwa znacznie dłużej, bo system ponownie etykietuje wszystkie pliki, i w tym czasie stacja jest niedostępna
+      - Usługa lub aplikacja, która działała tylko dzięki wyłączonemu SELinux, np. z danymi w niestandardowym katalogu, zaczyna dostawać odmowy dostępu
+    en:
+      - The first start after the change takes much longer, because the system relabels all files, and the workstation is unavailable meanwhile
+      - A service or application that only worked because SELinux was off, for example with data in a non-standard directory, starts getting access denials
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Nie przejrzano dziennika odmów SELinux dla aplikacji, dla których parametr został kiedyś dodany
+    en:
+      - The SELinux denial log has not been reviewed for the applications the parameter was once added for
+  reversibility: after-restart
+
+audit:
+  shell: bash
+  test_command: |
+    e=/boot/loader/entries
+    if [ ! -d "$e" ] || [ ! -r "$e" ]; then echo CHECK_ERROR; exit 0; fi
+    has() { printf ' %s ' "$1" | grep -qE ' (selinux|enforcing)=0 '; }
+    bad=""
+    for f in "$e"/*.conf; do
+      [ -e "$f" ] || continue
+      o=$(sed -n 's/^options[ \t]\{1,\}//p' "$f")
+      if has "$o"; then bad="$bad entries"; break; fi
+      case "$o" in *'$kernelopts'*)
+        k=$(grub2-editenv - list 2>/dev/null | sed -n 's/^kernelopts=//p')
+        if has "$k"; then bad="$bad grubenv"; break; fi ;;
+      esac
+    done
+    if [ -r /etc/kernel/cmdline ] && has "$(cat /etc/kernel/cmdline)"; then bad="$bad kernel-cmdline"; fi
+    if [ -r /etc/default/grub ]; then
+      g=$(sed -n 's/^GRUB_CMDLINE_LINUX\(_DEFAULT\)\{0,1\}=//p' /etc/default/grub | tr -d '"'"'"'"' | tr '\n' ' ')
+      if has "$g"; then bad="$bad default-grub"; fi
+    fi
+    if [ -n "$bad" ]; then echo "DISABLED:$(echo $bad | tr ' ' ',')"; else echo NOT_DISABLED; fi
+  expected: '^NOT_DISABLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      toks() { set -f; printf '%s\n' $1 | grep -xE '(selinux|enforcing)=0' | tr '\n' ' '; }
+      rl=0; [ -e /.autorelabel ] && rl=1
+      {
+        echo "relabel=$rl"
+        echo "mode=$(getenforce 2>/dev/null || echo Unknown)"
+        for f in /boot/loader/entries/*.conf; do
+          [ -e "$f" ] || continue
+          t=$(toks "$(sed -n 's/^options[ \t]\{1,\}//p' "$f")")
+          [ -z "$t" ] || echo "file=$f tokens=$t"
+        done
+        if command -v grub2-editenv >/dev/null 2>&1; then
+          t=$(toks "$(grub2-editenv - list 2>/dev/null | sed -n 's/^kernelopts=//p')")
+          [ -z "$t" ] || echo "grubenv tokens=$t"
+        fi
+        if [ -r /etc/kernel/cmdline ]; then
+          t=$(toks "$(cat /etc/kernel/cmdline)")
+          [ -z "$t" ] || echo "file=/etc/kernel/cmdline tokens=$t"
+        fi
+        if [ -r /etc/default/grub ]; then
+          for v in GRUB_CMDLINE_LINUX GRUB_CMDLINE_LINUX_DEFAULT; do
+            t=$(toks "$(sed -n "s/^$v=//p" /etc/default/grub | tr -d '"'"'"'"')")
+            [ -z "$t" ] || echo "grubvar=$v tokens=$t"
+          done
+        fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      command -v grubby >/dev/null 2>&1 || { echo "grubby is not installed" >&2; exit 1; }
+      grubby --update-kernel=ALL --remove-args="selinux=0 enforcing=0"
+      # Drops the two arguments from a file with a bare command line, or from the
+      # variables matching $2 in a KEY="..." file; other lines stay byte for byte.
+      strip() {
+        t=$(mktemp)
+        awk -v only="$2" '
+          only == "" || $0 ~ ("^" only "=") {
+            l = $0; p = ""; q = ""
+            if (only != "") {
+              i = index(l, "="); p = substr(l, 1, i); l = substr(l, i + 1)
+              if (l ~ /^".*"$/) { q = "\""; l = substr(l, 2, length(l) - 2) }
+            }
+            n = split(l, a, /[ \t]+/); v = ""; c = 0
+            for (j = 1; j <= n; j++) {
+              if (a[j] == "selinux=0" || a[j] == "enforcing=0") c = 1
+              else if (a[j] != "") v = v (v == "" ? "" : " ") a[j]
+            }
+            if (c) $0 = p q v q
+          }
+          { print }' "$1" > "$t"
+        if ! cmp -s "$1" "$t"; then cat "$t" > "$1"; fi
+        rm -f "$t"
+      }
+      if [ -w /etc/kernel/cmdline ]; then strip /etc/kernel/cmdline ""; fi
+      if [ -w /etc/default/grub ]; then strip /etc/default/grub 'GRUB_CMDLINE_LINUX(_DEFAULT)?'; fi
+      if [ "$(sed -n 's/^mode=//p' "$b")" = Disabled ] && [ ! -e /.autorelabel ]; then
+        touch /.autorelabel
+        echo "SELinux is off now: the file system will be relabelled at the next start"
+      fi
+      echo "Removed selinux=0 and enforcing=0 from the kernel command line; restart to apply"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      case "$(sed -n 's/^relabel=//p' "$b")" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      while read -r kind rest; do
+        t=${rest#tokens=}
+        case "$kind" in
+          file=*)
+            f=${kind#file=}
+            [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
+            if [ "$f" = /etc/kernel/cmdline ]; then
+              sed -i "1s/\$/ $t/; 1s/ \$//" "$f"
+            else
+              sed -i "s/^\(options[ \t].*\)\$/\1 $t/; s/^\(options[ \t].*[^ ]\) \$/\1/" "$f"
+            fi ;;
+          grubvar=*)
+            v=${kind#grubvar=}
+            sed -i -E "s/^($v=\"[^\"]*)\"/\1 ${t% }\"/; s/^($v=\") /\1/" /etc/default/grub ;;
+          grubenv)
+            k=$(grub2-editenv - list | sed -n 's/^kernelopts=//p')
+            grub2-editenv - set "kernelopts=$k ${t% }" ;;
+        esac
+      done < <(grep -E '^(file=|grubvar=|grubenv )' "$b")
+      if [ "$(sed -n 's/^relabel=//p' "$b")" = 0 ]; then rm -f /.autorelabel; fi
+      echo "Restored the previous kernel arguments; restart to apply"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.fedoraproject.org/en-US/quick-docs/selinux-changing-states-and-modes/
+  - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/using_selinux/changing-selinux-states-and-modes_using-selinux
+  - https://docs.kernel.org/admin-guide/kernel-parameters.html
+
+notes:
+  pl: |
+    Sprawdzenie nie patrzy na parametry bieżącego startu (/proc/cmdline), tylko
+    na konfigurację, z której powstanie następny, żeby wynik zmienił się od razu
+    po naprawie. To, czy SELinux działa teraz, sprawdza punkt 1.3.1.4.
+
+    Naprawa usuwa parametry poleceniem grubby --update-kernel=ALL, które
+    zmienia wpisy wszystkich zainstalowanych jąder, a następnie usuwa je
+    z /etc/kernel/cmdline i /etc/default/grub, jeśli grubby tego nie zrobił.
+    Wycofanie dopisuje dokładnie te parametry, które zapisała kopia, na końcu
+    wiersza parametrów w tych samych plikach; kolejność parametrów nie ma
+    znaczenia dla jądra. Jądra zainstalowane w międzyczasie ich nie dostaną.
+  en: |
+    The check does not look at the current boot's parameters (/proc/cmdline) but
+    at the configuration the next boot will come from, so that the result
+    changes right after the remediation. Whether SELinux runs now is checked by
+    item 1.3.1.4.
+
+    The remediation removes the parameters with grubby --update-kernel=ALL, which
+    changes the entries of all installed kernels, and then removes them from
+    /etc/kernel/cmdline and /etc/default/grub if grubby did not. Rollback adds
+    back exactly the parameters the backup recorded at the end of the parameter
+    line in the same files; the order of parameters does not matter to the
+    kernel. Kernels installed in the meantime will not get them.

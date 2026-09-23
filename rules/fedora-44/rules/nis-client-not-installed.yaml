@@ -1,0 +1,169 @@
+id: fedora44-nis-client-not-installed
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.2.3
+  section: Services > Configure Client Services
+  title:
+    pl: Klient NIS nie jest zainstalowany
+    en: Ensure nis client is not installed
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Klient NIS (ypbind) pobiera konta, grupy i skróty haseł z serwera NIS
+    i ufa każdej odpowiedzi, bo protokół nie uwierzytelnia serwera. Ktoś
+    w tej samej sieci może podszyć się pod serwer i podsunąć własne konta.
+
+    Punkt wymaga, żeby klient NIS nie był zainstalowany. Fedora Workstation
+    go nie instaluje.
+  en: |
+    The NIS client (ypbind) fetches accounts, groups and password hashes from
+    a NIS server and trusts every answer, because the protocol does not
+    authenticate the server. Someone on the same network can impersonate the
+    server and slip in their own accounts.
+
+    The item requires that the NIS client is not installed. Fedora
+    Workstation does not install it.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli komputer nie korzystał z NIS. W przeciwnym
+    razie użytkownicy z kontami NIS nie zalogują się, dopóki komputer nie
+    przejdzie na inne źródło kont, np. FreeIPA.
+  en: |
+    Nobody will notice if the computer did not use NIS. Otherwise users with
+    NIS accounts cannot sign in until the computer moves to another account
+    source, such as FreeIPA.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Użytkownicy z kontami NIS nie mogą się zalogować do tego komputera
+      - Polecenia ypcat, ypmatch i yppasswd nie są dostępne
+    en:
+      - Users with NIS accounts cannot sign in to this computer
+      - The ypcat, ypmatch and yppasswd commands are not available
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Komputer pobiera konta użytkowników z serwera NIS
+    en:
+      - The computer gets user accounts from a NIS server
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    found=""
+    for p in ypbind yp-tools; do if rpm -q --quiet "$p"; then found="$found $p"; fi; done
+    if [ -n "$found" ]; then echo "INSTALLED:$(echo $found | tr ' ' ',')"; else echo NOT_INSTALLED; fi
+  expected: '^NOT_INSTALLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      export LC_ALL=C
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=rpm-units-1
+        for u in ypbind.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "unit $u ${e:--} ${a:--}"
+        done
+        rpm -qa --qf 'pkg %{NAME}.%{ARCH}\n' | grep -v '^pkg gpg-pubkey\.' | sort -u
+      } > "$b"
+      echo "Saved the list of installed packages and the unit states to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      rm=""
+      for p in ypbind yp-tools; do if rpm -q --quiet "$p"; then rm="$rm $p"; fi; done
+      if [ -z "$rm" ]; then echo "Nothing to remove"; exit 0; fi
+      dnf -y -q remove --no-autoremove $rm
+      echo "Removed:$rm"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      export LC_ALL=C
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rpm-units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      units=$(sed -n 's/^unit //p' "$b")
+      [ -n "$units" ] && grep -q '^pkg ' "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r u e a x; do
+        case " ypbind.service " in *" $u "*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$units"
+      now=$(mktemp)
+      trap 'rm -f "$now"' EXIT
+      rpm -qa --qf '%{NAME}.%{ARCH}\n' | sort -u > "$now"
+      miss=$(sed -n 's/^pkg //p' "$b" | sort -u | comm -23 - "$now")
+      if [ -n "$miss" ]; then dnf -y -q install $miss; echo "Installed again:" $miss
+      else echo "All packages from the backup are installed"; fi
+      start=""
+      while read -r u e a; do
+        case "$e" in
+          enabled) systemctl enable -q "$u" ;;
+          enabled-runtime) systemctl enable -q --runtime "$u" ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$units"
+      if [ -n "$start" ]; then systemctl start $start; echo "Started again:$start"; fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://packages.fedoraproject.org/pkgs/ypbind/ypbind/
+  - https://dnf5.readthedocs.io/en/latest/commands/remove.8.html
+
+notes:
+  pl: |
+    Sprawdzam ypbind i yp-tools, które wymagają siebie nawzajem. Usunięcie
+    pakietu wyłącza usługę ypbind.service, a ponowna instalacja zostawia ją
+    wyłączoną, dlatego kopia zapisuje też stan tej usługi, a wycofanie
+    włącza ją i uruchamia, jeśli działała.
+
+    Naprawa usuwa pakiety poleceniem dnf remove, które usuwa też pakiety od
+    nich zależne i zależności zainstalowane tylko dla nich. Kopia zapisuje
+    listę wszystkich zainstalowanych pakietów, a wycofanie instaluje ponownie
+    te, których brakuje, więc wymaga dostępu do repozytoriów.
+  en: |
+    I check ypbind and yp-tools, which require each other. Removing the
+    package disables ypbind.service, and installing it again leaves it
+    disabled, so the backup also records the state of this service, and
+    rollback enables and starts it if it was running.
+
+    The remediation removes the packages with dnf remove, which also removes
+    packages that depend on them and dependencies installed only for them.
+    The backup records the list of all installed packages, and rollback
+    installs again the ones that are missing, so it needs access to the
+    repositories.

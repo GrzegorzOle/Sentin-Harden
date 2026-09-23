@@ -1,0 +1,109 @@
+id: fedora44-pam-unix-use-authtok
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.3.3.4.4
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_unix module
+  title:
+    pl: Moduł pam_unix zapisuje hasło sprawdzone wcześniej w stosie
+    en: Ensure pam_unix includes use_authtok
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Z opcją use_authtok pam_unix zapisuje hasło, które przeszło już przez
+    pam_pwquality i pam_pwhistory, i nie pyta o nie drugi raz. Bez niej
+    pam_unix może zapisać hasło, którego te moduły nie sprawdziły.
+
+    Punkt wymaga, żeby wiersz password z pam_unix w /etc/pam.d/system-auth
+    i password-auth miał argument use_authtok.
+  en: |
+    With the use_authtok option pam_unix stores the password that already
+    went through pam_pwquality and pam_pwhistory and does not ask for it
+    again. Without it pam_unix may store a password these modules did not
+    check.
+
+    The item requires the password line with pam_unix in
+    /etc/pam.d/system-auth and password-auth to have the use_authtok
+    argument.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: sprawdzenie tylko czyta pliki PAM.
+  en: |
+    Nobody will notice: the check only reads the PAM files.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    evaluate() {
+      local miss="" f s ty mo ar
+      for f in system-auth password-auth; do
+        for s in password:pam_unix.so:use_authtok; do
+          ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+          pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+        done
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_unix"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_unix.8.html
+
+notes:
+  pl: |
+    Sprawdzenie czyta aktywne wiersze pam_unix w /etc/pam.d/system-auth
+    i password-auth; inne pliki w /etc/pam.d dołączają te dwa. Profile
+    local i sssd generują te wiersze z szablonów w /usr/share/authselect,
+    więc ręczna zmiana w /etc/authselect znika przy następnym authselect
+    select albo enable-feature. Trwałą zmianę robi się we własnym profilu
+    w /etc/authselect/custom i poleceniem authselect apply-changes.
+
+    Profile local i sssd mają use_authtok w wierszu password pam_unix, więc
+    wynik NOT_OK oznacza własny profil albo ręcznie utrzymywane pliki PAM.
+    Reguła tylko sprawdza stan.
+  en: |
+    The check reads the active pam_unix lines in /etc/pam.d/system-auth and
+    password-auth; other files in /etc/pam.d include these two. The local
+    and sssd profiles generate these lines from the templates in
+    /usr/share/authselect, so a change by hand in /etc/authselect is lost at
+    the next authselect select or enable-feature. A lasting change is made
+    in a custom profile in /etc/authselect/custom and with authselect
+    apply-changes.
+
+    The local and sssd profiles have use_authtok on the password line of
+    pam_unix, so the NOT_OK result means a custom profile or PAM files kept
+    by hand. The rule only checks the state.

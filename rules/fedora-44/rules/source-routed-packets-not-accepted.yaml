@@ -1,0 +1,294 @@
+id: fedora44-source-routed-packets-not-accepted
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 3.3.8
+  section: Network > Configure Network Kernel Parameters
+  title:
+    pl: Pakiety z trasowaniem źródłowym nie są przyjmowane
+    en: Ensure source routed packets are not accepted
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Pakiet z trasowaniem źródłowym sam wskazuje routery, przez które ma
+    przejść. Napastnik może w ten sposób ominąć zaporę albo skierować ruch
+    przez komputer, do którego zwykłe trasy by go nie doprowadziły.
+
+    Punkt wymaga wartości 0 parametrów accept_source_route w ustawieniach
+    all i default, osobno dla IPv4 (net.ipv4.conf) i IPv6 (net.ipv6.conf).
+    Fedora ustawia 0 dla default IPv4 w pliku
+    /usr/lib/sysctl.d/50-default.conf, a pozostałe trzy wartości to wartości
+    domyślne jądra.
+  en: |
+    A source routed packet itself names the routers it should pass through.
+    An attacker can use this to get around a firewall or to direct traffic
+    through a computer that the regular routes would not lead to.
+
+    The item requires the value 0 for the accept_source_route parameters in
+    the all and default settings, separately for IPv4 (net.ipv4.conf) and
+    IPv6 (net.ipv6.conf). Fedora sets 0 for the IPv4 default in
+    /usr/lib/sysctl.d/50-default.conf, and the other three values are kernel
+    defaults.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: to ustawienia domyślne Fedory, a trasowania
+    źródłowego w zwykłych sieciach się nie używa.
+  en: |
+    Nobody will notice: these are the Fedora defaults, and source routing is
+    not used in regular networks.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -x /usr/lib/systemd/systemd-sysctl ] || [ ! -d /proc/sys/net/ipv4 ]; then echo CHECK_ERROR; exit 0; fi
+    ok=""; bad=""
+    while read -r k want dflt; do
+      p=/proc/sys/$(printf '%s' "$k" | tr . /)
+      n=${k#net.}
+      if [ ! -r "$p" ]; then
+        case "$k" in net.ipv6.*) if [ ! -d /proc/sys/net/ipv6 ]; then ok="$ok,$n=no-ipv6"; continue; fi ;; esac
+        echo CHECK_ERROR; exit 0
+      fi
+      r=$(tr -s ' \t' ' ' < "$p")
+      c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ -z "$c" ] && [ "$dflt" = 1 ]; then c=default; fi
+      if [ "$r" = "$want" ] && { [ "$c" = "$want" ] || [ "$c" = default ]; }; then ok="$ok,$n=$r"
+      else bad="$bad;$n:runtime=$r,config=${c:-none}"; fi
+    done <<'EOF'
+    net.ipv4.conf.all.accept_source_route 0 1
+    net.ipv4.conf.default.accept_source_route 0 0
+    net.ipv6.conf.all.accept_source_route 0 1
+    net.ipv6.conf.default.accept_source_route 0 1
+    EOF
+    # Interfaces with their own value, for information only: the item checks all and default.
+    ifs=""
+    for spec in ; do
+      d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
+      for p in /proc/sys/$d/*/$q; do
+        [ -r "$p" ] || continue
+        i=${p#/proc/sys/$d/}; i=${i%/$q}
+        case "$i" in all|default|lo) continue ;; esac
+        v=$(cat "$p")
+        [ "$v" = "$want" ] || ifs="$ifs,${d#net/}/$i/$q=$v"
+      done
+    done
+    [ -z "$ifs" ] || ifs=";interfaces:${ifs#,}"
+    if [ -n "$bad" ]; then echo "NOT_OK:${bad#;}$ifs"; else echo "OK:${ok#,}$ifs"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-source-route.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=sysctl-2
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        for k in net.ipv4.conf.all.accept_source_route net.ipv4.conf.default.accept_source_route net.ipv6.conf.all.accept_source_route net.ipv6.conf.default.accept_source_route ; do
+          p=/proc/sys/$(printf '%s' "$k" | tr . /)
+          if [ -r "$p" ]; then echo "rt $k $(tr -s ' \t' ' ' < "$p")"; fi
+        done
+        # Interface values are stored as paths, because interface names may contain dots.
+        for spec in ; do
+          d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
+          for p in /proc/sys/$d/*/$q; do
+            [ -r "$p" ] || continue
+            case "$p" in */all/$q|*/default/$q) continue ;; esac
+            echo "if ${p#/proc/sys/} $(cat "$p")"
+          done
+        done
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-source-route.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      command -v sysctl >/dev/null 2>&1 || { echo "sysctl is not installed" >&2; exit 1; }
+      # Writing some keys makes the kernel reset others; those keep their value.
+      keep=""
+      for k in ; do
+        p=/proc/sys/$(printf '%s' "$k" | tr . /)
+        if [ -r "$p" ]; then keep="$keep $k=$(cat "$p")"; fi
+      done
+      printf '%s\n' '# Sentin-Harden: fedora44-source-routed-packets-not-accepted' 'net.ipv4.conf.all.accept_source_route = 0' 'net.ipv4.conf.default.accept_source_route = 0' '-net.ipv6.conf.all.accept_source_route = 0' '-net.ipv6.conf.default.accept_source_route = 0' > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      for kv in net.ipv4.conf.all.accept_source_route=0 net.ipv4.conf.default.accept_source_route=0 net.ipv6.conf.all.accept_source_route=0 net.ipv6.conf.default.accept_source_route=0; do
+        k=${kv%%=*}
+        [ -e "/proc/sys/$(printf '%s' "$k" | tr . /)" ] || { echo "Skipped $k: IPv6 is disabled"; continue; }
+        sysctl -q -w "$kv"
+      done
+      for kv in $keep; do sysctl -q -w "$kv"; done
+      # The file covers interfaces added later; the existing ones are set here.
+      for spec in ; do
+        d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}; want=${x#*:}
+        for p in /proc/sys/$d/*/$q; do
+          [ -e "$p" ] || continue
+          case "$p" in */all/$q|*/default/$q) continue ;; esac
+          # An interface can disappear meanwhile, e.g. a container's veth.
+          printf '%s\n' "$want" 2>/dev/null > "$p" || [ ! -e "$p" ] || { echo "Cannot write $p" >&2; exit 1; }
+        done
+      done
+      late=""
+      for kv in net.ipv4.conf.all.accept_source_route=0 net.ipv4.conf.default.accept_source_route=0 net.ipv6.conf.all.accept_source_route=0 net.ipv6.conf.default.accept_source_route=0; do
+        k=${kv%%=*}
+        c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+        [ "$c" = "${kv#*=}" ] || late="$late $k=$c"
+      done
+      if [ -n "$late" ]; then
+        echo "Another sysctl.d file is applied after $f and the next start will set:$late" >&2; exit 1
+      fi
+      echo "Set net.ipv4.conf.all.accept_source_route=0 net.ipv4.conf.default.accept_source_route=0 net.ipv6.conf.all.accept_source_route=0 net.ipv6.conf.default.accept_source_route=0 now and in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/sysctl.d/sentin-harden-source-route.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sysctl-2 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      grep -qx -- --- "$b" || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      rts=$(sed -n '3,/^---$/p' "$b" | sed '$d')
+      while read -r t k v; do
+        [ -n "$t$k$v" ] || continue
+        bad=0
+        case "$v" in ""|*[!0-9-]*) bad=1 ;; esac
+        case "$t" in
+          rt) case " net.ipv4.conf.all.accept_source_route net.ipv4.conf.default.accept_source_route net.ipv6.conf.all.accept_source_route net.ipv6.conf.default.accept_source_route  " in *" $k "*) ;; *) bad=1 ;; esac ;;
+          if)
+            known=0
+            for spec in ; do
+              d=${spec%%:*}; x=${spec#*:}; q=${x%%:*}
+              case "$k" in "$d"/*/"$q") ;; *) continue ;; esac
+              i=${k#"$d"/}; i=${i%/"$q"}
+              case "$i" in ""|*/*|.|..|all|default) ;; *) known=1 ;; esac
+            done
+            [ "$known" = 1 ] || bad=1 ;;
+          *) bad=1 ;;
+        esac
+        if [ "$bad" = 1 ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$rts"
+      if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
+      # The kept keys go after the others, because writing those can reset them.
+      while read -r t k v; do
+        [ "$t" = rt ] || continue
+        case "  " in *" $k "*) continue ;; esac
+        sysctl -q -w "$k=$v"
+      done <<< "$rts"
+      while read -r t k v; do
+        [ "$t" = rt ] || continue
+        case "  " in *" $k "*) sysctl -q -w "$k=$v" ;; esac
+      done <<< "$rts"
+      # Interfaces removed since the backup are skipped.
+      while read -r t k v; do
+        [ "$t" = if ] || continue
+        if [ -e "/proc/sys/$k" ]; then printf '%s\n' "$v" > "/proc/sys/$k"; fi
+      done <<< "$rts"
+      echo "Restored the previous values and the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/networking/ip-sysctl.html
+  - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
+  - https://www.rfc-editor.org/rfc/rfc5095
+
+notes:
+  pl: |
+    Sprawdzenie porównuje dla każdego parametru wartość bieżącą z /proc/sys
+    z wartością, którą ustawi następny start. Tę drugą wyznacza
+    systemd-sysctl --cat-config, które wypisuje pliki z /usr/lib/sysctl.d,
+    /run/sysctl.d i /etc/sysctl.d w kolejności stosowania, więc liczy się
+    ostatnie przypisanie. Brak wpisu dla all IPv4 oraz dla obu
+    parametrów IPv6 oznacza wartość wbudowaną w jądro, czyli 0, i też
+    spełnia punkt. Wbudowana wartość default IPv4 to 1, więc ten parametr
+    wymaga wpisu; na Fedorze zapewnia go plik 50-default.conf. Parametry
+    IPv6 są spełnione, gdy IPv6 wyłączono przy starcie jądra. Wynik NOT_OK podaje obie wartości każdego
+    parametru, który nie spełnia punktu.
+
+    Naprawa zapisuje ustawienia w /etc/sysctl.d/sentin-harden-source-route.conf
+    i od razu je stosuje. Nazwa bez numeru na początku sortuje się po plikach
+    typu 99-*.conf, więc ustawienia wygrywają z nimi; jeśli mimo to inny
+    plik nadpisuje wartość, naprawa kończy się błędem. Wycofanie przywraca
+    poprzednią zawartość pliku i poprzednie wartości bieżące.
+
+    Jądro przyjmuje trasowanie źródłowe na interfejsie tylko wtedy, gdy
+    pozwala na to i all, i ustawienie interfejsu, więc 0 w all wystarcza dla
+    wszystkich interfejsów. Dla IPv6 wartość 0 odrzuca nagłówki trasowania
+    poza typem 2 używanym przez mobilne IPv6; typu 0 jądro nie obsługuje
+    wcale, bo RFC 5095 go wycofał.
+  en: |
+    For each parameter, the check compares the current value from /proc/sys
+    with the value the next start will set. The latter comes from
+    systemd-sysctl --cat-config, which prints the files from
+    /usr/lib/sysctl.d, /run/sysctl.d and /etc/sysctl.d in the order they are
+    applied, so the last assignment counts. No entry for the IPv4 all and for both
+    IPv6 parameters means the value built into the kernel, which is 0, and
+    also meets the item. The built-in IPv4 default value is 1, so that
+    parameter needs an entry; on Fedora the 50-default.conf file provides
+    it. The IPv6 parameters are met when IPv6 was turned off at kernel
+    start. The NOT_OK result gives
+    both values of every parameter that does not meet the item.
+
+    The remediation writes the settings to
+    /etc/sysctl.d/sentin-harden-source-route.conf and applies them at once. A name
+    without a leading number sorts after files such as 99-*.conf, so the
+    settings win over them; if another file still overrides a value, the
+    remediation ends with an error. Rollback restores the previous file
+    content and the previous current values.
+
+    The kernel accepts source routing on an interface only when both all and
+    the interface setting allow it, so 0 in all is enough for all
+    interfaces. For IPv6 the value 0 drops routing headers except type 2,
+    which mobile IPv6 uses; the kernel does not support type 0 at all,
+    because RFC 5095 deprecated it.

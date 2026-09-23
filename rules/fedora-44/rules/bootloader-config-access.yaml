@@ -1,0 +1,154 @@
+id: fedora44-bootloader-config-access
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.4.2
+  section: Initial Setup > Configure Bootloader
+  title:
+    pl: Dostęp do konfiguracji programu rozruchowego jest ograniczony
+    en: Ensure access to bootloader config is configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Pliki konfiguracyjne GRUB opisują, jak startuje system, a user.cfg zawiera
+    skrót hasła programu rozruchowego. Użytkownik, który może je czytać, może
+    próbować złamać ten skrót poza systemem albo poznać parametry rozruchu;
+    użytkownik, który może je zmieniać, decyduje o tym, co uruchomi się przy
+    następnym starcie.
+
+    Punkt wymaga, żeby pliki grub.cfg, grubenv i user.cfg w /boot/grub2
+    i w katalogu EFI Fedory należały do roota i nie były dostępne dla nikogo
+    innego. Na Fedorze tak jest domyślnie.
+  en: |
+    The GRUB configuration files describe how the system starts, and user.cfg
+    holds the hash of the bootloader password. A user who can read them can try
+    to crack the hash offline or learn the boot parameters; a user who can
+    change them decides what runs at the next start.
+
+    The item requires the grub.cfg, grubenv and user.cfg files in /boot/grub2
+    and in the Fedora EFI directory to be owned by root and not accessible to
+    anyone else. On Fedora this is the default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: pliki czytają i zmieniają tylko narzędzia
+    uruchamiane jako root, takie jak grubby i grub2-mkconfig.
+  en: |
+    Nobody will notice: the files are only read and changed by tools run as
+    root, such as grubby and grub2-mkconfig.
+
+implementation_consequences:
+  impact_areas:
+    - boot-and-firmware
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -d /boot/grub2 ] || [ ! -r /boot/grub2 ] || [ ! -x /boot/grub2 ]; then echo CHECK_ERROR; exit 0; fi
+    bad=""
+    for f in /boot/grub2/grub.cfg /boot/grub2/grubenv /boot/grub2/user.cfg /boot/efi/EFI/fedora/grub.cfg /boot/efi/EFI/fedora/grubenv /boot/efi/EFI/fedora/user.cfg; do
+      [ -e "$f" ] || continue
+      set -- $(stat -Lc '%a %u %g' "$f")
+      if [ $(( 0$1 & 077 )) -ne 0 ] || [ "$2" != 0 ] || [ "$3" != 0 ]; then bad="$bad $f:$1:$2:$3"; fi
+    done
+    if [ -n "$bad" ]; then echo "TOO_OPEN:$(echo $bad | tr ' ' ',')"; else echo RESTRICTED; fi
+  expected: '^RESTRICTED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=boot-access-1
+        for f in /boot/grub2/grub.cfg /boot/grub2/grubenv /boot/grub2/user.cfg /boot/efi/EFI/fedora/grub.cfg /boot/efi/EFI/fedora/grubenv /boot/efi/EFI/fedora/user.cfg; do
+          [ -e "$f" ] || continue
+          stat -Lc '%a %u %g' "$f" | sed "s|^|$(readlink -f "$f") |"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      rc=0
+      for f in /boot/grub2/grub.cfg /boot/grub2/grubenv /boot/grub2/user.cfg /boot/efi/EFI/fedora/grub.cfg /boot/efi/EFI/fedora/grubenv /boot/efi/EFI/fedora/user.cfg; do
+        [ -e "$f" ] || continue
+        set -- $(stat -Lc '%a %u %g' "$f")
+        if [ $(( 0$1 & 077 )) -eq 0 ] && [ "$2" = 0 ] && [ "$3" = 0 ]; then continue; fi
+        case "$(stat -f -Lc %T "$f")" in
+          msdos|vfat)
+            echo "$f is on a FAT file system: set umask=0077 for its mount point in /etc/fstab" >&2
+            rc=1 ;;
+          *)
+            chown 0:0 "$(readlink -f "$f")"
+            chmod og-rwx "$(readlink -f "$f")"
+            echo "Restricted $f to root" ;;
+        esac
+      done
+      exit $rc
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=boot-access-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      tail -n +2 "$b" | while read -r f mode uid gid; do
+        [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
+        case "$(stat -f -Lc %T "$f")" in msdos|vfat) continue ;; esac
+        chown "$uid:$gid" "$f"
+        chmod "$mode" "$f"
+        echo "Restored owner and mode of $f"
+      done
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.fedoraproject.org/en-US/fedora/latest/system-administrators-guide/kernel-module-driver-configuration/Working_with_the_GRUB_2_Boot_Loader/
+  - https://www.gnu.org/software/grub/manual/grub/html_node/Authentication-and-authorisation.html
+
+notes:
+  pl: |
+    Na partycji EFI z systemem plików FAT uprawnienia plików wynikają z opcji
+    montowania, a nie z samych plików. Fedora montuje /boot/efi z opcją
+    umask=0077, co spełnia punkt. Jeśli plik na tej partycji jest dostępny dla
+    innych, naprawa go nie zmienia i kończy się błędem z informacją, że trzeba
+    ustawić umask=0077 w /etc/fstab.
+
+    Sprawdzenie wymaga uprawnień roota, bo katalog /boot/grub2 jest dostępny
+    tylko dla niego.
+  en: |
+    On the EFI partition with a FAT file system, file permissions come from the
+    mount options rather than the files themselves. Fedora mounts /boot/efi
+    with the umask=0077 option, which meets the item. If a file on that
+    partition is accessible to others, the remediation does not change it and
+    ends with an error saying that umask=0077 has to be set in /etc/fstab.
+
+    The check needs root privileges because the /boot/grub2 directory is only
+    accessible to root.

@@ -1,0 +1,246 @@
+id: fedora44-pam-pwhistory-enabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.3.2.4
+  section: Access Control > Pluggable Authentication Modules > Configure authselect
+  title:
+    pl: Moduł pam_pwhistory jest włączony
+    en: Ensure pam_pwhistory module is enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy przy zmianie hasła można wrócić do jednego z poprzednich, wymuszona
+    zmiana hasła nic nie daje: hasło, które wyciekło, znów działa po dwóch
+    zmianach. pam_pwhistory zapamiętuje skróty ostatnich haseł i odrzuca
+    nowe hasło, które już było używane.
+
+    Punkt wymaga, żeby wiersz password z pam_pwhistory był aktywny
+    w /etc/pam.d/system-auth i password-auth.
+  en: |
+    When a password change can go back to one of the previous passwords, a
+    forced change is of little use: a leaked password works again after two
+    changes. pam_pwhistory remembers the hashes of recent passwords and
+    rejects a new password that was used before.
+
+    The item requires an active password line with pam_pwhistory in
+    /etc/pam.d/system-auth and password-auth.
+
+disruption_description:
+  pl: |
+    Użytkownik zmieniający hasło nie może wrócić do żadnego z ostatnich
+    haseł; domyślnie moduł pamięta 10 haseł. Hasła zmieniane przez roota
+    dla innych kont nie są sprawdzane, dopóki nie ustawi się
+    enforce_for_root.
+  en: |
+    A user who changes the password cannot go back to any of the recent
+    passwords; by default the module remembers 10 passwords. Passwords that
+    root sets for other accounts are not checked unless enforce_for_root is
+    set.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Użytkownicy, którzy przy zmianie hasła wracają do jednego z ostatnich haseł
+    en:
+      - Users who go back to one of their recent passwords when they change the password
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Pliki PAM są zmienione ręcznie w /etc/authselect; authselect enable-feature by te zmiany usunął, więc naprawa wtedy odmawia
+    en:
+      - The PAM files in /etc/authselect were changed by hand; authselect enable-feature would remove these changes, so the remediation refuses then
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    as_same() {
+      local cur o f
+      authselect check >/dev/null 2>&1 || return 1
+      cur=$(authselect current --raw 2>/dev/null) || return 1
+      for o in system-auth:system-auth password-auth:password-auth fingerprint-auth:fingerprint-auth \
+        smartcard-auth:smartcard-auth switchable-auth:switchable-auth postlogin:postlogin \
+        nsswitch:nsswitch.conf dconf-db:dconf-db dconf-lock:dconf-locks; do
+        f=/etc/authselect/${o#*:}
+        [ -e "$f" ] || continue
+        if [ "$(LC_ALL=C authselect test $cur --${o%%:*} 2>/dev/null | sed -e '1{/^File /d}' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')" != \
+             "$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$f")" ]; then
+          echo "${o#*:}"; return 1
+        fi
+      done
+    }
+    evaluate() {
+      local miss="" f s ty mo ar
+      for f in system-auth password-auth; do
+        for s in password:pam_pwhistory.so:; do
+          ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+          pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+        done
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_pwhistory"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=authfeat-1
+        if command -v authselect >/dev/null 2>&1 && cur=$(authselect current --raw 2>/dev/null); then
+          case " $cur " in *" with-pwhistory "*) echo enabled=1 ;; *) echo enabled=0 ;; esac
+        else
+          echo enabled=none
+        fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=authfeat-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    as_same() {
+      local cur o f
+      authselect check >/dev/null 2>&1 || return 1
+      cur=$(authselect current --raw 2>/dev/null) || return 1
+      for o in system-auth:system-auth password-auth:password-auth fingerprint-auth:fingerprint-auth \
+        smartcard-auth:smartcard-auth switchable-auth:switchable-auth postlogin:postlogin \
+        nsswitch:nsswitch.conf dconf-db:dconf-db dconf-lock:dconf-locks; do
+        f=/etc/authselect/${o#*:}
+        [ -e "$f" ] || continue
+        if [ "$(LC_ALL=C authselect test $cur --${o%%:*} 2>/dev/null | sed -e '1{/^File /d}' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')" != \
+             "$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$f")" ]; then
+          echo "${o#*:}"; return 1
+        fi
+      done
+    }
+    evaluate() {
+      local miss="" f s ty mo ar
+      for f in system-auth password-auth; do
+        for s in password:pam_pwhistory.so:; do
+          ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+          pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+        done
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_pwhistory"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "PAM already uses pam_pwhistory, nothing to change"; exit 0 ;; esac
+      command -v authselect >/dev/null 2>&1 || { echo "authselect is not installed; add pam_pwhistory to the PAM files by hand" >&2; exit 1; }
+      authselect current --raw >/dev/null 2>&1 || { echo "authselect does not manage the PAM configuration (no profile or authselect opt-out); add pam_pwhistory by hand" >&2; exit 1; }
+      # enable-feature writes the PAM files again, so changes made by hand would be lost.
+      if ! x=$(as_same); then echo "Files managed by authselect were changed by hand (${x:-authselect check fails}); nothing changed" >&2; exit 1; fi
+      authselect enable-feature with-pwhistory >/dev/null
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) if [ "$(sed -n 2p "$b")" = enabled=0 ]; then authselect disable-feature with-pwhistory >/dev/null || true; fi
+           echo "PAM does not use pam_pwhistory after enabling with-pwhistory ($r), for example because the profile has no lines for it; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Enabled the authselect feature with-pwhistory"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=authfeat-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      e=$(sed -n '2s/^enabled=//p' "$b")
+      case "$e" in 0|1|none) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$e" != 0 ]; then echo "Nothing to restore"; exit 0; fi
+    as_same() {
+      local cur o f
+      authselect check >/dev/null 2>&1 || return 1
+      cur=$(authselect current --raw 2>/dev/null) || return 1
+      for o in system-auth:system-auth password-auth:password-auth fingerprint-auth:fingerprint-auth \
+        smartcard-auth:smartcard-auth switchable-auth:switchable-auth postlogin:postlogin \
+        nsswitch:nsswitch.conf dconf-db:dconf-db dconf-lock:dconf-locks; do
+        f=/etc/authselect/${o#*:}
+        [ -e "$f" ] || continue
+        if [ "$(LC_ALL=C authselect test $cur --${o%%:*} 2>/dev/null | sed -e '1{/^File /d}' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')" != \
+             "$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$f")" ]; then
+          echo "${o#*:}"; return 1
+        fi
+      done
+    }
+      cur=$(authselect current --raw 2>/dev/null) || { echo "authselect no longer manages the PAM configuration; nothing changed" >&2; exit 1; }
+      case " $cur " in *" with-pwhistory "*) ;; *) echo "Nothing to restore"; exit 0 ;; esac
+      if ! x=$(as_same); then echo "Files managed by authselect were changed by hand (${x:-authselect check fails}); nothing changed" >&2; exit 1; fi
+      authselect disable-feature with-pwhistory >/dev/null
+      echo "Disabled the authselect feature with-pwhistory"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_pwhistory.8.html
+  - https://github.com/authselect/authselect
+
+notes:
+  pl: |
+    Na Fedorze plikami /etc/pam.d/system-auth i password-auth zarządza
+    authselect: są to dowiązania do plików w /etc/authselect, tworzonych
+    z szablonu wybranego profilu i włączonych funkcji. Fedora domyślnie
+    używa profilu local.
+
+    Naprawa włącza funkcję with-pwhistory poleceniem authselect
+    enable-feature, która dodaje wiersz password requisite pam_pwhistory.so
+    use_authtok. Przed zmianą porównuje pliki w /etc/authselect z wynikiem
+    authselect test i przy ręcznych zmianach niczego nie robi. Wycofanie
+    wyłącza funkcję, jeśli wcześniej była wyłączona. Skróty starych haseł
+    są w /etc/security/opasswd; liczbę pamiętanych haseł ustawia punkt
+    5.3.3.3.1 w /etc/security/pwhistory.conf.
+  en: |
+    On Fedora, authselect manages the /etc/pam.d/system-auth and
+    password-auth files: they are links to files in /etc/authselect built
+    from the template of the selected profile and its enabled features.
+    Fedora uses the local profile by default.
+
+    The remediation turns on the with-pwhistory feature with authselect
+    enable-feature, which adds the line password requisite pam_pwhistory.so
+    use_authtok. Before the change it compares the files in /etc/authselect
+    with the output of authselect test and does nothing when they were
+    changed by hand. Rollback turns the feature off if it was off before.
+    The hashes of old passwords are in /etc/security/opasswd; item
+    5.3.3.3.1 sets the number of remembered passwords in
+    /etc/security/pwhistory.conf.

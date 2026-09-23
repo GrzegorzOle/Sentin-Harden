@@ -1,0 +1,132 @@
+id: fedora44-mcstrans-not-installed
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.3.1.7
+  section: Initial Setup > Mandatory Access Control > Configure SELinux
+  title:
+    pl: Usługa tłumaczenia etykiet MCS (mcstrans) nie jest zainstalowana
+    en: Ensure the MCS Translation Service (mcstrans) is not installed
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pakiet mcstrans dostarcza usługę mcstransd, która zamienia poziomy MCS
+    i MLS z etykiet SELinux, np. s0-s0:c0.c1023, na czytelne nazwy z pliku
+    setrans.conf. Ma sens w środowiskach z polityką mls, gdzie poziomy opisują
+    klasyfikację informacji. Na stacji z polityką targeted nic z niej nie
+    korzysta, a każda usługa działająca jako root to dodatkowy kod, który może
+    mieć błędy.
+
+    Punkt wymaga, żeby pakiet nie był zainstalowany. Fedora Workstation go nie
+    instaluje.
+  en: |
+    The mcstrans package provides the mcstransd service, which turns the MCS
+    and MLS levels of SELinux labels, such as s0-s0:c0.c1023, into readable
+    names from the setrans.conf file. It makes sense in environments with the
+    mls policy, where the levels describe information classification. On a
+    workstation with the targeted policy nothing uses it, and every service
+    running as root is extra code that may have bugs.
+
+    The item requires the package not to be installed. Fedora Workstation does
+    not install it.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy poza administratorem, który czyta etykiety SELinux:
+    polecenia ls -Z i ps -Z pokazują poziom w postaci surowej zamiast nazwy.
+    Zmiana nie wymaga restartu.
+  en: |
+    Nobody will notice except an administrator reading SELinux labels: the
+    ls -Z and ps -Z commands show the level in raw form instead of a name. The
+    change needs no restart.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Polecenia ls -Z i ps -Z pokazują poziomy MCS w postaci surowej, np. s0-s0:c0.c1023, zamiast nazw takich jak SystemLow-SystemHigh
+    en:
+      - The ls -Z and ps -Z commands show MCS levels in raw form, such as s0-s0:c0.c1023, instead of names like SystemLow-SystemHigh
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    found=""
+    for p in mcstrans; do if rpm -q --quiet "$p"; then found="$found $p"; fi; done
+    if [ -n "$found" ]; then echo "INSTALLED:$(echo $found | tr ' ' ',')"; else echo NOT_INSTALLED; fi
+  expected: '^NOT_INSTALLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      export LC_ALL=C
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      { echo format=rpm-names-1; rpm -qa --qf '%{NAME}.%{ARCH}\n' | grep -v '^gpg-pubkey\.' | sort -u; } > "$b"
+      echo "Saved the list of installed packages to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      rm=""
+      for p in mcstrans; do if rpm -q --quiet "$p"; then rm="$rm $p"; fi; done
+      if [ -z "$rm" ]; then echo "Nothing to remove"; exit 0; fi
+      dnf -y -q remove --no-autoremove $rm
+      echo "Removed:$rm"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      export LC_ALL=C
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rpm-names-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      now=$(mktemp)
+      rpm -qa --qf '%{NAME}.%{ARCH}\n' | sort -u > "$now"
+      miss=$(tail -n +2 "$b" | comm -23 - "$now")
+      rm -f "$now"
+      if [ -z "$miss" ]; then echo "All packages from the backup are installed"; exit 0; fi
+      dnf -y -q install $miss
+      echo "Installed again:" $miss
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://packages.fedoraproject.org/pkgs/mcstrans/mcstrans/
+  - https://dnf5.readthedocs.io/en/latest/commands/remove.8.html
+
+notes:
+  pl: |
+    Naprawa usuwa pakiet poleceniem dnf remove, które usuwa także zależności
+    zainstalowane tylko dla niego. Kopia zapisuje listę wszystkich
+    zainstalowanych pakietów, a wycofanie instaluje ponownie te, których
+    brakuje, więc wymaga dostępu do repozytoriów.
+  en: |
+    The remediation removes the package with dnf remove, which also removes
+    dependencies installed only for it. The backup records the list of all
+    installed packages, and rollback installs again the ones that are missing,
+    so it needs access to the repositories.

@@ -1,0 +1,134 @@
+id: fedora44-crontab-permissions
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.4.1.2
+  section: Services > Job Schedulers > Configure cron
+  title:
+    pl: Uprawnienia do /etc/crontab są skonfigurowane
+    en: Ensure permissions on /etc/crontab are configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Plik /etc/crontab opisuje zadania systemowe uruchamiane przez cron,
+    często jako root. Kto może go zmienić, może uruchomić dowolne polecenie
+    z uprawnieniami roota, a kto może go czytać, poznaje harmonogram
+    i ścieżki skryptów, które warto zaatakować.
+
+    Punkt wymaga, żeby plik należał do roota i był dostępny tylko dla
+    niego, czyli miał uprawnienia 600 lub bardziej restrykcyjne. Fedora
+    instaluje go z uprawnieniami 644.
+  en: |
+    The /etc/crontab file describes system jobs run by cron, often as root.
+    Whoever can change it can run any command with root rights, and whoever
+    can read it learns the schedule and the paths of the scripts worth
+    attacking.
+
+    The item requires the file to be owned by root and accessible only to
+    root, that is with mode 600 or stricter. Fedora installs it with mode
+    644.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: plik czyta demon cron działający jako root,
+    a zwykli użytkownicy nie mają powodu go czytać.
+  en: |
+    Nobody will notice: the file is read by the cron daemon running as
+    root, and regular users have no reason to read it.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    f=/etc/crontab
+    if [ ! -e "$f" ]; then echo ABSENT; exit 0; fi
+    set -- $(stat -Lc '%a %u %g' "$f")
+    if [ $(( 0$1 & 07177 )) -eq 0 ] && [ "$2" = 0 ] && [ "$3" = 0 ]; then echo "RESTRICTED:$1"; else echo "TOO_OPEN:$1:$2:$3"; fi
+  expected: '^(RESTRICTED:|ABSENT$)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/crontab
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=access-1
+        if [ -e "$f" ]; then echo "$(readlink -f "$f") $(stat -Lc '%a %u %g' "$f")"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/crontab
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if [ ! -e "$f" ]; then echo "$f does not exist, nothing to change"; exit 0; fi
+      tg=$(readlink -f "$f")
+      set -- $(stat -c '%a' "$tg")
+      chown 0:0 "$tg"
+      # Five digits: with fewer, chmod keeps the setuid and setgid bits of a directory.
+      chmod "$(printf '0%04o' $(( 0$1 & 0600 )))" "$tg"
+      echo "Set owner root:root and mode $(stat -c '%a' "$tg") on $tg"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=access-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      tail -n +2 "$b" | while read -r f mode uid gid; do
+        case "$mode" in ""|*[!0-7]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$uid:$gid" in :*|*:|*[!0-9:]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
+        chown "$uid:$gid" "$f"
+        chmod "$(printf '0%04o' $(( 0$mode )))" "$f"
+        echo "Restored owner and mode of $f"
+      done
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/crontab.5.html
+  - https://man7.org/linux/man-pages/man8/cron.8.html
+
+notes:
+  pl: |
+    Wynik RESTRICTED podaje obecne uprawnienia, TOO_OPEN uprawnienia,
+    właściciela i grupę (UID i GID), a ABSENT oznacza brak pliku, co też
+    spełnia regułę. Naprawa ustawia właściciela root:root i usuwa prawa
+    spoza 600, a wycofanie przywraca poprzedniego właściciela i uprawnienia
+    zapisane w kopii.
+  en: |
+    The RESTRICTED result gives the current mode, TOO_OPEN the mode, owner
+    and group (UID and GID), and ABSENT means the file does not exist,
+    which also meets the rule. The remediation sets the owner to root:root
+    and removes the permissions beyond 600, and rollback restores the
+    previous owner and mode recorded in the backup.

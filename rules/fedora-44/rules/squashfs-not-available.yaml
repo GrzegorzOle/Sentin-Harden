@@ -1,0 +1,245 @@
+id: fedora44-squashfs-not-available
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.1.1.6
+  section: Initial Setup > Filesystem > Configure Filesystem Kernel Modules
+  title:
+    pl: Moduł jądra squashfs niedostępny
+    en: Ensure squashfs kernel module is not available
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Squashfs to skompresowany system plików tylko do odczytu, w którym
+    dystrybucje i narzędzia pakują gotowe drzewa plików: paczki snap, obrazy
+    rozszerzeń systemd-sysext, usługi przenośne systemd i obrazy Live innych
+    dystrybucji. Sama Fedora Workstation w codziennej pracy go nie potrzebuje.
+
+    Każdy sterownik systemu plików to kod jądra, który czyta strukturę zapisaną
+    na nośniku. Jeśli nośnik przygotował napastnik, to on decyduje, co ten kod
+    dostaje na wejście, a błąd w obsłudze uszkodzonej struktury wykonuje się
+    z pełnymi uprawnieniami jądra. Jądro ładuje sterownik samo, gdy ktoś poprosi
+    o zamontowanie danego typu, więc nikt nie musi świadomie tego sterownika
+    uruchamiać.
+
+    Punkt zamyka tę drogę dla squashfs: moduł nie ładuje się ani na żądanie
+    jądra, ani wywołany wprost.
+
+    Kategoria jest niska, bo squashfs jest dojrzałym i często używanym kodem,
+    a obraz trzeba najpierw dostarczyć i zamontować. Punkt należy do poziomu 2,
+    bo zabiera funkcję, z której część stacji korzysta.
+  en: |
+    Squashfs is a compressed read-only file system in which distributions and
+    tools pack ready-made file trees: snap packages, systemd-sysext extension
+    images, systemd portable services and the Live images of other
+    distributions. Fedora Workstation itself does not need it in daily work.
+
+    Every file system driver is kernel code that reads a structure stored on a
+    medium. If an attacker prepared the medium, the attacker decides what that
+    code gets as input, and a bug in handling a damaged structure runs with full
+    kernel privileges. The kernel loads the driver by itself when something asks
+    to mount that type, so nobody has to start the driver on purpose.
+
+    The item closes that path for squashfs: the module does not load, neither on
+    the kernel's request nor when called directly.
+
+    The category is low because squashfs is mature and widely used code, and an
+    image has to be delivered and mounted first. The item belongs to level 2
+    because it takes away a feature that some workstations use.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo o skutku decyduje to, co zainstalowano obok
+    pakietów Fedory. Na świeżej Fedorze Workstation nic nie przestaje działać:
+    Flatpak trzyma aplikacje w repozytorium OSTree, a AppImage montuje swój
+    obraz przez FUSE w przestrzeni użytkownika, bez modułu jądra.
+
+    Przestają działać snapy, rozszerzenia systemd-sysext i usługi przenośne
+    zbudowane jako squashfs oraz montowanie plików squashfs z obrazów innych
+    dystrybucji. Rozpakowanie takiego pliku narzędziem unsquashfs nadal działa,
+    bo nie korzysta z jądra.
+
+    Zmiana nie wymaga restartu ani wylogowania; obraz zamontowany wcześniej
+    działa do odmontowania.
+  en: |
+    The class needs review because the effect depends on what was installed next
+    to the Fedora packages. On a fresh Fedora Workstation nothing stops working:
+    Flatpak keeps applications in an OSTree repository, and AppImage mounts its
+    image through FUSE in user space, without the kernel module.
+
+    Snaps, systemd-sysext extensions and portable services built as squashfs
+    stop working, and so does mounting squashfs files from the images of other
+    distributions. Unpacking such a file with unsquashfs still works, because it
+    does not use the kernel.
+
+    The change needs no restart and no sign-out; an image mounted earlier keeps
+    working until it is unmounted.
+
+implementation_consequences:
+  impact_areas:
+    - drivers-and-devices
+    - virtualization-and-containers
+  what_breaks:
+    pl:
+      - Aplikacje zainstalowane jako snap nie uruchamiają się, bo snapd montuje każdą paczkę jako obraz squashfs
+      - Rozszerzenie systemd-sysext lub usługa przenośna w obrazie squashfs nie zostaje dołączona przy starcie systemu
+      - Zamontowanie pliku squashfs z obrazu Live innej dystrybucji, np. do odzyskania z niego plików, kończy się błędem
+    en:
+      - Applications installed as snaps do not start, because snapd mounts every package as a squashfs image
+      - A systemd-sysext extension or a portable service in a squashfs image is not attached when the system starts
+      - Mounting the squashfs file from another distribution's Live image, for example to recover files from it, fails
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Na stacji zainstalowano snapd i użytkownicy korzystają z aplikacji dostarczanych jako snap
+      - System korzysta z rozszerzeń systemd-sysext lub usług przenośnych dostarczanych jako obrazy squashfs
+    en:
+      - snapd is installed on the workstation and users rely on applications delivered as snaps
+      - The system uses systemd-sysext extensions or portable services delivered as squashfs images
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    m=squashfs
+    mods=/usr/lib/modules
+    if [ ! -d "$mods" ] || [ ! -r /proc/modules ] || ! command -v modprobe >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if grep -q "^$m " /proc/modules; then echo LOADED; exit 0; fi
+    for list in "$mods"/*/modules.builtin; do
+      [ -e "$list" ] || continue
+      [ -r "$list" ] || { echo CHECK_ERROR; exit 0; }
+      if grep -Eq "/$m\.ko$" "$list"; then echo BUILTIN; exit 0; fi
+    done
+    if ! found=$(find "$mods" -name "$m.ko*" -print -quit 2>/dev/null); then
+      echo CHECK_ERROR; exit 0
+    fi
+    if [ -z "$found" ]; then echo NOT_PRESENT; exit 0; fi
+    if ! config=$(modprobe --showconfig 2>/dev/null); then echo CHECK_ERROR; exit 0; fi
+    blocked=no; listed=no
+    if printf '%s\n' "$config" | grep -Eq "^install $m (/usr)?/bin/(false|true)$"; then blocked=yes; fi
+    if printf '%s\n' "$config" | grep -qx "blacklist $m"; then listed=yes; fi
+    case "$blocked$listed" in
+      yesyes) echo BLOCKED ;;
+      yesno)  echo NOT_BLACKLISTED ;;
+      noyes)  echo LOADABLE_ON_REQUEST ;;
+      *)      echo AVAILABLE ;;
+    esac
+  expected: '^(BLOCKED|NOT_PRESENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      m=squashfs
+      f=/etc/modprobe.d/sentin-harden-squashfs.conf
+      mkdir -p "$(dirname '{{backup_file}}')"
+      {
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        if grep -q "^$m " /proc/modules; then echo loaded=1; else echo loaded=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > '{{backup_file}}'
+      echo "Saved previous state to {{backup_file}}"
+    )
+
+  change_command: |
+    (
+      set -e
+      m=squashfs
+      f=/etc/modprobe.d/sentin-harden-squashfs.conf
+      printf '%s\n' \
+        '# Sentin-Harden: fedora44-squashfs-not-available' \
+        "install $m /bin/false" \
+        "blacklist $m" > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      if grep -q "^$m " /proc/modules; then
+        if ! modprobe -r "$m"; then
+          echo "Module $m is in use and stays loaded until the file system using it is unmounted" >&2
+        fi
+      fi
+      echo "Wrote $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      m=squashfs
+      f=/etc/modprobe.d/sentin-harden-squashfs.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      existed=$(sed -n 's/^existed=//p' "$b" | head -n 1)
+      loaded=$(sed -n 's/^loaded=//p' "$b" | head -n 1)
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f" ;;
+        0) rm -f "$f" ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      if [ "$loaded" = 1 ] && ! grep -q "^$m " /proc/modules; then modprobe "$m"; fi
+      echo "Restored previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/modprobe.d.5.html
+  - https://docs.kernel.org/filesystems/squashfs.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd-sysext.html
+
+notes:
+  pl: |
+    Sprawdzenie czyta wynikową konfigurację modprobe, a nie jeden wybrany
+    plik. Blokada zapisana wcześniej gdzie indziej, np. w
+    /etc/modprobe.d/squashfs.conf, także spełnia punkt, a naprawa jej nie
+    dubluje, bo przy spełnionym punkcie nie jest uruchamiana.
+
+    Potrzebne są obie linie. Wpis blacklist powstrzymuje tylko ładowanie po
+    aliasie, czyli wtedy, gdy jądro samo prosi o sterownik przy montowaniu;
+    modprobe wywołane z nazwą modułu go omija. Linia install zastępuje
+    ładowanie uruchomieniem /bin/false, więc każda taka próba kończy się
+    błędem. Obu mechanizmów nie zatrzymuje insmod z pełną ścieżką do pliku,
+    ale to wymaga roota i świadomego działania.
+
+    Punkt jest spełniony także wtedy, gdy żadne zainstalowane jądro nie
+    zawiera modułu. Moduł załadowany w chwili sprawdzenia daje wynik
+    niespełniony nawet przy obecnej blokadzie; naprawa próbuje go wyładować,
+    a jeśli jest w użyciu, zostaje w pamięci do odmontowania systemu plików
+    albo do restartu. Jeśli punkt pozostaje niespełniony po naprawie
+    i restarcie, sterownik jest wkompilowany w jądro: plikiem konfiguracji
+    nie da się go zablokować i zostaje zapisanie wyjątku.
+  en: |
+    The check reads the effective modprobe configuration rather than one
+    chosen file. A block written earlier somewhere else, for example in
+    /etc/modprobe.d/squashfs.conf, also meets the item, and the remediation does
+    not duplicate it, because it is not run when the item is met.
+
+    Both lines are needed. The blacklist entry only stops loading by alias,
+    that is, when the kernel itself asks for the driver while mounting; running
+    modprobe with the module name bypasses it. The install line replaces loading
+    with running /bin/false, so every such attempt fails. Neither mechanism
+    stops insmod with the full path to the file, but that needs root and a
+    deliberate action.
+
+    The item is also met when no installed kernel contains the module. A
+    module that is loaded at the time of the check gives a non-compliant result
+    even when the block is in place; the remediation tries to unload it, and if
+    it is in use it stays in memory until the file system is unmounted or the
+    machine restarts. If the item is still non-compliant after the remediation
+    and a restart, the driver is compiled into the kernel: a configuration file
+    cannot block it, and the remaining option is to record an exception.

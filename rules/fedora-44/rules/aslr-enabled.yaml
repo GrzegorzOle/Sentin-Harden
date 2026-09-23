@@ -1,0 +1,174 @@
+id: fedora44-aslr-enabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.5.1
+  section: Initial Setup > Configure Additional Process Hardening
+  title:
+    pl: Losowe rozmieszczenie przestrzeni adresowej (ASLR) jest włączone
+    en: Ensure address space layout randomization is enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: high
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    ASLR sprawia, że stos, sterta, biblioteki i obszary mapowane w pamięci
+    każdego procesu trafiają przy każdym uruchomieniu pod inne adresy. Exploit
+    wykorzystujący błąd pamięci, np. przepełnienie bufora, musi znać adresy, pod
+    które skacze; bez ASLR są one stałe i przewidywalne, z ASLR trzeba je
+    najpierw zdobyć inną luką.
+
+    Parametr jądra kernel.randomize_va_space ustawiony na 2 włącza pełne
+    losowanie, łącznie ze stertą. To wartość domyślna jądra Fedory; punkt
+    sprawdza, że żaden plik w sysctl.d jej nie obniża i że działa w tej chwili.
+  en: |
+    ASLR places the stack, heap, libraries and memory-mapped areas of every
+    process at different addresses on each run. An exploit using a memory bug,
+    such as a buffer overflow, must know the addresses it jumps to; without
+    ASLR they are fixed and predictable, with ASLR they must first be obtained
+    through another flaw.
+
+    The kernel parameter kernel.randomize_va_space set to 2 turns on full
+    randomization, including the heap. This is the Fedora kernel default; the
+    item checks that no sysctl.d file lowers it and that it is in effect now.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: to wartość domyślna, z którą działają wszystkie
+    programy dostarczane przez Fedorę. Zmiana działa od razu, bez restartu.
+  en: |
+    Nobody will notice: it is the default value all programs shipped by Fedora
+    run with. The change takes effect at once, without a restart.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    k=kernel.randomize_va_space
+    p=/proc/sys/kernel/randomize_va_space
+    if [ ! -r "$p" ] || [ ! -x /usr/lib/systemd/systemd-sysctl ]; then echo CHECK_ERROR; exit 0; fi
+    r=$(tr -s ' \t' ' ' < "$p")
+    c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+    [ -n "$c" ] || c=default
+    ok() { printf '%s\n' "$1" | grep -qxE "$2"; }
+    if ok "$r" '2' && ok "$c" '(2|default)'; then echo "OK:$r"; else echo "NOT_OK:runtime=$r,config=${c:-none}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      k=kernel.randomize_va_space
+      f=/etc/sysctl.d/sentin-harden-aslr.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo "runtime=$(cat /proc/sys/kernel/randomize_va_space)"
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      k=kernel.randomize_va_space
+      f=/etc/sysctl.d/sentin-harden-aslr.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      printf '%s\n' '# Sentin-Harden: fedora44-aslr-enabled' "$k = 2" > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      sysctl -q -w "$k=2"
+      c=$(/usr/lib/systemd/systemd-sysctl --cat-config 2>/dev/null | awk -v k="$k" '
+      /^[ \t]*[#;]/ || !/=/ { next }
+      { l = $0; sub(/^[ \t]*-/, "", l); i = index(l, "=")
+        n = substr(l, 1, i - 1); v = substr(l, i + 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", n); gsub(/^[ \t]+|[ \t]+$/, "", v); gsub("/", ".", n)
+        gsub(/[ \t]+/, " ", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ "$c" != "2" ]; then
+        echo "Another sysctl.d file sets $k after $f; the next start will set $c" >&2; exit 1
+      fi
+      echo "Set $k = 2 now and in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      k=kernel.randomize_va_space
+      f=/etc/sysctl.d/sentin-harden-aslr.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      existed=$(sed -n 's/^existed=//p' "$b" | head -n 1)
+      rt=$(sed -n 's/^runtime=//p' "$b" | head -n 1)
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      [ -n "$rt" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if [ "$existed" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; else rm -f "$f"; fi
+      sysctl -q -w "$k=$rt"
+      echo "Restored $k = $rt and the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/admin-guide/sysctl/kernel.html
+  - https://www.freedesktop.org/software/systemd/man/latest/sysctl.d.html
+
+notes:
+  pl: |
+    Sprawdzenie porównuje wartość bieżącą z /proc/sys z wartością, którą
+    ustawi następny start. Tę drugą wyznacza systemd-sysctl --cat-config, które
+    wypisuje pliki z /usr/lib/sysctl.d, /run/sysctl.d i /etc/sysctl.d
+    w kolejności stosowania, więc liczy się ostatnie przypisanie. Brak wpisu
+    oznacza wartość wbudowaną w jądro Fedory, czyli 2, i też spełnia punkt.
+    Wynik NOT_OK podaje obie wartości.
+
+    Naprawa zapisuje ustawienie w /etc/sysctl.d/sentin-harden-aslr.conf.
+    Nazwa bez numeru na początku sortuje się po plikach typu 99-*.conf, więc
+    ustawienie wygrywa z nimi; jeśli mimo to inny plik nadpisuje wartość,
+    naprawa kończy się błędem. Wycofanie przywraca poprzednią zawartość pliku
+    i wartość bieżącą.
+  en: |
+    The check compares the current value from /proc/sys with the value the next
+    start will set. The latter comes from systemd-sysctl --cat-config, which
+    prints the files from /usr/lib/sysctl.d, /run/sysctl.d and /etc/sysctl.d in
+    the order they are applied, so the last assignment counts. No entry means
+    the value built into the Fedora kernel, which is 2, and also meets the item.
+    The NOT_OK result gives both values.
+
+    The remediation writes the setting to
+    /etc/sysctl.d/sentin-harden-aslr.conf. A name without a leading number
+    sorts after files such as 99-*.conf, so the setting wins over them; if
+    another file still overrides the value, the remediation ends with an error.
+    Rollback restores the previous file content and the current value.

@@ -1,0 +1,123 @@
+id: fedora44-chrony-configured
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.3.2
+  section: Services > Configure Time Synchronization
+  title:
+    pl: Chrony jest skonfigurowany
+    en: Ensure chrony is configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Chrony synchronizuje zegar tylko wtedy, gdy ma skąd brać czas.
+    Konfiguracja bez źródeł czasu zostawia zegar bez korekty, mimo że
+    usługa działa.
+
+    Punkt wymaga, żeby konfiguracja chrony wskazywała źródła czasu,
+    najlepiej serwery NTP wybrane przez organizację. Fedora ustawia
+    domyślnie pulę 2.fedora.pool.ntp.org i serwery przekazane przez DHCP.
+  en: |
+    chrony only synchronizes the clock when it has somewhere to get the time
+    from. A configuration without time sources leaves the clock uncorrected
+    even though the service runs.
+
+    The item requires the chrony configuration to name time sources,
+    preferably NTP servers chosen by the organization. Fedora sets the
+    2.fedora.pool.ntp.org pool and the servers passed by DHCP by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli wskazane serwery czasu są osiągalne.
+    W sieci, która blokuje ruch NTP do internetu, trzeba wskazać serwery
+    czasu organizacji, inaczej zegar nie będzie synchronizowany.
+  en: |
+    Nobody will notice if the configured time servers are reachable. In a
+    network that blocks NTP traffic to the internet, the organization's
+    time servers have to be configured, otherwise the clock is not
+    synchronized.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Gdy żaden ze wskazanych serwerów czasu nie jest osiągalny, zegar komputera przestaje być synchronizowany
+    en:
+      - When none of the configured time servers can be reached, the computer clock is no longer synchronized
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if ! rpm -q --quiet chrony; then echo NOT_INSTALLED; exit 0; fi
+    c=/etc/chrony.conf
+    if [ ! -r "$c" ]; then echo CHECK_ERROR; exit 0; fi
+    cfiles() {
+      echo "c $c"
+      awk '{ d = tolower($1) } d == "include" || d == "confdir" || d == "sourcedir" { for (i = 2; i <= NF; i++) print d, $i }' "$c" |
+      while read -r d p; do
+        case "$d" in
+          include) for f in $p; do if [ -f "$f" ]; then echo "c $f"; fi; done ;;
+          confdir) for f in "$p"/*.conf; do if [ -f "$f" ]; then echo "c $f"; fi; done ;;
+          sourcedir) for f in "$p"/*.sources; do if [ -f "$f" ]; then echo "s $f"; fi; done ;;
+        esac
+      done
+    }
+    st=0; dy=0
+    while read -r k f; do
+      n=$(grep -Eic '^[[:space:]]*(server|pool|peer|refclock)[[:space:]]+[^[:space:]]' "$f" 2>/dev/null) || true
+      n=${n:-0}
+      if [ "$k" = s ]; then dy=$((dy + n)); else st=$((st + n)); fi
+    done < <(cfiles)
+    if [ $((st + dy)) -gt 0 ]; then echo "CONFIGURED:static=$st,sourcedir=$dy"; else echo NO_SOURCES; fi
+  expected: '^(CONFIGURED:|NOT_INSTALLED$)'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://chrony-project.org/doc/latest/chrony.conf.html
+
+notes:
+  pl: |
+    Reguła tylko sprawdza stan, bo wybór serwerów czasu należy do
+    organizacji. Źródła ustawia się dyrektywami server, pool lub peer
+    w /etc/chrony.conf albo w pliku .conf w katalogu wskazanym dyrektywą
+    confdir, a potem przeładowuje usługę poleceniem systemctl restart
+    chronyd.
+
+    Sprawdzenie liczy dyrektywy server, pool, peer i refclock w /etc/chrony.conf
+    i w plikach dołączonych dyrektywami include i confdir (static) oraz
+    w plikach .sources z katalogów sourcedir, do których skrypt chrony dla
+    NetworkManagera zapisuje serwery z DHCP (sourcedir). Pliki dołączone na drugim poziomie
+    nie są sprawdzane. Wynik CONFIGURED wymaga co najmniej jednego źródła,
+    a NO_SOURCES oznacza, że nie ma żadnego.
+  en: |
+    The rule only checks the state, because choosing the time servers is up
+    to the organization. Sources are set with the server, pool or peer
+    directives in /etc/chrony.conf or in a .conf file in a directory named
+    by a confdir directive, and then the service is restarted with
+    systemctl restart chronyd.
+
+    The check counts the server, pool, peer and refclock directives in
+    /etc/chrony.conf and in the files included with include and confdir
+    (static), and in the .sources files from the sourcedir directories,
+    where the chrony script for NetworkManager writes the servers from DHCP (sourcedir). Files
+    included at the second level are not checked. The CONFIGURED result
+    requires at least one source, and NO_SOURCES means there is none.

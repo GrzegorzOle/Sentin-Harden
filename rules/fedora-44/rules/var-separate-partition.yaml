@@ -1,0 +1,129 @@
+id: fedora44-var-separate-partition
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.1.2.4.1
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /var
+  title:
+    pl: Katalog /var jest osobną partycją
+    en: Ensure separate partition exists for /var
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    W /var system trzyma dane, które rosną w czasie pracy: dzienniki, pamięć
+    podręczną pakietów, bazy usług, obrazy kontenerów i maszyn wirtualnych. Gdy
+    dzieli system plików z resztą systemu, jego zapełnienie odbiera miejsce
+    wszystkiemu innemu i system przestaje się poprawnie aktualizować.
+
+    Na domyślnej instalacji Fedory /var nie jest osobnym punktem montowania,
+    tylko częścią podwoluminu root. Punkt należy do poziomu 2, bo zmiana wymaga
+    przeniesienia danych systemu.
+  en: |
+    /var is where the system keeps data that grows while it runs: logs, the
+    package cache, service databases, container and virtual machine images. When
+    it shares a file system with the rest of the system, filling it takes space
+    from everything else and the system stops updating properly.
+
+    On a default Fedora installation /var is not a separate mount point but part
+    of the root subvolume. The item belongs to level 2 because the change needs
+    system data to be moved.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia, bo przenosi dane systemu na nowe
+    miejsce i wymaga pracy przy zatrzymanym systemie. Program nie wykonuje jej
+    sam; opis mówi, co trzeba zaplanować.
+
+    Przeniesienie /var trzeba zrobić z systemu ratunkowego, bo działające usługi
+    stale z niego korzystają, i zachować przy tym etykiety SELinux. Trzeba też
+    oszacować miejsce dla obrazów kontenerów i maszyn wirtualnych w
+    /var/lib/containers i /var/lib/libvirt.
+  en: |
+    The change needs a planned rollout because it moves system data to a new
+    place and needs work while the system is stopped. The program does not
+    perform it; the description says what has to be planned.
+
+    Moving /var has to be done from a rescue system, because running services use
+    it constantly, and SELinux labels have to be kept. Space also has to be
+    estimated for container and virtual machine images in /var/lib/containers
+    and /var/lib/libvirt.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Przeniesienie /var wymaga uruchomienia stacji z nośnika ratunkowego i przerwy w pracy na czas kopiowania danych
+      - Zbyt mały nowy wolumin dla /var zatrzymuje aktualizacje dnf i pobieranie obrazów kontenerów po jego zapełnieniu
+    en:
+      - Moving /var needs the workstation to be started from rescue media and a break in work while the data is copied
+      - A new volume for /var that is too small stops dnf updates and container image downloads once it fills up
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dysk nie ma wolnego miejsca na osobny wolumin, a zmiana układu partycji nie była zaplanowana
+    en:
+      - The disk has no free space for a separate volume and no change to the partition layout has been planned
+  reversibility: difficult
+
+audit:
+  shell: bash
+  test_command: |
+    t=/var
+    if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if findmnt -kn --mountpoint "$t" >/dev/null 2>&1; then echo SEPARATE; else echo NOT_SEPARATE; fi
+  expected: '^SEPARATE$'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man5/fstab.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
+  - https://www.freedesktop.org/software/systemd/man/latest/file-hierarchy.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje punkt za spełniony, gdy /var jest osobnym punktem
+    montowania, bez względu na to, czy jest to partycja, wolumin logiczny czy
+    podwolumin btrfs.
+
+    Punkt nie ma naprawy uruchamianej z programu. Wydzielenie katalogu wymaga
+    przeniesienia jego zawartości na nowe miejsce, gdy nic z niej nie korzysta,
+    czyli w trybie ratunkowym albo przy instalacji, i nie da się go bezpiecznie
+    cofnąć jednym poleceniem.
+
+    Na Fedorze z domyślnym btrfs najprostszą drogą jest osobny podwolumin
+    zamontowany w /var wpisem w /etc/fstab. Daje on osobny punkt montowania
+    i własne opcje, ale dzieli miejsce z resztą systemu, więc przed zapełnieniem
+    dysku chroni dopiero przy włączonych limitach (quota) btrfs. Pełną ochronę
+    daje osobna partycja lub wolumin logiczny.
+  en: |
+    The check considers the item met when /var is a separate mount point, whether
+    it is a partition, a logical volume or a btrfs subvolume.
+
+    The item has no remediation that the program runs. Separating the directory
+    means moving its contents to the new place while nothing uses them, that is,
+    in rescue mode or during installation, and it cannot be safely undone with
+    one command.
+
+    On Fedora with the default btrfs the simplest way is a separate subvolume
+    mounted at /var by an entry in /etc/fstab. It gives a separate mount point and
+    its own options, but shares space with the rest of the system, so it protects
+    against a full disk only with btrfs quotas enabled. Full protection comes from
+    a separate partition or logical volume.

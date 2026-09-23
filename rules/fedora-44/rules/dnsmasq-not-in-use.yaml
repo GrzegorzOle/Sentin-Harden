@@ -1,0 +1,233 @@
+id: fedora44-dnsmasq-not-in-use
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.1.5
+  section: Services > Configure Server Services
+  title:
+    pl: Usługa dnsmasq nie jest używana
+    en: Ensure dnsmasq services are not in use
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    dnsmasq to mały serwer DNS, DHCP i TFTP. Uruchomiony jako usługa
+    systemowa odpowiada innym urządzeniom w sieci według /etc/dnsmasq.conf.
+    Na stacji roboczej zwykle nie jest do tego potrzebny, a każda usługa
+    słuchająca w sieci to dodatkowe miejsce na błędy.
+
+    Punkt wymaga, żeby dnsmasq nie był zainstalowany albo żeby jego usługa
+    nie była włączona ani uruchomiona. Na Fedorze pakiet bywa zainstalowany
+    jako zależność libvirt, ale usługa jest domyślnie wyłączona.
+  en: |
+    dnsmasq is a small DNS, DHCP and TFTP server. Started as a system service
+    it answers other devices on the network according to /etc/dnsmasq.conf.
+    A workstation usually does not need that, and every service listening on
+    the network is another place for bugs.
+
+    The item requires that dnsmasq is not installed or that its service is
+    neither enabled nor running. On Fedora the package is often installed as
+    a dependency of libvirt, but the service is off by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli usługa dnsmasq nie była używana. Sieci
+    maszyn wirtualnych i połączenia współdzielone w NetworkManager działają
+    dalej, bo uruchamiają własne procesy dnsmasq.
+  en: |
+    Nobody will notice if the dnsmasq service was not in use. Virtual machine
+    networks and shared connections in NetworkManager keep working, because
+    they start their own dnsmasq processes.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Urządzenia, którym ta usługa dnsmasq rozdawała adresy albo odpowiadała na zapytania DNS, tracą te usługi
+    en:
+      - Devices that got addresses or DNS answers from this dnsmasq service lose them
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || ! command -v rpm >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      bad=""
+      for u in dnsmasq.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        a=$(systemctl is-active "$u" 2>/dev/null) || true
+        case "$e" in
+          enabled|enabled-runtime|linked|linked-runtime) ;;
+          *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+        esac
+        bad="$bad,$u=${e:-none}/${a:-unknown}"
+      done
+      inst=""
+      for p in dnsmasq; do if rpm -q --quiet "$p"; then inst="$inst,$p"; fi; done
+      if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+      elif [ -z "$inst" ]; then echo NOT_INSTALLED
+      else echo "NOT_IN_USE:${inst#,}"; fi
+    }
+    state
+  expected: '^(NOT_INSTALLED$|NOT_IN_USE:)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=units-1
+        for u in dnsmasq.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "$u ${e:--} ${a:--}"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        bad=""
+        for u in dnsmasq.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          case "$e" in
+            enabled|enabled-runtime|linked|linked-runtime) ;;
+            *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+          esac
+          bad="$bad,$u=${e:-none}/${a:-unknown}"
+        done
+        inst=""
+        for p in dnsmasq; do if rpm -q --quiet "$p"; then inst="$inst,$p"; fi; done
+        if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+        elif [ -z "$inst" ]; then echo NOT_INSTALLED
+        else echo "NOT_IN_USE:${inst#,}"; fi
+      }
+      m=""
+      for u in dnsmasq.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        case "$e" in ""|not-found) continue ;; esac
+        l=/etc/systemd/system/$u
+        if { [ -e "$l" ] || [ -L "$l" ]; } && [ "$(readlink "$l")" != /dev/null ]; then
+          echo "$l is a unit file or link of its own, not masking $u" >&2; exit 1
+        fi
+        m="$m $u"
+      done
+      if [ -z "$m" ]; then echo "None of the units is installed, nothing to change"; exit 0; fi
+      systemctl mask --now $m
+      s=$(state)
+      case "$s" in IN_USE:*) echo "The units are still in use ($s)" >&2; exit 1 ;; esac
+      echo "Stopped and masked:$m ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      [ -n "$lines" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r u e a x; do
+        case " dnsmasq.service " in *" $u "*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      start=""
+      while read -r u e a; do
+        case "$e" in
+          -|not-found|masked) continue ;;
+          masked-runtime) systemctl unmask "$u"; systemctl mask --runtime "$u"; continue ;;
+        esac
+        systemctl unmask "$u"
+        case "$e" in
+          enabled) systemctl enable "$u" ;;
+          enabled-runtime) systemctl enable --runtime "$u" ;;
+          linked|linked-runtime) echo "Could not link $u again; link its unit file by hand" >&2 ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$lines"
+      if [ -n "$start" ]; then systemctl start $start; fi
+      echo "Restored the previous state of the units"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://thekelleys.org.uk/dnsmasq/doc.html
+  - https://libvirt.org/formatnetwork.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Punkt jest spełniony, gdy pakiet nie jest zainstalowany albo gdy żadna
+    z jednostek dnsmasq.service nie jest włączona ani uruchomiona. Wynik IN_USE
+    wymienia jednostki w użyciu razem ze stanem z systemctl is-enabled
+    i is-active, a NOT_IN_USE pakiety, które są zainstalowane, ale nie
+    działają.
+
+    Naprawa nie usuwa pakietów, bo mogą od nich zależeć inne programy.
+    Zatrzymuje i maskuje jednostki poleceniem systemctl mask --now, więc nie
+    da się ich uruchomić ręcznie, przez gniazdo ani jako zależność. Kopia
+    zapisuje stan każdej jednostki, a wycofanie zdejmuje maskę, włącza
+    jednostki, które były włączone, i uruchamia te, które działały.
+    Jednostki zamaskowane wcześniej zostają zamaskowane. Naprawa odmawia,
+    gdy w /etc/systemd/system leży własny plik jednostki o tej samej nazwie.
+
+    Jeśli usługa ma zniknąć całkiem, można usunąć pakiet przez dnf remove
+    po sprawdzeniu, co jeszcze zostałoby usunięte.
+
+    libvirt i NetworkManager uruchamiają własne procesy dnsmasq dla sieci
+    maszyn wirtualnych i połączeń współdzielonych, a nie przez
+    dnsmasq.service. Maskowanie tej jednostki ich nie dotyczy. Z tego samego
+    powodu nie warto usuwać pakietu: dnf remove usunąłby też sterownik sieci
+    libvirt.
+  en: |
+    The item is met when the package is not installed or when none of the
+    dnsmasq.service units is enabled or running. The IN_USE result lists the units in
+    use with their state from systemctl is-enabled and is-active, and
+    NOT_IN_USE lists the packages that are installed but not running.
+
+    The remediation does not remove packages, because other programs may
+    depend on them. It stops and masks the units with systemctl mask --now,
+    so they cannot be started by hand, through a socket or as a dependency.
+    The backup records the state of every unit, and rollback removes the
+    mask, enables the units that were enabled and starts the ones that were
+    running. Units that were masked before stay masked. The remediation
+    refuses when /etc/systemd/system holds a unit file of its own with the
+    same name.
+
+    If the service should be gone completely, the package can be removed with
+    dnf remove after checking what else would be removed.
+
+    libvirt and NetworkManager start their own dnsmasq processes for virtual
+    machine networks and shared connections, not through dnsmasq.service.
+    Masking that unit does not affect them. For the same reason it is not
+    worth removing the package: dnf remove would also remove the libvirt
+    network driver.

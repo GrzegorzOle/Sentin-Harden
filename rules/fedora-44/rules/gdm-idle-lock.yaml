@@ -1,0 +1,229 @@
+id: fedora44-gdm-idle-lock
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.8.4
+  section: Initial Setup > Configure GNOME Display Manager
+  title:
+    pl: Ekran GNOME blokuje się po bezczynności
+    en: Ensure GDM screen locks when the user is idle
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Stanowisko zostawione bez nadzoru z otwartą sesją daje każdemu, kto do
+    niego podejdzie, pełny dostęp do kont i danych użytkownika. Automatyczna
+    blokada ekranu po krótkim czasie bezczynności ogranicza ten czas.
+
+    Punkt wymaga, żeby sesja uznawała użytkownika za bezczynnego po nie
+    więcej niż 15 minutach (idle-delay od 1 do 900 sekund) i blokowała ekran
+    nie później niż 5 sekund po wygaszeniu (lock-delay do 5 sekund).
+    Sprawdzam też, czy blokada przy wygaszeniu jest włączona (lock-enabled),
+    bo bez niej oba czasy nic nie dają. Domyślne ustawienia Fedory, 300
+    i 0 sekund z włączoną blokadą, spełniają punkt.
+  en: |
+    A workstation left unattended with an open session gives anyone who walks
+    up to it full access to the user's accounts and data. Automatic screen
+    locking after a short idle time limits that window.
+
+    The item requires the session to treat the user as idle after no more than
+    15 minutes (idle-delay from 1 to 900 seconds) and to lock the screen no
+    later than 5 seconds after blanking (lock-delay up to 5 seconds). I also
+    check that locking on blanking is turned on (lock-enabled), because
+    without it both times achieve nothing. The Fedora defaults, 300 and 0
+    seconds with locking on, meet the item.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy przy ustawieniach domyślnych. Jeśli wcześniej
+    ustawiono dłuższy czas albo wyłączono blokadę, ekran znów będzie się
+    blokował po 15 minutach bezczynności. Użytkownik może zmienić te czasy
+    w Ustawieniach, dopóki nie zostaną zablokowane (punkt 1.8.5).
+  en: |
+    Nobody will notice with the default settings. If a longer time was set
+    before or locking was turned off, the screen locks again after 15 minutes
+    of inactivity. The user can change these times in Settings until they are
+    locked (item 1.8.5).
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl:
+      - Ekran blokuje się podczas długiego czytania lub prezentacji bez ruchu myszą, jeśli wcześniej ustawiono dłuższy czas
+    en:
+      - The screen locks during long reading or a presentation without mouse movement if a longer time was set before
+  interruption: logoff
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v gsettings >/dev/null 2>&1; then echo GDM_ABSENT; exit 0; fi
+    d=$(mktemp -d) || { echo CHECK_ERROR; exit 0; }
+    trap 'rm -rf "$d"' EXIT
+    g() { env -i PATH=/usr/bin:/bin HOME="$d" XDG_CONFIG_HOME="$d" XDG_RUNTIME_DIR="$d" DCONF_PROFILE=user GSETTINGS_BACKEND=dconf gsettings "$@" 2>/dev/null; }
+    if ! g list-schemas | grep -qx org.gnome.login-screen; then echo GDM_ABSENT; exit 0; fi
+    state() {
+      i=$(g get org.gnome.desktop.session idle-delay) && l=$(g get org.gnome.desktop.screensaver lock-delay) && e=$(g get org.gnome.desktop.screensaver lock-enabled) || { echo CHECK_ERROR; return; }
+      i=${i#uint32 }; l=${l#uint32 }
+      if [ "$e" = true ] && [ "$i" -ge 1 ] && [ "$i" -le 900 ] && [ "$l" -le 5 ]; then echo "LOCKS:idle=$i,delay=$l"; else echo "NO_LOCK:idle=$i,delay=$l,enabled=$e"; fi
+    }
+    state
+  expected: '^(LOCKS:.*|GDM_ABSENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/dconf/db/local.d/sentin-harden-idle-lock
+      D=/etc/dconf/db/local.d
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=dconf-1
+        m=""
+        p=$(dirname "$f")
+        while [ "$p" != /etc/dconf/db ]; do
+          if [ ! -d "$p" ]; then m="$m $p"; fi
+          p=$(dirname "$p")
+        done
+        echo "missing=${m# }"
+        if [ -e /etc/dconf/db/local ]; then echo db=1; else echo db=0; fi
+        if [ -f "$f" ]; then echo file=1; else echo file=0; fi
+        echo ---
+        if [ -f "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/dconf/db/local.d/sentin-harden-idle-lock
+      D=/etc/dconf/db/local.d
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      d=$(mktemp -d) || exit 1
+      trap 'rm -rf "$d"' EXIT
+      g() { env -i PATH=/usr/bin:/bin HOME="$d" XDG_CONFIG_HOME="$d" XDG_RUNTIME_DIR="$d" DCONF_PROFILE=user GSETTINGS_BACKEND=dconf gsettings "$@" 2>/dev/null; }
+      if ! command -v gsettings >/dev/null 2>&1 || ! g list-schemas | grep -qx org.gnome.login-screen; then
+        echo "GDM is not installed, nothing to change"; exit 0
+      fi
+      if [ ! -d "$D" ] && [ -e /etc/dconf/db/local ]; then
+        echo "/etc/dconf/db/local is not built from keyfiles in $D, not changing it" >&2; exit 1
+      fi
+      state() {
+        i=$(g get org.gnome.desktop.session idle-delay) && l=$(g get org.gnome.desktop.screensaver lock-delay) && e=$(g get org.gnome.desktop.screensaver lock-enabled) || { echo CHECK_ERROR; return; }
+        i=${i#uint32 }; l=${l#uint32 }
+        if [ "$e" = true ] && [ "$i" -ge 1 ] && [ "$i" -le 900 ] && [ "$l" -le 5 ]; then echo "LOCKS:idle=$i,delay=$l"; else echo "NO_LOCK:idle=$i,delay=$l,enabled=$e"; fi
+      }
+      body() {
+        ci=$(g get org.gnome.desktop.session idle-delay); cl=$(g get org.gnome.desktop.screensaver lock-delay)
+        ci=${ci#uint32 }; cl=${cl#uint32 }
+        if [ "$ci" -lt 1 ] || [ "$ci" -gt 900 ]; then ci=900; fi
+        if [ "$cl" -gt 5 ]; then cl=5; fi
+        printf '%s\n' '[org/gnome/desktop/session]' "idle-delay=uint32 $ci" '[org/gnome/desktop/screensaver]' "lock-delay=uint32 $cl" 'lock-enabled=true'
+      }
+      mkdir -p "$(dirname "$f")"
+      tmp=$(mktemp "$f.XXXXXX")
+      { echo '# Sentin-Harden: fedora44-gdm-idle-lock'; body; } > "$tmp"
+      chmod 0644 "$tmp"
+      mv -f "$tmp" "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      dconf update
+      s=$(state)
+      if ! printf '%s\n' "$s" | grep -Eq '^(LOCKS:.*)$'; then
+        echo "The setting is still not in effect ($s): another dconf database or file overrides it" >&2; exit 1
+      fi
+      echo "Wrote $f and updated the dconf databases ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/dconf/db/local.d/sentin-harden-idle-lock
+      D=/etc/dconf/db/local.d
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dconf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      m=$(sed -n '2s/^missing=//p' "$b")
+      db=$(sed -n '3s/^db=//p' "$b")
+      fl=$(sed -n '4s/^file=//p' "$b")
+      case "$db$fl" in [01][01]) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$fl" = 1 ]; then
+        tmp=$(mktemp "$f.XXXXXX")
+        sed '1,/^---$/d' "$b" > "$tmp"
+        chmod 0644 "$tmp"
+        mv -f "$tmp" "$f"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      else
+        rm -f "$f"
+      fi
+      for p in $m; do rmdir "$p" 2>/dev/null || true; done
+      if command -v dconf >/dev/null 2>&1; then dconf update; fi
+      if [ "$db" = 0 ] && [ ! -d "$D" ]; then rm -f /etc/dconf/db/local; fi
+      echo "Restored the previous state of $f and updated the dconf databases"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://help.gnome.org/admin/system-admin-guide/stable/desktop-lockscreen.html.en
+  - https://help.gnome.org/admin/system-admin-guide/stable/dconf-profiles.html.en
+
+notes:
+  pl: |
+    Naprawa zostawia obecne czasy, jeśli mieszczą się w granicach punktu,
+    a inaczej ustawia 900 i 5 sekund. Wartości trafiają do bazy local, którą
+    czytają profil user i ekran logowania. Każdy użytkownik może je nadpisać
+    we własnych ustawieniach; zapobiega temu blokada z punktu 1.8.5.
+
+    Sprawdzenie odczytuje ustawienia przez gsettings z profilu dconf user,
+    z pustym katalogiem domowym, czyli tak, jak zobaczy je nowy użytkownik bez własnych
+    ustawień. Czyta skompilowane bazy w /etc/dconf/db, więc plik zapisany
+    w katalogu .d bez uruchomienia dconf update nie spełnia punktu. Jeśli GDM
+    nie jest zainstalowany, wynik GDM_ABSENT oznacza, że punkt nie dotyczy
+    systemu.
+
+    Naprawa zapisuje własny plik /etc/dconf/db/local.d/sentin-harden-idle-lock i uruchamia dconf update, które
+    przebudowuje wszystkie bazy z plików w katalogach .d. Potem sprawdza
+    ustawienie ponownie i kończy się błędem, jeśli inna baza lub plik je
+    nadpisuje. Wycofanie przywraca poprzedni stan pliku i ponownie uruchamia
+    dconf update. Profilu /usr/share/dconf/profile/gdm z pakietu gdm naprawa
+    nie kopiuje do /etc, bo kopia bez wpisu file-db pominęłaby domyślne
+    ustawienia ekranu logowania.
+  en: |
+    The remediation keeps the current times if they are within the limits of
+    the item, and otherwise sets 900 and 5 seconds. The values go to the local
+    database, read by the user profile and the login screen. Every user can
+    override them in their own settings; the lock from item 1.8.5 prevents
+    that.
+
+    The check reads the settings with gsettings from the user dconf profile
+    with an empty home directory, that is as a new user without own settings
+    sees them. It reads the compiled databases in /etc/dconf/db, so a file
+    written to a .d directory without running dconf update does not meet the
+    item. If GDM is not installed, the GDM_ABSENT result means the item does
+    not apply to the system.
+
+    The remediation writes its own /etc/dconf/db/local.d/sentin-harden-idle-lock file and runs dconf update, which
+    rebuilds all databases from the files in the .d directories. It then
+    checks the setting again and fails if another database or file overrides
+    it. Rollback restores the previous state of the file and runs dconf update
+    again. The remediation does not copy the /usr/share/dconf/profile/gdm
+    profile from the gdm package to /etc, because a copy without the file-db
+    entry would skip the login screen defaults.

@@ -1,0 +1,138 @@
+id: fedora44-sudo-installed
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.2.1
+  section: Access Control > Configure privilege escalation
+  title:
+    pl: sudo jest zainstalowane
+    en: Ensure sudo is installed
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    sudo pozwala zwykłym kontom wykonywać wybrane polecenia jako root po
+    podaniu własnego hasła. Każde takie polecenie trafia do dziennika
+    z nazwą konta, więc wiadomo, kto co zrobił, a hasło roota nie musi być
+    nikomu znane.
+
+    Punkt wymaga, żeby pakiet sudo był zainstalowany.
+  en: |
+    sudo lets regular accounts run selected commands as root after entering
+    their own password. Each such command is logged with the account name,
+    so it is known who did what, and nobody needs to know the root
+    password.
+
+    The item requires the sudo package to be installed.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: Fedora instaluje sudo domyślnie.
+  en: |
+    Nobody will notice: Fedora installs sudo by default.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Brak znanych skutków; instalacja sudo sama nie daje nikomu uprawnień poza wpisami w /etc/sudoers, np. dla grupy wheel
+    en:
+      - No known effects; installing sudo by itself grants nobody rights beyond the entries in /etc/sudoers, for example for the wheel group
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if rpm -q --quiet sudo; then echo "INSTALLED:$(rpm -q sudo | head -n 1)"; else echo NOT_INSTALLED; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=pkg-on-1
+        if rpm -q --quiet sudo; then echo installed=1; else echo installed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if rpm -q --quiet sudo; then echo "sudo is already installed"; exit 0; fi
+      dnf -y -q install sudo
+      rpm -q --quiet sudo || { echo "sudo is still not installed" >&2; exit 1; }
+      echo "Installed sudo"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pkg-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      inst=$(sed -n '2s/^installed=//p' "$b")
+      case "$inst" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$inst" = 1 ] || ! rpm -q --quiet sudo; then echo "Nothing to restore"; exit 0; fi
+      # dnf refuses to remove a protected package; the package may protect itself.
+      if grep -Eqsx '[[:space:]]*sudo[[:space:]]*' /etc/dnf/protected.d/*.conf ||
+         grep -Eqs '^[[:space:]]*protected_packages[[:space:]]*=(.*[ ,])?sudo([ ,]|$)' \
+           /usr/share/dnf5/libdnf.conf.d/*.conf /etc/dnf/libdnf5.conf.d/*.conf /etc/dnf/dnf.conf; then
+        echo "Kept sudo: dnf protects it from removal"; exit 0
+      fi
+      # Packages installed since then may need it; then it stays.
+      rm=sudo
+      for p in sudo-python-plugin; do if rpm -q --quiet "$p"; then rm="$rm $p"; fi; done
+      if ! rpm -e --test $rm >/dev/null 2>&1; then
+        echo "Kept sudo: other installed packages need it now"; exit 0
+      fi
+      dnf -y -q remove --no-autoremove $rm
+      echo "Removed again:" $rm
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.sudo.ws/docs/man/sudoers.man/
+  - https://dnf5.readthedocs.io/en/latest/commands/install.8.html
+
+notes:
+  pl: |
+    Sprawdzenie pyta rpm o pakiet sudo. Naprawa instaluje go przez dnf, co
+    wymaga dostępu do repozytorium. Wycofanie usuwa pakiet tylko wtedy, gdy
+    naprawa go zainstalowała i żaden inny pakiet go teraz nie wymaga.
+    W Fedorze pakiet sudo sam dopisuje się do chronionych pakietów dnf
+    (/etc/dnf/protected.d/sudo.conf) i dnf odmawia jego usunięcia, więc
+    wycofanie zostawia go wtedy na miejscu i o tym informuje.
+    Fedora w pliku /etc/sudoers pozwala grupie wheel na wszystkie polecenia
+    po podaniu hasła.
+  en: |
+    The check asks rpm for the sudo package. The remediation installs it
+    with dnf, which needs access to a repository. Rollback removes the
+    package only when the remediation installed it and no other package
+    needs it now. On Fedora the sudo package adds itself to the dnf
+    protected packages (/etc/dnf/protected.d/sudo.conf) and dnf refuses to
+    remove it, so rollback then keeps it and says so. Fedora's /etc/sudoers
+    allows the wheel group all commands
+    after entering the password.

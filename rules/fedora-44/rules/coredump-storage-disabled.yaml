@@ -1,0 +1,176 @@
+id: fedora44-coredump-storage-disabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.5.4
+  section: Initial Setup > Configure Additional Process Hardening
+  title:
+    pl: Zrzuty pamięci nie są przechowywane na dysku
+    en: Ensure core dump storage is disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Domyślnie systemd-coredump zapisuje skompresowany obraz pamięci każdego
+    programu, który zakończył się awarią, w katalogu /var/lib/systemd/coredump.
+    Pliki leżą tam do czasu automatycznego sprzątania, często przez wiele dni,
+    a ich właściciel może je odczytać poleceniem coredumpctl. Obraz pamięci
+    przeglądarki, klienta poczty lub menedżera haseł zawiera dane, które w
+    normalnej pracy nigdy nie trafiają na dysk w postaci jawnej.
+
+    Parametr Storage w [Coredump] ustawiony na none sprawia, że zrzut nie jest
+    przechowywany: systemd-coredump usuwa go zaraz po analizie. Punkt wymaga
+    tej wartości.
+  en: |
+    By default systemd-coredump writes a compressed memory image of every
+    program that crashed to the /var/lib/systemd/coredump directory. The files
+    stay there until the automatic cleanup, often for many days, and their
+    owner can read them with the coredumpctl command. The memory image of a
+    browser, an email client or a password manager holds data that in normal
+    work never reaches the disk in plain form.
+
+    The Storage setting in [Coredump] set to none makes the dump not kept:
+    systemd-coredump deletes it right after the analysis. The item requires
+    this value.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo przy awarii nie zostaje plik, na podstawie
+    którego programista lub producent mógłby znaleźć przyczynę, a okno
+    zgłaszania problemów w GNOME (ABRT) nie ma z czego przygotować zgłoszenia.
+    Ślad stosu w dzienniku systemowym nadal powstaje, jeśli nie wyłącza go
+    punkt 1.5.3. Zmiana działa od następnej awarii, bez restartu.
+  en: |
+    The class needs review because a crash leaves no file from which a
+    developer or vendor could find the cause, and the GNOME problem reporting
+    window (ABRT) has nothing to prepare a report from. The stack trace in the
+    system journal is still produced unless item 1.5.3 turns it off. The
+    change takes effect from the next crash, without a restart.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Polecenie coredumpctl debug nie może otworzyć zrzutu nowej awarii w debuggerze, a coredumpctl list pokazuje ją jako brakującą
+      - ABRT i okno zgłaszania problemów w GNOME nie mogą przygotować pełnego zgłoszenia awarii do Fedory ani producenta, bo brakuje zrzutu pamięci
+    en:
+      - The coredumpctl debug command cannot open the dump of a new crash in a debugger, and coredumpctl list shows it as missing
+      - ABRT and the GNOME problem reporting window cannot prepare a full crash report for Fedora or the vendor, because the memory dump is missing
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stacja programisty lub testera, który diagnozuje awarie własnych programów na podstawie zrzutów pamięci
+    en:
+      - A developer or tester workstation where crashes of one's own programs are diagnosed from memory dumps
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! systemd-analyze cat-config systemd/coredump.conf >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    c=$(systemd-analyze cat-config systemd/coredump.conf 2>/dev/null | awk -v s="[Coredump]" -v k="Storage" '
+      /^[ \t]*[#;]/ { next }
+      { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
+      t ~ /^\[/ { in_s = (t == s); next }
+      in_s && index(t, "=") {
+        i = index(t, "="); n = substr(t, 1, i - 1); v = substr(t, i + 1)
+        gsub(/[ \t]+$/, "", n); gsub(/^[ \t]+/, "", v)
+        if (n == k) c = v }
+      END { print c }')
+    if printf '%s\n' "$c" | grep -qxE 'none'; then echo "OK:$c"; else echo "NOT_OK:${c:-default}"; fi
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/systemd/coredump.conf.d/sentin-harden-coredump-storage.conf
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/systemd/coredump.conf.d/sentin-harden-coredump-storage.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      mkdir -p /etc/systemd/coredump.conf.d
+      printf '%s\n' '# Sentin-Harden: fedora44-coredump-storage-disabled' '[Coredump]' 'Storage=none' > "$f"
+      chmod 0644 "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      c=$(systemd-analyze cat-config systemd/coredump.conf 2>/dev/null | awk -v s="[Coredump]" -v k="Storage" '
+      /^[ \t]*[#;]/ { next }
+      { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
+      t ~ /^\[/ { in_s = (t == s); next }
+      in_s && index(t, "=") {
+        i = index(t, "="); n = substr(t, 1, i - 1); v = substr(t, i + 1)
+        gsub(/[ \t]+$/, "", n); gsub(/^[ \t]+/, "", v)
+        if (n == k) c = v }
+      END { print c }')
+      if [ "$c" != "none" ]; then
+        echo "Another drop-in sets Storage after $f; the effective value is ${c:-default}" >&2; exit 1
+      fi
+      echo "Set Storage=none in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/systemd/coredump.conf.d/sentin-harden-coredump-storage.conf
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      existed=$(sed -n 's/^existed=//p' "$b" | head -n 1)
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f" ;;
+        0) rm -f "$f" ;;
+        *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+      esac
+      echo "Restored the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.freedesktop.org/software/systemd/man/latest/coredump.conf.html
+  - https://www.freedesktop.org/software/systemd/man/latest/coredumpctl.html
+  - https://abrt.readthedocs.io/en/latest/
+
+notes:
+  pl: |
+    Sprawdzenie i naprawa działają tak samo jak w punkcie 1.5.3, ale dotyczą
+    parametru Storage i pliku
+    /etc/systemd/coredump.conf.d/sentin-harden-coredump-storage.conf.
+
+    Naprawa nie usuwa zrzutów zapisanych wcześniej w /var/lib/systemd/coredump.
+    Jeśli mają zniknąć od razu, trzeba usunąć je ręcznie; inaczej usunie je
+    systemd-tmpfiles po okresie ustawionym dla tego katalogu.
+  en: |
+    The check and the remediation work the same way as in item 1.5.3, but
+    concern the Storage setting and the
+    /etc/systemd/coredump.conf.d/sentin-harden-coredump-storage.conf file.
+
+    The remediation does not delete dumps stored earlier in
+    /var/lib/systemd/coredump. If they should disappear at once, they have to
+    be removed by hand; otherwise systemd-tmpfiles removes them after the
+    period set for that directory.

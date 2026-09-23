@@ -1,0 +1,287 @@
+id: fedora44-root-umask
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.4.2.6
+  section: Access Control > User Accounts and Environment > Configure root and system accounts and environment
+  title:
+    pl: Pliki startowe roota nie ustawiają słabej maski umask
+    en: Ensure root user umask is configured
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maska umask decyduje o prawach nowych plików. Słaba maska w plikach
+    startowych roota sprawia, że pliki tworzone przez administratora może
+    zmieniać grupa albo czytać każdy.
+
+    Punkt wymaga, żeby /root/.bash_profile i /root/.bashrc nie ustawiały
+    maski słabszej niż 0027, czyli dającej grupie prawo zapisu albo
+    innym jakiekolwiek prawa.
+  en: |
+    The umask decides the permissions of new files. A weak mask in the
+    startup files of root makes files created by the administrator writable
+    by the group or readable by everybody.
+
+    The item requires /root/.bash_profile and /root/.bashrc not to set a
+    mask weaker than 0027, that is one that gives the group write access or
+    others any access.
+
+disruption_description:
+  pl: |
+    Fedora nie ustawia maski w tych plikach, więc zwykle nic się nie
+    zmienia. Jeśli ustawiono tam słabą maskę, naprawa zakomentowuje ten
+    wiersz i root dostaje domyślną maskę systemu (UMASK w /etc/login.defs,
+    w Fedorze 022).
+  en: |
+    Fedora does not set a mask in these files, so usually nothing changes.
+    If a weak mask is set there, the remediation comments out the line and
+    root gets the system default mask (UMASK in /etc/login.defs, 022 on
+    Fedora).
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Skrypty roota, które liczą na to, że tworzone pliki będą zapisywalne dla grupy
+    en:
+      - root scripts that expect the files they create to be writable by the group
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Nie ma typowej sytuacji, w której warto tego nie robić
+    en:
+      - There is no typical case where this is better left undone
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    home=$(getent passwd root | cut -d: -f6)
+    files="$home/.bash_profile $home/.bashrc"
+    mark='# Sentin-Harden: fedora44-root-umask: '
+    # weak_lines FILE: "line:text" of umask lines that are too weak
+    weak_lines() {
+      [ -f "$1" ] || return 0
+      awk '
+        function weak(a,   n, g, o, c, k, w, op, p) {
+          if (a ~ /^[0-7]+$/ && length(a) <= 4) {
+            a = substr("0000" a, length(a) + 1); g = substr(a, 3, 1) + 0; o = substr(a, 4, 1) + 0
+            return int(g / 2) % 2 == 0 || o != 7
+          }
+          if (a !~ /^[ugoa]*[=+-][rwxst]*(,[ugoa]*[=+-][rwxst]*)*$/) return 0
+          n = split(a, c, ",")
+          for (k = 1; k <= n; k++) {
+            match(c[k], /[=+-]/)
+            w = substr(c[k], 1, RSTART - 1); op = substr(c[k], RSTART, 1); p = substr(c[k], RSTART + 1)
+            if (w == "") w = "a"
+            if (op == "-") continue
+            if ((w ~ /[ga]/) && p ~ /w/) return 1
+            if ((w ~ /[oa]/) && p != "") return 1
+          }
+          return 0
+        }
+        { x = tolower($0) }
+        x ~ /^[ \t]*umask[ \t]+/ {
+          split(x, f, /[ \t;]+/); i = (f[1] == "") ? 3 : 2
+          while (f[i] ~ /^-/) i++
+          if (f[i] != "" && f[i] !~ /^#/ && weak(f[i])) print NR ":" $0
+        }' "$1"
+    }
+    evaluate() {
+      local f w bad=""
+      [ -r "$home" ] && [ -x "$home" ] || { echo "NOT_OK:needs-root"; return; }
+      for f in $files; do
+        w=$(weak_lines "$f" | cut -d: -f1 | paste -sd/ -)
+        [ -z "$w" ] || bad="$bad${bad:+,}$f:$w"
+      done
+      if [ -z "$bad" ]; then echo "OK:no-weak-umask"; else echo "NOT_OK:$bad"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      echo format=rootumask-1 > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rootumask-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    home=$(getent passwd root | cut -d: -f6)
+    files="$home/.bash_profile $home/.bashrc"
+    mark='# Sentin-Harden: fedora44-root-umask: '
+    # weak_lines FILE: "line:text" of umask lines that are too weak
+    weak_lines() {
+      [ -f "$1" ] || return 0
+      awk '
+        function weak(a,   n, g, o, c, k, w, op, p) {
+          if (a ~ /^[0-7]+$/ && length(a) <= 4) {
+            a = substr("0000" a, length(a) + 1); g = substr(a, 3, 1) + 0; o = substr(a, 4, 1) + 0
+            return int(g / 2) % 2 == 0 || o != 7
+          }
+          if (a !~ /^[ugoa]*[=+-][rwxst]*(,[ugoa]*[=+-][rwxst]*)*$/) return 0
+          n = split(a, c, ",")
+          for (k = 1; k <= n; k++) {
+            match(c[k], /[=+-]/)
+            w = substr(c[k], 1, RSTART - 1); op = substr(c[k], RSTART, 1); p = substr(c[k], RSTART + 1)
+            if (w == "") w = "a"
+            if (op == "-") continue
+            if ((w ~ /[ga]/) && p ~ /w/) return 1
+            if ((w ~ /[oa]/) && p != "") return 1
+          }
+          return 0
+        }
+        { x = tolower($0) }
+        x ~ /^[ \t]*umask[ \t]+/ {
+          split(x, f, /[ \t;]+/); i = (f[1] == "") ? 3 : 2
+          while (f[i] ~ /^-/) i++
+          if (f[i] != "" && f[i] !~ /^#/ && weak(f[i])) print NR ":" $0
+        }' "$1"
+    }
+    evaluate() {
+      local f w bad=""
+      [ -r "$home" ] && [ -x "$home" ] || { echo "NOT_OK:needs-root"; return; }
+      for f in $files; do
+        w=$(weak_lines "$f" | cut -d: -f1 | paste -sd/ -)
+        [ -z "$w" ] || bad="$bad${bad:+,}$f:$w"
+      done
+      if [ -z "$bad" ]; then echo "OK:no-weak-umask"; else echo "NOT_OK:$bad"; fi
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item, nothing to change"; exit 0 ;;
+        NOT_OK:needs-root) echo "Cannot read the home of root; run as root" >&2; exit 1 ;;
+      esac
+      for f in $files; do
+        n=$(weak_lines "$f" | cut -d: -f1 | paste -sd' ' -)
+        [ -n "$n" ] || continue
+        t=$(mktemp "$(dirname "$f")/.sentin-harden.XXXXXX")
+        awk -v lines=" $n " -v mark="$mark" 'index(lines, " " NR " ") { $0 = mark $0 } { print }' "$f" > "$t"
+        chmod --reference="$f" "$t"; chown --reference="$f" "$t"; mv -f "$t" "$f"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+        echo "Commented out the umask lines $n in $f"
+      done
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) echo "The item is not met after the change ($r); run rollback to restore the lines" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rootumask-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    home=$(getent passwd root | cut -d: -f6)
+    files="$home/.bash_profile $home/.bashrc"
+    mark='# Sentin-Harden: fedora44-root-umask: '
+    # weak_lines FILE: "line:text" of umask lines that are too weak
+    weak_lines() {
+      [ -f "$1" ] || return 0
+      awk '
+        function weak(a,   n, g, o, c, k, w, op, p) {
+          if (a ~ /^[0-7]+$/ && length(a) <= 4) {
+            a = substr("0000" a, length(a) + 1); g = substr(a, 3, 1) + 0; o = substr(a, 4, 1) + 0
+            return int(g / 2) % 2 == 0 || o != 7
+          }
+          if (a !~ /^[ugoa]*[=+-][rwxst]*(,[ugoa]*[=+-][rwxst]*)*$/) return 0
+          n = split(a, c, ",")
+          for (k = 1; k <= n; k++) {
+            match(c[k], /[=+-]/)
+            w = substr(c[k], 1, RSTART - 1); op = substr(c[k], RSTART, 1); p = substr(c[k], RSTART + 1)
+            if (w == "") w = "a"
+            if (op == "-") continue
+            if ((w ~ /[ga]/) && p ~ /w/) return 1
+            if ((w ~ /[oa]/) && p != "") return 1
+          }
+          return 0
+        }
+        { x = tolower($0) }
+        x ~ /^[ \t]*umask[ \t]+/ {
+          split(x, f, /[ \t;]+/); i = (f[1] == "") ? 3 : 2
+          while (f[i] ~ /^-/) i++
+          if (f[i] != "" && f[i] !~ /^#/ && weak(f[i])) print NR ":" $0
+        }' "$1"
+    }
+    evaluate() {
+      local f w bad=""
+      [ -r "$home" ] && [ -x "$home" ] || { echo "NOT_OK:needs-root"; return; }
+      for f in $files; do
+        w=$(weak_lines "$f" | cut -d: -f1 | paste -sd/ -)
+        [ -z "$w" ] || bad="$bad${bad:+,}$f:$w"
+      done
+      if [ -z "$bad" ]; then echo "OK:no-weak-umask"; else echo "NOT_OK:$bad"; fi
+    }
+      for f in $files; do
+        [ -f "$f" ] && grep -qF "$mark" "$f" || continue
+        t=$(mktemp "$(dirname "$f")/.sentin-harden.XXXXXX")
+        awk -v mark="$mark" 'index($0, mark) == 1 { $0 = substr($0, length(mark) + 1) } { print }' "$f" > "$t"
+        chmod --reference="$f" "$t"; chown --reference="$f" "$t"; mv -f "$t" "$f"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+        echo "Restored the umask lines in $f"
+      done
+      echo "Rollback finished"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.gnu.org/software/bash/manual/html_node/Bash-Startup-Files.html
+  - https://www.gnu.org/software/bash/manual/html_node/Bourne-Shell-Builtins.html
+
+notes:
+  pl: |
+    Sprawdzenie, tak jak CIS, obejmuje wiersze zaczynające się od umask
+    w /root/.bash_profile i /root/.bashrc (katalog domowy roota z
+    /etc/passwd), bez względu na wielkość liter. Maskę ósemkową z mniej niż
+    czterema cyframi uzupełnia zerami z lewej, a zapis symboliczny, np.
+    g=rwx albo o+r, sprawdza klauzula po klauzuli. Bez uprawnień roota
+    daje wynik NOT_OK z dopiskiem needs-root.
+
+    Naprawa nie wpisuje maski 0027, tylko zakomentowuje za słabe wiersze
+    znacznikiem Sentin-Harden, bo maska 0027 dla roota sprawia, że pliki
+    tworzone w /etc stają się nieczytelne dla usług. Wycofanie usuwa
+    znacznik. Efektywna maska roota pochodzi wtedy z UMASK w /etc/login.defs
+    (punkt 5.4.3.3).
+  en: |
+    Like CIS, the check covers lines that start with umask in
+    /root/.bash_profile and /root/.bashrc (the home of root from
+    /etc/passwd), ignoring case. An octal mask with fewer than four digits
+    is padded with zeros on the left, and a symbolic mask, for example
+    g=rwx or o+r, is checked clause by clause. Without root privileges it
+    gives the NOT_OK result with a needs-root note.
+
+    The remediation does not write the mask 0027, it comments out the weak
+    lines with a Sentin-Harden mark, because the mask 0027 for root makes
+    files created in /etc unreadable for services. Rollback removes the
+    mark. The effective mask of root then comes from UMASK in
+    /etc/login.defs (item 5.4.3.3).

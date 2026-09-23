@@ -1,0 +1,180 @@
+id: fedora44-motd-no-os-info
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.7.1
+  section: Initial Setup > Configure Command Line Warning Banners
+  title:
+    pl: Komunikat dnia (/etc/motd) nie ujawnia informacji o systemie
+    en: Ensure message of the day is configured properly
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Plik /etc/motd to komunikat dnia, który użytkownik widzi po zalogowaniu
+    w konsoli tekstowej lub przez SSH. Jeśli zawiera nazwę i wersję systemu,
+    wersję jądra albo architekturę, każdy, kto się zaloguje, od razu wie,
+    jakich luk szukać.
+
+    Punkt wymaga, żeby komunikat nie zawierał sekwencji \m, \r, \s i \v
+    (architektura, wydanie jądra, nazwa systemu i wersja jądra w składni
+    plików issue) ani nazwy systemu. Brak pliku lub pusty plik spełnia punkt;
+    Fedora dostarcza pusty /etc/motd.
+  en: |
+    The /etc/motd file is the message of the day a user sees after signing in
+    on a text console or over SSH. If it contains the system name and version,
+    the kernel version or the architecture, anyone who signs in knows at once
+    which flaws to look for.
+
+    The item requires the message not to contain the \m, \r, \s and \v
+    sequences (architecture, kernel release, system name and kernel version in
+    the syntax of issue files) or the system name. A missing or empty file
+    meets the item; Fedora ships an empty /etc/motd.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy poza tym, że z komunikatu po zalogowaniu znikną
+    wiersze z nazwą systemu. Zmiana działa od następnego logowania.
+  en: |
+    Nobody will notice, except that the lines with the system name disappear
+    from the message shown after signing in. The change takes effect from the
+    next sign-in.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+  what_breaks:
+    pl:
+      - Z komunikatu dnia znikają wiersze, które zawierają słowo fedora, także gdy dotyczą czegoś innego niż wersja systemu
+    en:
+      - Lines containing the word fedora disappear from the message of the day, also when they are about something other than the system version
+  interruption: none
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    f=/etc/motd
+    id=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"' | head -n 1)
+    if [ ! -e "$f" ]; then echo ABSENT; exit 0; fi
+    if [ ! -r "$f" ]; then echo CHECK_ERROR; exit 0; fi
+    found=""
+    for e in m r s v; do if grep -qiF "\\$e" "$f"; then found="$found,\\$e"; fi; done
+    if [ -n "$id" ] && grep -qiF "$id" "$f"; then found="$found,$id"; fi
+    if [ -n "$found" ]; then echo "OS_INFO:${found#,}"; exit 0; fi
+    echo NO_OS_INFO
+  expected: '^(NO_OS_INFO|ABSENT)$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/motd
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=banner-1
+        if [ -L "$f" ]; then echo type=symlink; echo "target=$(readlink "$f")"
+        elif [ -f "$f" ]; then echo type=file; echo "mode=$(stat -c '%a %u %g' "$f")"
+        elif [ -e "$f" ]; then echo "$f is not a regular file" >&2; exit 1
+        else echo type=absent; fi
+        echo ---
+        if [ -f "$f" ] && [ ! -L "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/motd
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if [ ! -e "$f" ]; then echo "$f does not exist, nothing to change"; exit 0; fi
+      id=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"' | head -n 1)
+      t=$(mktemp "$f.XXXXXX")
+      if [ -e "$f" ]; then
+        grep -viF -e '\m' -e '\r' -e '\s' -e '\v' ${id:+-e "$id"} "$f" > "$t" || true
+      fi
+      chown 0:0 "$t"
+      chmod 0644 "$t"
+      mv -fT "$t" "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      echo "Wrote $f without lines that reveal the operating system"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/motd
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=banner-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      case "$(sed -n '2s/^type=//p' "$b")" in
+        symlink)
+          tg=$(sed -n '3s/^target=//p' "$b")
+          [ -n "$tg" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+          rm -f "$f"
+          ln -s "$tg" "$f" ;;
+        file)
+          set -- $(sed -n '3s/^mode=//p' "$b")
+          [ $# -eq 3 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+          t=$(mktemp "$f.XXXXXX")
+          sed '1,/^---$/d' "$b" > "$t"
+          chown "$2:$3" "$t"
+          chmod "$1" "$t"
+          mv -fT "$t" "$f"
+          if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi ;;
+        absent) rm -f "$f" ;;
+        *) { echo "Backup file is damaged: $b" >&2; exit 1; } ;;
+      esac
+      echo "Restored the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_motd.8.html
+  - https://man7.org/linux/man-pages/man8/agetty.8.html
+
+notes:
+  pl: |
+    Sprawdzenie szuka w pliku sekwencji \m, \r, \s i \v (bez względu na
+    wielkość liter) oraz identyfikatora systemu z pola ID w /etc/os-release,
+    czyli na Fedorze słowa fedora. Wynik OS_INFO podaje, co znalazło.
+
+    Naprawa usuwa z pliku wiersze, które zawierają te elementy, a pozostałe
+    zostawia. Zapisuje wynik jako zwykły plik należący do roota z trybem 0644;
+    jeśli wcześniej był to link symboliczny, zastępuje sam link, a nie plik,
+    na który wskazywał. Wycofanie przywraca poprzednią treść, właściciela
+    i tryb albo link.
+
+    Moduł pam_motd pokazuje też pliki z /etc/motd.d, /run/motd.d
+    i /usr/lib/motd.d; punkt CIS i ta reguła dotyczą tylko /etc/motd.
+  en: |
+    The check looks in the file for the \m, \r, \s and \v sequences
+    (regardless of case) and for the system identifier from the ID field in
+    /etc/os-release, which on Fedora is the word fedora. The OS_INFO result
+    tells what it found.
+
+    The remediation removes the lines containing these elements from the file
+    and keeps the rest. It writes the result as a regular file owned by root
+    with mode 0644; if it was a symbolic link before, it replaces the link
+    itself, not the file it pointed to. Rollback restores the previous content,
+    owner and mode, or the link.
+
+    The pam_motd module also shows the files from /etc/motd.d, /run/motd.d and
+    /usr/lib/motd.d; the CIS item and this rule concern only /etc/motd.

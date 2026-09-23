@@ -1,0 +1,190 @@
+id: fedora44-issue-net-no-os-info
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.7.3
+  section: Initial Setup > Configure Command Line Warning Banners
+  title:
+    pl: Ostrzeżenie przed logowaniem zdalnym (/etc/issue.net) jest ustawione i nie ujawnia informacji o systemie
+    en: Ensure remote login warning banner is configured properly
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Plik /etc/issue.net to odpowiednik /etc/issue dla logowania przez sieć.
+    Serwer SSH pokazuje go przed uwierzytelnieniem, jeśli w sshd_config
+    ustawiono Banner /etc/issue.net; domyślnie w Fedorze tego nie robi, ale
+    administrator może to włączyć w każdej chwili. Plik z wersją systemu
+    ujawniałby ją każdemu, kto tylko połączy się z portem SSH.
+
+    Punkt wymaga, żeby plik zawierał tekst i nie zawierał sekwencji \m, \r,
+    \s i \v ani nazwy systemu.
+  en: |
+    The /etc/issue.net file is the counterpart of /etc/issue for sign-in over
+    the network. The SSH server shows it before authentication if Banner
+    /etc/issue.net is set in sshd_config; by default Fedora does not do that,
+    but an administrator can turn it on at any time. A file with the system
+    version would reveal it to anyone who merely connects to the SSH port.
+
+    The item requires the file to hold text and not to contain the \m, \r,
+    \s and \v sequences or the system name.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: przy domyślnej konfiguracji serwera SSH plik nie
+    jest nigdzie wyświetlany, a po włączeniu opcji Banner łączący się zobaczą
+    ostrzeżenie zamiast wersji systemu.
+  en: |
+    Nobody will notice: with the default SSH server configuration the file is
+    not shown anywhere, and once the Banner option is turned on, people
+    connecting see a warning instead of the system version.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - remote-management
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    f=/etc/issue.net
+    id=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"' | head -n 1)
+    if [ ! -e "$f" ]; then echo MISSING; exit 0; fi
+    if [ ! -r "$f" ]; then echo CHECK_ERROR; exit 0; fi
+    found=""
+    for e in m r s v; do if grep -qiF "\\$e" "$f"; then found="$found,\\$e"; fi; done
+    if [ -n "$id" ] && grep -qiF "$id" "$f"; then found="$found,$id"; fi
+    if [ -n "$found" ]; then echo "OS_INFO:${found#,}"; exit 0; fi
+    if ! grep -q '[^[:space:]]' "$f"; then echo EMPTY; exit 0; fi
+    echo NO_OS_INFO
+  expected: '^NO_OS_INFO$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      f=/etc/issue.net
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=banner-1
+        if [ -L "$f" ]; then echo type=symlink; echo "target=$(readlink "$f")"
+        elif [ -f "$f" ]; then echo type=file; echo "mode=$(stat -c '%a %u %g' "$f")"
+        elif [ -e "$f" ]; then echo "$f is not a regular file" >&2; exit 1
+        else echo type=absent; fi
+        echo ---
+        if [ -f "$f" ] && [ ! -L "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      f=/etc/issue.net
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      id=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"' | head -n 1)
+      t=$(mktemp "$f.XXXXXX")
+      if [ -e "$f" ]; then
+        grep -viF -e '\m' -e '\r' -e '\s' -e '\v' ${id:+-e "$id"} "$f" > "$t" || true
+      fi
+      if ! grep -q '[^[:space:]]' "$t"; then printf '%s\n' 'This system is for authorized users only. All activity may be monitored and recorded.' > "$t"; fi
+      chown 0:0 "$t"
+      chmod 0644 "$t"
+      mv -fT "$t" "$f"
+      if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      echo "Wrote $f without lines that reveal the operating system"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      f=/etc/issue.net
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=banner-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      case "$(sed -n '2s/^type=//p' "$b")" in
+        symlink)
+          tg=$(sed -n '3s/^target=//p' "$b")
+          [ -n "$tg" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+          rm -f "$f"
+          ln -s "$tg" "$f" ;;
+        file)
+          set -- $(sed -n '3s/^mode=//p' "$b")
+          [ $# -eq 3 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+          t=$(mktemp "$f.XXXXXX")
+          sed '1,/^---$/d' "$b" > "$t"
+          chown "$2:$3" "$t"
+          chmod "$1" "$t"
+          mv -fT "$t" "$f"
+          if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi ;;
+        absent) rm -f "$f" ;;
+        *) { echo "Backup file is damaged: $b" >&2; exit 1; } ;;
+      esac
+      echo "Restored the previous state of $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man.openbsd.org/sshd_config#Banner
+
+notes:
+  pl: |
+    Sprawdzenie szuka w pliku sekwencji \m, \r, \s i \v (bez względu na
+    wielkość liter) oraz identyfikatora systemu z pola ID w /etc/os-release,
+    czyli na Fedorze słowa fedora. Wynik OS_INFO podaje, co znalazło.
+
+    Naprawa usuwa z pliku wiersze, które zawierają te elementy, a pozostałe
+    zostawia. Zapisuje wynik jako zwykły plik należący do roota z trybem 0644;
+    jeśli wcześniej był to link symboliczny, zastępuje sam link, a nie plik,
+    na który wskazywał. Wycofanie przywraca poprzednią treść, właściciela
+    i tryb albo link.
+
+    Jeśli po usunięciu tych wierszy plik jest pusty, naprawa wpisuje neutralne
+    ostrzeżenie: "This system is for authorized users only. All activity may be monitored and recorded.". Treść ostrzeżenia warto potem zastąpić
+    tekstem uzgodnionym w organizacji.
+
+    Na Fedorze /etc/issue i /etc/issue.net to linki do plików w /usr/lib,
+    które nie są oznaczone jako konfiguracja pakietu. Zmiana treści przez link
+    zniknie przy następnej aktualizacji pakietu fedora-release-common, dlatego
+    naprawa zapisuje zwykły plik w /etc.
+  en: |
+    The check looks in the file for the \m, \r, \s and \v sequences
+    (regardless of case) and for the system identifier from the ID field in
+    /etc/os-release, which on Fedora is the word fedora. The OS_INFO result
+    tells what it found.
+
+    The remediation removes the lines containing these elements from the file
+    and keeps the rest. It writes the result as a regular file owned by root
+    with mode 0644; if it was a symbolic link before, it replaces the link
+    itself, not the file it pointed to. Rollback restores the previous content,
+    owner and mode, or the link.
+
+    If the file is empty after removing these lines, the remediation writes a
+    neutral warning: "This system is for authorized users only. All activity may be monitored and recorded.". It is worth replacing the warning with
+    text agreed in the organization afterwards.
+
+    On Fedora /etc/issue and /etc/issue.net are links to files in /usr/lib,
+    which are not marked as package configuration. Content changed through the
+    link disappears with the next update of the fedora-release-common package,
+    which is why the remediation writes a regular file in /etc.

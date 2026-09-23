@@ -1,0 +1,103 @@
+id: fedora44-pwhistory-use-authtok
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.3.3.3.3
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_pwhistory module
+  title:
+    pl: Moduł pam_pwhistory używa hasła sprawdzonego wcześniej w stosie
+    en: Ensure pam_pwhistory includes use_authtok
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Z opcją use_authtok pam_pwhistory sprawdza hasło, które użytkownik podał
+    już modułowi pam_pwquality, i nie pyta o nie drugi raz. Bez niej moduły
+    w stosie password mogą pracować na różnych hasłach, więc historia może
+    sprawdzać inne hasło niż to, które zostanie zapisane.
+
+    Punkt wymaga, żeby wiersz password z pam_pwhistory w
+    /etc/pam.d/system-auth i password-auth miał argument use_authtok.
+  en: |
+    With the use_authtok option pam_pwhistory checks the password the user
+    already gave to pam_pwquality and does not ask for it again. Without it
+    the modules in the password stack may work on different passwords, so
+    the history may check another password than the one that is saved.
+
+    The item requires the password line with pam_pwhistory in
+    /etc/pam.d/system-auth and password-auth to have the use_authtok
+    argument.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: sprawdzenie tylko czyta pliki PAM.
+  en: |
+    Nobody will notice: the check only reads the PAM files.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    evaluate() {
+      local miss="" f s ty mo ar
+      for f in system-auth password-auth; do
+        for s in password:pam_pwhistory.so:use_authtok; do
+          ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+          pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+        done
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_pwhistory"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_pwhistory.8.html
+
+notes:
+  pl: |
+    Funkcja with-pwhistory profili local i sssd dodaje wiersz
+    password requisite pam_pwhistory.so use_authtok, więc po włączeniu jej
+    regułą 5.3.2.4 ten punkt jest spełniony. Wynik NOT_OK oznacza zwykle,
+    że pam_pwhistory nie jest włączony, albo własny profil w
+    /etc/authselect/custom, w którego szablonach system-auth i password-auth
+    trzeba dopisać use_authtok i wykonać authselect apply-changes. Reguła
+    tylko sprawdza stan.
+  en: |
+    The with-pwhistory feature of the local and sssd profiles adds the line
+    password requisite pam_pwhistory.so use_authtok, so after it is turned
+    on with rule 5.3.2.4 this item is met. The NOT_OK result usually means
+    that pam_pwhistory is not enabled, or a custom profile in
+    /etc/authselect/custom, where use_authtok has to be added to the
+    system-auth and password-auth templates before running authselect
+    apply-changes. The rule only checks the state.

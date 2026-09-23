@@ -1,0 +1,137 @@
+id: fedora44-telnet-client-not-installed
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.2.4
+  section: Services > Configure Client Services
+  title:
+    pl: Klient telnet nie jest zainstalowany
+    en: Ensure telnet client is not installed
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Telnet przesyła login, hasło i całą sesję otwartym tekstem. Klient na
+    stacji zachęca do łączenia się ze starymi urządzeniami bez szyfrowania
+    zamiast przez SSH.
+
+    Punkt wymaga, żeby pakiet telnet nie był zainstalowany. Fedora
+    Workstation go nie instaluje.
+  en: |
+    Telnet sends the login, the password and the whole session in clear
+    text. A client on the workstation encourages connecting to old devices
+    without encryption instead of over SSH.
+
+    The item requires that the telnet package is not installed. Fedora
+    Workstation does not install it.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli nikt nie używał polecenia telnet.
+    W przeciwnym razie połączenia ze starymi urządzeniami i sprawdzanie
+    portów przez telnet trzeba zastąpić SSH, nc lub curl.
+  en: |
+    Nobody will notice if nobody used the telnet command. Otherwise
+    connections to old devices and port checks with telnet have to be
+    replaced by SSH, nc or curl.
+
+implementation_consequences:
+  impact_areas:
+    - remote-management
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Polecenie telnet nie jest dostępne; skrypty i procedury, które z niego korzystają, kończą się błędem
+    en:
+      - The telnet command is not available; scripts and procedures that use it fail
+  interruption: none
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    found=""
+    for p in telnet; do if rpm -q --quiet "$p"; then found="$found $p"; fi; done
+    if [ -n "$found" ]; then echo "INSTALLED:$(echo $found | tr ' ' ',')"; else echo NOT_INSTALLED; fi
+  expected: '^NOT_INSTALLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      export LC_ALL=C
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      { echo format=rpm-names-1; rpm -qa --qf '%{NAME}.%{ARCH}\n' | grep -v '^gpg-pubkey\.' | sort -u; } > "$b"
+      echo "Saved the list of installed packages to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      rm=""
+      for p in telnet; do if rpm -q --quiet "$p"; then rm="$rm $p"; fi; done
+      if [ -z "$rm" ]; then echo "Nothing to remove"; exit 0; fi
+      dnf -y -q remove --no-autoremove $rm
+      echo "Removed:$rm"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      export LC_ALL=C
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rpm-names-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      now=$(mktemp)
+      rpm -qa --qf '%{NAME}.%{ARCH}\n' | sort -u > "$now"
+      miss=$(tail -n +2 "$b" | comm -23 - "$now")
+      rm -f "$now"
+      if [ -z "$miss" ]; then echo "All packages from the backup are installed"; exit 0; fi
+      dnf -y -q install $miss
+      echo "Installed again:" $miss
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://packages.fedoraproject.org/pkgs/telnet/telnet/
+  - https://dnf5.readthedocs.io/en/latest/commands/remove.8.html
+
+notes:
+  pl: |
+    Polecenie telnet bywa używane do sprawdzania, czy port TCP odpowiada.
+    To samo zrobi np. nc z pakietu nmap-ncat albo curl. Od telnet zależą
+    m.in. gns3-gui i niektóre fence-agents, które dnf usunąłby razem z nim.
+
+    Naprawa usuwa pakiety poleceniem dnf remove, które usuwa też pakiety od
+    nich zależne i zależności zainstalowane tylko dla nich. Kopia zapisuje
+    listę wszystkich zainstalowanych pakietów, a wycofanie instaluje ponownie
+    te, których brakuje, więc wymaga dostępu do repozytoriów.
+  en: |
+    The telnet command is often used to check whether a TCP port answers. nc
+    from the nmap-ncat package or curl can do the same. gns3-gui and some
+    fence-agents, among others, depend on telnet, and dnf would remove them
+    together with it.
+
+    The remediation removes the packages with dnf remove, which also removes
+    packages that depend on them and dependencies installed only for them.
+    The backup records the list of all installed packages, and rollback
+    installs again the ones that are missing, so it needs access to the
+    repositories.

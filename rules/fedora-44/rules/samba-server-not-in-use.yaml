@@ -1,0 +1,233 @@
+id: fedora44-samba-server-not-in-use
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 2.1.6
+  section: Services > Configure Server Services
+  title:
+    pl: Serwer plików Samba nie jest używany
+    en: Ensure samba file server services are not in use
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Samba udostępnia katalogi i drukarki tego komputera innym komputerom
+    w protokole SMB, tym samym co udziały Windows. Serwer przyjmuje
+    połączenia i uwierzytelnianie z sieci i w przeszłości miewał poważne
+    błędy zdalne.
+
+    Punkt wymaga, żeby serwer Samba nie był zainstalowany albo żeby jego
+    usługi smb i nmb nie były włączone ani uruchomione. Na Fedorze
+    Workstation serwer domyślnie nie jest zainstalowany.
+  en: |
+    Samba shares this computer's folders and printers with other computers
+    over SMB, the same protocol as Windows shares. The server accepts
+    connections and authentication from the network and has had serious
+    remote flaws in the past.
+
+    The item requires that the Samba server is not installed or that its smb
+    and nmb services are neither enabled nor running. On Fedora Workstation
+    the server is not installed by default.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy, jeśli komputer niczego nie udostępniał. W przeciwnym
+    razie jego udziały i drukarki znikną z sieci, a użytkownicy innych
+    komputerów stracą do nich dostęp.
+  en: |
+    Nobody will notice if the computer shared nothing. Otherwise its shares
+    and printers disappear from the network, and users of other computers
+    lose access to them.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - printing
+  what_breaks:
+    pl:
+      - Katalogi udostępnione z tego komputera przez SMB są niedostępne dla innych komputerów
+      - Drukarki udostępnione przez Sambę są niedostępne dla innych komputerów
+      - Udostępnianie katalogów z menedżera plików przestaje działać
+    en:
+      - Folders shared from this computer over SMB are unavailable to other computers
+      - Printers shared through Samba are unavailable to other computers
+      - Sharing folders from the file manager stops working
+  interruption: none
+  user_visible: true
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v systemctl >/dev/null 2>&1 || ! command -v rpm >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+      echo CHECK_ERROR; exit 0
+    fi
+    state() {
+      bad=""
+      for u in smb.service nmb.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        a=$(systemctl is-active "$u" 2>/dev/null) || true
+        case "$e" in
+          enabled|enabled-runtime|linked|linked-runtime) ;;
+          *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+        esac
+        bad="$bad,$u=${e:-none}/${a:-unknown}"
+      done
+      inst=""
+      for p in samba; do if rpm -q --quiet "$p"; then inst="$inst,$p"; fi; done
+      if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+      elif [ -z "$inst" ]; then echo NOT_INSTALLED
+      else echo "NOT_IN_USE:${inst#,}"; fi
+    }
+    state
+  expected: '^(NOT_INSTALLED$|NOT_IN_USE:)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=units-1
+        for u in smb.service nmb.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          echo "$u ${e:--} ${a:--}"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ -d /run/systemd/system ] || { echo "systemd is not running" >&2; exit 1; }
+      state() {
+        bad=""
+        for u in smb.service nmb.service; do
+          e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+          a=$(systemctl is-active "$u" 2>/dev/null) || true
+          case "$e" in
+            enabled|enabled-runtime|linked|linked-runtime) ;;
+            *) case "$a" in active|activating|reloading) ;; *) continue ;; esac ;;
+          esac
+          bad="$bad,$u=${e:-none}/${a:-unknown}"
+        done
+        inst=""
+        for p in samba; do if rpm -q --quiet "$p"; then inst="$inst,$p"; fi; done
+        if [ -n "$bad" ]; then echo "IN_USE:${bad#,}"
+        elif [ -z "$inst" ]; then echo NOT_INSTALLED
+        else echo "NOT_IN_USE:${inst#,}"; fi
+      }
+      m=""
+      for u in smb.service nmb.service; do
+        e=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        case "$e" in ""|not-found) continue ;; esac
+        l=/etc/systemd/system/$u
+        if { [ -e "$l" ] || [ -L "$l" ]; } && [ "$(readlink "$l")" != /dev/null ]; then
+          echo "$l is a unit file or link of its own, not masking $u" >&2; exit 1
+        fi
+        m="$m $u"
+      done
+      if [ -z "$m" ]; then echo "None of the units is installed, nothing to change"; exit 0; fi
+      systemctl mask --now $m
+      s=$(state)
+      case "$s" in IN_USE:*) echo "The units are still in use ($s)" >&2; exit 1 ;; esac
+      echo "Stopped and masked:$m ($s)"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=units-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      [ -n "$lines" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      while read -r u e a x; do
+        case " smb.service nmb.service " in *" $u "*) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        case "$e$a" in *[!a-z-]*|"") echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        if [ -z "$a" ] || [ -n "$x" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      done <<< "$lines"
+      start=""
+      while read -r u e a; do
+        case "$e" in
+          -|not-found|masked) continue ;;
+          masked-runtime) systemctl unmask "$u"; systemctl mask --runtime "$u"; continue ;;
+        esac
+        systemctl unmask "$u"
+        case "$e" in
+          enabled) systemctl enable "$u" ;;
+          enabled-runtime) systemctl enable --runtime "$u" ;;
+          linked|linked-runtime) echo "Could not link $u again; link its unit file by hand" >&2 ;;
+        esac
+        case "$a" in active|activating|reloading) start="$start $u" ;; esac
+      done <<< "$lines"
+      if [ -n "$start" ]; then systemctl start $start; fi
+      echo "Restored the previous state of the units"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.samba.org/samba/docs/current/man-html/smbd.8.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Punkt jest spełniony, gdy pakiet nie jest zainstalowany albo gdy żadna
+    z jednostek smb.service, nmb.service nie jest włączona ani uruchomiona. Wynik IN_USE
+    wymienia jednostki w użyciu razem ze stanem z systemctl is-enabled
+    i is-active, a NOT_IN_USE pakiety, które są zainstalowane, ale nie
+    działają.
+
+    Naprawa nie usuwa pakietów, bo mogą od nich zależeć inne programy.
+    Zatrzymuje i maskuje jednostki poleceniem systemctl mask --now, więc nie
+    da się ich uruchomić ręcznie, przez gniazdo ani jako zależność. Kopia
+    zapisuje stan każdej jednostki, a wycofanie zdejmuje maskę, włącza
+    jednostki, które były włączone, i uruchamia te, które działały.
+    Jednostki zamaskowane wcześniej zostają zamaskowane. Naprawa odmawia,
+    gdy w /etc/systemd/system leży własny plik jednostki o tej samej nazwie.
+
+    Jeśli usługa ma zniknąć całkiem, można usunąć pakiet przez dnf remove
+    po sprawdzeniu, co jeszcze zostałoby usunięte.
+
+    Punkt dotyczy tylko serwera. Dostęp do udziałów na innych komputerach,
+    np. w menedżerze plików albo przez smbclient, korzysta z bibliotek
+    klienckich i działa dalej.
+  en: |
+    The item is met when the package is not installed or when none of the
+    smb.service, nmb.service units is enabled or running. The IN_USE result lists the units in
+    use with their state from systemctl is-enabled and is-active, and
+    NOT_IN_USE lists the packages that are installed but not running.
+
+    The remediation does not remove packages, because other programs may
+    depend on them. It stops and masks the units with systemctl mask --now,
+    so they cannot be started by hand, through a socket or as a dependency.
+    The backup records the state of every unit, and rollback removes the
+    mask, enables the units that were enabled and starts the ones that were
+    running. Units that were masked before stay masked. The remediation
+    refuses when /etc/systemd/system holds a unit file of its own with the
+    same name.
+
+    If the service should be gone completely, the package can be removed with
+    dnf remove after checking what else would be removed.
+
+    The item only covers the server. Access to shares on other computers,
+    for example in the file manager or with smbclient, uses the client
+    libraries and keeps working.

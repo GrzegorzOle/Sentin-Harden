@@ -1,0 +1,306 @@
+id: fedora44-su-restricted
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.2.7
+  section: Access Control > Configure privilege escalation
+  title:
+    pl: Dostęp do polecenia su jest ograniczony
+    en: Ensure access to the su command is restricted
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Polecenie su pozwala przełączyć się na inne konto, także na roota, po
+    podaniu hasła tego konta. Kto pozna hasło roota, może go użyć z każdego
+    konta, a dziennik nie wskazuje, kto naprawdę pracuje jako root. sudo
+    robi to samo z własnym hasłem użytkownika i zapisuje jego nazwę.
+
+    Punkt wymaga, żeby su było dostępne tylko dla członków pustej grupy,
+    czyli w praktyce tylko dla roota.
+  en: |
+    The su command switches to another account, root included, after the
+    password of that account is entered. Whoever learns the root password
+    can use it from any account, and the log does not show who really
+    works as root. sudo does the same with the user's own password and
+    records the user name.
+
+    The item requires su to be available only to members of an empty
+    group, in practice only to root.
+
+disruption_description:
+  pl: |
+    Zwykli użytkownicy nie mogą już używać su, także do innych kont,
+    np. su - postgres. Uprawnienia roota nadal daje sudo, a root nadal może
+    przełączać się poleceniem su na dowolne konto.
+  en: |
+    Regular users can no longer use su, also to other accounts, for example
+    su - postgres. sudo still gives root rights, and root can still switch
+    to any account with su.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - su do konta root z hasłem roota uruchamiane przez zwykłych użytkowników; zamiast tego działa sudo -i
+      - su do kont usługowych lub innych użytkowników uruchamiane przez zwykłych użytkowników, np. su - postgres; zamiast tego działa sudo -iu postgres
+    en:
+      - su to root with the root password run by regular users; sudo -i works instead
+      - su to service or other user accounts run by regular users, for example su - postgres; sudo -iu postgres works instead
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Administratorzy pracują przez su z hasłem roota i nie mają uprawnień sudo
+    en:
+      - Administrators work through su with the root password and have no sudo rights
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if [ ! -f /etc/pam.d/su ]; then echo NOT_APPLICABLE; exit 0; fi
+    # Members of a group, also by primary group; empty when it has none.
+    grp_members() {
+      local e gid
+      e=$(getent group "$1") || return 1
+      gid=$(printf '%s\n' "$e" | cut -d: -f3)
+      { printf '%s\n' "$e" | cut -d: -f4 | tr , '\n'; getent passwd | awk -F: -v g="$gid" '$4 == g { print $1 }'; } | sed '/^$/d' | sort -u | paste -sd, -
+    }
+    # Groups of the pam_wheel lines (required or requisite, use_uid, no deny)
+    # that every su login reaches: no earlier auth line other than pam_rootok
+    # can end the stack with success.
+    su_groups() {
+      awk '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1 }
+        $1 != "auth" { next }
+        { n = split($3, p, "/"); m = p[n] }
+        m == "pam_wheel.so" && ($2 == "required" || $2 == "requisite") && !open {
+          u = 0; d = 0; g = "wheel"
+          for (i = 4; i <= NF; i++) { if ($i == "use_uid") u = 1; if ($i == "deny") d = 1; if ($i ~ /^group=/) g = substr($i, 7) }
+          if (u && !d) print g
+          next
+        }
+        ($2 == "sufficient" && m != "pam_rootok.so") || $2 == "include" || $2 == "[jump]" { open = 1 }' /etc/pam.d/su
+    }
+    evaluate() {
+      local g res=""
+      [ -r /etc/pam.d/su ] || { echo CHECK_ERROR; return 0; }
+      for g in $(su_groups); do
+        if ! getent group "$g" >/dev/null; then res="$res,$g=missing"; continue; fi
+        if [ -z "$(grp_members "$g")" ]; then echo "OK:group=$g"; return 0; fi
+        res="$res,$g=has-members"
+      done
+      if [ -n "$res" ]; then echo "NOT_OK:pam_wheel:${res#,}"; else echo "NOT_OK:no-pam_wheel"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=su-1
+        if getent group sugroup >/dev/null; then echo group=1; else echo group=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/pam.d/su
+      mark='# Sentin-Harden: su only for members of the empty group sugroup'
+      line='auth            required        pam_wheel.so use_uid group=sugroup'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=su-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    # Members of a group, also by primary group; empty when it has none.
+    grp_members() {
+      local e gid
+      e=$(getent group "$1") || return 1
+      gid=$(printf '%s\n' "$e" | cut -d: -f3)
+      { printf '%s\n' "$e" | cut -d: -f4 | tr , '\n'; getent passwd | awk -F: -v g="$gid" '$4 == g { print $1 }'; } | sed '/^$/d' | sort -u | paste -sd, -
+    }
+    # Groups of the pam_wheel lines (required or requisite, use_uid, no deny)
+    # that every su login reaches: no earlier auth line other than pam_rootok
+    # can end the stack with success.
+    su_groups() {
+      awk '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1 }
+        $1 != "auth" { next }
+        { n = split($3, p, "/"); m = p[n] }
+        m == "pam_wheel.so" && ($2 == "required" || $2 == "requisite") && !open {
+          u = 0; d = 0; g = "wheel"
+          for (i = 4; i <= NF; i++) { if ($i == "use_uid") u = 1; if ($i == "deny") d = 1; if ($i ~ /^group=/) g = substr($i, 7) }
+          if (u && !d) print g
+          next
+        }
+        ($2 == "sufficient" && m != "pam_rootok.so") || $2 == "include" || $2 == "[jump]" { open = 1 }' /etc/pam.d/su
+    }
+    evaluate() {
+      local g res=""
+      [ -r /etc/pam.d/su ] || { echo CHECK_ERROR; return 0; }
+      for g in $(su_groups); do
+        if ! getent group "$g" >/dev/null; then res="$res,$g=missing"; continue; fi
+        if [ -z "$(grp_members "$g")" ]; then echo "OK:group=$g"; return 0; fi
+        res="$res,$g=has-members"
+      done
+      if [ -n "$res" ]; then echo "NOT_OK:pam_wheel:${res#,}"; else echo "NOT_OK:no-pam_wheel"; fi
+    }
+      put() {
+        chmod --reference="$f" "$1"; chown --reference="$f" "$1"; mv -f "$1" "$f"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+      }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "su is already restricted (${r#OK:}), nothing to change"; exit 0 ;;
+        CHECK_ERROR*) echo "Cannot read $f" >&2; exit 1 ;;
+      esac
+      if ! grep -Eq '^[[:space:]]*auth[[:space:]]+sufficient[[:space:]]+pam_rootok\.so([[:space:]]|$)' "$f"; then
+        echo "$f has no auth sufficient pam_rootok.so line; add the pam_wheel line by hand" >&2; exit 1
+      fi
+      if getent group sugroup >/dev/null; then
+        [ -z "$(grp_members sugroup)" ] || { echo "Group sugroup already exists and has members; choose an empty group and change $f by hand" >&2; exit 1; }
+        made=0
+      else
+        groupadd -r sugroup; made=1
+      fi
+      old=$(mktemp /etc/pam.d/.sentin-harden-old.XXXXXX)
+      cat "$f" > "$old"
+      t=$(mktemp /etc/pam.d/.sentin-harden.XXXXXX)
+      # Right after pam_rootok, so that no later sufficient line can skip it.
+      awk -v mark="$mark" -v line="$line" '{ print } !done && /^[ \t]*auth[ \t]+sufficient[ \t]+pam_rootok\.so([ \t]|$)/ { print mark; print line; done = 1 }' "$f" > "$t"
+      put "$t"
+      r=$(evaluate)
+      case "$r" in
+        OK*) rm -f "$old" ;;
+        *) put "$old"; if [ "$made" = 1 ]; then groupdel sugroup; fi
+           echo "su is not restricted after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Restricted su to the empty group sugroup in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/pam.d/su
+      mark='# Sentin-Harden: su only for members of the empty group sugroup'
+      line='auth            required        pam_wheel.so use_uid group=sugroup'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=su-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      g=$(sed -n '2s/^group=//p' "$b")
+      case "$g" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    # Members of a group, also by primary group; empty when it has none.
+    grp_members() {
+      local e gid
+      e=$(getent group "$1") || return 1
+      gid=$(printf '%s\n' "$e" | cut -d: -f3)
+      { printf '%s\n' "$e" | cut -d: -f4 | tr , '\n'; getent passwd | awk -F: -v g="$gid" '$4 == g { print $1 }'; } | sed '/^$/d' | sort -u | paste -sd, -
+    }
+    # Groups of the pam_wheel lines (required or requisite, use_uid, no deny)
+    # that every su login reaches: no earlier auth line other than pam_rootok
+    # can end the stack with success.
+    su_groups() {
+      awk '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1 }
+        $1 != "auth" { next }
+        { n = split($3, p, "/"); m = p[n] }
+        m == "pam_wheel.so" && ($2 == "required" || $2 == "requisite") && !open {
+          u = 0; d = 0; g = "wheel"
+          for (i = 4; i <= NF; i++) { if ($i == "use_uid") u = 1; if ($i == "deny") d = 1; if ($i ~ /^group=/) g = substr($i, 7) }
+          if (u && !d) print g
+          next
+        }
+        ($2 == "sufficient" && m != "pam_rootok.so") || $2 == "include" || $2 == "[jump]" { open = 1 }' /etc/pam.d/su
+    }
+    evaluate() {
+      local g res=""
+      [ -r /etc/pam.d/su ] || { echo CHECK_ERROR; return 0; }
+      for g in $(su_groups); do
+        if ! getent group "$g" >/dev/null; then res="$res,$g=missing"; continue; fi
+        if [ -z "$(grp_members "$g")" ]; then echo "OK:group=$g"; return 0; fi
+        res="$res,$g=has-members"
+      done
+      if [ -n "$res" ]; then echo "NOT_OK:pam_wheel:${res#,}"; else echo "NOT_OK:no-pam_wheel"; fi
+    }
+      if [ -f "$f" ] && grep -qxF "$mark" "$f"; then
+        t=$(mktemp /etc/pam.d/.sentin-harden.XXXXXX)
+        # Only the marked line of this rule goes; the rest of the file stays as it is now.
+        awk -v mark="$mark" -v line="$line" 'skip { skip = 0; if ($0 == line) next } $0 == mark { skip = 1; next } { print }' "$f" > "$t"
+        chmod --reference="$f" "$t"; chown --reference="$f" "$t"; mv -f "$t" "$f"
+        if command -v restorecon >/dev/null 2>&1; then restorecon "$f"; fi
+        echo "Removed the pam_wheel line of this rule from $f"
+      else
+        echo "The pam_wheel line of this rule is not in $f"
+      fi
+      if [ "$g" = 0 ] && getent group sugroup >/dev/null; then
+        if grep -Eq '^[^#]*pam_wheel\.so.*group=sugroup([[:space:]]|$)' "$f" 2>/dev/null; then
+          echo "Kept group sugroup: $f still uses it"
+        elif [ -n "$(grp_members sugroup)" ]; then
+          echo "Kept group sugroup: it has members now"
+        else
+          groupdel sugroup; echo "Removed group sugroup"
+        fi
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_wheel.8.html
+  - https://man7.org/linux/man-pages/man1/su.1.html
+  - https://man7.org/linux/man-pages/man5/pam.conf.5.html
+
+notes:
+  pl: |
+    Sprawdzenie szuka w /etc/pam.d/su aktywnego wiersza auth required lub
+    requisite z modułem pam_wheel.so, opcją use_uid i bez opcji deny, przed
+    którym żaden wiersz poza pam_rootok.so nie kończy stosu sukcesem. Grupa
+    z opcji group=, a bez niej wheel, musi istnieć i nie mieć członków,
+    także przez grupę podstawową. su-l dołącza ten sam plik.
+
+    Naprawa tworzy grupę systemową sugroup, jeśli jej nie ma, i dopisuje
+    oznaczony wiersz zaraz po pam_rootok.so, więc root nadal używa su bez
+    hasła. Gdy grupa sugroup istnieje i ma członków, naprawa nic nie
+    zmienia. Wycofanie usuwa tylko oznaczony wiersz tej reguły i grupę
+    sugroup, jeśli naprawa ją utworzyła i nadal jest pusta. Fedora
+    Workstation domyślnie blokuje hasło roota, więc su do roota zwykle i tak
+    nie działa; wiersz pam_wheel z grupą wheel ogranicza su do
+    administratorów, ale ta grupa nie jest pusta.
+  en: |
+    The check looks in /etc/pam.d/su for an active auth required or
+    requisite line with the pam_wheel.so module, the use_uid option and
+    without the deny option, before which no line except pam_rootok.so ends
+    the stack with success. The group from the group= option, or wheel
+    without it, must exist and have no members, also through the primary
+    group. su-l includes the same file.
+
+    The remediation creates the system group sugroup if it does not exist
+    and adds a marked line right after pam_rootok.so, so root still uses su
+    without a password. When the sugroup group exists and has members, the
+    remediation changes nothing. Rollback removes only the marked line of
+    this rule, and the sugroup group if the remediation created it and it
+    is still empty. Fedora Workstation locks the root password by default,
+    so su to root usually does not work anyway; a pam_wheel line with the
+    wheel group limits su to administrators, but that group is not empty.

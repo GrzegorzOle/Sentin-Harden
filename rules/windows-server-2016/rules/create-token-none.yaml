@@ -1,0 +1,234 @@
+id: win2016-create-token-none
+
+benchmark:
+  name: CIS Microsoft Windows Server 2016 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Tworzenie obiektu tokenu nieprzyznane nikomu
+    en: Creating a token object granted to nobody
+  level: 1
+  profile: server
+
+platform:
+  system: windows-server-2016
+
+risk_category: critical
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Punkt sprawdza, czy uprawnienie do tworzenia obiektu tokenu nie zostało
+    przyznane żadnemu kontu ani żadnej grupie.
+
+    Token to zapis tego, kim proces jest i co mu wolno. Normalnie wydaje go
+    system po pomyślnym uwierzytelnieniu i to właśnie uwierzytelnienie jest
+    warunkiem jego powstania. Uprawnienie opisane tym punktem pozwala
+    wytworzyć token samodzielnie, z pominięciem tego kroku.
+
+    Skutek jest taki, że konto może wydać sobie tożsamość, której nie ma.
+    Może wpisać do tokenu przynależność do grupy administratorów domeny albo
+    dowolny inny zestaw uprawnień, a system przyjmie to bez pytania, bo
+    sprawdzanie tożsamości odbywa się przy wydawaniu tokenu, a nie później.
+
+    Kategoria krytyczna. To nie jest uprawnienie ułatwiające atak — to jest
+    uprawnienie znoszące potrzebę atakowania czegokolwiek.
+
+    Na serwerze 2016 lista jest domyślnie pusta i powinna taka pozostać.
+    Punkt warto mimo to sprawdzać, bo bywa, że stare narzędzie obsługi albo
+    ręcznie pisana zasada grupy dopisuje tu konto razem z całą serią innych
+    uprawnień, kopiowaną jako blok.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: możliwość
+    wytworzenia sobie dowolnej tożsamości i dowolnego zestawu uprawnień bez
+    jednego uwierzytelnienia.
+  en: |
+    The item checks that the right to create a token object has been granted to
+    no account and no group.
+
+    A token is the record of who a process is and what it may do. Normally the
+    system issues it after successful authentication, and that authentication is
+    the condition of its coming into being. The right this item describes allows
+    a token to be produced independently, skipping that step.
+
+    The effect is that an account can issue itself an identity it does not have.
+    It can write into the token membership of the domain administrators group, or
+    any other set of rights, and the system will accept it without question,
+    because the checking of identity happens when the token is issued and not
+    later.
+
+    The critical category applies. This is not a right that eases an attack - it
+    is a right that removes the need to attack anything.
+
+    On Server 2016 the list is empty by default and should stay so. The item is
+    still worth checking, because an old administration tool or a hand-written
+    group policy sometimes adds an account here together with a whole series of
+    other rights, copied across as a block.
+
+    What an attacker gains while the item goes unmet: the ability to produce
+    themselves any identity and any set of rights without a single
+    authentication.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości". Domyślnie lista jest pusta, a oprogramowanie
+    potrzebujące tego uprawnienia praktycznie nie istnieje — nawet składniki
+    systemu tworzące tokeny robią to z konta systemowego, które tego
+    uprawnienia nie potrzebuje.
+
+    Jeżeli na liście coś jest, warto potraktować to jako ustalenie audytu,
+    a nie jako drobiazg do poprawienia po drodze. Wpis tutaj jest albo
+    pomyłką, albo śladem po czymś, co warto obejrzeć osobno.
+
+    Czego to nie psuje: uwierzytelniania, usług systemu, kont usługowych
+    o zwykłych uprawnieniach ani niczego, co działa z tokenem wydanym
+    normalnie.
+
+    Bez restartu, natychmiast odwracalne.
+  en: |
+    The class is "no disruption". The list is empty by default, and software
+    needing this right practically does not exist - even system components that
+    create tokens do so from the system account, which does not need the right.
+
+    If something is on the list, it is worth treating as a finding of the audit
+    rather than a detail to correct in passing. An entry here is either a mistake
+    or the trace of something worth looking at separately.
+
+    What this does not break: authentication, the system's services, service
+    accounts with ordinary rights, or anything working with a token issued
+    normally.
+
+    No restart, undone immediately.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - legacy-applications
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Konto wpisane na tę listę traci możliwość wytworzenia tokenu z pominięciem uwierzytelnienia
+      - Oprogramowanie faktycznie korzystające z tego uprawnienia jest tak rzadkie, że jego obecność sama w sobie wymaga wyjaśnienia
+      - Konto systemowe tworzy tokeny bez tego uprawnienia i nie jest objęte zmianą
+      - Uwierzytelnianie, usługi systemu i konta usługowe o zwykłych uprawnieniach działają bez zmian
+    en:
+      - An account written onto this list loses the ability to produce a token bypassing authentication
+      - Software that genuinely uses this right is so rare that its presence itself calls for an explanation
+      - The system account creates tokens without this right and is not touched by the change
+      - Authentication, the system's services and service accounts with ordinary rights work unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Uprawnienie ma konto oprogramowania, którego producent potwierdził ten wymóg na piśmie i nie da się go zastąpić
+    en:
+      - The right is held by an account of software whose vendor confirmed the requirement in writing and which cannot be replaced
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own
+        # message goes to the error stream, so the report can tell a missing
+        # privilege from a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeCreateTokenPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeCreateTokenPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeCreateTokenPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The list is emptied. Identity is checked when a token is issued and not
+    # afterwards, so an account able to issue its own token is checked by nobody.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeCreateTokenPrivilege =',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeCreateTokenPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/create-a-token-object
+
+notes:
+  pl: |
+    Uprawnienie to bywa mylone z podszywaniem się pod klienta, opisanym
+    osobną regułą. Różnica jest zasadnicza: tamto pozwala przyjąć tożsamość
+    kogoś, kto się właśnie uwierzytelnił, to pozwala wymyślić tożsamość,
+    której nigdzie nie ma.
+
+    Audyt porównuje identyfikatory zabezpieczeń, a nie nazwy kont, więc
+    działa niezależnie od wersji językowej systemu.
+
+    Brak wiersza w eksporcie i wiersz pusty znaczą to samo i oba uchodzą
+    za zgodne.
+  en: |
+    This right gets confused with impersonating a client, described by a separate
+    rule. The difference is fundamental: that one allows an identity to be taken
+    on from somebody who has just authenticated, this one allows an identity to
+    be invented that exists nowhere.
+
+    The audit compares security identifiers rather than account names, so it
+    works regardless of the system's language version.
+
+    A missing line in the export and an empty line mean the same thing and both
+    count as compliant.

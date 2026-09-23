@@ -1,0 +1,309 @@
+id: ubuntu2404-pam-pwhistory-enabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.3.2.4
+  section: Access Control > Pluggable Authentication Modules > Configure pam-auth-update profiles
+  title:
+    pl: Moduł pam_pwhistory jest włączony
+    en: Ensure pam_pwhistory module is enabled
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy przy zmianie hasła można wrócić do jednego z poprzednich, wymuszona
+    zmiana hasła nic nie daje: hasło, które wyciekło, znów działa po dwóch
+    zmianach. pam_pwhistory zapamiętuje skróty ostatnich haseł i odrzuca
+    nowe hasło, które już było używane.
+
+    Punkt wymaga, żeby wiersz password z pam_pwhistory był aktywny
+    w /etc/pam.d/common-password.
+  en: |
+    When a password change can go back to one of the previous passwords, a
+    forced change is of little use: a leaked password works again after two
+    changes. pam_pwhistory remembers the hashes of recent passwords and
+    rejects a new password that was used before.
+
+    The item requires an active password line with pam_pwhistory in
+    /etc/pam.d/common-password.
+
+disruption_description:
+  pl: |
+    Użytkownik zmieniający hasło nie może wrócić do żadnego z ostatnich
+    haseł; domyślnie moduł pamięta 10 haseł. Hasła zmieniane przez roota
+    dla innych kont nie są sprawdzane, dopóki nie ustawi się
+    enforce_for_root.
+  en: |
+    A user who changes the password cannot go back to any of the recent
+    passwords; by default the module remembers 10 passwords. Passwords that
+    root sets for other accounts are not checked unless enforce_for_root is
+    set.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Użytkownicy, którzy przy zmianie hasła wracają do jednego z ostatnich haseł
+    en:
+      - Users who go back to one of their recent passwords when they change the password
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Konta, których hasła zmienia automatyzacja wracająca celowo do tych samych haseł
+    en:
+      - Accounts whose passwords are changed by automation that goes back to the same passwords on purpose
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    evaluate() {
+      local miss="" s f ty mo ar
+      for s in common-password:password:pam_pwhistory.so:; do
+        f=${s%%:*}; s=${s#*:}; ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+        pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_pwhistory"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      # Without the list of enabled profiles, rollback could turn off profiles that were on.
+      debconf-show libpam-runtime 2>/dev/null | grep -q 'libpam-runtime/profiles:' ||
+        { echo "debconf does not report the enabled PAM profiles (debconf-show libpam-runtime); nothing saved" >&2; exit 1; }
+      {
+        echo format=pamprof-1
+        for p in sentin-harden-pwhistory; do
+          if prof_on "$p"; then e=1; else e=0; fi
+          if [ -e "$D/$p" ]; then x=1; else x=0; fi
+          echo "prof $p $e $x"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pamprof-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | awk '$1 == "prof" && $3 ~ /^[01]$/ && $4 ~ /^[01]$/ && NF == 4 { printf "%s ", $2; next } { print "bad" }')" = "sentin-harden-pwhistory " ] ||
+        { echo "Backup file is damaged: $b" >&2; exit 1; }
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    evaluate() {
+      local miss="" s f ty mo ar
+      for s in common-password:password:pam_pwhistory.so:; do
+        f=${s%%:*}; s=${s#*:}; ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+        pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_pwhistory"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "PAM already uses pam_pwhistory, nothing to change"; exit 0 ;; esac
+      command -v pam-auth-update >/dev/null 2>&1 || { echo "pam-auth-update is not installed; add pam_pwhistory to the PAM files by hand" >&2; exit 1; }
+      if [ ! -e "$D/sentin-harden-pwhistory" ]; then
+        t=$(mktemp "$D/.sentin-harden.XXXXXX")
+        printf '%b\n' 'Name: Remember old passwords (pam_pwhistory, Sentin-Harden)' 'Default: no' 'Priority: 1000' 'Password-Type: Primary' 'Password:' '\trequisite\tpam_pwhistory.so use_authtok' 'Password-Initial:' '\trequisite\tpam_pwhistory.so' > "$t"
+        chmod 644 "$t"; chown root:root "$t"; mv -f "$t" "$D/sentin-harden-pwhistory"
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      pam-auth-update --enable sentin-harden-pwhistory >/dev/null
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) undo "$b" >/dev/null
+           echo "PAM does not use pam_pwhistory after enabling the profiles ($r), for example because the common-* files were changed by hand outside the part that pam-auth-update manages; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Enabled the PAM profiles sentin-harden-pwhistory with pam-auth-update"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pamprof-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | awk '$1 == "prof" && $3 ~ /^[01]$/ && $4 ~ /^[01]$/ && NF == 4 { printf "%s ", $2; next } { print "bad" }')" = "sentin-harden-pwhistory " ] ||
+        { echo "Backup file is damaged: $b" >&2; exit 1; }
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      command -v pam-auth-update >/dev/null 2>&1 || { echo "pam-auth-update is not installed; nothing changed" >&2; exit 1; }
+      out=$(undo "$b")
+      echo "${out:-Nothing to restore}"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_pwhistory.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/pam-auth-update.8.html
+
+notes:
+  pl: |
+    Ubuntu buduje pliki /etc/pam.d/common-auth, common-account,
+    common-password i common-session poleceniem pam-auth-update z profili
+    w /usr/share/pam-configs, a listę włączonych profili trzyma w debconf
+    (debconf-show libpam-runtime). pam-auth-update zapisuje od nowa tylko
+    część plików między swoimi znacznikami; argumenty dopisane ręcznie do
+    wierszy w tej części zachowuje, a wiersze poza nią zostawia bez zmian.
+    Naprawa włącza profil poleceniem pam-auth-update --enable i sprawdza
+    pliki ponownie; gdy moduł nadal nie jest aktywny, np. po ręcznych
+    zmianach w plikach common-*, przywraca poprzedni stan i kończy się
+    błędem. Wycofanie wyłącza profil tylko wtedy, gdy przed naprawą był
+    wyłączony.
+
+    Ubuntu nie ma profilu pam-auth-update dla pam_pwhistory, choć moduł jest
+    w pakiecie libpam-modules. Naprawa tworzy profil
+    /usr/share/pam-configs/sentin-harden-pwhistory z priorytetem 1000, czyli
+    po pam_pwquality (1024) i przed pam_unix (256), i go włącza. W pliku
+    common-password pojawia się wiersz password requisite pam_pwhistory.so
+    use_authtok; gdy pam_pwquality nie jest włączony, pam_pwhistory jest
+    pierwszym modułem i dostaje wiersz bez use_authtok, bo sam pyta o nowe
+    hasło. Istniejącego pliku o tej nazwie naprawa nie zmienia. Wycofanie
+    usuwa profil poleceniem pam-auth-update --remove i kasuje jego plik,
+    jeśli utworzyła go naprawa.
+
+    Skróty starych haseł są w /etc/security/opasswd; historia zapisuje hasło
+    dopiero przy jego zmianie. Liczbę pamiętanych haseł (domyślnie 10)
+    ustawia punkt 5.3.3.3.1 w /etc/security/pwhistory.conf.
+  en: |
+    Ubuntu builds the /etc/pam.d/common-auth, common-account,
+    common-password and common-session files with pam-auth-update from the
+    profiles in /usr/share/pam-configs and keeps the list of enabled
+    profiles in debconf (debconf-show libpam-runtime). pam-auth-update
+    writes again only the part of the files between its markers; it keeps
+    arguments added by hand to lines in that part and leaves lines outside
+    it unchanged. The remediation enables the profile with pam-auth-update
+    --enable and checks the files again; when the module is still not
+    active, for example after manual changes to the common-* files, it
+    restores the previous state and fails. Rollback turns the profile off
+    only when it was off before the remediation.
+
+    Ubuntu has no pam-auth-update profile for pam_pwhistory, although the
+    module is in the libpam-modules package. The remediation creates the
+    profile /usr/share/pam-configs/sentin-harden-pwhistory with priority
+    1000, that is after pam_pwquality (1024) and before pam_unix (256), and
+    enables it. The line password requisite pam_pwhistory.so use_authtok
+    appears in common-password; when pam_pwquality is not enabled,
+    pam_pwhistory is the first module and gets a line without use_authtok,
+    because it asks for the new password itself. The remediation does not
+    change an existing file with this name. Rollback removes the profile
+    with pam-auth-update --remove and deletes its file if the remediation
+    created it.
+
+    The hashes of old passwords are in /etc/security/opasswd; the history
+    records a password only when it is changed. The number of remembered
+    passwords (10 by default) is set by item 5.3.3.3.1 in
+    /etc/security/pwhistory.conf.

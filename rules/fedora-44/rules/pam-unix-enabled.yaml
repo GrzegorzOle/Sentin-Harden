@@ -1,0 +1,109 @@
+id: fedora44-pam-unix-enabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 5.3.2.5
+  section: Access Control > Pluggable Authentication Modules > Configure authselect
+  title:
+    pl: Moduł pam_unix jest włączony
+    en: Ensure pam_unix module is enabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    pam_unix sprawdza hasła z /etc/shadow, pilnuje ważności kont i haseł,
+    zapisuje nowe hasła i odnotowuje otwarcie i zamknięcie sesji. Bez niego
+    logowanie kontami lokalnymi nie działa albo działa bez tych
+    sprawdzeń.
+
+    Punkt wymaga, żeby w /etc/pam.d/system-auth i password-auth pam_unix
+    był aktywny w częściach auth, account, password i session.
+  en: |
+    pam_unix checks passwords from /etc/shadow, enforces account and
+    password expiry, stores new passwords and records the opening and
+    closing of sessions. Without it, login with local accounts does not
+    work or works without these checks.
+
+    The item requires pam_unix to be active in the auth, account, password
+    and session parts of /etc/pam.d/system-auth and password-auth.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: sprawdzenie tylko czyta pliki PAM.
+  en: |
+    Nobody will notice: the check only reads the PAM files.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_has() {
+      [ -r "$1" ] || return 1
+      awk -v t="$2" -v m="$3" -v a="$4" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        $1 == t && p[n] == m && (a == "" || index(" " $0 " ", " " a " ")) { f = 1 }
+        END { exit !f }' "$1"
+    }
+    evaluate() {
+      local miss="" f s ty mo ar
+      for f in system-auth password-auth; do
+        for s in auth:pam_unix.so: account:pam_unix.so: password:pam_unix.so: session:pam_unix.so:; do
+          ty=${s%%:*}; s=${s#*:}; mo=${s%%:*}; ar=${s#*:}
+          pam_has "/etc/pam.d/$f" "$ty" "$mo" "$ar" || miss="$miss,$f:$ty:$mo${ar:+:$ar}"
+        done
+      done
+      if [ -z "$miss" ]; then echo "OK:pam_unix"; else echo "NOT_OK:missing=${miss#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_unix.8.html
+  - https://github.com/authselect/authselect
+
+notes:
+  pl: |
+    Na Fedorze plikami /etc/pam.d/system-auth i password-auth zarządza
+    authselect: są to dowiązania do plików w /etc/authselect, tworzonych
+    z szablonu wybranego profilu i włączonych funkcji. Fedora domyślnie
+    używa profilu local.
+
+    Profile local i sssd zawsze mają wszystkie cztery wiersze pam_unix.
+    Brak któregoś oznacza własny profil albo ręcznie utrzymywane pliki PAM
+    po authselect opt-out; wtedy trzeba poprawić szablony własnego profilu
+    w /etc/authselect/custom i wykonać authselect apply-changes. Reguła
+    tylko sprawdza stan.
+  en: |
+    On Fedora, authselect manages the /etc/pam.d/system-auth and
+    password-auth files: they are links to files in /etc/authselect built
+    from the template of the selected profile and its enabled features.
+    Fedora uses the local profile by default.
+
+    The local and sssd profiles always have all four pam_unix lines. A
+    missing one means a custom profile or PAM files kept by hand after
+    authselect opt-out; then fix the templates of the custom profile in
+    /etc/authselect/custom and run authselect apply-changes. The rule only
+    checks the state.

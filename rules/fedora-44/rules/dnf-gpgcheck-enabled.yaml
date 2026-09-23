@@ -1,0 +1,222 @@
+id: fedora44-dnf-gpgcheck-enabled
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.2.1.2
+  section: Initial Setup > Package Management > Configure Package Repositories
+  title:
+    pl: Sprawdzanie podpisów pakietów włączone globalnie
+    en: Ensure gpgcheck is globally activated
+  level: 1
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Każdy pakiet RPM instalowany przez dnf uruchamia skrypty z uprawnieniami
+    roota i umieszcza pliki w katalogach systemowych. Podpis cyfrowy pakietu
+    potwierdza, że zbudował go wydawca repozytorium i że nikt go po drodze nie
+    zmienił: ani serwer lustrzany, ani pośrednik w sieci, ani ktoś, kto przejął
+    serwer repozytorium. Bez sprawdzania podpisów wystarczy podmienić jeden
+    pakiet, żeby przy najbliższej aktualizacji uruchomić dowolny kod jako root.
+
+    Sprawdzanie podpisów steruje opcja pkg_gpgcheck (starsza nazwa gpgcheck).
+    Fedora włącza ją domyślnie dla wszystkich repozytoriów, ale plik .repo
+    dodany przez zewnętrznego dostawcę albo polecenie config-manager może ją
+    wyłączyć dla pojedynczego repozytorium. Punkt wymaga, żeby była włączona
+    globalnie i żadne włączone repozytorium jej nie wyłączało.
+
+    Kategoria jest wysoka, bo chodzi o kod uruchamiany jako root na każdej
+    stacji, która korzysta z danego repozytorium.
+  en: |
+    Every RPM package installed by dnf runs scripts with root privileges and
+    places files in system directories. The package's digital signature
+    confirms that the repository publisher built it and that nobody changed it
+    along the way: not a mirror server, not a network intermediary, not someone
+    who took over the repository server. Without signature checks, replacing a
+    single package is enough to run any code as root at the next update.
+
+    Signature checking is controlled by the pkg_gpgcheck option (older name
+    gpgcheck). Fedora enables it by default for all repositories, but a .repo
+    file added by a third-party vendor or the config-manager command can turn it
+    off for a single repository. The item requires it to be on globally and not
+    turned off by any enabled repository.
+
+    The category is high because it is about code run as root on every
+    workstation that uses the repository.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo repozytoria, które wyłączają sprawdzanie
+    podpisów, zwykle robią to dlatego, że ich pakiety nie są podpisane albo
+    klucz nie jest opisany w pliku .repo. Po zmianie dnf odmawia instalacji
+    i aktualizacji pakietów z takiego repozytorium. Repozytoria Fedory, RPM
+    Fusion i Copr podpisują pakiety, więc ich zmiana nie dotyczy.
+
+    Zmiana nie wymaga restartu ani wylogowania.
+  en: |
+    The class needs review because repositories that turn off signature checks
+    usually do so because their packages are not signed or the key is not
+    described in the .repo file. After the change dnf refuses to install and
+    update packages from such a repository. The Fedora, RPM Fusion and Copr
+    repositories sign their packages, so the change does not affect them.
+
+    The change needs no restart and no sign-out.
+
+implementation_consequences:
+  impact_areas:
+    - updates-and-servicing
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Instalacja i aktualizacja pakietów z repozytorium bez podpisów, np. wewnętrznego serwera z własnymi pakietami, kończy się błędem braku podpisu lub klucza
+      - Automatyczna aktualizacja przez dnf-automatic zatrzymuje się na pierwszym niepodpisanym pakiecie z takiego repozytorium
+    en:
+      - Installing and updating packages from a repository without signatures, such as an internal server with in-house packages, fails with a missing signature or key error
+      - Automatic updates through dnf-automatic stop at the first unsigned package from such a repository
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Organizacja korzysta z wewnętrznego repozytorium z niepodpisanymi pakietami i nie ma jeszcze klucza do ich podpisywania
+    en:
+      - The organisation uses an internal repository with unsigned packages and has no key to sign them yet
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dnf >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    main=$(LC_ALL=C dnf -q --dump-main-config 2>/dev/null | sed -n 's/^pkg_gpgcheck = //p')
+    case "$main" in 0|1) ;; *) echo CHECK_ERROR; exit 0 ;; esac
+    if [ "$main" != 1 ]; then echo MAIN_DISABLED; exit 0; fi
+    bad=$(
+    LC_ALL=C dnf -q --dump-repo-config='*' 2>/dev/null | awk '
+      /^=+ ".*" repository configuration: =+$/ { split($0, a, "\""); id = a[2]; en = ""; next }
+      $1 == "enabled" && $2 == "=" { en = $3 }
+      $1 == "pkg_gpgcheck" && $2 == "=" && en == "1" && $3 == "0" { print id }'
+    )
+    if [ -n "$bad" ]; then echo "REPO_DISABLED:$(echo $bad | tr ' ' ',')"; exit 0; fi
+    echo ENABLED
+  expected: '^ENABLED$'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      o=/etc/dnf/repos.override.d/99-config_manager.repo
+      mkdir -p "$(dirname "$b")"
+      main=$(LC_ALL=C dnf -q --dump-main-config | sed -n 's/^pkg_gpgcheck = //p')
+      case "$main" in 0|1) ;; *) echo "Cannot read the dnf configuration" >&2; exit 1 ;; esac
+      conf=$(awk '/^\[/ { s = ($0 == "[main]") } s && /^[ \t]*pkg_gpgcheck[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); v = $0 } END { print v }' /etc/dnf/dnf.conf)
+      bad=$(
+    LC_ALL=C dnf -q --dump-repo-config='*' 2>/dev/null | awk '
+      /^=+ ".*" repository configuration: =+$/ { split($0, a, "\""); id = a[2]; en = ""; next }
+      $1 == "enabled" && $2 == "=" { en = $3 }
+      $1 == "pkg_gpgcheck" && $2 == "=" && en == "1" && $3 == "0" { print id }'
+      )
+      {
+        echo "main=$main"
+        echo "main_conf=$conf"
+        for id in $bad; do
+          prev=""
+          if [ -r "$o" ]; then
+            prev=$(awk -v s="[$id]" '/^\[/ { in_s = ($0 == s) } in_s && /^[ \t]*pkg_gpgcheck[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); v = $0 } END { print v }' "$o")
+          fi
+          echo "repo=$id override=$prev"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      dnf config-manager --help >/dev/null 2>&1 || { echo "dnf config-manager is not available; install dnf5-plugins" >&2; exit 1; }
+      if [ "$(sed -n 's/^main=//p' "$b")" != 1 ]; then
+        dnf config-manager setopt pkg_gpgcheck=1
+        echo "Enabled pkg_gpgcheck in /etc/dnf/dnf.conf"
+      fi
+      for id in $(sed -n 's/^repo=\([^ ]*\) .*/\1/p' "$b"); do
+        dnf config-manager setopt "$id.pkg_gpgcheck=1"
+        echo "Enabled pkg_gpgcheck for repository $id"
+      done
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      main=$(sed -n 's/^main=//p' "$b")
+      case "$main" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      rc=0
+      while read -r id prev; do
+        prev=${prev#override=}
+        if dnf config-manager unsetopt "$id.pkg_gpgcheck" &&
+           { [ -z "$prev" ] || dnf config-manager setopt "$id.pkg_gpgcheck=$prev"; }; then
+          echo "Restored pkg_gpgcheck for repository $id"
+        else
+          echo "Could not restore repository $id" >&2; rc=1
+        fi
+      done < <(sed -n 's/^repo=//p' "$b")
+      if [ "$main" != 1 ]; then
+        conf=$(sed -n 's/^main_conf=//p' "$b")
+        dnf config-manager unsetopt pkg_gpgcheck
+        if [ -n "$conf" ]; then dnf config-manager setopt "pkg_gpgcheck=$conf"; fi
+        echo "Restored pkg_gpgcheck in /etc/dnf/dnf.conf"
+      fi
+      exit $rc
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://dnf5.readthedocs.io/en/latest/dnf5.conf.5.html
+  - https://dnf5.readthedocs.io/en/latest/dnf5_plugins/config-manager.8.html
+
+notes:
+  pl: |
+    Sprawdzenie odczytuje wartości, z których dnf faktycznie korzysta
+    (dnf --dump-main-config i --dump-repo-config), a nie same pliki, więc
+    uwzględnia pliki w katalogach z dodatkami i nadpisania z config-manager.
+    Wynik REPO_DISABLED podaje identyfikatory repozytoriów, które trzeba
+    przejrzeć. Repozytoria wyłączone nie są brane pod uwagę.
+
+    Naprawa włącza sprawdzanie przez dnf config-manager setopt: globalnie
+    w /etc/dnf/dnf.conf, jeśli było wyłączone, i dla każdego wskazanego
+    repozytorium w /etc/dnf/repos.override.d/99-config_manager.repo. Plików
+    .repo nie zmienia, więc aktualizacja pakietu, który je dostarcza, nie cofa
+    zmiany. Wycofanie usuwa tylko wpisy dodane przez naprawę i przywraca
+    wartości, które były tam wcześniej.
+
+    Punkt nie obejmuje sprawdzania podpisu metadanych repozytorium
+    (repo_gpgcheck) ani pakietów instalowanych z pliku (localpkg_gpgcheck).
+  en: |
+    The check reads the values dnf actually uses (dnf --dump-main-config and
+    --dump-repo-config) rather than the files themselves, so it covers drop-in
+    directories and config-manager overrides. The REPO_DISABLED result lists the
+    ids of the repositories to review. Disabled repositories are not considered.
+
+    The remediation turns checking on with dnf config-manager setopt: globally in
+    /etc/dnf/dnf.conf if it was off, and for each listed repository in
+    /etc/dnf/repos.override.d/99-config_manager.repo. It does not change .repo
+    files, so an update of the package that ships them does not undo the change.
+    Rollback removes only the entries the remediation added and restores the
+    values that were there before.
+
+    The item does not cover signature checks of repository metadata
+    (repo_gpgcheck) or of packages installed from a file (localpkg_gpgcheck).

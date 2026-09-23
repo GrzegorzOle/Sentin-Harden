@@ -1,0 +1,129 @@
+id: fedora44-var-log-audit-separate-partition
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 1.1.2.7.1
+  section: Initial Setup > Filesystem > Configure Filesystem Partitions > Configure /var/log/audit
+  title:
+    pl: Katalog /var/log/audit jest osobną partycją
+    en: Ensure separate partition exists for /var/log/audit
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: low
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    W /var/log/audit usługa auditd zapisuje dziennik audytu. Gdy brakuje na
+    niego miejsca, auditd zgodnie z konfiguracją może przestać zapisywać
+    zdarzenia, zawiesić system albo go wyłączyć. Osobny wolumin sprawia, że
+    o tym decyduje tylko rozmiar dziennika audytu, a nie to, ile miejsca zajęło
+    wszystko inne.
+
+    Na domyślnej instalacji Fedory Workstation /var/log/audit nie jest osobnym
+    punktem montowania, a pakiet audit nie zawsze jest zainstalowany. Punkt
+    należy do poziomu 2, bo zmiana wymaga przeniesienia danych.
+  en: |
+    /var/log/audit is where auditd writes the audit log. When it runs out of
+    space, auditd, depending on its configuration, may stop recording events,
+    suspend the system or shut it down. A separate volume means that only the
+    size of the audit log decides this, not how much space everything else took.
+
+    On a default Fedora Workstation installation /var/log/audit is not a
+    separate mount point, and the audit package is not always installed. The
+    item belongs to level 2 because the change needs data to be moved.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga planowanego wdrożenia, bo przenosi dane systemu na nowe
+    miejsce i wymaga pracy przy zatrzymanym systemie. Program nie wykonuje jej
+    sam; opis mówi, co trzeba zaplanować.
+
+    Przeniesienie dziennika audytu trzeba zrobić przy zatrzymanym auditd,
+    z zachowaniem uprawnień katalogu i etykiet SELinux. Rozmiar woluminu trzeba
+    dobrać do ustawień rotacji w /etc/audit/auditd.conf.
+  en: |
+    The change needs a planned rollout because it moves system data to a new
+    place and needs work while the system is stopped. The program does not
+    perform it; the description says what has to be planned.
+
+    Moving the audit log has to be done with auditd stopped, keeping the
+    directory's permissions and SELinux labels. The volume size has to match the
+    rotation settings in /etc/audit/auditd.conf.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Przeniesienie /var/log/audit wymaga zatrzymania auditd, więc zdarzenia z czasu przenoszenia nie trafiają do dziennika audytu
+      - Wolumin mniejszy niż suma plików rotacji z auditd.conf zapełnia się i uruchamia reakcję na brak miejsca, np. wstrzymanie systemu
+    en:
+      - Moving /var/log/audit needs auditd to be stopped, so events from the time of the move do not reach the audit log
+      - A volume smaller than the total of rotated files from auditd.conf fills up and triggers the out of space action, such as suspending the system
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Dysk nie ma wolnego miejsca na osobny wolumin, a zmiana układu partycji nie była zaplanowana
+    en:
+      - The disk has no free space for a separate volume and no change to the partition layout has been planned
+  reversibility: difficult
+
+audit:
+  shell: bash
+  test_command: |
+    t=/var/log/audit
+    if [ ! -r /proc/self/mountinfo ] || ! command -v findmnt >/dev/null 2>&1; then
+      echo CHECK_ERROR; exit 0
+    fi
+    if findmnt -kn --mountpoint "$t" >/dev/null 2>&1; then echo SEPARATE; else echo NOT_SEPARATE; fi
+  expected: '^SEPARATE$'
+  comparison: regex
+
+privileges: root
+runnable: false
+
+sources:
+  - https://man7.org/linux/man-pages/man5/fstab.5.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html
+  - https://www.freedesktop.org/software/systemd/man/latest/file-hierarchy.html
+  - https://man7.org/linux/man-pages/man8/auditd.8.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje punkt za spełniony, gdy /var/log/audit jest osobnym punktem
+    montowania, bez względu na to, czy jest to partycja, wolumin logiczny czy
+    podwolumin btrfs.
+
+    Punkt nie ma naprawy uruchamianej z programu. Wydzielenie katalogu wymaga
+    przeniesienia jego zawartości na nowe miejsce, gdy nic z niej nie korzysta,
+    czyli w trybie ratunkowym albo przy instalacji, i nie da się go bezpiecznie
+    cofnąć jednym poleceniem.
+
+    Na Fedorze z domyślnym btrfs najprostszą drogą jest osobny podwolumin
+    zamontowany w /var/log/audit wpisem w /etc/fstab. Daje on osobny punkt montowania
+    i własne opcje, ale dzieli miejsce z resztą systemu, więc przed zapełnieniem
+    dysku chroni dopiero przy włączonych limitach (quota) btrfs. Pełną ochronę
+    daje osobna partycja lub wolumin logiczny.
+  en: |
+    The check considers the item met when /var/log/audit is a separate mount point, whether
+    it is a partition, a logical volume or a btrfs subvolume.
+
+    The item has no remediation that the program runs. Separating the directory
+    means moving its contents to the new place while nothing uses them, that is,
+    in rescue mode or during installation, and it cannot be safely undone with
+    one command.
+
+    On Fedora with the default btrfs the simplest way is a separate subvolume
+    mounted at /var/log/audit by an entry in /etc/fstab. It gives a separate mount point and
+    its own options, but shares space with the rest of the system, so it protects
+    against a full disk only with btrfs quotas enabled. Full protection comes from
+    a separate partition or logical volume.

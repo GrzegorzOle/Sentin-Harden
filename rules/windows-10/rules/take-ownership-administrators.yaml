@@ -1,0 +1,236 @@
+id: win10-take-ownership-administrators
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Local Policies > User Rights Assignment
+  title:
+    pl: Przejmowanie własności obiektów tylko dla administratorów
+    en: The taking of ownership of objects restricted to administrators
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ustawienie zastrzega prawo przejmowania własności obiektów dla
+    administratorów lokalnych.
+
+    Właściciel obiektu zajmuje w systemie pozycję szczególną: niezależnie
+    od tego, co stoi na liście uprawnień, może tę listę zmienić. Jest to
+    mechanizm ratunkowy, pomyślany na wypadek, gdyby ktoś zamknął sobie
+    dostęp do własnego katalogu.
+
+    Prawo przejmowania własności pozwala tę pozycję zająć bez pytania
+    dotychczasowego właściciela. Konto, które je ma, bierze plik na
+    własność, następnie nadaje sobie pełne uprawnienia — i od tej chwili
+    robi z plikiem, co chce.
+
+    Jest to droga w dwóch krokach zamiast jednego, ale prowadzi tam samo
+    co prawa do odczytu i zapisu z pominięciem uprawnień. Różnica polega
+    na tym, że zostawia ślad: właściciel się zmienia i da się to zobaczyć.
+
+    Odnotowuję, że ślad ten zauważa wyłącznie ktoś, kto patrzy. Zmiana
+    właściciela nie wywołuje żadnego alarmu i nie przeszkadza w pracy,
+    więc bywa odkrywana miesiącami później.
+
+    Co zyskuje napastnik, dopóki punkt pozostaje niespełniony: dostęp do
+    dowolnego pliku po przejęciu go na własność w dwóch krokach.
+  en: |
+    The setting reserves the right of taking ownership of objects to the local administrators.
+
+    An object's owner holds a particular place in the system: whatever stands upon the list of rights, they may
+    change that list. It is a mechanism of rescue, thought out against the hour somebody shuts themselves out of a
+    folder of their own.
+
+    The right of taking ownership lets that place be seized without the standing owner being asked. An account
+    holding it takes a file for its own, then grants itself full rights - and from that hour does with the file as
+    it likes.
+
+    It is a road of two steps instead of one, but it leads where the rights of reading and writing with rights
+    passed over lead. The difference is that it leaves a trace: the owner changes and that may be seen.
+
+    I set down that the trace is marked only by somebody who looks. A change of owner raises no alarm and hinders
+    no work, so it is at times found out months later.
+
+    What an attacker gains while the item goes unmet: a way into any file at all, by taking it for their own in
+    two steps.
+
+disruption_description:
+  pl: |
+    Klasa „bez uciążliwości".
+
+    Domyślny wykaz zawiera samych administratorów, więc na maszynie
+    utrzymywanej normalnie zmiana jest zapisem stanu.
+
+    Odnotowuję, że prawo to bywa nadawane doraźnie, przy porządkowaniu
+    uprawnień po odejściu pracownika albo po migracji danych. Bywa wtedy
+    nadane kontu operatorskiemu i zapomniane. Warto przeczytać wykaz przed
+    zmianą właśnie z tego powodu.
+
+    Skutek pojawia się natychmiast, bez restartu i bez wylogowania.
+
+    Czego to nie psuje: pracy z plikami w ramach własnych uprawnień,
+    logowania, udziałów plikowych, dostępu administratora do wszystkiego,
+    drukowania.
+  en: |
+    The class is "no disruption".
+
+    The default list holds the administrators alone, so upon a machine kept in the ordinary way the change is a
+    setting down of a state.
+
+    I set down that this right is at times granted as need arises, at a tidying of rights after a worker has left
+    or after a moving of data. It is then at times granted to an operator's account and forgotten. It is worth
+    reading the list before the change for just that reason.
+
+    The consequence shows at once, with no restart and no signing out.
+
+    What this does not break: work with files within one's own rights, logging on, file shares, an
+    administrator's way to everything, or printing.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Konto operatorskie, któremu prawo nadano doraźnie przy porządkowaniu uprawnień, straci możliwość przejmowania plików
+      - Bywa tak po odejściu pracownika albo po migracji danych, gdy nadane prawo zostaje zapomniane
+      - Domyślny wykaz zawiera samych administratorów, więc na większości maszyn zmiana jest zapisem stanu
+      - Skutek pojawia się natychmiast, bez restartu i bez wylogowania
+      - Praca z plikami w ramach własnych uprawnień, logowanie, udziały plikowe i drukowanie pozostają bez zmian
+    en:
+      - An operator s account granted the right as need arose at a tidying of rights will lose the taking of files
+      - It happens so after a worker has left or after a moving of data, a granted right being forgotten
+      - The default list holds the administrators alone, so upon most machines the change is a setting down of a state
+      - The consequence shows at once, with no restart and no signing out
+      - Work with files within one s own rights, logging on, file shares and printing stay unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Konto operatorskie porządkuje uprawnienia po odejściach pracowników i potrzebuje tego prawa do pracy
+    en:
+      - An operator s account tidies rights after workers leave and needs this right for its work
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $export = Join-Path $env:TEMP ('sentin-audit-' + [guid]::NewGuid().ToString() + '.inf')
+      $output = & secedit /export /cfg $export /areas USER_RIGHTS 2>&1
+      if (-not (Test-Path -Path $export)) {
+        # secedit refuses the export without administrative rights. Its own message
+        # goes to the error stream, so the report can tell a missing privilege from
+        # a real fault instead of showing a bare error.
+        [Console]::Error.WriteLine((($output | Out-String).Trim()))
+        'CHECK_ERROR'
+      }
+      else {
+        $text = Get-Content -Path $export -Raw -ErrorAction Stop
+        Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+        if ($text -match '(?m)^SeTakeOwnershipPrivilege\s*=\s*(.*)$') {
+          $members = $Matches[1].Trim()
+          if ($members -eq '') { 'EMPTY' }
+          else { (($members -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Sort-Object) -join ',') }
+        } else { 'ABSENT' }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(S-1-5-32-544|ABSENT|EMPTY)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $export = Join-Path $env:TEMP ('sentin-backup-' + [guid]::NewGuid().ToString() + '.inf')
+    $null = secedit /export /cfg $export /areas USER_RIGHTS /quiet
+    $text = Get-Content -Path $export -Raw
+    Remove-Item -Path $export -Force -ErrorAction SilentlyContinue
+    $value = ''
+    if ($text -match '(?m)^SeTakeOwnershipPrivilege\s*=\s*(.*)$') { $value = $Matches[1].Trim() }
+    [pscustomobject]@{
+      right = 'SeTakeOwnershipPrivilege'
+      value = $value
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    # The right is left to the local administrators alone. A list narrower than that
+    # meets the item too, and the check takes an empty one as meeting it.
+    $inf = Join-Path $env:TEMP ('sentin-change-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      'SeTakeOwnershipPrivilege = *S-1-5-32-544',
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $inf = Join-Path $env:TEMP ('sentin-rollback-' + [guid]::NewGuid().ToString() + '.inf')
+    $body = @(
+      '[Unicode]',
+      'Unicode=yes',
+      '[Privilege Rights]',
+      ('SeTakeOwnershipPrivilege = ' + $b.value),
+      '[Version]',
+      'signature="$CHICAGO$"',
+      'Revision=1'
+    ) -join "`r`n"
+    Set-Content -Path $inf -Value $body -Encoding Unicode
+    secedit /configure /db (Join-Path $env:TEMP 'sentin-secpol.sdb') /cfg $inf /areas USER_RIGHTS /quiet
+    Remove-Item -Path $inf -Force -ErrorAction SilentlyContinue
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/take-ownership-of-files-or-other-objects
+
+notes:
+  pl: |
+    Reguła jest trzecim punktem tej samej rodziny, obok praw do odczytu
+    i zapisu z pominięciem uprawnień. Warto, żeby aplikacja pokazała całą
+    trójkę razem, bo każda z nich osobno wystarcza do obejścia uprawnień
+    plikowych — a zamknięcie dwóch przy otwartej trzeciej nie daje nic.
+
+    Argument wart zachowania dotyczy śladu. Punkt ten jest jedynym
+    z trójki, który zostawia widoczną zmianę: właściciel pliku staje się
+    inny i da się to sprawdzić. Jest to realna różnica i warto ją
+    odnotować — ale wyłącznie wtedy, gdy ktoś rzeczywiście patrzy.
+    Zmiana właściciela nie przeszkadza w pracy i nie wywołuje alarmu,
+    więc sama z siebie nie zostanie zauważona.
+
+    Odnotowuję powód, dla którego warto przeczytać wykaz mimo zerowej
+    uciążliwości. Prawo to bywa nadawane doraźnie i zostawiane — a wpis
+    zapomniany jest gorszy od wpisu świadomego, bo nikt nie pamięta, czemu
+    służył.
+  en: |
+    The rule is the third item of the same family, beside the rights of reading and writing with rights passed
+    over. It is well that the application show all three together, each of them apart sufficing to go round files'
+    rights - and the shutting of two with the third left open gives nothing.
+
+    The argument worth keeping touches the trace. This item is the only one of the three that leaves a change to
+    be seen: a file's owner becomes another and that may be proved. It is a real difference and worth setting down
+    - but only where somebody truly looks. A change of owner hinders no work and raises no alarm, so of itself it
+    will not be marked.
+
+    I set down the ground for reading the list despite the want of disruption. This right is at times granted as
+    need arises and left standing - and a forgotten entry is worse than a knowing one, nobody calling to mind what
+    it served.

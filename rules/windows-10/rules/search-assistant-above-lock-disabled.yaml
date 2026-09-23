@@ -1,0 +1,163 @@
+id: win10-search-assistant-above-lock-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Search
+  title:
+    pl: Asystent wyszukiwania nad ekranem blokady wyłączony
+    en: The search assistant above the lock screen switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Asystent wyszukiwania działający nad ekranem blokady przyjmuje polecenia od
+    kogoś, kto nie podał hasła. Odpowiada na pytania, potrafi otworzyć okno
+    ustawień, uruchomić wybrane składniki systemu i odczytać na głos to, co
+    znajdzie.
+
+    Jest to wyjście poza granicę, którą ekran blokady ma wyznaczać. Nie chodzi
+    nawet o dostęp do plików — chodzi o to, że maszyna zaczyna wykonywać polecenia
+    osoby postronnej i pokazywać jej fragmenty własnego stanu. Każda taka funkcja
+    działająca przed uwierzytelnieniem jest powierzchnią, której nikt nie
+    przewidział.
+
+    Wyłączenie sprawia, że ekran blokady znów nic nie odpowiada, dopóki nie padnie
+    hasło.
+  en: |
+    A search assistant working above the lock screen accepts commands from
+    somebody who gave no password. It answers questions, can open the settings
+    window, start selected parts of the system and read out what it finds.
+
+    That is a step past the boundary the lock screen is supposed to draw. The
+    matter is not even access to files - it is that the machine begins carrying
+    out the commands of an outsider and showing them pieces of its own state.
+    Every such function working before authentication is a surface nobody planned
+    for.
+
+    Switching it off makes the lock screen answer nothing again until a password
+    is given.
+
+disruption_description:
+  pl: |
+    Funkcja jest w pracy biurowej nieużywana, a jej wyłączenie nie odbiera niczego
+    po zalogowaniu. Wyszukiwanie w zalogowanej sesji działa dokładnie tak jak
+    wcześniej.
+
+    Jedyną grupą, która to zauważy, są osoby korzystające z poleceń głosowych ze
+    względów dostępności. Tam trzeba sprawdzić, czy zablokowany ekran rzeczywiście
+    był im do czegoś potrzebny, i dobrać rozwiązanie świadomie, zamiast zdejmować
+    zasadę dla wszystkich.
+  en: |
+    The function is unused in office work, and switching it off takes nothing away
+    after signing in. Search within a signed-in session works exactly as before.
+
+    The only group that notices are people using voice commands for accessibility
+    reasons. There it has to be checked whether the locked screen really served
+    them for anything, and a solution chosen deliberately rather than the rule
+    being lifted for everybody.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Polecenia wydawane asystentowi przy zablokowanym ekranie przestaną być przyjmowane
+      - Osoby korzystające z poleceń głosowych ze względów dostępności stracą tę drogę przed zalogowaniem
+      - Odczytanie przypomnienia albo sprawdzenie pogody bez odblokowania maszyny przestanie działać
+      - Wyszukiwanie po zalogowaniu, polecenia głosowe w sesji, logowanie i praca z plikami działają bez zmian
+    en:
+      - Commands given to the assistant with the screen locked stop being accepted
+      - People using voice commands for accessibility lose that route before signing in
+      - Reading out a reminder or checking the weather without unlocking the machine stops working
+      - Search after signing in, voice commands within a session, signing in and work with files are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska przystosowane pod względem dostępności, gdzie polecenia głosowe przed zalogowaniem są realną potrzebą
+      - Maszyny obsługiwane bez klawiatury, na których głos jest podstawową drogą sterowania
+    en:
+      - Stations adapted for accessibility, where voice commands before signing in are a genuine need
+      - Machines operated without a keyboard, where voice is the main way of steering them
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowCortanaAboveLock'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    $name = 'AllowCortanaAboveLock'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowCortanaAboveLock' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-experience
+
+notes:
+  pl: |
+    Ustawienie dotyczy wyłącznie zachowania nad ekranem blokady i nie wyłącza
+    samego asystenta — to robi osobna reguła. Punkt ocenia się razem z pozostałymi
+    zasadami ekranu blokady, bo odpowiada na to samo pytanie: co maszyna robi,
+    zanim ktokolwiek poda hasło.
+  en: |
+    The setting covers behaviour above the lock screen alone and does not switch
+    the assistant itself off - a separate rule does that. The item is judged
+    together with the other lock screen rules, because it answers the same
+    question: what does the machine do before anybody gives a password.

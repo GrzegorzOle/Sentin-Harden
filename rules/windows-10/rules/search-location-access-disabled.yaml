@@ -1,0 +1,160 @@
+id: win10-search-location-access-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Search
+  title:
+    pl: Dostęp wyszukiwania do położenia maszyny wyłączony
+    en: Search access to the machine s location turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wyszukiwanie korzystające z położenia dołącza do zapytania informację o tym,
+    gdzie maszyna się znajduje. Ma to poprawić trafność podpowiedzi i faktycznie
+    poprawia — kosztem stałego strumienia informacji o miejscu pobytu.
+
+    Dla organizacji znaczy to, że ruchy osób z laptopami stają się widoczne dla
+    strony trzeciej, bez żadnej decyzji i bez żadnego śladu. Dla pojedynczego
+    użytkownika znaczy to, że położenie wychodzi na zewnątrz nawet wtedy, gdy
+    szuka pliku na własnym dysku.
+
+    Wyłączenie odcina wyszukiwanie od tej informacji, zostawiając usługi położenia
+    dostępne dla aplikacji, które o nie proszą wprost.
+  en: |
+    Search that uses location attaches to the query information about where the
+    machine is. That is meant to improve the aptness of suggestions, and it does -
+    at the cost of a steady stream of information about whereabouts.
+
+    For an organisation it means the movements of people with laptops become
+    visible to a third party, with no decision taken and no trace left. For a
+    single user it means their location goes outside even when they are looking
+    for a file on their own disk.
+
+    Switching it off cuts search from that information while leaving location
+    services available to applications that ask for them outright.
+
+disruption_description:
+  pl: |
+    Zmiana nie odbiera niczego poza trafnością podpowiedzi zależnych od miejsca,
+    a te w pracy biurowej i tak są rzadko przydatne. Nie wymaga przerwy i nie
+    zmienia zachowania wyszukiwania plików.
+
+    Usługi położenia pozostają dostępne dla map, pogody i aplikacji, które proszą
+    o nie osobno — zasada dotyczy wyłącznie wyszukiwania systemowego. Warto o tym
+    wspomnieć, żeby zmiana nie została uznana za wyłączenie położenia w ogóle.
+  en: |
+    The change takes nothing away beyond the aptness of location-dependent
+    suggestions, and those are rarely useful in office work anyway. It calls for
+    no interruption and does not alter the behaviour of file search.
+
+    Location services stay available to maps, weather and applications that ask
+    for them separately - the rule covers system search alone. That is worth
+    mentioning, so that the change is not taken for switching location off
+    altogether.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Podpowiedzi zależne od miejsca pobytu przestaną pojawiać się w oknie wyszukiwania
+      - Wyniki dotyczące pobliskich miejsc i usług nie będą już zwracane przez wyszukiwanie systemowe
+      - Narzędzia liczące na położenie przekazywane tą drogą zgłoszą jego brak
+      - Usługi położenia dla map i pogody, wyszukiwanie plików, indeks i praca z dokumentami działają bez zmian
+    en:
+      - Location-dependent suggestions stop appearing in the search window
+      - Results about nearby places and services are no longer returned by system search
+      - Tools counting on a location passed this way report it missing
+      - Location services for maps and weather, file search, the index and work with documents are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska terenowe, na których podpowiedzi zależne od miejsca są elementem pracy
+      - Maszyny w punktach obsługi, gdzie wyszukiwanie pobliskich usług jest częścią procedury
+    en:
+      - Field stations, where location-dependent suggestions are part of the work
+      - Machines at service points, where finding nearby services is part of the procedure
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowSearchToUseLocation'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    $name = 'AllowSearchToUseLocation'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowSearchToUseLocation' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-search
+
+notes:
+  pl: |
+    Ustawienie dotyczy wyłącznie wyszukiwania systemowego i nie wyłącza usług
+    położenia dla pozostałych aplikacji. Ocenia się je razem z wyłączeniem
+    asystenta i wyszukiwania w zasobach chmurowych — wszystkie trzy ograniczają to,
+    co maszyna wysyła przy okazji zwykłego szukania pliku.
+  en: |
+    The setting covers system search alone and does not switch location services
+    off for other applications. It is judged together with switching off the
+    assistant and cloud search - all three limit what the machine sends out while
+    somebody merely looks for a file.

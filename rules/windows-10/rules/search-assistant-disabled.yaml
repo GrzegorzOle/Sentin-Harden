@@ -1,0 +1,163 @@
+id: win10-search-assistant-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Search
+  title:
+    pl: Asystent w wyszukiwaniu systemowym wyłączony
+    en: The assistant in system search turned off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Asystent wbudowany w wyszukiwanie nie ogranicza się do przeszukiwania dysku.
+    Zapytania wpisywane w okno wyszukiwania wychodzą na zewnątrz, żeby wrócić z
+    podpowiedziami, a razem z nimi wychodzi to, czego użytkownik akurat szukał.
+
+    Jest to wyciek mimowolny i dlatego trwały. W okno wyszukiwania wpisuje się
+    nazwy projektów, nazwiska, nazwy serwerów i katalogów, czasem fragmenty
+    danych wklejone przez pomyłkę. Każde takie zapytanie opuszcza organizację,
+    choć nikt nie podjął decyzji, żeby cokolwiek wysyłać.
+
+    Wyłączenie asystenta zostawia wyszukiwanie plików na maszynie. Zapytania
+    zostają na miejscu.
+  en: |
+    The assistant built into search does not confine itself to searching the disk.
+    Queries typed into the search window go outside so as to return with
+    suggestions, and along with them goes whatever the user happened to be looking
+    for.
+
+    It is an involuntary leak, and therefore a lasting one. Into the search window
+    people type project names, surnames, server and folder names, sometimes
+    fragments of data pasted by mistake. Every such query leaves the organisation,
+    though nobody decided to send anything anywhere.
+
+    Switching the assistant off leaves file search on the machine. The queries
+    stay where they are.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna od razu: okno wyszukiwania przestaje podpowiadać i
+    przestaje pokazywać wyniki spoza maszyny. Część osób odbierze to jako
+    zubożenie narzędzia, z którego korzysta dziesiątki razy dziennie.
+
+    Sprawdzić trzeba, czy w organizacji nie zbudowano procedur wokół wyszukiwania
+    odpowiedzi tą drogą. Zwykle nie — ale samo wyszukiwanie plików i aplikacji
+    zostaje, więc koszt sprowadza się do przyzwyczajenia, nie do utraconej
+    funkcji.
+  en: |
+    The change is visible at once - the search window stops suggesting and stops
+    showing results from beyond the machine. Some people will take that as an
+    impoverishment of a tool they use dozens of times a day.
+
+    What has to be checked is whether the organisation built procedures around
+    finding answers this way. Usually not - and file and application search
+    remain, so the cost comes down to habit rather than a lost function.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Okno wyszukiwania przestanie podpowiadać i przestanie pokazywać wyniki spoza maszyny
+      - Zapytania o pogodę, przeliczenia i odpowiedzi na pytania w oknie wyszukiwania przestaną zwracać cokolwiek
+      - Polecenia głosowe oparte na asystencie przestaną działać, także po zalogowaniu
+      - Osoby przyzwyczajone do wyszukiwania w sieci z tego okna zgłoszą to jako usterkę
+      - Wyszukiwanie plików, aplikacji i ustawień na maszynie, indeks oraz praca z dokumentami działają bez zmian
+    en:
+      - The search window stops suggesting and stops showing results from beyond the machine
+      - Questions about the weather, conversions and answers typed into the search window return nothing
+      - Voice commands built on the assistant stop working, after signing in as well
+      - People used to searching the web from that window report it as a fault
+      - Searching files, applications and settings on the machine, the index and work with documents are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska przystosowane pod względem dostępności, gdzie polecenia głosowe są podstawową drogą sterowania maszyną
+      - Środowiska, w których procedury pracy opierają się na wyszukiwaniu odpowiedzi z okna systemowego
+    en:
+      - Stations adapted for accessibility, where voice commands are the main way of steering the machine
+      - Environments where working procedures rest on finding answers from the system window
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowCortana'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    $name = 'AllowCortana'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowCortana' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-search
+
+notes:
+  pl: |
+    Nazwa wpisu w rejestrze pochodzi od nazwy własnej składnika i nie przypomina
+    nazwy zasady w edytorze. Ustawienie wyłącza asystenta w całości; jego
+    zachowanie nad ekranem blokady rozstrzyga osobna reguła, a wyszukiwanie w
+    zasobach chmurowych jeszcze inna.
+  en: |
+    The registry entry name comes from the component s own name and bears no
+    resemblance to the policy name in the editor. The setting switches the
+    assistant off whole; its behaviour above the lock screen is settled by a
+    separate rule, and searching cloud resources by yet another.

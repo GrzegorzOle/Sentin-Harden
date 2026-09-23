@@ -1,0 +1,158 @@
+id: win10-search-encrypted-items-indexing-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Search
+  title:
+    pl: Indeksowanie zaszyfrowanych plików wyłączone
+    en: Indexing of encrypted files disabled
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Indeks wyszukiwania przechowuje treść plików w postaci pozwalającej ją szybko
+    przeszukać. Gdy obejmuje pliki zaszyfrowane, ich zawartość trafia do indeksu
+    odszyfrowana — i leży tam obok wszystkiego innego.
+
+    Szyfrowanie pliku staje się wtedy pozorne. Plik na dysku jest chroniony,
+    a jego treść dostępna w bazie indeksu, której nikt nie traktuje jak zasobu
+    wrażliwego i której uprawnienia rzadko ktoś sprawdza. To dokładnie ten rodzaj
+    obejścia, przed którym broni się trudno, bo mechanizm działa zgodnie z
+    zamierzeniem.
+
+    Wyłączenie sprawia, że pliki zaszyfrowane pozostają poza indeksem i można je
+    znaleźć po nazwie, ale nie po zawartości.
+  en: |
+    The search index keeps the content of files in a form that lets it be searched
+    quickly. Where it covers encrypted files, their contents reach the index
+    decrypted - and sit there alongside everything else.
+
+    Encrypting a file then becomes a pretence. The file on the disk is protected
+    and its contents are available in the index database, which nobody treats as a
+    sensitive resource and whose permissions are rarely checked. It is exactly the
+    kind of bypass that is hard to defend against, because the mechanism works as
+    designed.
+
+    Switching it off keeps encrypted files out of the index - they can be found by
+    name, but not by content.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie plików zaszyfrowanych, a tych na typowej maszynie
+    jest niewiele. Pozostała zawartość dysku indeksuje się jak wcześniej.
+
+    Tam, gdzie szyfrowania używa się regularnie, zmiana jest odczuwalna:
+    szukanie po treści przestaje obejmować właśnie te dokumenty, które są
+    najważniejsze. To jest koszt świadomy i wynika wprost z tego, po co plik
+    został zaszyfrowany.
+  en: |
+    The change touches encrypted files alone, and there are few of those on a
+    typical machine. The rest of the disk is indexed as before.
+
+    Where encryption is used regularly the change is felt - searching by content
+    stops covering exactly those documents that matter most. That is a deliberate
+    cost and follows directly from why the file was encrypted in the first place.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - user-interface
+  what_breaks:
+    pl:
+      - Szukanie po treści przestanie obejmować pliki zaszyfrowane, choć nadal znajdzie je po nazwie
+      - Pozycje zaszyfrowane znikną z wyników wyszukiwania pełnotekstowego i użytkownik może uznać, że pliku nie ma
+      - Narzędzia korzystające z indeksu do przeszukiwania dokumentów zwrócą niepełne wyniki dla zasobów zaszyfrowanych
+      - Indeksowanie pozostałych plików, szyfrowanie, dostęp do plików zaszyfrowanych i praca z dokumentami działają bez zmian
+    en:
+      - Searching by content stops covering encrypted files, though they are still found by name
+      - Encrypted entries disappear from full-text results and a user may conclude the file is gone
+      - Tools using the index to search documents return incomplete results for encrypted resources
+      - Indexing of other files, encryption itself, access to encrypted files and work with documents are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska pracujące głównie na dokumentach zaszyfrowanych, gdzie szukanie po treści jest podstawową drogą ich odnajdywania
+      - Środowiska archiwalne, w których wyszukiwanie pełnotekstowe jest wymaganiem, a zasoby są szyfrowane w całości
+    en:
+      - Stations working mainly on encrypted documents, where searching by content is the main way of finding them
+      - Archive environments where full-text search is a requirement and the resources are encrypted whole
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowIndexingEncryptedStoresOrItems'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    $name = 'AllowIndexingEncryptedStoresOrItems'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowIndexingEncryptedStoresOrItems' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-search
+
+notes:
+  pl: |
+    Zasada dotyczy zawartości plików, a nie ich nazw — te pozostają w indeksie.
+    Po zmianie warto przebudować indeks, bo treść zaszyfrowana zapisana w nim
+    wcześniej nie znika sama z siebie.
+  en: |
+    The rule covers the contents of files rather than their names, which stay in
+    the index. After the change the index is worth rebuilding, since encrypted
+    content written into it earlier does not vanish by itself.

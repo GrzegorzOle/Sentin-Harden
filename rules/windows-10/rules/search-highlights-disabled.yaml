@@ -1,0 +1,158 @@
+id: win10-search-highlights-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Search
+  title:
+    pl: Treść pobierana do okna wyszukiwania wyłączona
+    en: Content fetched into the search window switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Okno wyszukiwania pokazuje treści pobierane z zewnątrz, zanim użytkownik
+    cokolwiek wpisze: obrazki, ciekawostki, odnośniki do stron. Żeby to działało,
+    maszyna łączy się regularnie z serwerami dostawcy i pobiera stamtąd materiał
+    wyświetlany wprost w powłoce systemu.
+
+    Powierzchnia ataku rośnie w sposób, którego nikt nie zamierzał. Treść z
+    zewnątrz jest renderowana w oknie należącym do systemu, a odnośniki prowadzą
+    poza organizację — jednym kliknięciem, z miejsca, które użytkownik uważa za
+    część systemu, a nie za przeglądarkę.
+
+    Wyłączenie zostawia okno wyszukiwania puste, dopóki ktoś nie zacznie pisać.
+  en: |
+    The search window shows content fetched from outside before the user types
+    anything - pictures, curiosities, links to pages. For that to work the machine
+    connects regularly to the supplier s servers and fetches material displayed
+    directly in the system shell.
+
+    The attack surface grows in a way nobody intended. Content from outside is
+    rendered in a window belonging to the system, and the links lead outside the
+    organisation - with one click, from a place the user takes for part of the
+    system rather than for a browser.
+
+    Switching it off leaves the search window empty until somebody starts typing.
+
+disruption_description:
+  pl: |
+    Zmiana dotyczy wyłącznie wyglądu okna wyszukiwania i nie rusza żadnej
+    funkcji. Wpisanie nazwy pliku albo aplikacji daje dokładnie ten sam wynik co
+    przedtem.
+
+    Zauważą ją osoby przyzwyczajone do tego, co widać w oknie przed wpisaniem
+    czegokolwiek. Jest to przyzwyczajenie, a nie narzędzie pracy, więc koszt
+    sprowadza się do jednego zdania wyjaśnienia.
+  en: |
+    The change touches only the look of the search window and moves no function.
+    Typing a file or application name gives exactly the result it did before.
+
+    People used to what appears in the window before anything is typed will
+    notice. That is a habit rather than a working tool, so the cost comes down to
+    one sentence of explanation.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Okno wyszukiwania przestanie pokazywać obrazki, ciekawostki i odnośniki przed wpisaniem zapytania
+      - Maszyna przestanie łączyć się z serwerami dostawcy po tę treść, co bywa widoczne w narzędziach nadzoru ruchu
+      - Osoby korzystające z odnośników w tym oknie stracą tę drogę i będą musiały otworzyć przeglądarkę
+      - Wyszukiwanie plików, aplikacji i ustawień, indeks oraz praca z dokumentami działają bez zmian
+    en:
+      - The search window stops showing pictures, curiosities and links before a query is typed
+      - The machine stops connecting to the supplier s servers for that content, which is visible in traffic monitoring tools
+      - People using the links in that window lose that route and have to open a browser
+      - Searching files, applications and settings, the index and work with documents are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska demonstracyjne pokazujące system w postaci domyślnej
+      - Maszyny, na których treść w oknie wyszukiwania jest świadomie wykorzystywana jako kanał informacyjny
+    en:
+      - Demonstration stations showing the system in its default form
+      - Machines where the content in the search window is deliberately used as an information channel
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry s name refers to the window s internal name and does not
+    # resemble the setting s name in the editor.
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnableDynamicContentInWSB'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    $name = 'EnableDynamicContentInWSB'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnableDynamicContentInWSB' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-search
+
+notes:
+  pl: |
+    Nazwa wpisu odwołuje się do wewnętrznej nazwy okna i nie przypomina nazwy
+    ustawienia w edytorze zasad, więc szukanie po niej nic nie znajdzie.
+    Wyłączenie dotyczy treści pobieranej, a nie samego wyszukiwania.
+  en: |
+    The entry name refers to the window s internal name and bears no resemblance
+    to the setting name in the policy editor, so searching by it finds nothing.
+    Switching it off covers the fetched content rather than search itself.

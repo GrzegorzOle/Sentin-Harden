@@ -1,0 +1,163 @@
+id: win10-cloud-search-disabled
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Search
+  title:
+    pl: Wyszukiwanie w zasobach chmurowych wyłączone
+    en: Searching cloud resources switched off
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wyszukiwanie systemowe potrafi sięgać poza dysk maszyny i przeszukiwać
+    zasoby powiązane z kontem w chmurze: pocztę, dokumenty, katalogi
+    udostępnione. Wynik wygląda jak jedna lista, ale połowa jej pozycji pochodzi z
+    innego miejsca.
+
+    Konsekwencje są dwie i obie warto nazwać. Po pierwsze, zapytanie wychodzi na
+    zewnątrz razem z tym, czego szukano. Po drugie, wyniki z chmury wyświetlają
+    się na maszynie, która w danej chwili może stać w sali konferencyjnej
+    podłączona do rzutnika — a na liście widać fragmenty wiadomości i nazwy
+    dokumentów.
+
+    Wyłączenie zostawia wyszukiwanie w granicach tej maszyny.
+  en: |
+    System search can reach past the machine s disk and search resources tied to a
+    cloud account - mail, documents, shared folders. The result looks like one
+    list, but half its entries come from elsewhere.
+
+    There are two consequences, and both are worth naming. First, the query leaves
+    the machine along with whatever was being looked for. Second, results from the
+    cloud are shown on a machine that may at that moment stand in a meeting room
+    attached to a projector - and the list carries fragments of messages and
+    document names.
+
+    Switching it off keeps search within the bounds of this machine.
+
+disruption_description:
+  pl: |
+    Zmiana odbiera funkcję, z której część osób korzysta codziennie i świadomie —
+    zwłaszcza tam, gdzie poczta i dokumenty rzeczywiście leżą w chmurze. Nie jest
+    to zatem zmiana niewidoczna i nie należy jej przedstawiać jako takiej.
+
+    Zamiennik istnieje i działa: wyszukiwanie wewnątrz aplikacji pocztowej i w
+    oknie usługi chmurowej. Różnica polega na tym, że trzeba wiedzieć, gdzie się
+    szuka, zamiast wpisywać wszystko w jedno pole. Przed wdrożeniem warto to
+    ludziom powiedzieć.
+  en: |
+    The change takes away a function some people use daily and deliberately -
+    especially where the mail and the documents really do live in the cloud. It is
+    therefore not an invisible change and should not be presented as one.
+
+    A replacement exists and works - searching inside the mail application and in
+    the cloud service window. The difference is that one has to know where to
+    look, rather than typing everything into one field. That is worth telling
+    people before the rollout.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - file-sharing
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Wyszukiwanie systemowe przestanie zwracać pocztę i dokumenty z zasobów chmurowych
+      - Osoby szukające dokumentów wyłącznie tą drogą będą musiały przejść do aplikacji pocztowej albo do okna usługi
+      - Wyniki mieszane z kilku źródeł zastąpi lista obejmująca wyłącznie zawartość maszyny
+      - Wyszukiwanie plików lokalnych, aplikacji i ustawień, indeks oraz dostęp do zasobów chmurowych z ich własnych aplikacji działają bez zmian
+    en:
+      - System search stops returning mail and documents from cloud resources
+      - People who look for documents only that way have to move to the mail application or the service window
+      - Mixed results from several sources are replaced by a list covering the contents of the machine alone
+      - Searching local files, applications and settings, the index and access to cloud resources from their own applications are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których dokumenty i poczta leżą wyłącznie w chmurze, a wyszukiwanie systemowe jest ustaloną drogą dotarcia do nich
+      - Stanowiska, na których procedury pracy opierają się na jednym polu wyszukiwania dla wszystkich źródeł
+    en:
+      - Environments where documents and mail live only in the cloud and system search is the settled way of reaching them
+      - Stations where working procedures rest on one search field for every source
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'AllowCloudSearch'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    $name = 'AllowCloudSearch'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'AllowCloudSearch' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/privacy/manage-connections-from-windows-operating-system-components-to-microsoft-services
+
+notes:
+  pl: |
+    Wyłączenie dotyczy wyszukiwania z poziomu systemu, a nie dostępu do samych
+    zasobów — aplikacje usług chmurowych działają bez zmian. Punkt ocenia się
+    razem z wyłączeniem asystenta: oba zamykają drogi, którymi zapytanie opuszcza
+    maszynę.
+  en: |
+    Switching it off covers search from the system rather than access to the
+    resources themselves - the cloud service applications work unchanged. The item
+    is judged together with switching the assistant off - both close roads by
+    which a query leaves the machine.

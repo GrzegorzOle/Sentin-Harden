@@ -1,0 +1,231 @@
+id: ubuntu2404-apport-disabled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 1.5.5
+  section: Initial Setup > Configure Additional Process Hardening
+  title:
+    pl: Automatyczne zgłaszanie błędów (apport) nie jest włączone
+    en: Ensure Automatic Error Reporting is not enabled
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    apport przechwytuje awarie programów i zapisuje w /var/crash raporty, które
+    zawierają zrzut pamięci procesu, jego środowisko, argumenty i fragmenty
+    dzienników. Raport może trafić do Canonical, a na serwerze leży na dysku
+    z danymi, które program miał w pamięci. Sam apport działa jako root przy
+    każdej awarii, a jego błędy w obsłudze zrzutów bywały wykorzystywane do
+    podniesienia uprawnień.
+
+    Punkt wymaga, żeby apport nie był zainstalowany albo był wyłączony:
+    enabled=0 w /etc/default/apport i usługa apport.service ani nie działa,
+    ani nie startuje z systemem. Pakietu nie usuwamy, bo zależą od niego
+    pakiety metapakietu ubuntu-server.
+  en: |
+    apport intercepts program crashes and writes reports to /var/crash that
+    contain the memory dump of the process, its environment, arguments and
+    pieces of logs. A report may be sent to Canonical, and on a server it sits
+    on disk with the data the program had in memory. apport itself runs as root
+    on every crash, and its bugs in dump handling have been used for privilege
+    escalation.
+
+    The item requires apport either not to be installed or to be turned off:
+    enabled=0 in /etc/default/apport and the apport.service service neither
+    running nor starting with the system. The package is not removed, because
+    the ubuntu-server metapackage depends on it.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo po zmianie awarie nie zostawiają raportów
+    w /var/crash, a zrzuty pamięci trafiają tam, gdzie wskaże jądro (domyślnie
+    plik core w katalogu roboczym procesu, o ile limit na to pozwala).
+    Zmiana działa od razu, bez restartu.
+  en: |
+    The class needs review because after the change crashes leave no reports
+    in /var/crash, and memory dumps go where the kernel points them (by default
+    a core file in the working directory of the process, if the limit allows
+    it). The change takes effect at once, without a restart.
+
+implementation_consequences:
+  impact_areas:
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Awarie programów nie tworzą raportów w /var/crash, więc nie ma ich czego wysłać poleceniem ubuntu-bug ani przejrzeć poleceniem apport-cli
+      - Zgłoszenie błędu pakietu do Launchpada wymaga ręcznego zebrania informacji o awarii
+    en:
+      - Program crashes create no reports in /var/crash, so there is nothing to send with ubuntu-bug or review with apport-cli
+      - Reporting a package bug to Launchpad requires collecting the crash information by hand
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwer testowy, z którego zespół zgłasza błędy pakietów Ubuntu na podstawie raportów apport
+    en:
+      - A test server from which the team reports Ubuntu package bugs based on apport reports
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    ue() {
+      if [ "$(systemctl show -p LoadState --value apport.service 2>/dev/null)" = loaded ]; then
+        systemctl is-enabled apport.service 2>/dev/null || true
+      else echo not-found; fi
+    }
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if [ "$(dpkg-query -W -f='${db:Status-Status}' apport 2>/dev/null || true)" != installed ]; then echo NOT_INSTALLED; exit 0; fi
+    f=/etc/default/apport
+    if [ -e "$f" ] && [ ! -r "$f" ]; then echo CHECK_ERROR; exit 0; fi
+    v=$(sed -n 's/^[[:space:]]*enabled[[:space:]]*=//p' "$f" 2>/dev/null | tr -d " \t\"'" | sort -u | tr '\n' ' ')
+    e=$(ue)
+    a=$(systemctl is-active apport.service 2>/dev/null || true)
+    bad=""
+    [ "$v" = "0 " ] || bad="$bad,enabled=$(echo ${v:-unset} | tr ' ' '/')"
+    case "$e" in enabled|enabled-runtime) bad="$bad,apport.service=$e" ;; esac
+    case "$a" in active|activating|reloading) bad="$bad,apport.service=$a" ;; esac
+    case "$(cat /proc/sys/kernel/core_pattern 2>/dev/null)" in *apport*) bad="$bad,core_pattern=apport" ;; esac
+    if [ -n "$bad" ]; then echo "ENABLED:${bad#,}"; else echo "DISABLED:enabled=0,apport.service=${e:-not-found}"; fi
+  expected: '^(NOT_INSTALLED$|DISABLED:)'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/default/apport
+      mkdir -p "$(dirname "$b")"
+    ue() {
+      if [ "$(systemctl show -p LoadState --value apport.service 2>/dev/null)" = loaded ]; then
+        systemctl is-enabled apport.service 2>/dev/null || true
+      else echo not-found; fi
+    }
+      e=$(ue)
+      a=$(systemctl is-active apport.service 2>/dev/null || true)
+      {
+        echo format=apport-1
+        echo "unit ${e:--} ${a:--}"
+        for k in kernel/core_pattern kernel/core_pipe_limit fs/suid_dumpable; do echo "sys $k $(base64 -w 0 < /proc/sys/$k)"; done
+        if [ -e "$f" ]; then echo "file 1 $(stat -c '%a' "$f")"; else echo "file 0 -"; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+    ue() {
+      if [ "$(systemctl show -p LoadState --value apport.service 2>/dev/null)" = loaded ]; then
+        systemctl is-enabled apport.service 2>/dev/null || true
+      else echo not-found; fi
+    }
+      if [ "$(dpkg-query -W -f='${db:Status-Status}' apport 2>/dev/null || true)" != installed ]; then
+        echo "apport is not installed, nothing to change"; exit 0
+      fi
+      f=/etc/default/apport
+      if [ -e "$f" ] && grep -qE '^[[:space:]]*enabled[[:space:]]*=' "$f"; then
+        sed -i -E 's/^[[:space:]]*enabled[[:space:]]*=.*/enabled=0/' "$f"
+      else
+        printf '%s\n' '# Sentin-Harden: ubuntu2404-apport-disabled' 'enabled=0' >> "$f"
+      fi
+      case "$(ue)" in
+        enabled) systemctl disable -q apport.service ;;
+        enabled-runtime) systemctl disable -q --runtime apport.service ;;
+      esac
+      # Stopping runs apport --stop, which hands core dumps back to the kernel.
+      if systemctl is-active -q apport.service; then systemctl stop apport.service; fi
+      case "$(cat /proc/sys/kernel/core_pattern)" in *apport*) /usr/share/apport/apport --stop ;; esac
+      echo "Set enabled=0 in $f and turned off apport.service"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/default/apport
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      damaged() { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=apport-1 ] || damaged
+      set -- $(sed -n 's/^unit //p' "$b" | head -n 1)
+      [ $# -eq 2 ] || damaged
+      e=$1; a=$2
+      case "$e$a" in *[!a-z-]*) damaged ;; esac
+      set -- $(sed -n 's/^file //p' "$b" | head -n 1)
+      [ $# -eq 2 ] || damaged
+      case "$1:$2" in 1:[0-7]*) case "$2" in *[!0-7]*) damaged ;; esac ;; 0:-) ;; *) damaged ;; esac
+      [ "$(grep -c '^sys ' "$b")" = 3 ] || damaged
+      if [ "$1" = 1 ]; then sed '1,/^---$/d' "$b" > "$f"; chmod "$2" "$f"; else rm -f "$f"; fi
+      case "$e" in
+        enabled) systemctl enable -q apport.service ;;
+        enabled-runtime) systemctl enable -q --runtime apport.service ;;
+      esac
+      case "$a" in active|activating|reloading) systemctl start apport.service ;; esac
+      # Values the change could have reset with apport --stop.
+      if grep '^sys kernel/core_pattern ' "$b" | cut -d' ' -f3 | base64 -d | grep -q apport; then
+        while read -r tag k d x; do
+          case " kernel/core_pattern kernel/core_pipe_limit fs/suid_dumpable " in *" $k "*) ;; *) damaged ;; esac
+          [ -n "$d" ] && [ -z "$x" ] || damaged
+          printf '%s' "$d" | base64 -d > "/proc/sys/$k"
+        done < <(grep '^sys ' "$b")
+      fi
+      echo "Restored the previous state of $f and apport.service"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://wiki.ubuntu.com/Apport
+  - https://man7.org/linux/man-pages/man5/core.5.html
+
+notes:
+  pl: |
+    Sprawdzenie wymaga, żeby każdy wpis enabled w /etc/default/apport miał
+    wartość 0, żeby apport.service nie była włączona ani uruchomiona i żeby
+    parametr jądra kernel.core_pattern nie przekazywał zrzutów do apport.
+    Wynik ENABLED podaje, co nie jest spełnione.
+
+    Samo enabled=0 nie wystarcza: na Ubuntu 24.04 apport.service przy starcie
+    ustawia kernel.core_pattern na apport i fs.suid_dumpable na 2 bez względu
+    na ten plik. Naprawa ustawia enabled=0, wyłącza i zatrzymuje usługę, co
+    oddaje obsługę zrzutów jądru; plik /etc/default/apport to plik
+    konfiguracyjny pakietu, więc dpkg zachowa zmianę przy aktualizacji.
+    Wycofanie przywraca plik, stan usługi i poprzednie wartości tych
+    parametrów jądra. Jednostki apport-forward.socket i apport-autoreport
+    zostają bez zmian, bo punkt ich nie dotyczy. Po zainstalowaniu
+    systemd-coredump pakiet apport-core-dump-handler znika razem z usługą
+    apport.service; wtedy sprawdzenie ocenia plik /etc/default/apport
+    i kernel.core_pattern.
+  en: |
+    The check requires every enabled entry in /etc/default/apport to be 0,
+    apport.service to be neither enabled nor running, and the
+    kernel.core_pattern kernel parameter not to hand dumps to apport. The
+    ENABLED result tells what is not met.
+
+    enabled=0 alone is not enough: on Ubuntu 24.04 apport.service sets
+    kernel.core_pattern to apport and fs.suid_dumpable to 2 at start regardless
+    of that file. The remediation sets enabled=0, disables and stops the
+    service, which hands dump handling back to the kernel; /etc/default/apport
+    is a configuration file of the package, so dpkg keeps the change on
+    upgrade. Rollback restores the file, the service state and the previous
+    values of these kernel parameters. The apport-forward.socket and
+    apport-autoreport units stay unchanged, as the item does not concern them.
+    Installing systemd-coredump removes the apport-core-dump-handler package
+    together with apport.service; the check then assesses /etc/default/apport
+    and kernel.core_pattern.

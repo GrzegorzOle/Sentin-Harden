@@ -1,0 +1,165 @@
+id: win10-hosted-app-winrt-access-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > App runtime
+  title:
+    pl: Uruchamianie aplikacji z dostępem do systemu z treści zdalnej zablokowane
+    en: Launching applications with system access from remote content blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Aplikacja może osadzić w sobie treść pobieraną z sieci i jednocześnie dać tej
+    treści dostęp do interfejsów systemowych: plików, urządzeń, danych konta.
+    Wygląda to jak strona w oknie, a działa z uprawnieniami programu, w którym
+    została osadzona.
+
+    Granica między treścią zdalną a systemem jest tu narysowana po stronie
+    aplikacji, czyli przez jej autora, a nie przez system. Treść podmieniona na
+    serwerze albo w drodze trafia więc od razu za tę granicę — bez pobierania
+    pliku, bez ostrzeżenia, bez czynności, którą użytkownik mógłby rozpoznać jako
+    uruchomienie czegokolwiek.
+
+    Zablokowanie tej drogi przenosi granicę z powrotem do systemu.
+  en: |
+    An application can embed content fetched from the network and at the same time
+    give that content access to system interfaces - files, devices, account data.
+    It looks like a page in a window and works with the privileges of the program
+    it was embedded in.
+
+    The boundary between remote content and the system is drawn here on the
+    application s side, that is by its author rather than by the system. Content
+    swapped on the server or in transit therefore lands straight past that
+    boundary - with no file downloaded, no warning, and no act the user could
+    recognise as running anything.
+
+    Blocking that route moves the boundary back into the system.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo trafia w oprogramowanie budowane właśnie w ten
+    sposób. Typowy przykład to aplikacja wewnętrzna będąca w istocie stroną
+    opakowaną w okno, która sięga do plików albo drukarki.
+
+    Rozpoznanie takich programów przed wdrożeniem jest trudne, bo z zewnątrz
+    wyglądają jak zwykłe aplikacje. Najpewniejszą drogą jest pytanie do autora
+    albo dostawcy, a nie oględziny. Objawem po zmianie bywa aplikacja, która
+    uruchamia się i wyświetla treść, ale przestaje zapisywać pliki albo drukować.
+  en: |
+    The change calls for a review, because it strikes at software built in exactly
+    that way. The typical example is an in-house application that is in truth a
+    page wrapped in a window, reaching for files or the printer.
+
+    Recognising such programs before the rollout is hard, since from outside they
+    look like ordinary applications. The surest route is a question to the author
+    or supplier rather than inspection. The symptom after the change tends to be
+    an application that starts and shows content but stops saving files or
+    printing.
+
+implementation_consequences:
+  impact_areas:
+    - legacy-applications
+    - scripting-and-automation
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Aplikacje osadzające treść zdalną i sięgające przez nią do plików, urządzeń albo danych konta stracą ten dostęp
+      - Programy wewnętrzne będące stroną opakowaną w okno mogą uruchamiać się poprawnie, ale przestać zapisywać pliki i drukować
+      - Rozpoznanie dotkniętych programów przed wdrożeniem wymaga pytania do autora, bo z zewnątrz wyglądają jak zwykłe aplikacje
+      - Przeglądarka, zwykłe aplikacje, dostęp do plików, drukowanie i praca w sieci pozostają bez zmian
+    en:
+      - Applications embedding remote content and reaching through it for files, devices or account data lose that access
+      - In-house programs that are a page wrapped in a window may start correctly but stop saving files and printing
+      - Recognising the affected programs before the rollout calls for a question to the author, since from outside they look like ordinary applications
+      - The browser, ordinary applications, access to files, printing and work on the network are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska z aplikacją wewnętrzną zbudowaną jako treść zdalna sięgająca do plików albo drukarki
+      - Środowiska, w których nie dało się ustalić z dostawcą, czy jego program korzysta z tej drogi
+    en:
+      - Stations with an in-house application built as remote content reaching for files or the printer
+      - Environments where it could not be established with the supplier whether their program uses that route
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'BlockHostedAppAccessWinRT'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'BlockHostedAppAccessWinRT'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'BlockHostedAppAccessWinRT' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/uwp/xaml-platform/
+
+notes:
+  pl: |
+    Punkt dotyczy treści zdalnej osadzonej w aplikacji, a nie stron otwieranych w
+    przeglądarce — przeglądarka rysuje własną granicę i tego ustawienia nie widzi.
+    Objawem po zmianie bywa program działający pozornie poprawnie, który przestaje
+    sięgać do plików albo urządzeń.
+  en: |
+    The item covers remote content embedded in an application rather than pages
+    opened in a browser - the browser draws a boundary of its own and does not see
+    this setting. The symptom after the change tends to be a program working
+    seemingly correctly that stops reaching for files or devices.

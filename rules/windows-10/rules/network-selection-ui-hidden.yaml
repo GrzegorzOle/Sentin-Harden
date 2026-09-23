@@ -1,0 +1,165 @@
+id: win10-network-selection-ui-hidden
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Wybór sieci niedostępny z ekranu logowania
+    en: Network selection unavailable from the sign-in screen
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Z ekranu logowania, jeszcze przed podaniem jakichkolwiek poświadczeń, da się
+    podłączyć maszynę do wybranej sieci bezprzewodowej. Jest to jedna z niewielu
+    czynności zmieniających stan systemu, na którą nie trzeba się w ogóle
+    zalogować.
+
+    Konsekwencja jest taka, że osoba stojąca przy zablokowanej maszynie może
+    wskazać jej sieć własną — na przykład punkt dostępowy uruchomiony na telefonie
+    obok. Maszyna zaczyna mówić przez łącze kontrolowane przez tę osobę, zanim
+    ktokolwiek się zalogował.
+
+    Ukrycie wyboru sieci zamyka ostatnią czynność, którą ekran logowania oddawał
+    za darmo.
+  en: |
+    From the sign-in screen, before any credentials are given at all, the machine
+    can be connected to a chosen wireless network. This is one of the few acts
+    changing the state of the system that calls for no signing in whatsoever.
+
+    The consequence is that a person standing at a locked machine can point it at
+    a network of their own - an access point running on the telephone beside them,
+    say. The machine begins speaking over a link controlled by that person before
+    anybody has signed in.
+
+    Hiding network selection shuts the last act the sign-in screen was handing out
+    for free.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo w jednym scenariuszu jest kosztowna: maszyna,
+    która straciła łączność, a loguje się kontem domenowym, musi mieć jak wrócić
+    do sieci przed zalogowaniem. Bez wyboru sieci na ekranie logowania nie ma jak.
+
+    Dotyczy to zwłaszcza laptopów pracujących wyłącznie po łączu bezprzewodowym,
+    przenoszonych między biurem a domem. Tam warto najpierw zapewnić drogę
+    powrotną — zapisany profil sieci albo logowanie poświadczeniem zapisanym na
+    maszynie — a dopiero potem wdrażać ten punkt.
+  en: |
+    The change calls for a review, because in one scenario it is costly - a
+    machine that has lost connectivity and signs in with a domain account has to
+    have a way back onto the network before signing in. Without network selection
+    on the sign-in screen there is none.
+
+    That is especially true of laptops working solely over a wireless link, moved
+    between the office and home. There it is worth first providing a way back - a
+    saved network profile, or signing in with a credential cached on the machine -
+    and only then rolling this item out.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - user-interface
+  what_breaks:
+    pl:
+      - Podłączenie maszyny do sieci bezprzewodowej z ekranu logowania przestanie być możliwe
+      - Laptop pracujący wyłącznie po łączu bezprzewodowym nie połączy się z nową siecią przed zalogowaniem
+      - Logowanie kontem domenowym na maszynie bez łączności będzie możliwe tylko z poświadczeniem zapisanym wcześniej
+      - Zapisane profile sieci łączą się samoczynnie i ta droga pozostaje otwarta
+      - Łącze przewodowe, logowanie kontem lokalnym, praca po zalogowaniu i dostęp do zasobów pozostają bez zmian
+    en:
+      - Connecting the machine to a wireless network from the sign-in screen stops being possible
+      - A laptop working solely over a wireless link cannot join a new network before signing in
+      - Signing in with a domain account on a machine with no connectivity is possible only with a credential cached earlier
+      - Saved network profiles connect by themselves and that route stays open
+      - A wired link, signing in with a local account, work after signing in and access to resources are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Laptopy pracujące wyłącznie po łączu bezprzewodowym, bez zapisanego profilu sieci i bez poświadczenia zapisanego na maszynie
+      - Stanowiska przenoszone między sieciami, do których użytkownik musi podłączyć się sam przed zalogowaniem
+    en:
+      - Laptops working solely over a wireless link, with no saved network profile and no credential cached on the machine
+      - Stations moved between networks, which the user has to join themselves before signing in
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'DontDisplayNetworkSelectionUI'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'DontDisplayNetworkSelectionUI'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'DontDisplayNetworkSelectionUI' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-windowslogon
+
+notes:
+  pl: |
+    Zapisane profile sieci łączą się samoczynnie i ta droga pozostaje otwarta —
+    punkt zamyka wyłącznie ręczny wybór sieci przed zalogowaniem. Przed wdrożeniem
+    warto sprawdzić, czy maszyny logujące się kontem domenowym mają zapisane
+    poświadczenie pozwalające wejść bez łączności.
+  en: |
+    Saved network profiles connect by themselves and that route stays open - the
+    item shuts manual network selection before signing in alone. Before the
+    rollout it is worth checking whether machines signing in with a domain account
+    hold a cached credential letting them in without connectivity.

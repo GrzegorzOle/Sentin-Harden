@@ -1,0 +1,161 @@
+id: win10-local-users-not-enumerated-in-domain
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > System > Logon
+  title:
+    pl: Konta lokalne niewyliczane na maszynie w domenie
+    en: Local accounts not listed on a machine in a domain
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ekran logowania maszyny przyłączonej do domeny potrafi wypisać konta lokalne
+    tej maszyny. Są to konta, których domena nie widzi i których hasła nie podlegają
+    polityce domenowej — czyli najczęściej te najstarsze i najsłabsze na maszynie.
+
+    Wypisanie ich to wskazanie palcem drogi, która omija całą kontrolę
+    organizacji. Konto serwisowe założone przy instalacji, konto po poprzednim
+    właścicielu sprzętu, konto testowe sprzed dwóch lat: każde z nich wygląda na
+    ekranie równie zachęcająco.
+
+    Ukrycie listy nie usuwa tych kont, ale przestaje je reklamować każdemu, kto
+    podejdzie do maszyny.
+  en: |
+    The sign-in screen of a machine joined to a domain can list the local accounts
+    of that machine. These are accounts the domain does not see and whose
+    passwords fall outside domain policy - that is, usually the oldest and weakest
+    on the machine.
+
+    Listing them points a finger at a road bypassing the whole of the
+    organisation s control. A service account set up at installation, an account
+    left by the hardware s previous owner, a test account from two years ago -
+    each of them looks equally inviting on the screen.
+
+    Hiding the list does not remove those accounts, but it stops advertising them
+    to everybody who walks up to the machine.
+
+disruption_description:
+  pl: |
+    Na maszynie w domenie użytkownicy logują się kontem domenowym, więc lista
+    lokalna i tak jest im niepotrzebna. Zmiana nie wymaga przerwy i cofa się
+    natychmiast.
+
+    Odczuje ją obsługa techniczna logująca się lokalnie przy naprawach — po
+    zmianie nazwę konta trzeba wpisać ręcznie, razem z kropką albo nazwą maszyny
+    przed nazwą konta. Warto to przekazać, zanim ktoś uzna, że konto zniknęło.
+  en: |
+    On a machine in a domain users sign in with a domain account, so the local
+    list is of no use to them anyway. The change calls for no interruption and
+    reverses at once.
+
+    It is felt by technical staff signing in locally during repairs - after the
+    change the account name has to be typed by hand, together with a dot or the
+    machine name before it. That is worth passing on before somebody decides the
+    account has vanished.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Ekran logowania przestanie wypisywać konta lokalne, a ich nazwy trzeba będzie wpisać ręcznie
+      - Obsługa techniczna logująca się lokalnie przy naprawach musi znać nazwę konta i poprzedzić ją nazwą maszyny
+      - Osoby korzystające dotąd z konta lokalnego z listy mogą uznać, że konto zostało usunięte
+      - Same konta lokalne, ich uprawnienia, logowanie kontem domenowym i praca po zalogowaniu pozostają bez zmian
+    en:
+      - The sign-in screen stops listing local accounts, and their names have to be typed by hand
+      - Technical staff signing in locally during repairs have to know the account name and precede it with the machine name
+      - People who have been using a local account off the list may decide the account has been removed
+      - The local accounts themselves, their privileges, signing in with a domain account and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny poza domeną, gdzie lista kont lokalnych jest jedyną drogą do zalogowania się
+      - Stanowiska wspólne obsługiwane przez osoby, którym nie przekazano nazw kont lokalnych
+    en:
+      - Machines outside a domain, where the list of local accounts is the only way of signing in
+      - Shared stations operated by people who have not been given the names of the local accounts
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnumerateLocalUsers'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    $name = 'EnumerateLocalUsers'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnumerateLocalUsers' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/client-management/mdm/policy-csp-windowslogon
+
+notes:
+  pl: |
+    Punkt ma zastosowanie na maszynie przyłączonej do domeny. Poza domeną lista
+    kont lokalnych jest jedyną drogą logowania i ukrycie jej zamienia stanowisko w
+    maszynę, do której trzeba znać nazwę konta z pamięci. Zasadę ocenia się razem
+    z niewyliczaniem kont administratorów przy podnoszeniu uprawnień.
+  en: |
+    The item applies on a machine joined to a domain. Outside a domain the list of
+    local accounts is the only way in, and hiding it turns the station into a
+    machine one has to know an account name for from memory. The rule is judged
+    together with administrator accounts not being listed when elevating.

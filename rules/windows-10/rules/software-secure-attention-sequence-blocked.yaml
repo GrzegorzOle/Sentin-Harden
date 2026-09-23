@@ -1,0 +1,172 @@
+id: win10-software-secure-attention-sequence-blocked
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Windows Logon Options
+  title:
+    pl: Wywoływanie bezpiecznej sekwencji uwagi przez programy zablokowane
+    en: The raising of the secure attention sequence by programs blocked
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Bezpieczna sekwencja uwagi ma jedną właściwość, z której bierze się jej sens:
+    wywołuje ją wyłącznie człowiek przy klawiaturze. Program tego nie potrafi i
+    właśnie dlatego jej naciśnięcie dowodzi, że ekran logowania jest prawdziwy.
+
+    Dopuszczenie programów do wywoływania tej sekwencji odbiera ten dowód. Skoro
+    sekwencję może wywołać oprogramowanie, to obecność ekranu logowania przestaje
+    świadczyć o czymkolwiek — a użytkownik nie ma jak tych dwóch przypadków
+    odróżnić.
+
+    Zablokowanie wywoływania programowego przywraca sekwencji jej jedyną
+    właściwość.
+  en: |
+    The secure attention sequence has one property its whole point rests on - only
+    a person at the keyboard raises it. A program cannot, and that is precisely
+    why pressing it proves the sign-in screen is the real one.
+
+    Admitting programs to raising that sequence takes the proof away. Once
+    software can raise it, the presence of a sign-in screen stops attesting to
+    anything at all - and the user has no way of telling the two cases apart.
+
+    Blocking software from raising it gives the sequence its one property back.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo wywołanie programowe bywa potrzebne i wtedy
+    zablokowanie go coś psuje. Dwie grupy są tu istotne.
+
+    Pierwsza to narzędzia ułatwień dostępu: klawiatura ekranowa i oprogramowanie
+    obsługujące maszynę bez klawiatury fizycznej. Dla nich wywołanie programowe
+    jest jedynym sposobem wywołania sekwencji, więc blokada odcina logowanie w
+    ogóle.
+
+    Druga to narzędzia zarządzania zdalnego, które wysyłają tę sekwencję do
+    maszyny obsługiwanej przez sieć. Po zmianie trzeba je sprawdzić, bo część
+    przestanie umieć pokazać ekran logowania.
+  en: |
+    The change calls for a review, because software raising it is sometimes needed
+    and blocking it then breaks something. Two groups matter here.
+
+    The first is accessibility tooling - an on-screen keyboard and software
+    operating a machine with no physical keyboard. For them raising it in software
+    is the only way of producing the sequence, so the block cuts off signing in
+    altogether.
+
+    The second is remote management tooling, which sends the sequence to a machine
+    operated over the network. After the change those need checking, since some of
+    them stop being able to show the sign-in screen.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - accounts-and-passwords
+    - remote-management
+  what_breaks:
+    pl:
+      - Klawiatura ekranowa i narzędzia ułatwień dostępu przestaną móc wywołać ekran logowania na maszynie bez klawiatury fizycznej
+      - Narzędzia zarządzania zdalnego wysyłające tę sekwencję mogą przestać pokazywać ekran logowania obsługiwanej maszyny
+      - Stanowiska dotykowe i kioskowe stracą jedyną drogę do wywołania sekwencji przed zalogowaniem
+      - Skrypty automatyzujące logowanie oparte na wysłaniu tej sekwencji przestaną działać
+      - Naciśnięcie kombinacji na klawiaturze fizycznej, logowanie, uprawnienia i praca po zalogowaniu pozostają bez zmian
+    en:
+      - An on-screen keyboard and accessibility tooling stop being able to raise the sign-in screen on a machine with no physical keyboard
+      - Remote management tooling sending that sequence may stop showing the sign-in screen of the machine it serves
+      - Touch and kiosk stations lose the only route to raising the sequence before signing in
+      - Scripts automating sign-in built on sending that sequence stop working
+      - Pressing the combination on a physical keyboard, signing in, privileges and work after signing in are all unchanged
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska obsługiwane wyłącznie klawiaturą ekranową albo narzędziem ułatwień dostępu
+      - Maszyny zarządzane zdalnie narzędziem, które wysyła tę sekwencję programowo
+      - Stanowiska dotykowe i kioskowe bez klawiatury fizycznej
+    en:
+      - Stations operated solely by an on-screen keyboard or accessibility tooling
+      - Machines managed remotely by a tool that sends the sequence in software
+      - Touch and kiosk stations with no physical keyboard
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The entry takes values from a set: zero admits no software at all, and
+    # the further positions admit services, accessibility tools, or both.
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'SoftwareSASGeneration'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $name = 'SoftwareSASGeneration'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'SoftwareSASGeneration' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/win32/secauthn/winlogon-and-gina
+
+notes:
+  pl: |
+    Wpis przyjmuje wartości ze zbioru: zero nie dopuszcza żadnego oprogramowania,
+    a dalsze pozycje dopuszczają usługi, narzędzia ułatwień dostępu albo jedno i
+    drugie. Punkt ocenia się razem z zasadą wymagającą kombinacji klawiszy przed
+    logowaniem — ta druga traci sens, jeżeli sekwencję potrafi wywołać program.
+  en: |
+    The entry takes values from a set - zero admits no software at all, while the
+    further positions admit services, accessibility tooling, or both. The item is
+    judged together with the rule requiring a key combination before signing in -
+    that one loses its point if a program can raise the sequence.

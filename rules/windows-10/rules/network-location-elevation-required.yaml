@@ -1,0 +1,163 @@
+id: win10-network-location-elevation-required
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Network > Network Connections
+  title:
+    pl: Zmiana typu sieci wymaga podniesienia uprawnień
+    en: Changing a network s type requires raised privileges
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Typ sieci rozstrzyga, który zestaw reguł zapory obowiązuje. Sieć oznaczona
+    jako prywatna otwiera udostępnianie plików, wykrywanie maszyn i drukowanie —
+    czyli dokładnie to, co w sieci publicznej ma być zamknięte.
+
+    Jeżeli typ sieci zmienia zwykły użytkownik, to zapora przestaje być decyzją
+    organizacji, a staje się decyzją osoby, która chciała podłączyć drukarkę w
+    hotelu. Jedno kliknięcie w oknie z pytaniem „czy zezwolić innym urządzeniom
+    w tej sieci" zdejmuje całą warstwę ochrony na czas pobytu w sieci obcej.
+
+    Wymaganie podniesienia uprawnień przenosi tę decyzję z powrotem tam, gdzie
+    jest świadoma.
+  en: |
+    The type of a network settles which set of firewall rules holds. A network
+    marked private opens file sharing, machine discovery and printing - that is,
+    exactly what is meant to be shut on a public network.
+
+    If an ordinary user changes the network type, then the firewall stops being
+    the organisation s decision and becomes the decision of somebody who wanted to
+    connect a printer in a hotel. One click in the window asking whether to let
+    other devices on this network see the machine lifts a whole layer of
+    protection for the length of a stay on a foreign network.
+
+    Requiring raised privileges moves that decision back to where it is a
+    deliberate one.
+
+disruption_description:
+  pl: |
+    Zmiana nie wymaga przerwy i cofa się natychmiast. Jej skutkiem jest okno z
+    pytaniem o hasło administratora w miejsce cichego przełączenia.
+
+    Odczują ją laptopy podłączane do sieci nowych: domowej, hotelowej, u klienta.
+    Przy każdej nowej sieci system pyta o typ, a po zmianie na to pytanie nie
+    odpowie już użytkownik bez uprawnień. Domyślnie sieć nieokreślona traktowana
+    jest jako publiczna, czyli ostrożniej — więc brak odpowiedzi nie otwiera
+    niczego, tylko zostawia stanowisko zamknięte.
+  en: |
+    The change calls for no interruption and reverses at once. Its consequence is
+    a window asking for an administrator password in place of a silent switch.
+
+    It is felt by laptops connected to new networks - at home, in a hotel, at a
+    client s. With every new network the system asks about its type, and after the
+    change a user without privileges no longer answers that question. By default
+    an undetermined network is treated as public, that is more cautiously - so an
+    unanswered question opens nothing and merely leaves the station shut.
+
+implementation_consequences:
+  impact_areas:
+    - network-and-firewall
+    - file-sharing
+    - printing
+  what_breaks:
+    pl:
+      - Zmiana typu sieci z publicznej na prywatną przestanie być możliwa bez podania hasła administratora
+      - Udostępnianie plików i drukarek w sieci domowej nie ruszy, dopóki ktoś z uprawnieniami nie oznaczy jej jako prywatnej
+      - Wykrywanie maszyn i urządzeń w nowej sieci pozostanie wyłączone, bo sieć nieokreślona traktowana jest jako publiczna
+      - Osoby pracujące zdalnie zgłoszą to jako niedziałającą drukarkę albo niewidoczny dysk sieciowy
+      - Samo połączenie z siecią, dostęp do internetu, poczta i praca w przeglądarce działają bez zmian
+    en:
+      - Changing a network type from public to private stops being possible without an administrator password
+      - File and printer sharing on a home network does not start until somebody with privileges marks it private
+      - Discovery of machines and devices on a new network stays off, since an undetermined network is treated as public
+      - People working remotely report this as a printer that does not work or a network drive that is not visible
+      - The network connection itself, internet access, mail and work in a browser all work unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska zdalne, na których użytkownik musi sam uruchomić udostępnianie plików albo drukarkę w sieci domowej
+      - Maszyny przenoszone między wieloma sieciami dziennie, gdzie każde pytanie o typ wymagałoby administratora
+    en:
+      - Remote stations, where the user has to start file sharing or a printer on a home network themselves
+      - Machines moved between many networks a day, where every question about the type would call for an administrator
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'NC_StdDomainUserSetLocation'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '1'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+    $name = 'NC_StdDomainUserSetLocation'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'NC_StdDomainUserSetLocation' -Value 1 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/threat-protection/windows-firewall/windows-firewall-with-advanced-security
+
+notes:
+  pl: |
+    Sieć, dla której typu nikt nie rozstrzygnął, traktowana jest jako publiczna,
+    czyli ostrożniej. Brak odpowiedzi na pytanie systemu nie otwiera więc niczego —
+    zostawia stanowisko zamknięte, a nie odsłonięte.
+  en: |
+    A network whose type nobody has settled is treated as public, that is more
+    cautiously. An unanswered question from the system therefore opens nothing -
+    it leaves the station shut rather than exposed.

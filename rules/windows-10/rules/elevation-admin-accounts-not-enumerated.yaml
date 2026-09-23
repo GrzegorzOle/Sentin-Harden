@@ -1,0 +1,164 @@
+id: win10-elevation-admin-accounts-not-enumerated
+
+benchmark:
+  name: CIS Microsoft Windows 10 Benchmark
+  version: TBD
+  item: TBD
+  section: Administrative Templates > Windows Components > Credential User Interface
+  title:
+    pl: Konta administratorów nie są wyliczane przy podnoszeniu uprawnień
+    en: Administrator accounts not listed when elevating
+  level: 1
+  profile: workstation
+
+platform:
+  system: windows-10
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Okno proszące o zgodę na podniesienie uprawnień potrafi wypisać konta
+    administratorów tej maszyny. Użytkownik wybiera jedno z listy i podaje do
+    niego hasło. Wygodne — i równie wygodne dla kogoś, kto przy tej maszynie
+    usiadł bez zaproszenia.
+
+    Znajomość nazwy konta to połowa pracy przy zgadywaniu poświadczeń. Druga
+    połowa, hasło, ma sens dopiero wtedy, gdy wiadomo, do czego je dopasować.
+    Wypisana lista zdejmuje tę pierwszą połowę z atakującego i robi to na każdym
+    stanowisku, przy którym zdąży usiąść.
+
+    Ukrycie listy nie utrudnia niczego osobie, która i tak zna nazwę własnego
+    konta administracyjnego.
+  en: |
+    The window asking for consent to raise privileges can list the administrator
+    accounts of the machine. The user picks one off the list and supplies its
+    password. Convenient - and just as convenient for somebody who sat down at
+    that machine without an invitation.
+
+    Knowing the name of an account is half the work of guessing credentials. The
+    other half, the password, only makes sense once it is known what to match it
+    against. A listed set takes that first half off the attacker, and does so at
+    every station they manage to sit down at.
+
+    Hiding the list makes nothing harder for a person who knows the name of their
+    own administrative account anyway.
+
+disruption_description:
+  pl: |
+    Zmiana jest widoczna, ale nie odbiera niczego poza podpowiedzią: nazwę konta
+    wpisuje się ręcznie zamiast wybierać z listy. Nie wymaga przerwy i cofa się
+    natychmiast.
+
+    Odczują ją wyłącznie osoby, które nazwy własnego konta administracyjnego nie
+    znają — zwykle dlatego, że używają go rzadko i dotąd wybierały z listy.
+    Kosztem jest jedno pytanie do działu informatycznego na osobę, jednorazowo.
+  en: |
+    The change is visible but takes nothing away beyond a hint - the account name
+    is typed by hand rather than picked off a list. It calls for no interruption
+    and reverses at once.
+
+    The only people who feel it are those who do not know the name of their own
+    administrative account - usually because they use it rarely and have so far
+    been picking it off the list. The cost is one question to the IT desk per
+    person, once.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - user-interface
+  what_breaks:
+    pl:
+      - Okno podnoszenia uprawnień przestanie wypisywać konta administratorów i będzie wymagało wpisania nazwy ręcznie
+      - Osoby nieznające nazwy własnego konta administracyjnego nie podniosą uprawnień bez pytania do działu informatycznego
+      - Pomyłka w nazwie konta będzie wyglądała tak samo jak błędne hasło, co utrudni samodzielne zorientowanie się
+      - Samo podnoszenie uprawnień, uprawnienia kont, logowanie i praca po zalogowaniu pozostają bez zmian
+    en:
+      - The elevation window stops listing administrator accounts and calls for the name to be typed by hand
+      - People who do not know the name of their own administrative account cannot elevate without asking the IT desk
+      - A mistyped account name looks the same as a wrong password, making it harder to work out unaided
+      - Elevation itself, account privileges, signing in and work after signing in are all unchanged
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowiska obsługiwane przez osoby, którym nie przekazano nazw kont administracyjnych i nie ma jak tego zrobić
+      - Środowiska szkoleniowe, w których lista kont jest częścią prowadzonych zajęć
+    en:
+      - Stations operated by people who have not been given the names of the administrative accounts and cannot be
+      - Training environments, where the list of accounts is part of the lesson being taught
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI'
+      if (-not (Test-Path -Path $path -ErrorAction Stop)) { 'MISSING' }
+      else {
+        $value = (Get-ItemProperty -Path $path -ErrorAction Stop).'EnumerateAdministrators'
+        if ($null -eq $value) { 'MISSING' } else { [string]$value }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '0'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI'
+    $name = 'EnumerateAdministrators'
+    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+    [pscustomobject]@{
+      path        = $path
+      name        = $name
+      value       = $current
+      existed     = ($null -ne $current)
+      key_existed = (Test-Path -Path $path)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI'
+    if (-not (Test-Path -Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name 'EnumerateAdministrators' -Value 0 -Type DWord
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if ($b.existed) {
+      Set-ItemProperty -Path $b.path -Name $b.name -Value $b.value -Type DWord
+    } else {
+      Remove-ItemProperty -Path $b.path -Name $b.name -ErrorAction SilentlyContinue
+      if (-not $b.key_existed) {
+        # The key is removed only where the change created it and nothing else has
+        # since been written into it.
+        $k = Get-Item -Path $b.path -ErrorAction SilentlyContinue
+        if ($k -and $k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) {
+          Remove-Item -Path $b.path -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows/security/identity-protection/user-account-control/user-account-control-overview
+
+notes:
+  pl: |
+    Wpis leży w gałęzi zasad interfejsu poświadczeń, a nie w gałęzi zasad
+    podnoszenia uprawnień — to inne miejsce niż pozostałe ustawienia kontroli
+    konta użytkownika. Punkt ocenia się razem z zasadą o niewyliczaniu kont
+    lokalnych na maszynie w domenie: obie odbierają tę samą podpowiedź w dwóch
+    różnych oknach.
+  en: |
+    The entry lies in the credential interface policy branch rather than the
+    elevation policy branch - a different place from the other user account
+    control settings. The item is judged together with the rule on local accounts
+    not being listed on a machine in a domain - both take the same hint away, in
+    two different windows.

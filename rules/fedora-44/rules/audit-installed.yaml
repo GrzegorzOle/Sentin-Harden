@@ -1,0 +1,130 @@
+id: fedora44-audit-installed
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.3.1.1
+  section: Logging and Auditing > System Accounting (auditd) > Configure auditd Service
+  title:
+    pl: Pakiety audytu są zainstalowane
+    en: Ensure auditd packages are installed
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podsystem audytu jądra zapisuje zdarzenia ważne dla bezpieczeństwa:
+    logowania, zmiany uprawnień, dostęp do chronionych plików i użycie
+    uprawnień administratora. Usługa auditd z pakietu audit odbiera te
+    zdarzenia z jądra i zapisuje je w /var/log/audit/audit.log. Bez niej
+    większość zdarzeń przepada albo trafia tylko do dziennika systemowego.
+
+    Punkt wymaga pakietu audit razem z biblioteką audit-libs.
+  en: |
+    The kernel audit subsystem records security events: logins, permission
+    changes, access to protected files and the use of administrator
+    privileges. The auditd service from the audit package receives these
+    events from the kernel and writes them to /var/log/audit/audit.log.
+    Without it most events are lost or only reach the system log.
+
+    The item requires the audit package with the audit-libs library.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: Fedora instaluje pakiet audit domyślnie, a sama
+    instalacja niczego nie włącza, bo usługą zajmuje się punkt 6.3.1.4.
+  en: |
+    Nobody will notice: Fedora installs the audit package by default, and
+    the installation alone switches nothing on, because item 6.3.1.4 takes
+    care of the service.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Instalacja wymaga dostępu do repozytorium pakietów Fedory
+    en:
+      - The installation needs access to the Fedora package repository
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v rpm >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    if rpm -q --quiet audit; then echo "INSTALLED:$(rpm -q audit | head -n 1)"; else echo NOT_INSTALLED; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=pkg-on-1
+        if rpm -q --quiet audit; then echo installed=1; else echo installed=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      if rpm -q --quiet audit; then echo "audit is already installed"; exit 0; fi
+      dnf -y -q install audit
+      rpm -q --quiet audit || { echo "audit is still not installed" >&2; exit 1; }
+      echo "Installed audit"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pkg-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      inst=$(sed -n '2s/^installed=//p' "$b")
+      case "$inst" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$inst" = 1 ] || ! rpm -q --quiet audit; then echo "Nothing to restore"; exit 0; fi
+      # Packages installed since then may need it; then it stays.
+      rm=audit
+      for p in ""; do if rpm -q --quiet "$p"; then rm="$rm $p"; fi; done
+      if ! rpm -e --test $rm >/dev/null 2>&1; then
+        echo "Kept audit: other installed packages need it now"; exit 0
+      fi
+      dnf -y -q remove --no-autoremove $rm
+      echo "Removed again:" $rm
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/auditd.8.html
+  - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/security_hardening/auditing-the-system_security-hardening
+
+notes:
+  pl: |
+    Test sprawdza pakiet audit; audit-libs jest jego zależnością, więc
+    instaluje się razem z nim i nie da się go usunąć osobno bez audit. Naprawa
+    instaluje audit poleceniem dnf. Wycofanie usuwa go ponownie, jeśli nie
+    było go przed naprawą i żaden inny pakiet go nie potrzebuje.
+  en: |
+    The test checks the audit package; audit-libs is its dependency, so it is
+    installed together with it and cannot be removed separately without
+    audit. The remediation installs audit with dnf. Rollback removes it
+    again if it was not there before the remediation and no other package
+    needs it.

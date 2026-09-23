@@ -1,0 +1,737 @@
+id: fedora44-audit-early-boot
+
+benchmark:
+  name: CIS Red Hat Enterprise Linux 9 Benchmark
+  version: 2.0.0
+  item: 6.3.1.2
+  section: Logging and Auditing > System Accounting (auditd) > Configure auditd Service
+  title:
+    pl: Audyt obejmuje procesy uruchomione przed auditd
+    en: Ensure auditing for processes that start prior to auditd is enabled
+  level: 2
+  profile: workstation
+
+platform:
+  system: fedora-44
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Jądro zaczyna audyt dopiero wtedy, gdy auditd go włączy, a procesy
+    uruchomione wcześniej podczas startu nie są objęte audytem aż do
+    ponownego uruchomienia. Parametr jądra audit=1 włącza audyt od samego
+    początku startu systemu.
+
+    Punkt wymaga parametru audit=1 we wszystkich wpisach programu
+    rozruchowego oraz w ustawieniach, z których powstają wpisy dla nowych
+    jąder.
+  en: |
+    The kernel only starts auditing when auditd enables it, and processes
+    started earlier during boot are not audited until they are restarted.
+    The audit=1 kernel argument enables auditing from the very start of the
+    boot.
+
+    The item requires the audit=1 argument in all boot loader entries and in
+    the settings from which the entries for new kernels are created.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo zmiana dotyczy programu rozruchowego
+    i działa dopiero po ponownym uruchomieniu komputera. Samo audit=1 nie
+    zmienia zachowania systemu: bez reguł audytu jądro zapisuje tylko
+    nieliczne zdarzenia wbudowane.
+  en: |
+    The class needs review because the change concerns the boot loader and
+    only takes effect after the computer restarts. audit=1 alone does not
+    change how the system behaves: without audit rules the kernel records
+    only a few built-in events.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - boot-and-firmware
+  what_breaks:
+    pl:
+      - Zmiana działa dopiero po ponownym uruchomieniu komputera
+    en:
+      - The change only takes effect after the computer restarts
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    kn=audit
+    kv=1
+    e=/boot/loader/entries
+    g=/etc/default/grub
+    kc=/etc/kernel/cmdline
+    # kval ARGS: the value of the last $kn argument, "" for a bare name, "-" when absent
+    kval() { printf '%s\n' "$1" | awk -v n="$kn" '{ v = "-"; for (i = 1; i <= NF; i++) { if (index($i, n "=") == 1) v = substr($i, length(n) + 2); else if ($i == n) v = "" } print v }'; }
+    kok() { [ "$1" != "-" ] && printf '%s\n' "$1" | awk '{ v = $0 } END { exit !(v == "1" || tolower(v) == "on") }'; }
+    # ktoks ARGS: all $kn arguments, space separated
+    ktoks() { printf '%s\n' "$1" | awk -v n="$kn" '{ for (i = 1; i <= NF; i++) if ($i == n || index($i, n "=") == 1) r = r (r == "" ? "" : " ") $i } END { print r }'; }
+    show() { if [ "$1" = - ]; then echo missing; else echo "$1"; fi; }
+    opts() { sed -n 's/^options[ \t]\{1,\}//p' "$1" | tr '\n' ' '; }
+    genv() { grub2-editenv - list 2>/dev/null | sed -n 's/^kernelopts=//p'; }
+    expand() { case "$1" in *'$kernelopts'*) local k; k=$(genv); printf '%s\n' "${1//\$kernelopts/$k}" ;; *) printf '%s\n' "$1" ;; esac; }
+    gvar() { [ -f "$g" ] && sed -n "s/^$1=//p" "$g" | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" | tr '\n' ' '; }
+    ghas() { [ -f "$g" ] && grep -q "^$1=" "$g"; }
+    # kawk MODE TOKENS FILE: prints FILE with TOKENS in place of the first $kn
+    # argument of the lines MODE selects (bls: options lines, plain: the first
+    # line, var:NAME: NAME= lines), without the other $kn arguments, and with
+    # TOKENS appended to the first such line when there was none. Other lines stay
+    # byte for byte.
+    kawk() {
+      awk -v n="$kn" -v mode="$1" -v tk="$2" '
+        function pick(l, i) {
+          if (mode == "bls") return l ~ /^options[ \t]/
+          if (mode == "plain") return i == 1
+          return index(l, var "=") == 1
+        }
+        function split3(l) {
+          pre = ""; q = ""; body = l
+          if (mode == "bls") { match(l, /^options[ \t]+/); pre = substr(l, 1, RLENGTH); body = substr(l, RLENGTH + 1) }
+          else if (mode != "plain") {
+            pre = var "="; body = substr(l, length(pre) + 1)
+            if (body ~ /^".*"$/ || body ~ /^\x27.*\x27$/) { q = substr(body, 1, 1); body = substr(body, 2, length(body) - 2) }
+          }
+        }
+        function has(s,  a, c, i) { c = split(s, a, /[ \t]+/); for (i = 1; i <= c; i++) if (a[i] == n || index(a[i], n "=") == 1) return 1; return 0 }
+        # edit keeps the whitespace between the remaining arguments as it was
+        function edit(s,  r, ws, t, lead, fix) {
+          r = ""; fix = 0
+          while (s != "") {
+            match(s, /^[ \t]*/); ws = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+            if (s == "") { r = r ws; break }
+            match(s, /^[^ \t]+/); t = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+            if (t == n || index(t, n "=") == 1) {
+              if (!put && tk != "") { r = r ws tk; put = 1; continue }
+              put = 1
+              if (r == "" && !fix) { fix = 1; lead = ws }
+              continue
+            }
+            if (fix && r == "") { ws = lead; fix = 0 }
+            r = r ws t
+          }
+          return r
+        }
+        BEGIN { var = mode; sub(/^var:/, "", var) }
+        { line[NR] = $0 }
+        END {
+          found = 0; first = 0
+          for (i = 1; i <= NR; i++) if (pick(line[i], i)) { if (!first) first = i; split3(line[i]); if (has(body)) found = 1 }
+          for (i = 1; i <= NR; i++) {
+            l = line[i]
+            if (pick(l, i)) {
+              split3(l)
+              if (has(body)) { l = edit(body); if (mode == "bls" && tk == "" && l !~ /[^ \t]/) continue; l = pre q l q }
+              else if (!found && i == first && tk != "") l = pre q body (body ~ /[^ \t]/ ? " " : "") tk q
+            }
+            print l
+          }
+          if (!first && tk != "") {
+            if (mode == "bls") print "options " tk
+            else if (mode == "plain") print tk
+            else print var "=\"" tk "\""
+          }
+        }' "$3"
+    }
+    # kedit FILE MODE TOKENS: kawk in place, keeping the owner, mode and label
+    kedit() {
+      local t; t=$(mktemp)
+      kawk "$2" "$3" "$1" > "$t"
+      if ! cmp -s "$1" "$t"; then cat "$t" > "$1"; fi
+      rm -f "$t"
+    }
+    kstr() { printf '%s\n' "$1" | kawk plain "$2" -; }
+    gtoks() { local a=""; ghas GRUB_CMDLINE_LINUX && a="$(gvar GRUB_CMDLINE_LINUX)"; ghas GRUB_CMDLINE_LINUX_DEFAULT && a="$a $(gvar GRUB_CMDLINE_LINUX_DEFAULT)"; printf '%s\n' "$a"; }
+    evaluate() {
+      local f o v bad="" needs="" n=0 r
+      [ -d "$e" ] || { echo CHECK_ERROR; return; }
+      if [ ! -r "$e" ] || [ ! -x "$e" ]; then needs=1
+      else
+        for f in "$e"/*.conf; do
+          [ -e "$f" ] || continue
+          [ -r "$f" ] || { needs=1; continue; }
+          n=$((n + 1))
+          v=$(kval "$(expand "$(opts "$f")")")
+          kok "$v" || { o=${f##*/}; bad="$bad,${o%.conf}=$(show "$v")"; }
+        done
+        [ "$n" -gt 0 ] || bad="$bad,no-entries"
+      fi
+      if [ -f "$kc" ]; then v=$(kval "$(cat "$kc")"); kok "$v" || bad="$bad,kernel-cmdline=$(show "$v")"; fi
+      if [ -f "$g" ]; then v=$(kval "$(gtoks)"); kok "$v" || bad="$bad,default-grub=$(show "$v")"; fi
+      r=$(show "$(kval "$(cat /proc/cmdline 2>/dev/null)")")
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}${needs:+,needs-root}"
+      elif [ -n "$needs" ]; then echo "NOT_OK:needs-root"
+      else echo "OK:entries=$n,running=$r"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    kn=audit
+    kv=1
+    e=/boot/loader/entries
+    g=/etc/default/grub
+    kc=/etc/kernel/cmdline
+    # kval ARGS: the value of the last $kn argument, "" for a bare name, "-" when absent
+    kval() { printf '%s\n' "$1" | awk -v n="$kn" '{ v = "-"; for (i = 1; i <= NF; i++) { if (index($i, n "=") == 1) v = substr($i, length(n) + 2); else if ($i == n) v = "" } print v }'; }
+    kok() { [ "$1" != "-" ] && printf '%s\n' "$1" | awk '{ v = $0 } END { exit !(v == "1" || tolower(v) == "on") }'; }
+    # ktoks ARGS: all $kn arguments, space separated
+    ktoks() { printf '%s\n' "$1" | awk -v n="$kn" '{ for (i = 1; i <= NF; i++) if ($i == n || index($i, n "=") == 1) r = r (r == "" ? "" : " ") $i } END { print r }'; }
+    show() { if [ "$1" = - ]; then echo missing; else echo "$1"; fi; }
+    opts() { sed -n 's/^options[ \t]\{1,\}//p' "$1" | tr '\n' ' '; }
+    genv() { grub2-editenv - list 2>/dev/null | sed -n 's/^kernelopts=//p'; }
+    expand() { case "$1" in *'$kernelopts'*) local k; k=$(genv); printf '%s\n' "${1//\$kernelopts/$k}" ;; *) printf '%s\n' "$1" ;; esac; }
+    gvar() { [ -f "$g" ] && sed -n "s/^$1=//p" "$g" | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" | tr '\n' ' '; }
+    ghas() { [ -f "$g" ] && grep -q "^$1=" "$g"; }
+    # kawk MODE TOKENS FILE: prints FILE with TOKENS in place of the first $kn
+    # argument of the lines MODE selects (bls: options lines, plain: the first
+    # line, var:NAME: NAME= lines), without the other $kn arguments, and with
+    # TOKENS appended to the first such line when there was none. Other lines stay
+    # byte for byte.
+    kawk() {
+      awk -v n="$kn" -v mode="$1" -v tk="$2" '
+        function pick(l, i) {
+          if (mode == "bls") return l ~ /^options[ \t]/
+          if (mode == "plain") return i == 1
+          return index(l, var "=") == 1
+        }
+        function split3(l) {
+          pre = ""; q = ""; body = l
+          if (mode == "bls") { match(l, /^options[ \t]+/); pre = substr(l, 1, RLENGTH); body = substr(l, RLENGTH + 1) }
+          else if (mode != "plain") {
+            pre = var "="; body = substr(l, length(pre) + 1)
+            if (body ~ /^".*"$/ || body ~ /^\x27.*\x27$/) { q = substr(body, 1, 1); body = substr(body, 2, length(body) - 2) }
+          }
+        }
+        function has(s,  a, c, i) { c = split(s, a, /[ \t]+/); for (i = 1; i <= c; i++) if (a[i] == n || index(a[i], n "=") == 1) return 1; return 0 }
+        # edit keeps the whitespace between the remaining arguments as it was
+        function edit(s,  r, ws, t, lead, fix) {
+          r = ""; fix = 0
+          while (s != "") {
+            match(s, /^[ \t]*/); ws = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+            if (s == "") { r = r ws; break }
+            match(s, /^[^ \t]+/); t = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+            if (t == n || index(t, n "=") == 1) {
+              if (!put && tk != "") { r = r ws tk; put = 1; continue }
+              put = 1
+              if (r == "" && !fix) { fix = 1; lead = ws }
+              continue
+            }
+            if (fix && r == "") { ws = lead; fix = 0 }
+            r = r ws t
+          }
+          return r
+        }
+        BEGIN { var = mode; sub(/^var:/, "", var) }
+        { line[NR] = $0 }
+        END {
+          found = 0; first = 0
+          for (i = 1; i <= NR; i++) if (pick(line[i], i)) { if (!first) first = i; split3(line[i]); if (has(body)) found = 1 }
+          for (i = 1; i <= NR; i++) {
+            l = line[i]
+            if (pick(l, i)) {
+              split3(l)
+              if (has(body)) { l = edit(body); if (mode == "bls" && tk == "" && l !~ /[^ \t]/) continue; l = pre q l q }
+              else if (!found && i == first && tk != "") l = pre q body (body ~ /[^ \t]/ ? " " : "") tk q
+            }
+            print l
+          }
+          if (!first && tk != "") {
+            if (mode == "bls") print "options " tk
+            else if (mode == "plain") print tk
+            else print var "=\"" tk "\""
+          }
+        }' "$3"
+    }
+    # kedit FILE MODE TOKENS: kawk in place, keeping the owner, mode and label
+    kedit() {
+      local t; t=$(mktemp)
+      kawk "$2" "$3" "$1" > "$t"
+      if ! cmp -s "$1" "$t"; then cat "$t" > "$1"; fi
+      rm -f "$t"
+    }
+    kstr() { printf '%s\n' "$1" | kawk plain "$2" -; }
+    gtoks() { local a=""; ghas GRUB_CMDLINE_LINUX && a="$(gvar GRUB_CMDLINE_LINUX)"; ghas GRUB_CMDLINE_LINUX_DEFAULT && a="$a $(gvar GRUB_CMDLINE_LINUX_DEFAULT)"; printf '%s\n' "$a"; }
+    evaluate() {
+      local f o v bad="" needs="" n=0 r
+      [ -d "$e" ] || { echo CHECK_ERROR; return; }
+      if [ ! -r "$e" ] || [ ! -x "$e" ]; then needs=1
+      else
+        for f in "$e"/*.conf; do
+          [ -e "$f" ] || continue
+          [ -r "$f" ] || { needs=1; continue; }
+          n=$((n + 1))
+          v=$(kval "$(expand "$(opts "$f")")")
+          kok "$v" || { o=${f##*/}; bad="$bad,${o%.conf}=$(show "$v")"; }
+        done
+        [ "$n" -gt 0 ] || bad="$bad,no-entries"
+      fi
+      if [ -f "$kc" ]; then v=$(kval "$(cat "$kc")"); kok "$v" || bad="$bad,kernel-cmdline=$(show "$v")"; fi
+      if [ -f "$g" ]; then v=$(kval "$(gtoks)"); kok "$v" || bad="$bad,default-grub=$(show "$v")"; fi
+      r=$(show "$(kval "$(cat /proc/cmdline 2>/dev/null)")")
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}${needs:+,needs-root}"
+      elif [ -n "$needs" ]; then echo "NOT_OK:needs-root"
+      else echo "OK:entries=$n,running=$r"; fi
+    }
+      [ -d "$e" ] || { echo "No boot loader entries in $e; only BLS systems are supported" >&2; exit 1; }
+      {
+        echo format=karg-1
+        ge=0
+        for f in "$e"/*.conf; do
+          [ -e "$f" ] || continue
+          echo "entry $f $(ktoks "$(opts "$f")")"
+          case "$(opts "$f")" in *'$kernelopts'*) ge=1 ;; esac
+        done
+        if [ "$ge" = 1 ]; then echo "grubenv $(ktoks "$(genv)")"; fi
+        if [ -f "$kc" ]; then echo "cmdline $(ktoks "$(cat "$kc")")"; fi
+        if [ -f "$g" ]; then
+          for v in GRUB_CMDLINE_LINUX GRUB_CMDLINE_LINUX_DEFAULT; do
+            if ghas $v; then echo "var $v present $(ktoks "$(gvar $v)")"; else echo "var $v absent"; fi
+          done
+        fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=karg-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    kn=audit
+    kv=1
+    e=/boot/loader/entries
+    g=/etc/default/grub
+    kc=/etc/kernel/cmdline
+    # kval ARGS: the value of the last $kn argument, "" for a bare name, "-" when absent
+    kval() { printf '%s\n' "$1" | awk -v n="$kn" '{ v = "-"; for (i = 1; i <= NF; i++) { if (index($i, n "=") == 1) v = substr($i, length(n) + 2); else if ($i == n) v = "" } print v }'; }
+    kok() { [ "$1" != "-" ] && printf '%s\n' "$1" | awk '{ v = $0 } END { exit !(v == "1" || tolower(v) == "on") }'; }
+    # ktoks ARGS: all $kn arguments, space separated
+    ktoks() { printf '%s\n' "$1" | awk -v n="$kn" '{ for (i = 1; i <= NF; i++) if ($i == n || index($i, n "=") == 1) r = r (r == "" ? "" : " ") $i } END { print r }'; }
+    show() { if [ "$1" = - ]; then echo missing; else echo "$1"; fi; }
+    opts() { sed -n 's/^options[ \t]\{1,\}//p' "$1" | tr '\n' ' '; }
+    genv() { grub2-editenv - list 2>/dev/null | sed -n 's/^kernelopts=//p'; }
+    expand() { case "$1" in *'$kernelopts'*) local k; k=$(genv); printf '%s\n' "${1//\$kernelopts/$k}" ;; *) printf '%s\n' "$1" ;; esac; }
+    gvar() { [ -f "$g" ] && sed -n "s/^$1=//p" "$g" | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" | tr '\n' ' '; }
+    ghas() { [ -f "$g" ] && grep -q "^$1=" "$g"; }
+    # kawk MODE TOKENS FILE: prints FILE with TOKENS in place of the first $kn
+    # argument of the lines MODE selects (bls: options lines, plain: the first
+    # line, var:NAME: NAME= lines), without the other $kn arguments, and with
+    # TOKENS appended to the first such line when there was none. Other lines stay
+    # byte for byte.
+    kawk() {
+      awk -v n="$kn" -v mode="$1" -v tk="$2" '
+        function pick(l, i) {
+          if (mode == "bls") return l ~ /^options[ \t]/
+          if (mode == "plain") return i == 1
+          return index(l, var "=") == 1
+        }
+        function split3(l) {
+          pre = ""; q = ""; body = l
+          if (mode == "bls") { match(l, /^options[ \t]+/); pre = substr(l, 1, RLENGTH); body = substr(l, RLENGTH + 1) }
+          else if (mode != "plain") {
+            pre = var "="; body = substr(l, length(pre) + 1)
+            if (body ~ /^".*"$/ || body ~ /^\x27.*\x27$/) { q = substr(body, 1, 1); body = substr(body, 2, length(body) - 2) }
+          }
+        }
+        function has(s,  a, c, i) { c = split(s, a, /[ \t]+/); for (i = 1; i <= c; i++) if (a[i] == n || index(a[i], n "=") == 1) return 1; return 0 }
+        # edit keeps the whitespace between the remaining arguments as it was
+        function edit(s,  r, ws, t, lead, fix) {
+          r = ""; fix = 0
+          while (s != "") {
+            match(s, /^[ \t]*/); ws = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+            if (s == "") { r = r ws; break }
+            match(s, /^[^ \t]+/); t = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+            if (t == n || index(t, n "=") == 1) {
+              if (!put && tk != "") { r = r ws tk; put = 1; continue }
+              put = 1
+              if (r == "" && !fix) { fix = 1; lead = ws }
+              continue
+            }
+            if (fix && r == "") { ws = lead; fix = 0 }
+            r = r ws t
+          }
+          return r
+        }
+        BEGIN { var = mode; sub(/^var:/, "", var) }
+        { line[NR] = $0 }
+        END {
+          found = 0; first = 0
+          for (i = 1; i <= NR; i++) if (pick(line[i], i)) { if (!first) first = i; split3(line[i]); if (has(body)) found = 1 }
+          for (i = 1; i <= NR; i++) {
+            l = line[i]
+            if (pick(l, i)) {
+              split3(l)
+              if (has(body)) { l = edit(body); if (mode == "bls" && tk == "" && l !~ /[^ \t]/) continue; l = pre q l q }
+              else if (!found && i == first && tk != "") l = pre q body (body ~ /[^ \t]/ ? " " : "") tk q
+            }
+            print l
+          }
+          if (!first && tk != "") {
+            if (mode == "bls") print "options " tk
+            else if (mode == "plain") print tk
+            else print var "=\"" tk "\""
+          }
+        }' "$3"
+    }
+    # kedit FILE MODE TOKENS: kawk in place, keeping the owner, mode and label
+    kedit() {
+      local t; t=$(mktemp)
+      kawk "$2" "$3" "$1" > "$t"
+      if ! cmp -s "$1" "$t"; then cat "$t" > "$1"; fi
+      rm -f "$t"
+    }
+    kstr() { printf '%s\n' "$1" | kawk plain "$2" -; }
+    gtoks() { local a=""; ghas GRUB_CMDLINE_LINUX && a="$(gvar GRUB_CMDLINE_LINUX)"; ghas GRUB_CMDLINE_LINUX_DEFAULT && a="$a $(gvar GRUB_CMDLINE_LINUX_DEFAULT)"; printf '%s\n' "$a"; }
+    evaluate() {
+      local f o v bad="" needs="" n=0 r
+      [ -d "$e" ] || { echo CHECK_ERROR; return; }
+      if [ ! -r "$e" ] || [ ! -x "$e" ]; then needs=1
+      else
+        for f in "$e"/*.conf; do
+          [ -e "$f" ] || continue
+          [ -r "$f" ] || { needs=1; continue; }
+          n=$((n + 1))
+          v=$(kval "$(expand "$(opts "$f")")")
+          kok "$v" || { o=${f##*/}; bad="$bad,${o%.conf}=$(show "$v")"; }
+        done
+        [ "$n" -gt 0 ] || bad="$bad,no-entries"
+      fi
+      if [ -f "$kc" ]; then v=$(kval "$(cat "$kc")"); kok "$v" || bad="$bad,kernel-cmdline=$(show "$v")"; fi
+      if [ -f "$g" ]; then v=$(kval "$(gtoks)"); kok "$v" || bad="$bad,default-grub=$(show "$v")"; fi
+      r=$(show "$(kval "$(cat /proc/cmdline 2>/dev/null)")")
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}${needs:+,needs-root}"
+      elif [ -n "$needs" ]; then echo "NOT_OK:needs-root"
+      else echo "OK:entries=$n,running=$r"; fi
+    }
+      lines=$(tail -n +2 "$b")
+      bad=""
+      while read -r k a c; do
+        [ -n "$k" ] || continue
+        case "$k" in
+          entry) case "$a" in "$e"/*.conf) ;; *) bad=1 ;; esac; case "$a" in *..*) bad=1 ;; esac; t=$c ;;
+          grubenv|cmdline) t="$a $c" ;;
+          var) case "$a" in GRUB_CMDLINE_LINUX|GRUB_CMDLINE_LINUX_DEFAULT) ;; *) bad=1 ;; esac
+               case "$c" in present|present\ *|absent) t=${c#present}; t=${t#absent} ;; *) bad=1 ;; esac ;;
+          *) bad=1 ;;
+        esac
+        for x in $t; do case "$x" in "$kn"|"$kn"=*) ;; *) bad=1 ;; esac; done
+      done <<< "$lines"
+      if [ -n "$bad" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      restore() {
+        local k a c t cur f n=0
+        set -f
+        while read -r k a c; do
+          [ -n "$k" ] || continue
+          case "$k" in
+            entry)
+              t=$(echo $c)
+              [ -f "$a" ] || { echo "Skipped $a: it no longer exists"; continue; }
+              cur=$(ktoks "$(opts "$a")")
+              if [ "$cur" = "$t" ]; then continue; fi
+              if [ "$cur" != "$kn=$kv" ]; then echo "Kept $a: changed since the remediation ($cur)"; continue; fi
+              kedit "$a" bls "$t"; n=$((n + 1)) ;;
+            grubenv)
+              t=$(echo $a $c); cur=$(ktoks "$(genv)")
+              if [ "$cur" = "$t" ]; then continue; fi
+              if [ "$cur" != "$kn=$kv" ]; then echo "Kept kernelopts in grubenv: changed since the remediation ($cur)"; continue; fi
+              grub2-editenv - set "kernelopts=$(kstr "$(genv)" "$t")"; n=$((n + 1)) ;;
+            cmdline)
+              t=$(echo $a $c)
+              [ -f "$kc" ] || continue
+              cur=$(ktoks "$(cat "$kc")")
+              if [ "$cur" = "$t" ]; then continue; fi
+              if [ "$cur" != "$kn=$kv" ]; then echo "Kept $kc: changed since the remediation ($cur)"; continue; fi
+              kedit "$kc" plain "$t"; n=$((n + 1)) ;;
+            var)
+              t=${c#present}; t=${t#absent}; t=$(echo $t)
+              [ -f "$g" ] || continue
+              cur=$(ktoks "$(gvar "$a")")
+              if [ "$cur" = "$t" ]; then continue; fi
+              if [ "$cur" != "$kn=$kv" ]; then echo "Kept $a in $g: changed since the remediation ($cur)"; continue; fi
+              kedit "$g" "var:$a" "$t"
+              if [ "${c%% *}" = absent ] && grep -qx "$a=\"\"" "$g"; then
+                f=$(mktemp); grep -vx "$a=\"\"" "$g" > "$f" || true; cat "$f" > "$g"; rm -f "$f"
+              fi
+              n=$((n + 1)) ;;
+          esac
+        done <<< "$lines"
+        set +f
+        for f in "$e"/*.conf; do
+          [ -e "$f" ] || continue
+          printf '%s\n' "$lines" | grep -qF "entry $f " || printf '%s\n' "$lines" | grep -qxF "entry $f" || echo "Kept $f: not in the backup"
+        done
+        echo "Restored $n places"
+      }
+      [ -d "$e" ] || { echo "No boot loader entries in $e; only BLS systems are supported" >&2; exit 1; }
+      r=$(evaluate)
+      case "$r" in OK*) echo "Already meets the item, nothing to change"; exit 0 ;; esac
+      for f in "$e"/*.conf; do
+        [ -e "$f" ] || continue
+        { printf '%s\n' "$lines" | grep -qF "entry $f " || printf '%s\n' "$lines" | grep -qxF "entry $f"; } || { echo "Not in the backup, run the backup again: $f" >&2; exit 1; }
+      done
+      ge=0
+      for f in "$e"/*.conf; do
+        [ -e "$f" ] || continue
+        o=$(opts "$f")
+        kok "$(kval "$(expand "$o")")" && continue
+        # An argument written in the entry wins over $kernelopts before it.
+        if [ -z "$(ktoks "$o")" ] && [[ $o == *'$kernelopts'* ]]; then ge=1; else kedit "$f" bls "$kn=$kv"; echo "Set $kn=$kv in $f"; fi
+      done
+      if [ "$ge" = 1 ]; then grub2-editenv - set "kernelopts=$(kstr "$(genv)" "$kn=$kv")"; echo "Set $kn=$kv in kernelopts in grubenv"; fi
+      if [ -f "$kc" ] && ! kok "$(kval "$(cat "$kc")")"; then kedit "$kc" plain "$kn=$kv"; echo "Set $kn=$kv in $kc"; fi
+      if [ -f "$g" ] && ! kok "$(kval "$(gtoks)")"; then
+        # The last variable naming the argument decides; otherwise GRUB_CMDLINE_LINUX,
+        # which also reaches the recovery entries.
+        v=GRUB_CMDLINE_LINUX
+        if [ -n "$(ktoks "$(gvar GRUB_CMDLINE_LINUX_DEFAULT)")" ]; then v=GRUB_CMDLINE_LINUX_DEFAULT; fi
+        kedit "$g" "var:$v" "$kn=$kv"; echo "Set $kn=$kv in $v in $g"
+      fi
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) restore >/dev/null; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Restart the computer to apply the kernel arguments"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=karg-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    kn=audit
+    kv=1
+    e=/boot/loader/entries
+    g=/etc/default/grub
+    kc=/etc/kernel/cmdline
+    # kval ARGS: the value of the last $kn argument, "" for a bare name, "-" when absent
+    kval() { printf '%s\n' "$1" | awk -v n="$kn" '{ v = "-"; for (i = 1; i <= NF; i++) { if (index($i, n "=") == 1) v = substr($i, length(n) + 2); else if ($i == n) v = "" } print v }'; }
+    kok() { [ "$1" != "-" ] && printf '%s\n' "$1" | awk '{ v = $0 } END { exit !(v == "1" || tolower(v) == "on") }'; }
+    # ktoks ARGS: all $kn arguments, space separated
+    ktoks() { printf '%s\n' "$1" | awk -v n="$kn" '{ for (i = 1; i <= NF; i++) if ($i == n || index($i, n "=") == 1) r = r (r == "" ? "" : " ") $i } END { print r }'; }
+    show() { if [ "$1" = - ]; then echo missing; else echo "$1"; fi; }
+    opts() { sed -n 's/^options[ \t]\{1,\}//p' "$1" | tr '\n' ' '; }
+    genv() { grub2-editenv - list 2>/dev/null | sed -n 's/^kernelopts=//p'; }
+    expand() { case "$1" in *'$kernelopts'*) local k; k=$(genv); printf '%s\n' "${1//\$kernelopts/$k}" ;; *) printf '%s\n' "$1" ;; esac; }
+    gvar() { [ -f "$g" ] && sed -n "s/^$1=//p" "$g" | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" | tr '\n' ' '; }
+    ghas() { [ -f "$g" ] && grep -q "^$1=" "$g"; }
+    # kawk MODE TOKENS FILE: prints FILE with TOKENS in place of the first $kn
+    # argument of the lines MODE selects (bls: options lines, plain: the first
+    # line, var:NAME: NAME= lines), without the other $kn arguments, and with
+    # TOKENS appended to the first such line when there was none. Other lines stay
+    # byte for byte.
+    kawk() {
+      awk -v n="$kn" -v mode="$1" -v tk="$2" '
+        function pick(l, i) {
+          if (mode == "bls") return l ~ /^options[ \t]/
+          if (mode == "plain") return i == 1
+          return index(l, var "=") == 1
+        }
+        function split3(l) {
+          pre = ""; q = ""; body = l
+          if (mode == "bls") { match(l, /^options[ \t]+/); pre = substr(l, 1, RLENGTH); body = substr(l, RLENGTH + 1) }
+          else if (mode != "plain") {
+            pre = var "="; body = substr(l, length(pre) + 1)
+            if (body ~ /^".*"$/ || body ~ /^\x27.*\x27$/) { q = substr(body, 1, 1); body = substr(body, 2, length(body) - 2) }
+          }
+        }
+        function has(s,  a, c, i) { c = split(s, a, /[ \t]+/); for (i = 1; i <= c; i++) if (a[i] == n || index(a[i], n "=") == 1) return 1; return 0 }
+        # edit keeps the whitespace between the remaining arguments as it was
+        function edit(s,  r, ws, t, lead, fix) {
+          r = ""; fix = 0
+          while (s != "") {
+            match(s, /^[ \t]*/); ws = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+            if (s == "") { r = r ws; break }
+            match(s, /^[^ \t]+/); t = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+            if (t == n || index(t, n "=") == 1) {
+              if (!put && tk != "") { r = r ws tk; put = 1; continue }
+              put = 1
+              if (r == "" && !fix) { fix = 1; lead = ws }
+              continue
+            }
+            if (fix && r == "") { ws = lead; fix = 0 }
+            r = r ws t
+          }
+          return r
+        }
+        BEGIN { var = mode; sub(/^var:/, "", var) }
+        { line[NR] = $0 }
+        END {
+          found = 0; first = 0
+          for (i = 1; i <= NR; i++) if (pick(line[i], i)) { if (!first) first = i; split3(line[i]); if (has(body)) found = 1 }
+          for (i = 1; i <= NR; i++) {
+            l = line[i]
+            if (pick(l, i)) {
+              split3(l)
+              if (has(body)) { l = edit(body); if (mode == "bls" && tk == "" && l !~ /[^ \t]/) continue; l = pre q l q }
+              else if (!found && i == first && tk != "") l = pre q body (body ~ /[^ \t]/ ? " " : "") tk q
+            }
+            print l
+          }
+          if (!first && tk != "") {
+            if (mode == "bls") print "options " tk
+            else if (mode == "plain") print tk
+            else print var "=\"" tk "\""
+          }
+        }' "$3"
+    }
+    # kedit FILE MODE TOKENS: kawk in place, keeping the owner, mode and label
+    kedit() {
+      local t; t=$(mktemp)
+      kawk "$2" "$3" "$1" > "$t"
+      if ! cmp -s "$1" "$t"; then cat "$t" > "$1"; fi
+      rm -f "$t"
+    }
+    kstr() { printf '%s\n' "$1" | kawk plain "$2" -; }
+    gtoks() { local a=""; ghas GRUB_CMDLINE_LINUX && a="$(gvar GRUB_CMDLINE_LINUX)"; ghas GRUB_CMDLINE_LINUX_DEFAULT && a="$a $(gvar GRUB_CMDLINE_LINUX_DEFAULT)"; printf '%s\n' "$a"; }
+    evaluate() {
+      local f o v bad="" needs="" n=0 r
+      [ -d "$e" ] || { echo CHECK_ERROR; return; }
+      if [ ! -r "$e" ] || [ ! -x "$e" ]; then needs=1
+      else
+        for f in "$e"/*.conf; do
+          [ -e "$f" ] || continue
+          [ -r "$f" ] || { needs=1; continue; }
+          n=$((n + 1))
+          v=$(kval "$(expand "$(opts "$f")")")
+          kok "$v" || { o=${f##*/}; bad="$bad,${o%.conf}=$(show "$v")"; }
+        done
+        [ "$n" -gt 0 ] || bad="$bad,no-entries"
+      fi
+      if [ -f "$kc" ]; then v=$(kval "$(cat "$kc")"); kok "$v" || bad="$bad,kernel-cmdline=$(show "$v")"; fi
+      if [ -f "$g" ]; then v=$(kval "$(gtoks)"); kok "$v" || bad="$bad,default-grub=$(show "$v")"; fi
+      r=$(show "$(kval "$(cat /proc/cmdline 2>/dev/null)")")
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}${needs:+,needs-root}"
+      elif [ -n "$needs" ]; then echo "NOT_OK:needs-root"
+      else echo "OK:entries=$n,running=$r"; fi
+    }
+      lines=$(tail -n +2 "$b")
+      bad=""
+      while read -r k a c; do
+        [ -n "$k" ] || continue
+        case "$k" in
+          entry) case "$a" in "$e"/*.conf) ;; *) bad=1 ;; esac; case "$a" in *..*) bad=1 ;; esac; t=$c ;;
+          grubenv|cmdline) t="$a $c" ;;
+          var) case "$a" in GRUB_CMDLINE_LINUX|GRUB_CMDLINE_LINUX_DEFAULT) ;; *) bad=1 ;; esac
+               case "$c" in present|present\ *|absent) t=${c#present}; t=${t#absent} ;; *) bad=1 ;; esac ;;
+          *) bad=1 ;;
+        esac
+        for x in $t; do case "$x" in "$kn"|"$kn"=*) ;; *) bad=1 ;; esac; done
+      done <<< "$lines"
+      if [ -n "$bad" ]; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      restore() {
+        local k a c t cur f n=0
+        set -f
+        while read -r k a c; do
+          [ -n "$k" ] || continue
+          case "$k" in
+            entry)
+              t=$(echo $c)
+              [ -f "$a" ] || { echo "Skipped $a: it no longer exists"; continue; }
+              cur=$(ktoks "$(opts "$a")")
+              if [ "$cur" = "$t" ]; then continue; fi
+              if [ "$cur" != "$kn=$kv" ]; then echo "Kept $a: changed since the remediation ($cur)"; continue; fi
+              kedit "$a" bls "$t"; n=$((n + 1)) ;;
+            grubenv)
+              t=$(echo $a $c); cur=$(ktoks "$(genv)")
+              if [ "$cur" = "$t" ]; then continue; fi
+              if [ "$cur" != "$kn=$kv" ]; then echo "Kept kernelopts in grubenv: changed since the remediation ($cur)"; continue; fi
+              grub2-editenv - set "kernelopts=$(kstr "$(genv)" "$t")"; n=$((n + 1)) ;;
+            cmdline)
+              t=$(echo $a $c)
+              [ -f "$kc" ] || continue
+              cur=$(ktoks "$(cat "$kc")")
+              if [ "$cur" = "$t" ]; then continue; fi
+              if [ "$cur" != "$kn=$kv" ]; then echo "Kept $kc: changed since the remediation ($cur)"; continue; fi
+              kedit "$kc" plain "$t"; n=$((n + 1)) ;;
+            var)
+              t=${c#present}; t=${t#absent}; t=$(echo $t)
+              [ -f "$g" ] || continue
+              cur=$(ktoks "$(gvar "$a")")
+              if [ "$cur" = "$t" ]; then continue; fi
+              if [ "$cur" != "$kn=$kv" ]; then echo "Kept $a in $g: changed since the remediation ($cur)"; continue; fi
+              kedit "$g" "var:$a" "$t"
+              if [ "${c%% *}" = absent ] && grep -qx "$a=\"\"" "$g"; then
+                f=$(mktemp); grep -vx "$a=\"\"" "$g" > "$f" || true; cat "$f" > "$g"; rm -f "$f"
+              fi
+              n=$((n + 1)) ;;
+          esac
+        done <<< "$lines"
+        set +f
+        for f in "$e"/*.conf; do
+          [ -e "$f" ] || continue
+          printf '%s\n' "$lines" | grep -qF "entry $f " || printf '%s\n' "$lines" | grep -qxF "entry $f" || echo "Kept $f: not in the backup"
+        done
+        echo "Restored $n places"
+      }
+      restore
+      echo "Restart the computer to apply the previous kernel arguments"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/admin-guide/kernel-parameters.html
+  - https://uapi-group.org/specifications/specs/boot_loader_specification/
+  - https://docs.fedoraproject.org/en-US/fedora/latest/system-administrators-guide/kernel-module-driver-configuration/Working_with_the_GRUB_2_Boot_Loader/
+  - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/security_hardening/auditing-the-system_security-hardening
+
+notes:
+  pl: |
+    Test sprawdza wiersze options wszystkich wpisów w /boot/loader/entries
+    (z rozwinięciem $kernelopts z grubenv), plik /etc/kernel/cmdline, z którego
+    powstają wpisy dla nowych jąder, i zmienne GRUB_CMDLINE_LINUX
+    i GRUB_CMDLINE_LINUX_DEFAULT w /etc/default/grub, bo grub2-mkconfig
+    przepisuje z nich wpisy. Liczy się ostatnie wystąpienie parametru. Wynik
+    OK podaje liczbę wpisów i wartość w działającym jądrze (running), która
+    zmienia się dopiero po ponownym uruchomieniu. Katalog wpisów jest
+    dostępny tylko dla roota, więc bez tych uprawnień wynik to
+    NOT_OK:needs-root; bez katalogu wpisów (system bez BLS) wynik to
+    CHECK_ERROR.
+
+    Naprawa zmienia tylko miejsca, które nie spełniają punktu: zastępuje
+    istniejący parametr w miejscu albo dopisuje go na końcu. Kopia zapasowa
+    zapisuje poprzednie wartości w każdym miejscu. Wycofanie przywraca je
+    tam, gdzie nadal jest wartość ustawiona przez naprawę; wpisy nowych
+    jąder zainstalowanych w międzyczasie wymienia i zostawia.
+  en: |
+    The test checks the options lines of all entries in /boot/loader/entries
+    (with $kernelopts expanded from grubenv), the /etc/kernel/cmdline file
+    from which entries for new kernels are created, and the
+    GRUB_CMDLINE_LINUX and GRUB_CMDLINE_LINUX_DEFAULT variables in
+    /etc/default/grub, because grub2-mkconfig rewrites the entries from them.
+    The last occurrence of the argument counts. The OK result gives the
+    number of entries and the value in the running kernel (running), which
+    only changes after a restart. The entry directory is only accessible to
+    root, so without these privileges the result is NOT_OK:needs-root;
+    without the entry directory (a system without BLS) the result is
+    CHECK_ERROR.
+
+    The remediation only changes the places that do not meet the item: it
+    replaces an existing argument in place or appends it at the end. The
+    backup saves the previous values in each place. Rollback restores them
+    where the value set by the remediation is still there; it names and
+    leaves the entries of new kernels installed in the meantime.

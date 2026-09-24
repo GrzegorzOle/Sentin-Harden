@@ -1,0 +1,306 @@
+id: ubuntu2404-auditd-max-log-file
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 6.2.2.1
+  section: Logging and Auditing > System Accounting (auditd) > Configure Data Retention
+  title:
+    pl: Rozmiar pliku dziennika audytu jest ustawiony
+    en: Ensure audit log storage size is configured
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    auditd zaczyna nowy plik dziennika, gdy bieżący osiągnie rozmiar
+    max_log_file (w megabajtach). Zbyt mały rozmiar sprawia, że starsze
+    zdarzenia szybko znikają z dysku, zanim ktokolwiek je przejrzy.
+
+    Punkt wymaga ustawienia max_log_file w /etc/audit/auditd.conf na co
+    najmniej 8 MB, czyli nie mniej niż domyślnie w pakiecie auditd.
+  en: |
+    auditd starts a new log file when the current one reaches the
+    max_log_file size (in megabytes). Too small a size makes older events
+    disappear from the disk quickly, before anyone reviews them.
+
+    The item requires max_log_file in /etc/audit/auditd.conf to be set to at
+    least 8 MB, that is no less than the default of the auditd package.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: pakiet auditd ma domyślnie max_log_file = 8, więc
+    naprawa zmienia coś tylko po wcześniejszym zmniejszeniu tej wartości.
+  en: |
+    Nobody will notice: the auditd package has max_log_file = 8 by default,
+    so the remediation only changes something after this value was lowered.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    c=/etc/audit/auditd.conf
+    # aline KEY: number of the last active line setting KEY, empty when none
+    aline() { awk -v k="$1" '/^[ \t]*#/ { next } { i = index($0, "="); if (!i) next; n = tolower(substr($0, 1, i - 1)); gsub(/[ \t]/, "", n) } n == k { r = NR } END { print r }' "$c"; }
+    aval() {
+      local l; l=$(aline "$1")
+      if [ -z "$l" ]; then echo -; return; fi
+      sed -n "${l}p" "$c" | sed -e 's/^[^=]*=//' -e 's/^[ \t]*//' -e 's/[ \t]*$//'
+    }
+    aok() { [ "$2" != "-" ] && printf '%s\n' "$2" | awk -v k="$1" '{ v = tolower($0) } END { exit !(v ~ /^[0-9]+$/ && v + 0 >= 8) }'; }
+    evaluate() {
+      local k v ok="" bad=""
+      if [ -d /etc/audit ] && [ ! -x /etc/audit ]; then echo "NOT_OK:needs-root"; return; fi
+      [ -e "$c" ] || { echo "NOT_OK:no-auditd-conf"; return; }
+      [ -r "$c" ] || { echo "NOT_OK:needs-root"; return; }
+      for k in max_log_file; do
+        v=$(aval "$k")
+        if aok "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=$([ "$v" = - ] && echo missing || echo "$v")"; fi
+      done
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:${ok#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    c=/etc/audit/auditd.conf
+    # aline KEY: number of the last active line setting KEY, empty when none
+    aline() { awk -v k="$1" '/^[ \t]*#/ { next } { i = index($0, "="); if (!i) next; n = tolower(substr($0, 1, i - 1)); gsub(/[ \t]/, "", n) } n == k { r = NR } END { print r }' "$c"; }
+    aval() {
+      local l; l=$(aline "$1")
+      if [ -z "$l" ]; then echo -; return; fi
+      sed -n "${l}p" "$c" | sed -e 's/^[^=]*=//' -e 's/^[ \t]*//' -e 's/[ \t]*$//'
+    }
+    aok() { [ "$2" != "-" ] && printf '%s\n' "$2" | awk -v k="$1" '{ v = tolower($0) } END { exit !(v ~ /^[0-9]+$/ && v + 0 >= 8) }'; }
+    evaluate() {
+      local k v ok="" bad=""
+      if [ -d /etc/audit ] && [ ! -x /etc/audit ]; then echo "NOT_OK:needs-root"; return; fi
+      [ -e "$c" ] || { echo "NOT_OK:no-auditd-conf"; return; }
+      [ -r "$c" ] || { echo "NOT_OK:needs-root"; return; }
+      for k in max_log_file; do
+        v=$(aval "$k")
+        if aok "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=$([ "$v" = - ] && echo missing || echo "$v")"; fi
+      done
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:${ok#,}"; fi
+    }
+      [ -f "$c" ] || { echo "$c not found; install auditd first" >&2; exit 1; }
+      {
+        echo format=auditd-conf-1
+        for k in max_log_file; do
+          l=$(aline "$k")
+          if [ -n "$l" ]; then echo "$k present $(sed -n "${l}p" "$c")"; else echo "$k absent"; fi
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=auditd-conf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    c=/etc/audit/auditd.conf
+    # aline KEY: number of the last active line setting KEY, empty when none
+    aline() { awk -v k="$1" '/^[ \t]*#/ { next } { i = index($0, "="); if (!i) next; n = tolower(substr($0, 1, i - 1)); gsub(/[ \t]/, "", n) } n == k { r = NR } END { print r }' "$c"; }
+    aval() {
+      local l; l=$(aline "$1")
+      if [ -z "$l" ]; then echo -; return; fi
+      sed -n "${l}p" "$c" | sed -e 's/^[^=]*=//' -e 's/^[ \t]*//' -e 's/[ \t]*$//'
+    }
+    aok() { [ "$2" != "-" ] && printf '%s\n' "$2" | awk -v k="$1" '{ v = tolower($0) } END { exit !(v ~ /^[0-9]+$/ && v + 0 >= 8) }'; }
+    evaluate() {
+      local k v ok="" bad=""
+      if [ -d /etc/audit ] && [ ! -x /etc/audit ]; then echo "NOT_OK:needs-root"; return; fi
+      [ -e "$c" ] || { echo "NOT_OK:no-auditd-conf"; return; }
+      [ -r "$c" ] || { echo "NOT_OK:needs-root"; return; }
+      for k in max_log_file; do
+        v=$(aval "$k")
+        if aok "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=$([ "$v" = - ] && echo missing || echo "$v")"; fi
+      done
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:${ok#,}"; fi
+    }
+      sets='max_log_file 8'
+      lines=$(tail -n +2 "$b")
+      if [ "$(printf '%s\n' "$lines" | cut -d' ' -f1 | tr '\n' ' ')" != "max_log_file " ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      while read -r k s rest; do
+        case "$s" in
+          absent) [ -z "$rest" ] || { echo "Backup file is damaged: $b" >&2; exit 1; } ;;
+          present) printf '%s\n' "$rest" | grep -qiE "^[[:space:]]*$k[[:space:]]*=" || { echo "Backup file is damaged: $b" >&2; exit 1; } ;;
+          *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+        esac
+      done <<< "$lines"
+      # aset KEY LINE: LINE in place of the last active line of KEY, appended
+      # when there is none; an empty LINE removes it
+      aset() {
+        local l t; l=$(aline "$1"); t=$(mktemp)
+        if [ -n "$l" ]; then
+          awk -v l="$l" -v s="$2" 'NR == l { if (s != "") print s; next } { print }' "$c" > "$t"
+        else
+          cat "$c" > "$t"; if [ -n "$2" ]; then printf '%s\n' "$2" >> "$t"; fi
+        fi
+        cat "$t" > "$c"; rm -f "$t"
+      }
+      restore() {
+        local k s rest cur n=0
+        while read -r k s rest; do
+          l=$(aline "$k"); cur=""; [ -z "$l" ] || cur=$(sed -n "${l}p" "$c")
+          want=$(printf '%s\n' "$sets" | awk -v k="$k" '$1 == k { sub(/^[^ ]+ /, ""); print }')
+          if [ "$cur" = "$rest" ] && [ "$s" = present ]; then continue; fi
+          if [ -z "$l" ] && [ "$s" = absent ]; then continue; fi
+          if [ "$cur" != "$k = $want" ]; then echo "Kept $k: changed since the remediation (${cur:-none})"; continue; fi
+          aset "$k" "$rest"; n=$((n + 1))
+        done <<< "$lines"
+        echo "Restored $n settings in $c"
+      }
+      [ -f "$c" ] || { echo "$c not found; install auditd first" >&2; exit 1; }
+      r=$(evaluate)
+      case "$r" in OK*) echo "Already meets the item, nothing to change"; exit 0 ;; esac
+      while read -r k v; do
+        if ! aok "$k" "$(aval "$k")"; then aset "$k" "$k = $v"; echo "Set $k = $v in $c"; fi
+      done <<< "$sets"
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) restore >/dev/null; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+      if [ -d /run/systemd/system ] && systemctl is-active --quiet auditd.service; then
+        auditctl --signal reload >/dev/null 2>&1 || kill -HUP "$(systemctl show -p MainPID --value auditd.service)"
+        echo "auditd reloaded its configuration"
+      fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=auditd-conf-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    c=/etc/audit/auditd.conf
+    # aline KEY: number of the last active line setting KEY, empty when none
+    aline() { awk -v k="$1" '/^[ \t]*#/ { next } { i = index($0, "="); if (!i) next; n = tolower(substr($0, 1, i - 1)); gsub(/[ \t]/, "", n) } n == k { r = NR } END { print r }' "$c"; }
+    aval() {
+      local l; l=$(aline "$1")
+      if [ -z "$l" ]; then echo -; return; fi
+      sed -n "${l}p" "$c" | sed -e 's/^[^=]*=//' -e 's/^[ \t]*//' -e 's/[ \t]*$//'
+    }
+    aok() { [ "$2" != "-" ] && printf '%s\n' "$2" | awk -v k="$1" '{ v = tolower($0) } END { exit !(v ~ /^[0-9]+$/ && v + 0 >= 8) }'; }
+    evaluate() {
+      local k v ok="" bad=""
+      if [ -d /etc/audit ] && [ ! -x /etc/audit ]; then echo "NOT_OK:needs-root"; return; fi
+      [ -e "$c" ] || { echo "NOT_OK:no-auditd-conf"; return; }
+      [ -r "$c" ] || { echo "NOT_OK:needs-root"; return; }
+      for k in max_log_file; do
+        v=$(aval "$k")
+        if aok "$k" "$v"; then ok="$ok,$k=$v"; else bad="$bad,$k=$([ "$v" = - ] && echo missing || echo "$v")"; fi
+      done
+      if [ -n "$bad" ]; then echo "NOT_OK:${bad#,}"; else echo "OK:${ok#,}"; fi
+    }
+      sets='max_log_file 8'
+      lines=$(tail -n +2 "$b")
+      if [ "$(printf '%s\n' "$lines" | cut -d' ' -f1 | tr '\n' ' ')" != "max_log_file " ]; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      while read -r k s rest; do
+        case "$s" in
+          absent) [ -z "$rest" ] || { echo "Backup file is damaged: $b" >&2; exit 1; } ;;
+          present) printf '%s\n' "$rest" | grep -qiE "^[[:space:]]*$k[[:space:]]*=" || { echo "Backup file is damaged: $b" >&2; exit 1; } ;;
+          *) echo "Backup file is damaged: $b" >&2; exit 1 ;;
+        esac
+      done <<< "$lines"
+      # aset KEY LINE: LINE in place of the last active line of KEY, appended
+      # when there is none; an empty LINE removes it
+      aset() {
+        local l t; l=$(aline "$1"); t=$(mktemp)
+        if [ -n "$l" ]; then
+          awk -v l="$l" -v s="$2" 'NR == l { if (s != "") print s; next } { print }' "$c" > "$t"
+        else
+          cat "$c" > "$t"; if [ -n "$2" ]; then printf '%s\n' "$2" >> "$t"; fi
+        fi
+        cat "$t" > "$c"; rm -f "$t"
+      }
+      restore() {
+        local k s rest cur n=0
+        while read -r k s rest; do
+          l=$(aline "$k"); cur=""; [ -z "$l" ] || cur=$(sed -n "${l}p" "$c")
+          want=$(printf '%s\n' "$sets" | awk -v k="$k" '$1 == k { sub(/^[^ ]+ /, ""); print }')
+          if [ "$cur" = "$rest" ] && [ "$s" = present ]; then continue; fi
+          if [ -z "$l" ] && [ "$s" = absent ]; then continue; fi
+          if [ "$cur" != "$k = $want" ]; then echo "Kept $k: changed since the remediation (${cur:-none})"; continue; fi
+          aset "$k" "$rest"; n=$((n + 1))
+        done <<< "$lines"
+        echo "Restored $n settings in $c"
+      }
+      [ -f "$c" ] || { echo "$c not found" >&2; exit 1; }
+      restore
+      if [ -d /run/systemd/system ] && systemctl is-active --quiet auditd.service; then
+        auditctl --signal reload >/dev/null 2>&1 || kill -HUP "$(systemctl show -p MainPID --value auditd.service)"
+        echo "auditd reloaded its configuration"
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/auditd.conf.5.html
+  - https://man7.org/linux/man-pages/man8/auditd.8.html
+
+notes:
+  pl: |
+    CIS zostawia wartość polityce organizacji; ta reguła przyjmuje jako
+    minimum domyślne 8 MB z pakietu auditd. Większa wartość spełnia punkt
+    i zostaje. Łączne miejsce na dzienniki to max_log_file razy num_logs
+    (domyślnie 5 plików), jeśli max_log_file_action to ROTATE, więc
+    większa wartość wymaga odpowiednio dużo miejsca w /var/log/audit.
+    Bez pakietu auditd wynik to NOT_OK:no-auditd-conf.
+
+    Naprawa zastępuje ostatni wiersz każdego ustawienia w
+    /etc/audit/auditd.conf w miejscu albo dopisuje go na końcu, a potem
+    każe działającemu auditd przeładować konfigurację. Wycofanie przywraca
+    poprzednie wiersze tam, gdzie nadal jest wartość ustawiona przez
+    naprawę. /etc/audit jest dostępny tylko dla roota, więc bez tych
+    uprawnień wynik to NOT_OK:needs-root.
+  en: |
+    CIS leaves the value to the organization's policy; this rule takes the
+    default of 8 MB from the auditd package as the minimum. A larger value
+    meets the item and stays. The total space for the logs is max_log_file
+    times num_logs (5 files by default) when max_log_file_action is ROTATE,
+    so a larger value needs correspondingly more space in /var/log/audit.
+    Without the auditd package the result is NOT_OK:no-auditd-conf.
+
+    The remediation replaces the last line of each setting in
+    /etc/audit/auditd.conf in place or appends it at the end, and then tells
+    a running auditd to reload its configuration. Rollback restores the
+    previous lines where the value set by the remediation is still there.
+    /etc/audit is only accessible to root, so without these privileges the
+    result is NOT_OK:needs-root.

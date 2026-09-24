@@ -1,0 +1,361 @@
+id: ubuntu2404-audit-backlog-limit
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 6.2.1.4
+  section: Logging and Auditing > System Accounting (auditd) > Configure auditd Service
+  title:
+    pl: Kolejka zdarzeń audytu ma co najmniej 8192 miejsca
+    en: Ensure audit_backlog_limit is sufficient
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zanim auditd odbierze zdarzenia, jądro trzyma je w kolejce. Domyślna
+    kolejka ma 64 miejsca, a przy audit=1 zdarzenia z początku startu
+    systemu przychodzą, zanim auditd działa. Po jej zapełnieniu jądro gubi
+    zdarzenia.
+
+    Punkt wymaga parametru jądra audit_backlog_limit o wartości co najmniej
+    8192 we wszystkich wpisach programu rozruchowego oraz w ustawieniach dla
+    nowych jąder.
+  en: |
+    Before auditd receives events, the kernel keeps them in a queue. The
+    default queue has 64 places, and with audit=1 events from the start of
+    the boot arrive before auditd runs. When the queue is full, the kernel
+    loses events.
+
+    The item requires the audit_backlog_limit kernel argument with a value of
+    at least 8192 in all boot loader entries and in the settings for new
+    kernels.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo zmiana dotyczy programu rozruchowego
+    i działa dopiero po ponownym uruchomieniu. Większa kolejka zajmuje
+    pamięć jądra tylko wtedy, gdy auditd nie nadąża z odbieraniem zdarzeń.
+  en: |
+    The class needs review because the change concerns the boot loader and
+    only takes effect after a restart. A larger queue only uses kernel
+    memory when auditd cannot keep up with receiving events.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - boot-and-firmware
+  what_breaks:
+    pl:
+      - Zmiana działa dopiero po ponownym uruchomieniu komputera
+    en:
+      - The change only takes effect after the computer restarts
+  interruption: system-restart
+  user_visible: false
+  reversibility: after-restart
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    kn=audit_backlog_limit
+    kv=8192
+    c=/boot/grub/grub.cfg
+    g=/etc/default/grub
+    f=/etc/default/grub.d/sentin-harden-audit-backlog.cfg
+    head='# Sentin-Harden: ubuntu2404-audit-backlog-limit (CIS Ubuntu 24.04 6.2.1.4); rollback removes this file'
+    # kval ARGS: the value of the last $kn argument, "" for a bare name, "-" when absent
+    kval() { printf '%s\n' "$1" | awk -v n="$kn" '{ v = "-"; for (i = 1; i <= NF; i++) { if (index($i, n "=") == 1) v = substr($i, length(n) + 2); else if ($i == n) v = "" } print v }'; }
+    kok() { [ "$1" != "-" ] && printf '%s\n' "$1" | awk '{ v = $0 } END { exit !(v ~ /^[0-9]+$/ && v + 0 >= 8192) }'; }
+    show() { if [ "$1" = - ]; then echo missing; else echo "$1"; fi; }
+    ours() { printf '%s\n' "$head" "GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $kn=$kv\""; }
+    # cfgbad: "entries-not-meeting-the-item entries" over the linux lines of grub.cfg
+    cfgbad() {
+      local n=0 bad=0 kw img args
+      while read -r kw img args; do
+        n=$((n + 1)); kok "$(kval "$args")" || bad=$((bad + 1))
+      done < <(grep -E '^[[:space:]]*linux(efi)?[[:space:]]' "$c")
+      echo "$bad $n"
+    }
+    src() {
+      (
+        unset GRUB_CMDLINE_LINUX GRUB_CMDLINE_LINUX_DEFAULT
+        . "$g" >/dev/null 2>&1
+        for x in /etc/default/grub.d/*.cfg; do [ -e "$x" ] && . "$x" >/dev/null 2>&1; done
+        printf '%s\n%s\n' "${GRUB_CMDLINE_LINUX:-}" "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
+      )
+    }
+    # srcbad: what update-grub would write where it does not meet the item, empty when all does
+    srcbad() {
+      local l d r=""
+      { read -r l || true; read -r d || true; } < <(src)
+      kok "$(kval "$l")" || r="recovery=$(show "$(kval "$l")")"
+      kok "$(kval "$l $d")" || r="$r${r:+,}normal=$(show "$(kval "$l $d")")"
+      printf '%s\n' "$r"
+    }
+    evaluate() {
+      local s r run
+      if [ ! -f "$g" ] || [ ! -e "$c" ]; then echo CHECK_ERROR; return; fi
+      s=$(srcbad)
+      if [ ! -r "$c" ]; then echo "NOT_OK:${s:+$s,}needs-root"; return; fi
+      set -- $(cfgbad)
+      if [ "$2" = 0 ]; then echo CHECK_ERROR; return; fi
+      run=$(show "$(kval "$(cat /proc/cmdline 2>/dev/null)")")
+      r=""
+      [ "$1" = 0 ] || r="grub-cfg=$1/$2"
+      [ -z "$s" ] || r="$r${r:+,}$s"
+      if [ -n "$r" ]; then echo "NOT_OK:$r"; else echo "OK:entries=$2,running=$run"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      f=/etc/default/grub.d/sentin-harden-audit-backlog.cfg
+      {
+        echo format=grub-karg-1
+        if [ -e "$f" ]; then echo present=1; base64 -w 0 "$f"; echo; else echo present=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=grub-karg-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      p=$(sed -n '2s/^present=//p' "$b")
+      case "$p" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$p" = 1 ]; then
+        [ "$(wc -l < "$b")" -eq 3 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        sed -n 3p "$b" | base64 -d >/dev/null 2>&1 || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      fi
+      # putback: the saved drop-in back, or none
+      putback() { if [ "$p" = 0 ]; then rm -f "$f"; else sed -n 3p "$b" | base64 -d > "$f"; fi; }
+      saved() { [ "$p" = 1 ] && [ -e "$f" ] && sed -n 3p "$b" | base64 -d | cmp -s - "$f"; }
+    export LC_ALL=C
+    kn=audit_backlog_limit
+    kv=8192
+    c=/boot/grub/grub.cfg
+    g=/etc/default/grub
+    f=/etc/default/grub.d/sentin-harden-audit-backlog.cfg
+    head='# Sentin-Harden: ubuntu2404-audit-backlog-limit (CIS Ubuntu 24.04 6.2.1.4); rollback removes this file'
+    # kval ARGS: the value of the last $kn argument, "" for a bare name, "-" when absent
+    kval() { printf '%s\n' "$1" | awk -v n="$kn" '{ v = "-"; for (i = 1; i <= NF; i++) { if (index($i, n "=") == 1) v = substr($i, length(n) + 2); else if ($i == n) v = "" } print v }'; }
+    kok() { [ "$1" != "-" ] && printf '%s\n' "$1" | awk '{ v = $0 } END { exit !(v ~ /^[0-9]+$/ && v + 0 >= 8192) }'; }
+    show() { if [ "$1" = - ]; then echo missing; else echo "$1"; fi; }
+    ours() { printf '%s\n' "$head" "GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $kn=$kv\""; }
+    # cfgbad: "entries-not-meeting-the-item entries" over the linux lines of grub.cfg
+    cfgbad() {
+      local n=0 bad=0 kw img args
+      while read -r kw img args; do
+        n=$((n + 1)); kok "$(kval "$args")" || bad=$((bad + 1))
+      done < <(grep -E '^[[:space:]]*linux(efi)?[[:space:]]' "$c")
+      echo "$bad $n"
+    }
+    src() {
+      (
+        unset GRUB_CMDLINE_LINUX GRUB_CMDLINE_LINUX_DEFAULT
+        . "$g" >/dev/null 2>&1
+        for x in /etc/default/grub.d/*.cfg; do [ -e "$x" ] && . "$x" >/dev/null 2>&1; done
+        printf '%s\n%s\n' "${GRUB_CMDLINE_LINUX:-}" "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
+      )
+    }
+    # srcbad: what update-grub would write where it does not meet the item, empty when all does
+    srcbad() {
+      local l d r=""
+      { read -r l || true; read -r d || true; } < <(src)
+      kok "$(kval "$l")" || r="recovery=$(show "$(kval "$l")")"
+      kok "$(kval "$l $d")" || r="$r${r:+,}normal=$(show "$(kval "$l $d")")"
+      printf '%s\n' "$r"
+    }
+    evaluate() {
+      local s r run
+      if [ ! -f "$g" ] || [ ! -e "$c" ]; then echo CHECK_ERROR; return; fi
+      s=$(srcbad)
+      if [ ! -r "$c" ]; then echo "NOT_OK:${s:+$s,}needs-root"; return; fi
+      set -- $(cfgbad)
+      if [ "$2" = 0 ]; then echo CHECK_ERROR; return; fi
+      run=$(show "$(kval "$(cat /proc/cmdline 2>/dev/null)")")
+      r=""
+      [ "$1" = 0 ] || r="grub-cfg=$1/$2"
+      [ -z "$s" ] || r="$r${r:+,}$s"
+      if [ -n "$r" ]; then echo "NOT_OK:$r"; else echo "OK:entries=$2,running=$run"; fi
+    }
+      [ -f "$g" ] || { echo "$g not found: GRUB does not start this system" >&2; exit 1; }
+      command -v update-grub >/dev/null 2>&1 || { echo "update-grub is not installed" >&2; exit 1; }
+      r=$(evaluate)
+      case "$r" in OK:*) echo "Already meets the item, nothing to change"; exit 0 ;; esac
+      if [ -n "$(srcbad)" ]; then
+        mkdir -p "$(dirname "$f")"
+        ours > "$f"
+        echo "Wrote $f"
+        s=$(srcbad)
+        if [ -n "$s" ]; then
+          putback
+          echo "A later setting in $g or /etc/default/grub.d still overrides $kn ($s); restored the previous state" >&2; exit 1
+        fi
+      fi
+      update-grub
+      r=$(evaluate)
+      case "$r" in
+        OK:*) ;;
+        *) putback; update-grub || true; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Set $kn=$kv for all boot entries; restart the computer to apply it"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=grub-karg-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      p=$(sed -n '2s/^present=//p' "$b")
+      case "$p" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      if [ "$p" = 1 ]; then
+        [ "$(wc -l < "$b")" -eq 3 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        sed -n 3p "$b" | base64 -d >/dev/null 2>&1 || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      fi
+      # putback: the saved drop-in back, or none
+      putback() { if [ "$p" = 0 ]; then rm -f "$f"; else sed -n 3p "$b" | base64 -d > "$f"; fi; }
+      saved() { [ "$p" = 1 ] && [ -e "$f" ] && sed -n 3p "$b" | base64 -d | cmp -s - "$f"; }
+    export LC_ALL=C
+    kn=audit_backlog_limit
+    kv=8192
+    c=/boot/grub/grub.cfg
+    g=/etc/default/grub
+    f=/etc/default/grub.d/sentin-harden-audit-backlog.cfg
+    head='# Sentin-Harden: ubuntu2404-audit-backlog-limit (CIS Ubuntu 24.04 6.2.1.4); rollback removes this file'
+    # kval ARGS: the value of the last $kn argument, "" for a bare name, "-" when absent
+    kval() { printf '%s\n' "$1" | awk -v n="$kn" '{ v = "-"; for (i = 1; i <= NF; i++) { if (index($i, n "=") == 1) v = substr($i, length(n) + 2); else if ($i == n) v = "" } print v }'; }
+    kok() { [ "$1" != "-" ] && printf '%s\n' "$1" | awk '{ v = $0 } END { exit !(v ~ /^[0-9]+$/ && v + 0 >= 8192) }'; }
+    show() { if [ "$1" = - ]; then echo missing; else echo "$1"; fi; }
+    ours() { printf '%s\n' "$head" "GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $kn=$kv\""; }
+    # cfgbad: "entries-not-meeting-the-item entries" over the linux lines of grub.cfg
+    cfgbad() {
+      local n=0 bad=0 kw img args
+      while read -r kw img args; do
+        n=$((n + 1)); kok "$(kval "$args")" || bad=$((bad + 1))
+      done < <(grep -E '^[[:space:]]*linux(efi)?[[:space:]]' "$c")
+      echo "$bad $n"
+    }
+    src() {
+      (
+        unset GRUB_CMDLINE_LINUX GRUB_CMDLINE_LINUX_DEFAULT
+        . "$g" >/dev/null 2>&1
+        for x in /etc/default/grub.d/*.cfg; do [ -e "$x" ] && . "$x" >/dev/null 2>&1; done
+        printf '%s\n%s\n' "${GRUB_CMDLINE_LINUX:-}" "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
+      )
+    }
+    # srcbad: what update-grub would write where it does not meet the item, empty when all does
+    srcbad() {
+      local l d r=""
+      { read -r l || true; read -r d || true; } < <(src)
+      kok "$(kval "$l")" || r="recovery=$(show "$(kval "$l")")"
+      kok "$(kval "$l $d")" || r="$r${r:+,}normal=$(show "$(kval "$l $d")")"
+      printf '%s\n' "$r"
+    }
+    evaluate() {
+      local s r run
+      if [ ! -f "$g" ] || [ ! -e "$c" ]; then echo CHECK_ERROR; return; fi
+      s=$(srcbad)
+      if [ ! -r "$c" ]; then echo "NOT_OK:${s:+$s,}needs-root"; return; fi
+      set -- $(cfgbad)
+      if [ "$2" = 0 ]; then echo CHECK_ERROR; return; fi
+      run=$(show "$(kval "$(cat /proc/cmdline 2>/dev/null)")")
+      r=""
+      [ "$1" = 0 ] || r="grub-cfg=$1/$2"
+      [ -z "$s" ] || r="$r${r:+,}$s"
+      if [ -n "$r" ]; then echo "NOT_OK:$r"; else echo "OK:entries=$2,running=$run"; fi
+    }
+      if [ "$p" = 0 ] && [ ! -e "$f" ]; then echo "Nothing to restore"; exit 0; fi
+      if saved; then echo "Nothing to restore"; exit 0; fi
+      if [ -e "$f" ] && ! ours | cmp -s - "$f"; then echo "Kept $f: changed since the remediation"; exit 0; fi
+      putback
+      if [ "$p" = 0 ]; then echo "Removed $f"; else echo "Restored $f"; fi
+      if [ -f "$g" ] && command -v update-grub >/dev/null 2>&1; then update-grub; fi
+      echo "Restart the computer to apply the previous kernel arguments"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://docs.kernel.org/admin-guide/kernel-parameters.html
+  - https://www.gnu.org/software/grub/manual/grub/html_node/Simple-configuration.html
+  - https://man7.org/linux/man-pages/man8/auditctl.8.html
+
+notes:
+  pl: |
+    Wartość większa niż 8192 spełnia punkt i zostaje; naprawa ustawia 8192
+    tylko wtedy, gdy parametru brakuje albo jest mniejszy. Plik
+    /etc/audit/rules.d/audit.rules z pakietu auditd ma regułę -b 8192, która
+    ustawia ten sam limit dopiero wtedy, gdy auditd wczyta reguły; parametr
+    jądra obejmuje czas startu przed tym momentem. Limit w działającym jądrze
+    można sprawdzić poleceniem auditctl -s (backlog_limit).
+
+    Test sprawdza wszystkie wiersze linux w /boot/grub/grub.cfg oraz to, co
+    update-grub zapisze przy następnym uruchomieniu: zmienną
+    GRUB_CMDLINE_LINUX (wpisy trybu odzyskiwania) i GRUB_CMDLINE_LINUX_DEFAULT
+    po niej (zwykłe wpisy), odczytane z /etc/default/grub i plików
+    w /etc/default/grub.d tak samo jak robi to update-grub. Liczy się ostatnie
+    wystąpienie parametru, więc na przykład wartość w pliku
+    50-cloudimg-settings.cfg obrazów chmurowych może zastąpić wcześniejszą.
+    Wynik NOT_OK wymienia wpisy grub.cfg, które nie spełniają punktu
+    (grub-cfg=), oraz wartości, które update-grub by zapisał (recovery=,
+    normal=). Wynik OK podaje liczbę wpisów i wartość w działającym jądrze
+    (running), która zmienia się dopiero po ponownym uruchomieniu. Gdy
+    grub.cfg jest dostępny tylko dla roota (punkt 1.4.2), bez tych uprawnień
+    wynik to NOT_OK:needs-root; system bez GRUB daje wynik CHECK_ERROR.
+
+    Naprawa zapisuje parametr w pliku /etc/default/grub.d/sentin-harden-audit-backlog.cfg, który dopisuje go
+    do GRUB_CMDLINE_LINUX, i uruchamia update-grub. /etc/default/grub zostaje
+    bez zmian. Gdy późniejsze ustawienie nadal zastępuje parametr, naprawa
+    przywraca poprzedni stan i kończy się błędem. Wycofanie przywraca
+    poprzednią zawartość tego pliku (zwykle go usuwa) i ponownie uruchamia
+    update-grub, a plik zmieniony po naprawie zostawia.
+  en: |
+    A value larger than 8192 meets the item and stays; the remediation sets
+    8192 only when the argument is missing or smaller. The
+    /etc/audit/rules.d/audit.rules file from the auditd package has a -b 8192
+    rule, which sets the same limit only once auditd loads the rules; the
+    kernel argument covers the boot before that moment. The limit in the
+    running kernel can be checked with auditctl -s (backlog_limit).
+
+    The test checks all linux lines in /boot/grub/grub.cfg and what
+    update-grub will write the next time it runs: the GRUB_CMDLINE_LINUX
+    variable (the recovery mode entries) and GRUB_CMDLINE_LINUX_DEFAULT after
+    it (the normal entries), read from /etc/default/grub and the files in
+    /etc/default/grub.d the same way update-grub does. The last occurrence of
+    the argument counts, so, for example, a value in the
+    50-cloudimg-settings.cfg file of cloud images can override an earlier
+    one. The NOT_OK result lists the grub.cfg entries that do not meet the
+    item (grub-cfg=) and the values update-grub would write (recovery=,
+    normal=). The OK result gives the number of entries and the value in the
+    running kernel (running), which only changes after a restart. When
+    grub.cfg is only accessible to root (item 1.4.2), without these
+    privileges the result is NOT_OK:needs-root; a system without GRUB gives
+    CHECK_ERROR.
+
+    The remediation writes the argument to /etc/default/grub.d/sentin-harden-audit-backlog.cfg, which
+    appends it to GRUB_CMDLINE_LINUX, and runs update-grub. /etc/default/grub
+    stays unchanged. When a later setting still overrides the argument, the
+    remediation restores the previous state and ends with an error. Rollback
+    restores the previous content of that file (usually removes it) and
+    runs update-grub again, and leaves the file if it was changed after the
+    remediation.

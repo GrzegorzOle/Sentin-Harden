@@ -1,0 +1,284 @@
+id: ubuntu2404-audit-log-files-group
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 6.2.4.3
+  section: Logging and Auditing > System Accounting (auditd) > Configure auditd File Access
+  title:
+    pl: Grupą plików dziennika audytu jest root lub adm
+    en: Ensure audit log files group owner is configured
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: none
+assessment_state: assessed-no-impact
+
+description:
+  pl: |
+    Grupa pliku dziennika audytu decyduje, kto poza rootem może go czytać.
+    Dostęp powinien mieć tylko root i ewentualnie grupa adm, przeznaczona
+    do przeglądania dzienników systemu.
+
+    Punkt wymaga, żeby każdy plik w katalogu pliku log_file należał do grupy
+    root lub adm, a log_group w /etc/audit/auditd.conf, czyli grupa, którą
+    auditd nadaje nowym plikom, był równy root lub adm. Ubuntu ustawia
+    log_group = adm.
+  en: |
+    The group of an audit log file decides who besides root can read it.
+    Only root and possibly the adm group, meant for reviewing system logs,
+    should have access.
+
+    The item requires every file in the directory of log_file to belong to
+    the root or adm group, and log_group in /etc/audit/auditd.conf, the group
+    auditd gives new files, to be root or adm. Ubuntu sets log_group = adm.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: dzienniki zapisuje auditd działający jako root,
+    a ausearch i aureport uruchamia administrator.
+  en: |
+    Nobody will notice: the logs are written by auditd running as root, and
+    ausearch and aureport are run by the administrator.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl: []
+    en: []
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    conf=/etc/audit/auditd.conf
+    # logdir: the directory of log_file from auditd.conf, or a reason and 1
+    logdir() {
+      local f
+      if [ ! -r "$conf" ]; then
+        if [ -e "$conf" ] || { [ -d /etc/audit ] && [ ! -x /etc/audit ]; }; then echo needs-root; else echo audit-not-installed; fi
+        return 1
+      fi
+      f=$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      dirname -- "${f:-/var/log/audit/audit.log}"
+    }
+    # lgroup: log_group from auditd.conf, root when unset
+    lgroup() {
+      local v
+      v=$(awk -F= '$1 ~ /^[[:space:]]*log_group[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      echo "${v:-root}"
+    }
+    plist() {
+      local l g
+      l=$(logdir) || { echo "$l"; return 1; }
+      g=$(lgroup)
+      case "$g" in root|adm) ;; *) echo "log-group=$g"; return 1 ;; esac
+      [ -d "$l" ] || return 0
+      { [ -r "$l" ] && [ -x "$l" ]; } || { echo needs-root; return 1; }
+      find "$l/" -type f | sort
+    }
+    pok() { { [ "$3" = root ] || [ "$3" = adm ]; }; }
+    gok() { set -- '' '' "$1"; { [ "$3" = root ] || [ "$3" = adm ]; }; }
+    evaluate() {
+      local l f n=0 bad=0 first="" m o g
+      if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        read -r m o g <<< "$(stat -c '%a %U %G' -- "$f" 2>/dev/null)"
+        [ -n "$m" ] || continue
+        n=$((n + 1))
+        pok "$m" "$o" "$g" || { bad=$((bad + 1)); [ -n "$first" ] || first="$f=$m:$o:$g"; }
+      done <<< "$l"
+      if [ "$bad" -gt 0 ]; then echo "NOT_OK:bad=$bad,$first"; else echo "OK:paths=$n"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    conf=/etc/audit/auditd.conf
+    # logdir: the directory of log_file from auditd.conf, or a reason and 1
+    logdir() {
+      local f
+      if [ ! -r "$conf" ]; then
+        if [ -e "$conf" ] || { [ -d /etc/audit ] && [ ! -x /etc/audit ]; }; then echo needs-root; else echo audit-not-installed; fi
+        return 1
+      fi
+      f=$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      dirname -- "${f:-/var/log/audit/audit.log}"
+    }
+    # lgroup: log_group from auditd.conf, root when unset
+    lgroup() {
+      local v
+      v=$(awk -F= '$1 ~ /^[[:space:]]*log_group[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      echo "${v:-root}"
+    }
+    plist() {
+      local l g
+      l=$(logdir) || { echo "$l"; return 1; }
+      g=$(lgroup)
+      case "$g" in root|adm) ;; *) echo "log-group=$g"; return 1 ;; esac
+      [ -d "$l" ] || return 0
+      { [ -r "$l" ] && [ -x "$l" ]; } || { echo needs-root; return 1; }
+      find "$l/" -type f | sort
+    }
+    pok() { { [ "$3" = root ] || [ "$3" = adm ]; }; }
+    gok() { set -- '' '' "$1"; { [ "$3" = root ] || [ "$3" = adm ]; }; }
+    evaluate() {
+      local l f n=0 bad=0 first="" m o g
+      if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        read -r m o g <<< "$(stat -c '%a %U %G' -- "$f" 2>/dev/null)"
+        [ -n "$m" ] || continue
+        n=$((n + 1))
+        pok "$m" "$o" "$g" || { bad=$((bad + 1)); [ -n "$first" ] || first="$f=$m:$o:$g"; }
+      done <<< "$l"
+      if [ "$bad" -gt 0 ]; then echo "NOT_OK:bad=$bad,$first"; else echo "OK:paths=$n"; fi
+    }
+      l=$(plist) || { echo "Cannot list the paths: $l" >&2; exit 1; }
+      {
+        echo format=perms-1
+        printf '%s\n' "$l" | while IFS= read -r f; do
+          [ -n "$f" ] && [ -e "$f" ] || continue
+          printf '%s %s\n' "$(stat -c '%a %u %g' -- "$f")" "$f"
+        done
+      } > "$b.tmp"
+      mv "$b.tmp" "$b"
+      echo "Saved the owner and mode of $(( $(wc -l < "$b") - 1 )) paths"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=perms-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    conf=/etc/audit/auditd.conf
+    # logdir: the directory of log_file from auditd.conf, or a reason and 1
+    logdir() {
+      local f
+      if [ ! -r "$conf" ]; then
+        if [ -e "$conf" ] || { [ -d /etc/audit ] && [ ! -x /etc/audit ]; }; then echo needs-root; else echo audit-not-installed; fi
+        return 1
+      fi
+      f=$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      dirname -- "${f:-/var/log/audit/audit.log}"
+    }
+    # lgroup: log_group from auditd.conf, root when unset
+    lgroup() {
+      local v
+      v=$(awk -F= '$1 ~ /^[[:space:]]*log_group[[:space:]]*$/ { v = $2 } END { print v }' "$conf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      echo "${v:-root}"
+    }
+    plist() {
+      local l g
+      l=$(logdir) || { echo "$l"; return 1; }
+      g=$(lgroup)
+      case "$g" in root|adm) ;; *) echo "log-group=$g"; return 1 ;; esac
+      [ -d "$l" ] || return 0
+      { [ -r "$l" ] && [ -x "$l" ]; } || { echo needs-root; return 1; }
+      find "$l/" -type f | sort
+    }
+    pok() { { [ "$3" = root ] || [ "$3" = adm ]; }; }
+    gok() { set -- '' '' "$1"; { [ "$3" = root ] || [ "$3" = adm ]; }; }
+    evaluate() {
+      local l f n=0 bad=0 first="" m o g
+      if ! l=$(plist); then echo "NOT_OK:$l"; return; fi
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        read -r m o g <<< "$(stat -c '%a %U %G' -- "$f" 2>/dev/null)"
+        [ -n "$m" ] || continue
+        n=$((n + 1))
+        pok "$m" "$o" "$g" || { bad=$((bad + 1)); [ -n "$first" ] || first="$f=$m:$o:$g"; }
+      done <<< "$l"
+      if [ "$bad" -gt 0 ]; then echo "NOT_OK:bad=$bad,$first"; else echo "OK:paths=$n"; fi
+    }
+      l=$(plist) || { echo "Cannot list the paths: $l" >&2; exit 1; }
+      n=0
+      while IFS= read -r f; do
+        [ -n "$f" ] && [ -e "$f" ] || continue
+        read -r m o g <<< "$(stat -c '%a %U %G' -- "$f")"
+        ! pok "$m" "$o" "$g" || continue
+        gok "$g" || chgrp "$(lgroup)" -- "$f"
+        chmod "$(printf '0%04o' $(( 0$m )))" -- "$f"
+        n=$((n + 1))
+      done <<< "$l"
+      echo "Corrected $n paths"
+      r=$(evaluate)
+      case "$r" in OK:*) ;; *) echo "Paths still not as required ($r)" >&2; exit 1 ;; esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=perms-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if tail -n +2 "$b" | grep -qvE '^[0-7]+ [0-9]+ [0-9]+ /'; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+      n=0
+      while read -r m u g f; do
+        [ -e "$f" ] || { echo "Skipped $f: it no longer exists"; continue; }
+        read -r cm cu cg <<< "$(stat -c '%a %u %g' -- "$f")"
+        k=0
+        [ "$cg" = "$g" ] || { chgrp "$g" -- "$f"; k=1; }
+        [ "$k" = 1 ] || continue
+        chmod "$(printf '0%04o' $(( 0$cm )))" -- "$f"
+        echo "Restored $f"; n=$((n + 1))
+      done < <(tail -n +2 "$b")
+      [ "$n" -gt 0 ] || echo "Nothing to restore"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/auditd.conf.5.html
+  - https://man7.org/linux/man-pages/man8/auditd.8.html
+
+notes:
+  pl: |
+    Naprawa nadaje plikom z inną grupą grupę z log_group (root albo adm), tę
+    samą, którą auditd nada plikom po rotacji; tryb i właściciel pozostają
+    bez zmian. W Ubuntu do grupy adm należy konto pierwszego administratora,
+    więc może ono czytać dzienniki audytu bez sudo. log_group spoza root
+    i adm daje wynik NOT_OK:log-group=..., a naprawa kończy się błędem bez
+    zmian: reguła nie edytuje auditd.conf, bo zmiana log_group wymaga
+    ponownego wczytania konfiguracji auditd, a domyślne adm spełnia punkt.
+    Ustaw log_group ręcznie i zrestartuj auditd.
+    Wycofanie przywraca tylko to, czym reguła zarządza (tryb, właściciela
+    albo grupę), i tylko dla ścieżek, które nadal istnieją, więc reguły
+    trybu, właściciela i grupy tych samych plików można wycofywać osobno.
+    Katalog /etc/audit i auditd.conf są dostępne tylko dla roota, więc bez
+    tych uprawnień wynik to NOT_OK:needs-root.
+  en: |
+    The remediation gives files with another group the group from log_group
+    (root or adm), the same one auditd gives files after rotation; the mode
+    and owner stay unchanged. In Ubuntu the account of the first
+    administrator belongs to the adm group, so it can read the audit logs
+    without sudo. A log_group other than root or adm gives the result
+    NOT_OK:log-group=..., and the remediation fails without changes: the rule
+    does not edit auditd.conf, because changing log_group needs auditd to
+    reload its configuration, and the default adm meets the item. Set
+    log_group by hand and restart auditd.
+    Rollback restores only what the rule manages (mode, owner or group),
+    and only for the paths that still exist, so the mode, owner and group
+    rules for the same files can be rolled back separately. The /etc/audit
+    directory and auditd.conf are only accessible to root, so without these
+    privileges the result is NOT_OK:needs-root.

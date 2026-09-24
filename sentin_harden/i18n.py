@@ -62,6 +62,13 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "pl": "Sprawdzanie {done}/{total}: {title}",
         "en": "Checking {done}/{total}: {title}",
     },
+    "report": {"pl": "Raport do druku", "en": "Printable report"},
+    "report_save": {"pl": "Zapisz raport", "en": "Save report"},
+    "report_saved": {"pl": "Zapisano raport: {path}", "en": "Report saved: {path}"},
+    "report_failed": {
+        "pl": "Nie udało się zapisać raportu: {error}",
+        "en": "Could not save the report: {error}",
+    },
     "copy": {"pl": "Kopiuj polecenie", "en": "Copy command"},
     "copied": {"pl": "Skopiowano do schowka", "en": "Copied to clipboard"},
     "filter_risk": {"pl": "Ryzyko", "en": "Risk"},

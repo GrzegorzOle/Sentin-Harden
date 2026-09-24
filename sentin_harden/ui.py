@@ -9,12 +9,32 @@ skips the backup would violate the rule the whole project rests on.
 from __future__ import annotations
 
 import html
+import platform
+from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QMarginsF,
+    QModelIndex,
+    QSizeF,
+    Qt,
+    QThread,
+    Signal,
+)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QPageLayout,
+    QPageSize,
+    QPalette,
+    QPdfWriter,
+    QTextDocument,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -28,7 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import paths
+from . import paths, report
 from .audit import AuditResult, AuditRunner, Outcome, Scope, summarise
 from .i18n import Language, ui
 from .ruleset import DISRUPTION_ORDER, RISK_ORDER, Rule, RuleBase, Target, load
@@ -387,6 +407,9 @@ class MainWindow(QMainWindow):
         self.target: Target | None = None
         self.overlays: list[Target] = []
         self._worker: ScanWorker | None = None
+        # The whole scan, kept apart from the table model: the report covers
+        # everything that was checked, not the rows left visible by a filter.
+        self._results: list[AuditResult] = []
 
         self.model = ResultsModel(self.base, self.language)
         self.detail = DetailPanel(self.base, self.language)
@@ -403,6 +426,11 @@ class MainWindow(QMainWindow):
         self.scan_button = QPushButton()
         self.scan_button.clicked.connect(self.start_scan)
 
+        # Enabled only once there is something to put in a report. An empty
+        # document handed to an auditor is worse than none.
+        self.report_button = QPushButton()
+        self.report_button.clicked.connect(self.export_report)
+        self.report_button.setEnabled(False)
 
         self.risk_filter = QComboBox()
         self.disruption_filter = QComboBox()
@@ -423,6 +451,7 @@ class MainWindow(QMainWindow):
 
         top = QHBoxLayout()
         top.addWidget(self.scan_button)
+        top.addWidget(self.report_button)
         top.addSpacing(12)
         top.addWidget(self.risk_filter)
         top.addWidget(self.disruption_filter)
@@ -529,6 +558,7 @@ class MainWindow(QMainWindow):
     def retranslate(self) -> None:
         self.setWindowTitle(ui("window_title", self.language))
         self.scan_button.setText(ui("scan", self.language))
+        self.report_button.setText(ui("report", self.language))
         self.copy_button.setText(ui("copy", self.language))
 
         for box, key, vocabulary in (
@@ -591,10 +621,77 @@ class MainWindow(QMainWindow):
         self.progress.setValue(self.progress.maximum())
         self.progress.setVisible(False)
         self.model.set_results(results)
+        self._results = results
         self.scan_button.setEnabled(True)
+        self.report_button.setEnabled(bool(results))
         if self.model.rowCount():
             self.table.selectRow(0)
         self._update_summary()
+
+    def export_report(self) -> None:
+        """Save the printable report beside whatever the user chooses.
+
+        The report covers the whole scan rather than the rows left by the
+        filters. A document that quietly holds only what happened to be on
+        screen would be read as the full picture.
+        """
+        if not self._results:
+            return
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        host = self.target.identifier if self.target else "audit"
+        suggested = str(paths.data_dir() / f"sentin-harden-{host}-{stamp}.html")
+        path, selected = QFileDialog.getSaveFileName(
+            self,
+            ui("report_save", self.language),
+            suggested,
+            "HTML (*.html);;PDF (*.pdf)",
+        )
+        if not path:
+            return
+
+        wants_pdf = path.lower().endswith(".pdf") or selected.startswith("PDF")
+        if wants_pdf and not path.lower().endswith(".pdf"):
+            path = path.rsplit(".", 1)[0] + ".pdf"
+
+        document = report.build_html(
+            self.base,
+            self.scope,
+            self._results,
+            self.language,
+            machine=platform.node(),
+        )
+
+        try:
+            if wants_pdf:
+                self._write_pdf(document, path)
+            else:
+                Path(path).write_text(document, encoding="utf-8")
+        except OSError as error:
+            self.statusBar().showMessage(
+                ui("report_failed", self.language, error=str(error))
+            )
+            return
+        self.statusBar().showMessage(ui("report_saved", self.language, path=path))
+
+    @staticmethod
+    def _write_pdf(document: str, path: str) -> None:
+        """Render the report straight to PDF, without a browser in between.
+
+        Qt's text engine understands a subset of the stylesheet - enough for
+        headings, tables and page breaks, not for the finer print rules. The
+        HTML export opened in a browser gives the better typeset document, and
+        this path exists so that a PDF can be handed over without one.
+        """
+        writer = QPdfWriter(path)
+        writer.setPageSize(QPageSize(QPageSize.A4))
+        writer.setResolution(300)
+        writer.setPageMargins(QMarginsF(16, 18, 16, 20), QPageLayout.Millimeter)
+
+        text = QTextDocument()
+        text.setHtml(document)
+        text.setPageSize(QSizeF(writer.width(), writer.height()))
+        text.print_(writer)
 
     def _filters_changed(self) -> None:
         self.model.set_filters(

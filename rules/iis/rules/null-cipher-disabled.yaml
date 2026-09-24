@@ -1,0 +1,242 @@
+id: iis-null-cipher-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Zestaw szyfrów bez szyfrowania wyłączony
+    en: The cipher set that does not encrypt is switched off
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wśród zestawów szyfrów, które potrafi zestawić serwer, jest taki, który
+    niczego nie szyfruje. Strony uzgadniają tożsamość i pilnują, żeby dane nie
+    zostały po drodze przerobione, ale sama treść jedzie otwartym tekstem.
+    Powstał do zastosowań, w których liczy się wyłącznie potwierdzenie, z kim
+    się rozmawia — i do diagnostyki, bo pozwala podejrzeć ruch, który
+    normalnie jest nieczytelny.
+
+    Co to odbiera atakującemu: połączenie, które wygląda na zabezpieczone
+    i nim nie jest. Przeglądarka pokazuje wtedy kłódkę, adres zaczyna się
+    tak samo, a treść — łącznie z hasłem wpisanym w formularz i ciasteczkiem
+    sesji — jest czytelna dla każdego, kto ma dostęp do ruchu po drodze.
+    To gorsze niż połączenie jawnie nieszyfrowane, bo nikt nie ma powodu
+    zachować ostrożności.
+
+    Po zmianie serwer odmawia zestawienia takiego połączenia. Klient, który
+    potrafi wyłącznie to, nie połączy się wcale — i o to chodzi.
+  en: |
+    Among the cipher sets a server can establish there is one that encrypts
+    nothing. The two sides agree on identity and see to it that the data are not
+    reworked on the way, but the contents themselves travel in plain text. It came
+    about for uses where only confirming whom one is talking to matters - and for
+    diagnostics, since it allows traffic normally unreadable to be looked at.
+
+    What it takes away from an attacker - a connection that looks secured and is
+    not. The browser then shows a padlock, the address begins the same way, and
+    the contents - including a password typed into a form and the session cookie -
+    are readable by anybody with access to the traffic on the way. That is worse
+    than a plainly unencrypted connection, because nobody has reason to be
+    careful.
+
+    After the change the server refuses to establish such a connection. A client
+    that can do only this will not connect at all - which is the point.
+
+disruption_description:
+  pl: |
+    W praktyce ta zmiana nic nie psuje. Żaden system Windows nie włącza tego
+    zestawu domyślnie, a żadna przeglądarka ani biblioteka sieciowa nie
+    zaproponuje go z własnej woli — części z nich w ogóle nie da się do tego
+    nakłonić. Jeśli wpis w rejestrze go włącza, ktoś zrobił to świadomie
+    i warto ustalić po co, zanim zmiana zostanie wykonana.
+
+    Powód bywa jeden i zawsze ten sam: ktoś potrzebował podejrzeć ruch, żeby
+    zdiagnozować problem, i zostawił ustawienie włączone po zakończeniu pracy.
+    To jest dokładnie ta sytuacja, którą ta reguła ma wychwycić.
+
+    Zapis obowiązuje od ponownego uruchomienia maszyny. Do tego czasu stan
+    zgłaszany przez sprawdzenie i stan faktyczny się różnią.
+  en: |
+    In practice this change breaks nothing. No Windows system switches this set on
+    by default, and no browser or networking library proposes it of its own accord
+    - some of them cannot be talked into it at all. If a registry entry switches it
+    on, somebody did so deliberately and it is worth establishing what for before
+    the change is made.
+
+    The reason tends to be one and always the same - somebody needed to look at
+    the traffic to diagnose a problem, and left the setting on after finishing.
+    That is exactly the situation this rule is meant to catch.
+
+    The write applies from the machine's next restart. Until then the state the
+    check reports and the real state differ.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - web-server-services
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Podglądanie ruchu w narzędziu diagnostycznym bez znajomości klucza przestaje być możliwe
+      - Klient zestawiający połączenie wyłącznie tym zestawem nie połączy się wcale i zobaczy błąd połączenia, nie błąd strony
+      - Zmiana obejmuje całą maszynę, nie tylko serwer sieciowy
+      - Połączenia po zestawach faktycznie szyfrujących, uwierzytelnianie i zawartość stron pozostają bez zmian
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - Looking at traffic in a diagnostic tool without knowing the key stops being possible
+      - A client establishing a connection only with this set will not connect at all and sees a connection error rather than a page error
+      - The change covers the whole machine and not the web server alone
+      - Connections over sets that actually encrypt, authentication and page contents are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Stanowiska laboratoryjne, na których podgląd ruchu jest celem pracy, a nie niedopatrzeniem
+    en:
+      - Laboratory machines where looking at traffic is the point of the work rather than an oversight
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        # The cipher keys are named with a slash - 'DES 56/56', 'RC4 128/128'.
+        # The registry provider in PowerShell reads a slash as a path separator,
+        # so a path built that way points at a key that does not exist and the
+        # reading comes back empty on a machine where the entry is present. Only
+        # the .NET interface treats the backslash alone as a separator, so that
+        # is what is used here and in every other rule touching these keys.
+        $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+        $wrong = @()
+        foreach ($name in @('NULL')) {
+          $key = $base.OpenSubKey($root + $name)
+          if ($null -eq $key) { $wrong += ($name + ':not-set'); continue }
+          $value = $key.GetValue('Enabled', $null)
+          $key.Close()
+          # An absent key or value means the set follows the system default
+          # rather than being switched off, so it counts as unset and not as
+          # compliant.
+          if ($null -eq $value) { $wrong += ($name + ':not-set') }
+          elseif ([int]$value -ne 0) { $wrong += ($name + ':other') }
+        }
+        $base.Close()
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    $saved = @()
+    foreach ($name in @('NULL')) {
+      $key = $base.OpenSubKey($root + $name)
+      $value = $null
+      $existed = ($null -ne $key)
+      if ($existed) {
+        $value = $key.GetValue('Enabled', $null)
+        $key.Close()
+      }
+      $saved += [pscustomobject]@{
+        name          = $name
+        key_existed   = $existed
+        value         = $value
+        value_existed = ($null -ne $value)
+      }
+    }
+    $base.Close()
+    [pscustomobject]@{
+      cipher  = 'NULL'
+      path    = $root
+      entries = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($name in @('NULL')) {
+      # The key is usually absent, so it is created rather than assumed.
+      $key = $base.CreateSubKey($root + $name)
+      if ($null -eq $key) { throw ('The cipher key could not be created: ' + $name) }
+      $key.SetValue('Enabled', 0, [Microsoft.Win32.RegistryValueKind]::DWord)
+      $key.Close()
+    }
+    $base.Close()
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($e in $b.entries) {
+      if (-not $e.key_existed) {
+        # The key did not exist before the change, so it goes away whole instead
+        # of being left behind holding a value nobody wrote.
+        $base.DeleteSubKeyTree($b.path + $e.name, $false)
+        continue
+      }
+      $key = $base.CreateSubKey($b.path + $e.name)
+      if ($e.value_existed) {
+        $key.SetValue('Enabled', [int]$e.value, [Microsoft.Win32.RegistryValueKind]::DWord)
+      } else {
+        $key.DeleteValue('Enabled', $false)
+      }
+      $key.Close()
+    }
+    $base.Close()
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+  - https://learn.microsoft.com/windows/win32/secauthn/cipher-suites-in-schannel
+
+notes:
+  pl: |
+    Nazwy kluczy szyfrów zawierają ukośnik, którego dostawca rejestru
+    w PowerShell nie rozumie jako części nazwy — czyta go jako separator
+    ścieżki i szuka zagnieżdżonego klucza, którego nie ma. Wszystkie reguły
+    dotyczące tych kluczy sięgają więc po interfejs .NET, dla którego
+    separatorem jest wyłącznie odwrotny ukośnik. Ten konkretny klucz ukośnika
+    nie ma, ale sposób dostępu zostaje wspólny dla całej grupy, żeby nie było
+    dwóch różnych ścieżek do tego samego miejsca.
+
+    Wyłączenie zestawu zostawia decyzję o pozostałych bez zmian — reguła
+    dotyczy wyłącznie tego jednego i nie ustala kolejności zestawów ani ich
+    listy.
+  en: |
+    The cipher key names hold a slash, which the registry provider in PowerShell
+    does not understand as part of a name - it reads it as a path separator and
+    looks for a nested key that is not there. Every rule touching these keys
+    therefore reaches for the .NET interface, for which only the backslash is a
+    separator. This particular key has no slash, but the way of reaching it stays
+    common to the whole group, so that there are not two different roads to the
+    same place.
+
+    Switching the set off leaves the decision about the others untouched - the
+    rule concerns this one alone and settles neither the order of the sets nor the
+    list of them.

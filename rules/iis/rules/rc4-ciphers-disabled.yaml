@@ -1,0 +1,252 @@
+id: iis-rc4-ciphers-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Szyfry strumieniowe RC4 wyłączone we wszystkich długościach klucza
+    en: The RC4 stream ciphers switched off at every key length
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    RC4 był przez lata najpopularniejszym szyfrem w ruchu sieciowym, bo jest
+    szybki i prosty. Działa inaczej niż pozostałe: zamiast przetwarzać dane
+    blokami, wytwarza strumień, który miesza się z treścią. Ta konstrukcja
+    okazała się wadliwa w sposób, którego nie da się naprawić — pierwsze bajty
+    strumienia nie są przypadkowe w stopniu, w jakim powinny być, a zależność
+    daje się wykorzystać.
+
+    Co to odbiera atakującemu: możliwość odtworzenia danych powtarzających się
+    w wielu połączeniach. Atak polega na zebraniu bardzo wielu sesji, w których
+    ten sam fragment treści jest zaszyfrowany za każdym razem inaczej, i na
+    odzyskaniu go ze statystyki. Fragmentem powtarzającym się w każdej sesji
+    jest ciasteczko uwierzytelniające, a zmusić przeglądarkę do zestawienia
+    wielu połączeń potrafi skrypt na dowolnej innej stronie.
+
+    Po zmianie serwer nie zestawi połączenia żadnym z wariantów tego szyfru,
+    niezależnie od długości klucza — bo słabość leży w samej konstrukcji,
+    a nie w rozmiarze klucza.
+  en: |
+    RC4 was for years the commonest cipher in network traffic, because it is fast
+    and simple. It works differently from the others - instead of processing data
+    in blocks it produces a stream that is mixed into the contents. That
+    construction turned out to be faulty in a way that cannot be repaired - the
+    first bytes of the stream are not random to the degree they ought to be, and
+    the dependency can be exploited.
+
+    What it takes away from an attacker - the ability to reconstruct data that
+    repeat across many connections. The attack consists of gathering very many
+    sessions in which the same fragment of content is encrypted differently each
+    time, and recovering it from the statistics. The fragment repeating in every
+    session is the authentication cookie, and a script on any other page can force
+    a browser to establish many connections.
+
+    After the change the server will not establish a connection with any variant of
+    this cipher, whatever the key length - because the weakness lies in the
+    construction itself and not in the size of the key.
+
+disruption_description:
+  pl: |
+    Zmiana nie wymaga rozważań. Przeglądarki przestały proponować ten szyfr
+    około dziesięciu lat temu, a instytucje normalizacyjne wprost zakazały
+    jego używania w ruchu szyfrowanym. Serwer, który go nie oferuje, nie traci
+    dziś żadnego klienta, który miałby czym go zastąpić.
+
+    Wyjątkiem pozostaje sprzęt wbudowany ze starym stosem sieciowym oraz
+    klienci napisani tak, że szyfr wskazano w kodzie na sztywno. Ci pierwsi
+    zazwyczaj potrafią też coś blokowego; ci drudzy nie potrafią nic i tak czy
+    inaczej wymagają przepisania.
+
+    Reguła obejmuje cztery warianty naraz — czterdziesto-, pięćdziesięcio-
+    sześcio-, sześćdziesięciocztero- i stu dwudziestoośmiobitowy. Rozdzielanie
+    ich nie miałoby sensu, bo wszystkie dzielą tę samą wadę, a wyłączenie
+    tylko części zostawia drogę otwartą.
+
+    Zapis obowiązuje od ponownego uruchomienia maszyny.
+  en: |
+    The change calls for no deliberation. Browsers stopped proposing this cipher
+    about ten years ago, and standards bodies forbade its use in encrypted traffic
+    outright. A server that does not offer it loses no client today that would have
+    anything to replace it with.
+
+    The exception remains embedded equipment with an old network stack, and clients
+    written with the cipher fixed in the code. The former can usually do something
+    block-based as well; the latter can do nothing and call for rewriting either
+    way.
+
+    The rule covers four variants at once - forty, fifty-six, sixty-four and a
+    hundred and twenty-eight bits. Separating them would make no sense, because all
+    of them share the same fault, and switching off only some leaves the road open.
+
+    The write applies from the machine's next restart.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - legacy-applications
+    - web-server-services
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Klient ze wskazanym w kodzie szyfrem strumieniowym przestanie nawiązywać połączenie i zobaczy błąd połączenia, nie błąd strony
+      - Urządzenie wbudowane bez obsługi szyfrów blokowych traci możliwość połączenia szyfrowanego
+      - Zmiana obejmuje całą maszynę, nie tylko serwer sieciowy, więc dotyczy też połączeń wychodzących
+      - Połączenia po szyfrach blokowych, uwierzytelnianie i zawartość stron pozostają bez zmian
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - A client with a stream cipher fixed in its code stops establishing connections and sees a connection error rather than a page error
+      - An embedded device with no support for block ciphers loses the ability to connect at all over an encrypted channel
+      - The change covers the whole machine and not the web server alone, so it reaches outgoing connections too
+      - Connections over block ciphers, authentication and page contents are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery obsługujące urządzenia wbudowane, o których wiadomo, że nie potrafią żadnego szyfru blokowego
+    en:
+      - Servers serving embedded devices known to be incapable of any block cipher
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        # Every one of these names holds a slash, which the registry provider in
+        # PowerShell reads as a path separator - 'RC4 128/128' would be looked
+        # for as '128' inside 'RC4 128'. The .NET interface treats only the
+        # backslash that way, so it is used here.
+        $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+        $wrong = @()
+        # The four variants are judged one by one, and the ones still open are
+        # named. Reporting them together would hide exactly which key length
+        # remains available.
+        foreach ($name in @('RC4 40/128', 'RC4 56/128', 'RC4 64/128', 'RC4 128/128')) {
+          $key = $base.OpenSubKey($root + $name)
+          if ($null -eq $key) { $wrong += ($name + ':not-set'); continue }
+          $value = $key.GetValue('Enabled', $null)
+          $key.Close()
+          if ($null -eq $value) { $wrong += ($name + ':not-set') }
+          elseif ([int]$value -ne 0) { $wrong += ($name + ':other') }
+        }
+        $base.Close()
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    $saved = @()
+    foreach ($name in @('RC4 40/128', 'RC4 56/128', 'RC4 64/128', 'RC4 128/128')) {
+      $key = $base.OpenSubKey($root + $name)
+      $value = $null
+      $existed = ($null -ne $key)
+      if ($existed) {
+        $value = $key.GetValue('Enabled', $null)
+        $key.Close()
+      }
+      $saved += [pscustomobject]@{
+        name          = $name
+        key_existed   = $existed
+        value         = $value
+        value_existed = ($null -ne $value)
+      }
+    }
+    $base.Close()
+    [pscustomobject]@{
+      cipher  = 'RC4'
+      path    = $root
+      entries = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($name in @('RC4 40/128', 'RC4 56/128', 'RC4 64/128', 'RC4 128/128')) {
+      $key = $base.CreateSubKey($root + $name)
+      if ($null -eq $key) { throw ('The cipher key could not be created: ' + $name) }
+      $key.SetValue('Enabled', 0, [Microsoft.Win32.RegistryValueKind]::DWord)
+      $key.Close()
+    }
+    $base.Close()
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($e in $b.entries) {
+      if (-not $e.key_existed) {
+        # Keys the change created go away whole. Only those absent beforehand
+        # are removed, so a key somebody else wrote is left where it was.
+        $base.DeleteSubKeyTree($b.path + $e.name, $false)
+        continue
+      }
+      $key = $base.CreateSubKey($b.path + $e.name)
+      if ($e.value_existed) {
+        $key.SetValue('Enabled', [int]$e.value, [Microsoft.Win32.RegistryValueKind]::DWord)
+      } else {
+        $key.DeleteValue('Enabled', $false)
+      }
+      $key.Close()
+    }
+    $base.Close()
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+  - https://datatracker.ietf.org/doc/html/rfc7465
+
+notes:
+  pl: |
+    Cztery warianty w jednej regule to świadoma decyzja. Dzielą tę samą wadę
+    konstrukcyjną, wyłącza się je tym samym poleceniem i zostawienie choćby
+    jednego włączonego daje drogę, której pozostałe trzy miały zamknąć.
+    Rozbicie na cztery punkty dałoby cztery identyczne opisy i raport,
+    w którym trzy zielone pozycje przesłaniają jedną czerwoną.
+
+    Sprawdzenie zgłasza za to każdy wariant osobno, więc w wyniku widać, który
+    dokładnie pozostaje otwarty.
+
+    Brak klucza w rejestrze liczy się jako stan nieustawiony. Współczesne
+    wydania Windows nie proponują tego szyfru nawet przy braku wpisu, ale
+    zachowanie domyślne zmienia się między wydaniami i nie jest tym samym co
+    jawne wyłączenie.
+  en: |
+    Four variants in one rule is a deliberate decision. They share the same fault
+    of construction, are switched off by the same command, and leaving even one of
+    them on gives a road the other three were meant to close. Splitting them into
+    four items would give four identical descriptions and a report in which three
+    green entries obscure one red.
+
+    The check does report each variant separately, so the result shows which one
+    exactly remains open.
+
+    An absent key counts as unset. Current releases of Windows do not propose this
+    cipher even with no entry present, but default behaviour changes between
+    releases and is not the same as switching it off outright.

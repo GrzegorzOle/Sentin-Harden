@@ -1,0 +1,240 @@
+id: iis-aes-256-cipher-enabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Szyfr AES z kluczem 256-bitowym jawnie włączony
+    en: The AES cipher with a 256-bit key switched on outright
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Wszystkie poprzednie punkty z tej grupy coś odbierają. Ten jeden dodaje:
+    zapisuje w rejestrze, że szyfr, którym serwer ma faktycznie szyfrować
+    ruch, jest włączony. Bez tego wpisu decyzja należy do systemu i zmienia
+    się razem z jego wydaniem.
+
+    Co to wnosi: pewność, że po wyłączeniu wszystkiego, co słabe, cokolwiek
+    jeszcze zostało. To nie jest rozważanie teoretyczne — maszyna, na której
+    ktoś kolejno powyłączał stare szyfry, a nowego nie włączył jawnie, potrafi
+    przestać zestawiać połączenia szyfrowane w ogóle. Objawia się to po
+    ponownym uruchomieniu, czyli zwykle w najgorszym możliwym momencie,
+    i wygląda na awarię serwera, a nie na skutek zmiany sprzed tygodnia.
+
+    Po zmianie stan jest zapisany wprost, a nie odziedziczony. To jest cała
+    wartość tego punktu: nie zmienia zachowania maszyny, tylko przestaje
+    pozwalać, żeby zmieniło się samo.
+  en: |
+    Every previous item in this group takes something away. This one adds - it
+    records in the registry that the cipher the server is actually to encrypt
+    traffic with is switched on. Without that entry the decision rests with the
+    system and changes along with its release.
+
+    What it brings - certainty that after everything weak has been switched off,
+    anything at all is left. This is not a theoretical consideration; a machine on
+    which somebody switched old ciphers off one after another without switching a
+    new one on outright can stop establishing encrypted connections altogether. It
+    shows up after a restart, which is to say usually at the worst possible moment,
+    and looks like a server failure rather than the consequence of a change made a
+    week earlier.
+
+    After the change the state is recorded outright rather than inherited. That is
+    the whole worth of this item - it does not change the machine's behaviour, it
+    stops allowing the behaviour to change by itself.
+
+disruption_description:
+  pl: |
+    Zmiana nie psuje niczego i nie odbiera niczego. Szyfr, o którym mowa, jest
+    włączony na każdym wspieranym wydaniu Windows, a wpis w rejestrze jedynie
+    potwierdza stan, który i tak obowiązuje. Klienci, którzy łączyli się
+    wcześniej, połączą się dalej.
+
+    Jedyna rzecz warta odnotowania dotyczy kolejności pracy: ten punkt wykonaj
+    **przed** wyłączaniem starszych szyfrów, nie po. Odwrotna kolejność
+    zostawia okno, w którym słabe zestawy są już wyłączone, a mocny nie jest
+    jeszcze potwierdzony — a jeśli ponowne uruchomienie wypadnie właśnie
+    wtedy, maszyna wstanie bez żadnego zestawu do zaproponowania.
+
+    Zapis obowiązuje od ponownego uruchomienia maszyny, tak jak pozostałe
+    w tej grupie.
+  en: |
+    The change breaks nothing and takes nothing away. The cipher in question is
+    switched on in every supported release of Windows, and the registry entry
+    merely confirms a state that holds anyway. Clients that connected before will
+    connect still.
+
+    The one thing worth noting concerns the order of work - do this item **before**
+    switching off the older ciphers, not after. The reverse order leaves a window
+    in which the weak sets are already off and the strong one is not yet confirmed
+    - and if a restart falls exactly then, the machine comes back up with no set to
+    propose at all.
+
+    The write applies from the machine's next restart, as with the others in this
+    group.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - web-server-services
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Nie przestaje działać nic — wpis potwierdza stan, który i tak obowiązuje na wspieranych wydaniach systemu
+      - Wykonanie tego punktu po wyłączeniu starszych szyfrów, a nie przed, zostawia okno bez potwierdzonego zestawu mocnego
+      - Zmiana obejmuje całą maszynę, nie tylko serwer sieciowy
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - Nothing stops working - the entry confirms a state that holds anyway on supported releases of the system
+      - Doing this item after switching off the older ciphers rather than before leaves a window with no confirmed strong set
+      - The change covers the whole machine and not the web server alone
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten wpis byłby błędem
+    en:
+      - No known case in which this entry would be a mistake
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        # The key name holds a slash, which the registry provider in PowerShell
+        # reads as a path separator. The .NET interface treats only the
+        # backslash that way, so it is used here.
+        $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+        $wrong = @()
+        foreach ($name in @('AES 256/256')) {
+          $key = $base.OpenSubKey($root + $name)
+          if ($null -eq $key) { $wrong += ($name + ':not-set'); continue }
+          $value = $key.GetValue('Enabled', $null)
+          $key.Close()
+          # This is the one item in the group asking for a value other than
+          # zero. An absent entry means the cipher follows the system default -
+          # which today is on, but is not recorded anywhere and changes between
+          # releases, so it counts as unset rather than as met.
+          if ($null -eq $value) { $wrong += ($name + ':not-set') }
+          elseif ([int]$value -eq 0) { $wrong += ($name + ':disabled') }
+        }
+        $base.Close()
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    $saved = @()
+    foreach ($name in @('AES 256/256')) {
+      $key = $base.OpenSubKey($root + $name)
+      $value = $null
+      $existed = ($null -ne $key)
+      if ($existed) {
+        $value = $key.GetValue('Enabled', $null)
+        $key.Close()
+      }
+      $saved += [pscustomobject]@{
+        name          = $name
+        key_existed   = $existed
+        value         = $value
+        value_existed = ($null -ne $value)
+      }
+    }
+    $base.Close()
+    [pscustomobject]@{
+      cipher  = 'AES 256/256'
+      path    = $root
+      entries = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($name in @('AES 256/256')) {
+      $key = $base.CreateSubKey($root + $name)
+      if ($null -eq $key) { throw ('The cipher key could not be created: ' + $name) }
+      # Minus one written as a four-byte value is the all-ones pattern this
+      # branch of the registry uses to mean switched on. Writing one instead
+      # would read as an unexpected value rather than as consent.
+      $key.SetValue('Enabled', -1, [Microsoft.Win32.RegistryValueKind]::DWord)
+      $key.Close()
+    }
+    $base.Close()
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($e in $b.entries) {
+      if (-not $e.key_existed) {
+        $base.DeleteSubKeyTree($b.path + $e.name, $false)
+        continue
+      }
+      $key = $base.CreateSubKey($b.path + $e.name)
+      if ($e.value_existed) {
+        $key.SetValue('Enabled', [int]$e.value, [Microsoft.Win32.RegistryValueKind]::DWord)
+      } else {
+        $key.DeleteValue('Enabled', $false)
+      }
+      $key.Close()
+    }
+    $base.Close()
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+  - https://learn.microsoft.com/windows/win32/secauthn/cipher-suites-in-schannel
+
+notes:
+  pl: |
+    Kategoria ryzyka jest niska i tak ma być: punkt nie zamyka żadnej drogi
+    atakującemu, tylko utrwala stan, który i tak obowiązuje. Wartość leży
+    w spójności konfiguracji i w tym, że po wyłączeniu wszystkiego słabego
+    zostaje zapisane, co ma działać.
+
+    Wycofanie zmiany przywraca poprzedni stan wpisu, a nie wyłącza szyfru —
+    jeśli wpisu wcześniej nie było, klucz zostaje usunięty i decyzja wraca do
+    systemu.
+
+    Reguła nie ustala kolejności zestawów szyfrów ani ich listy. To osobne
+    ustawienie, w innym miejscu rejestru, i osobna decyzja.
+  en: |
+    The risk category is low and is meant to be - the item closes no road to an
+    attacker, it fixes in place a state that holds anyway. The worth lies in the
+    consistency of the configuration and in having it recorded what is to work once
+    everything weak has been switched off.
+
+    Undoing the change restores the previous state of the entry rather than
+    switching the cipher off - where no entry was there before, the key is removed
+    and the decision returns to the system.
+
+    The rule settles neither the order of the cipher sets nor the list of them.
+    That is a separate setting, in a different place in the registry, and a
+    separate decision.

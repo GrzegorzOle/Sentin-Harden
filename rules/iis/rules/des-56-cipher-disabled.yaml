@@ -1,0 +1,227 @@
+id: iis-des-56-cipher-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Szyfr DES z kluczem 56-bitowym wyłączony
+    en: The DES cipher with a 56-bit key switched off
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    DES był przez dwie dekady standardowym szyfrem i jego klucz ma
+    pięćdziesiąt sześć bitów. To liczba, która w latach siedemdziesiątych
+    oznaczała rozmiar nie do przejścia, a dziś oznacza pracę do wykonania
+    w skończonym czasie na sprzęcie, który da się wynająć na godziny.
+    Pierwsze publiczne złamanie tego szyfru siłowo miało miejsce w latach
+    dziewięćdziesiątych i od tego czasu koszt takiego ataku tylko spadał.
+
+    Co to odbiera atakującemu: możliwość odłożenia ataku na później.
+    Przechwycony ruch nie psuje się z upływem czasu — kto nagra dziś
+    połączenie zestawione tym szyfrem, może je rozszyfrować, kiedy mu będzie
+    wygodnie. Dotyczy to wszystkiego, co w tym połączeniu było: treści
+    formularzy, ciasteczek, nagłówków uwierzytelniających.
+
+    Po zmianie serwer nie zestawi połączenia tym szyfrem, więc nagrany ruch
+    przestaje być łupem odłożonym na potem.
+  en: |
+    DES was the standard cipher for two decades and its key is fifty-six bits.
+    That is a number which in the nineteen-seventies meant a size beyond reach and
+    today means an amount of work to be done in finite time on hardware that can
+    be rented by the hour. The first public brute-force break of this cipher
+    happened in the nineteen-nineties, and the cost of such an attack has only
+    fallen since.
+
+    What it takes away from an attacker - the option of putting the attack off
+    until later. Captured traffic does not spoil with time; whoever records a
+    connection established with this cipher today can decrypt it whenever it suits
+    them. That covers everything that was in the connection - the contents of
+    forms, cookies, authentication headers.
+
+    After the change the server will not establish a connection with this cipher,
+    so recorded traffic stops being loot set aside for later.
+
+disruption_description:
+  pl: |
+    Zmiana nie wymaga rozważań, bo nie ma dziś klienta, który potrafiłby
+    wyłącznie ten szyfr i jednocześnie łączył się z czymkolwiek innym.
+    Przeglądarki usunęły jego obsługę lata temu, a nowsze wydania Windows nie
+    włączają go domyślnie.
+
+    Jedyne miejsce, gdzie warto spojrzeć, to urządzenia wbudowane ze starym
+    stosem sieciowym — sterowniki, drukarki przemysłowe, czytniki. Jeśli takie
+    urządzenie rozmawia z tym serwerem po szyfrowanym połączeniu, sprawdź, co
+    potrafi zestawić, zanim wykonasz zmianę. Objawem będzie zerwane połączenie,
+    a nie komunikat błędu, więc w dziennikach serwera nie zostanie po nim ślad.
+
+    Zapis obowiązuje od ponownego uruchomienia maszyny.
+  en: |
+    The change calls for no deliberation, because there is no client today that
+    could do only this cipher and at the same time connect to anything else.
+    Browsers removed support for it years ago, and newer releases of Windows do not
+    switch it on by default.
+
+    The only place worth a look is embedded devices with an old network stack -
+    controllers, industrial printers, readers. If such a device talks to this
+    server over an encrypted connection, check what it can establish before making
+    the change. The symptom will be a broken connection rather than an error
+    message, so no trace of it is left in the server logs.
+
+    The write applies from the machine's next restart.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - legacy-applications
+    - web-server-services
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Urządzenie wbudowane potrafiące wyłącznie ten szyfr przestanie nawiązywać połączenie i zrobi to bez śladu w dziennikach serwera
+      - Zmiana obejmuje całą maszynę, nie tylko serwer sieciowy, więc dotyczy też połączeń wychodzących
+      - Starsze systemy łączące się z tą maszyną mogą stracić jedyny wspólny szyfr, jeśli nie mają nowszych
+      - Połączenia po nowszych szyfrach, uwierzytelnianie i zawartość stron pozostają bez zmian
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - An embedded device able to do only this cipher stops establishing connections, and does so without a trace in the server logs
+      - The change covers the whole machine and not the web server alone, so it reaches outgoing connections too
+      - Older systems connecting to this machine may lose the only cipher they share with it, where they have nothing newer
+      - Connections over newer ciphers, authentication and page contents are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery obsługujące urządzenia wbudowane ze starym stosem sieciowym, dopóki nie wiadomo, co te urządzenia potrafią zestawić
+    en:
+      - Servers serving embedded devices with an old network stack, until it is known what those devices can establish
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        # The key name holds a slash, which the registry provider in PowerShell
+        # reads as a path separator - it would look for '56' inside 'DES 56'.
+        # The .NET interface treats only the backslash that way, so it is used
+        # here.
+        $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+        $wrong = @()
+        foreach ($name in @('DES 56/56')) {
+          $key = $base.OpenSubKey($root + $name)
+          if ($null -eq $key) { $wrong += ($name + ':not-set'); continue }
+          $value = $key.GetValue('Enabled', $null)
+          $key.Close()
+          if ($null -eq $value) { $wrong += ($name + ':not-set') }
+          elseif ([int]$value -ne 0) { $wrong += ($name + ':other') }
+        }
+        $base.Close()
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    $saved = @()
+    foreach ($name in @('DES 56/56')) {
+      $key = $base.OpenSubKey($root + $name)
+      $value = $null
+      $existed = ($null -ne $key)
+      if ($existed) {
+        $value = $key.GetValue('Enabled', $null)
+        $key.Close()
+      }
+      $saved += [pscustomobject]@{
+        name          = $name
+        key_existed   = $existed
+        value         = $value
+        value_existed = ($null -ne $value)
+      }
+    }
+    $base.Close()
+    [pscustomobject]@{
+      cipher  = 'DES 56/56'
+      path    = $root
+      entries = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($name in @('DES 56/56')) {
+      $key = $base.CreateSubKey($root + $name)
+      if ($null -eq $key) { throw ('The cipher key could not be created: ' + $name) }
+      $key.SetValue('Enabled', 0, [Microsoft.Win32.RegistryValueKind]::DWord)
+      $key.Close()
+    }
+    $base.Close()
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($e in $b.entries) {
+      if (-not $e.key_existed) {
+        $base.DeleteSubKeyTree($b.path + $e.name, $false)
+        continue
+      }
+      $key = $base.CreateSubKey($b.path + $e.name)
+      if ($e.value_existed) {
+        $key.SetValue('Enabled', [int]$e.value, [Microsoft.Win32.RegistryValueKind]::DWord)
+      } else {
+        $key.DeleteValue('Enabled', $false)
+      }
+      $key.Close()
+    }
+    $base.Close()
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+  - https://learn.microsoft.com/windows/win32/secauthn/cipher-suites-in-schannel
+
+notes:
+  pl: |
+    Reguła dotyczy wyłącznie wariantu z kluczem pięćdziesięciu sześciu bitów.
+    Wariant potrójny, w którym ten sam szyfr wykonywany jest trzykrotnie, ma
+    osobny klucz i osobną regułę — jest mocniejszy i wycofuje się go z innego
+    powodu, więc mieszanie ich w jednym punkcie zatarłoby różnicę w skutkach.
+
+    Brak klucza w rejestrze liczy się jako stan nieustawiony, nie jako
+    spełnienie. Domyślne zachowanie systemu bywa właściwe, ale zmienia się
+    między wydaniami i nie jest tym samym co jawne wyłączenie.
+  en: |
+    The rule concerns only the variant with a fifty-six-bit key. The triple
+    variant, in which the same cipher is performed three times over, has a key and
+    a rule of its own - it is stronger and is being retired for a different reason,
+    so mixing the two into one item would blur the difference in consequences.
+
+    An absent key counts as unset rather than as met. The system's default
+    behaviour is sometimes the right one, but it changes between releases and is
+    not the same as switching the cipher off outright.

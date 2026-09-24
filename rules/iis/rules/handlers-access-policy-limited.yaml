@@ -1,0 +1,211 @@
+id: iis-handlers-access-policy-limited
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Request Filtering and Other Restriction Modules
+  title:
+    pl: Zapis i uruchamianie skryptów nie występują razem
+    en: Writing and running scripts do not occur together
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uprawnienia modułów obsługi mówią, co wolno robić z zawartością katalogu:
+    czytać, uruchamiać skrypty, uruchamiać programy, zapisywać. Ustawia się je
+    niezależnie, więc mogą wystąpić w dowolnym połączeniu.
+
+    Jedno połączenie jest groźniejsze niż suma jego części. Katalog, do którego
+    wolno zapisywać i w którym wolno uruchamiać skrypty, zamienia każde wgranie
+    pliku w wykonanie kodu. Nie potrzeba do tego ani luki w aplikacji, ani
+    podniesionych uprawnień — wystarczy formularz przesyłania plików, pomyłka
+    w uprawnieniach albo zapomniany katalog wymiany. Jest to najkrótsza znana
+    droga od dostępu do zapisu do przejęcia serwera.
+
+    Zasada nie narzuca jednego zestawu uprawnień. Rozstrzyga wyłącznie o tej
+    jednej parze.
+  en: |
+    Handler permissions say what may be done with the contents of a folder - read
+    it, run scripts, run programs, write. They are set independently, so they may
+    occur in any combination.
+
+    One combination is worse than the sum of its parts. A folder that may both be
+    written to and run scripts turns every file placed there into code being run.
+    Neither a flaw in the application nor raised privileges is needed - an upload
+    form, a mistake in permissions or a forgotten exchange folder is enough. It is
+    the shortest known road from write access to a server being taken over.
+
+    The rule does not impose one particular set of permissions. It settles that one
+    pair alone.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo istnieją zastosowania, w których to połączenie
+    ustawiono celowo: katalog wymiany plików z podglądem, stary system obiegu
+    dokumentów, narzędzie do publikowania treści przez przeglądarkę.
+
+    Objawem jest odmowa zapisu przy działającym odczycie — wgranie pliku kończy
+    się błędem, choć zasób otwiera się normalnie. Wygląda to na problem
+    z uprawnieniami do plików, a nie z konfiguracją serwera, więc rozpoznanie
+    bywa długie.
+
+    Właściwą naprawą dla zasobu, który naprawdę potrzebuje obu, jest rozdzielenie
+    katalogów: jeden przyjmuje pliki i nie uruchamia niczego, drugi uruchamia
+    i nie przyjmuje zapisu. Nie jest nią pozostawienie obu uprawnień w jednym
+    miejscu.
+  en: |
+    The change calls for a review, since there are uses where this combination was
+    set deliberately - a file exchange folder with a preview, an old document
+    workflow system, a tool for publishing contents through a browser.
+
+    The symptom is a write refused while reading works - placing a file ends in an
+    error though the resource opens normally. It looks like a problem with file
+    permissions rather than with the server configuration, so finding the cause
+    tends to take long.
+
+    The proper repair for a resource that really needs both is separating the
+    folders - one takes files and runs nothing, the other runs and takes no
+    writes. It is not leaving both permissions in one place.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - scripting-and-automation
+    - file-sharing
+  what_breaks:
+    pl:
+      - Wgrywanie plików do katalogów, w których wolno uruchamiać skrypty, zakończy się odmową
+      - Stare systemy obiegu dokumentów i narzędzia publikujące treść przez przeglądarkę mogą przestać działać
+      - Odczyt działa dalej, więc objaw wygląda na problem z uprawnieniami do plików
+      - Naprawa polega na rozdzieleniu katalogów, a nie na przywróceniu obu uprawnień w jednym miejscu
+      - Strony, skrypty uruchamiane z katalogów tylko do odczytu, uwierzytelnianie i dzienniki pozostają bez zmian
+    en:
+      - Placing files in folders where scripts may be run ends in a refusal
+      - Old document workflow systems and tools publishing contents through a browser may stop working
+      - Reading still works, so the symptom looks like a problem with file permissions
+      - The repair is separating the folders rather than restoring both permissions in one place
+      - Pages, scripts run from read-only folders, authentication and the logs are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zasoby z katalogiem wymiany, w którym zapis i uruchamianie skryptów ustawiono celowo
+      - Systemy publikujące treść przez przeglądarkę, dopóki katalogi nie zostaną rozdzielone
+    en:
+      - Resources with an exchange folder where writing and running scripts were set deliberately
+      - Systems publishing contents through a browser, until the folders have been separated
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/handlers' -Name 'accessPolicy' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          else {
+            $flags = ([string]$value) -split ',' | ForEach-Object { $_.Trim() }
+            # The item is not about one particular set of permissions but about one
+            # pair of them. Where a folder may both take writes and run scripts, a
+            # file placed there runs, and that is the whole attack.
+            if (($flags -contains 'Script') -and ($flags -contains 'Write')) { 'SCRIPT_AND_WRITE' }
+            else { 'SAFE' }
+          }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'SAFE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/handlers' -Name 'accessPolicy' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/handlers'
+      name    = 'accessPolicy'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/handlers' -Name 'accessPolicy' -Value 'Read,Script'
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/handlers/
+
+notes:
+  pl: |
+    Odczyt nie porównuje całego zestawu uprawnień, tylko sprawdza obecność tej
+    jednej pary, więc uprawnienia dodane poza nią nie wpływają na wynik.
+    Polecenie naprawcze ustawia zestaw pozwalający czytać i uruchamiać skrypty;
+    zasób wymagający innego zestawu poprawia się na swoim poziomie.
+  en: |
+    The reading does not compare the whole set of permissions but checks for that
+    one pair, so permissions added beyond it do not bear on the result. The
+    remediation sets a set allowing reading and running scripts; a resource calling
+    for another set is corrected at its own level.

@@ -1,0 +1,216 @@
+id: iis-log-fields-complete
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Logging Recommendations
+  title:
+    pl: Dziennik żądań zawiera pola potrzebne do ustalenia przebiegu
+    en: The request log holds the fields needed to establish what happened
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Serwer zapisuje żądania do dziennika, ale o tym, które pola trafiają do
+    zapisu, decyduje osobne ustawienie. Zestaw domyślny bywa uboższy, niż się
+    wydaje.
+
+    Braki ujawniają się dopiero wtedy, gdy dziennik jest potrzebny, a wtedy jest
+    już za późno. Bez adresu klienta nie da się powiedzieć, skąd przyszło żądanie.
+    Bez nazwy użytkownika nie da się odróżnić działania konta od ruchu anonimowego.
+    Bez ciągu zapytania nie widać parametrów, czyli tego, co właściwie próbowano
+    wstrzyknąć. Bez adresu odsyłającego ginie droga, którą ktoś tu trafił.
+    Zapis niekompletny wygląda na dowód, a dowodem nie jest.
+
+    Punkt nie utrudnia ataku. Rozstrzyga o tym, czy po ataku da się cokolwiek
+    ustalić.
+  en: |
+    The server writes requests to a log, but a separate setting decides which
+    fields reach the record. The default set is sometimes poorer than it seems.
+
+    The gaps show only once the log is needed, and by then it is too late. Without
+    the client address there is no saying where a request came from. Without the
+    user name there is no telling the action of an account from anonymous traffic.
+    Without the query string the parameters are invisible, that is, what was
+    actually being injected. Without the referring address the road by which
+    somebody arrived is lost. An incomplete record looks like evidence and is not.
+
+    The item makes no attack harder. It settles whether anything can be
+    established after one.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, choć nie dlatego, że coś psuje — niczego nie psuje.
+    Powód jest inny: szerszy zestaw pól to większe pliki dziennika, a te rosną
+    w tempie zależnym od ruchu i potrafią zapełnić dysk.
+
+    Przed zmianą warto oszacować przyrost i sprawdzić, czy ustawiono obracanie
+    dzienników oraz ich usuwanie po czasie. Serwer o dużym ruchu bez takiej
+    obsługi zatrzyma się, gdy zabraknie miejsca, i będzie to awaria dotkliwsza niż
+    brak kilku pól w zapisie.
+
+    Druga sprawa to narzędzia czytające dziennik. Część z nich zakłada stały układ
+    kolumn i po dodaniu pól przestaje parsować pliki albo przypisuje wartości do
+    niewłaściwych kolumn. Taki błąd jest cichy — narzędzie działa i pokazuje dane,
+    tylko nieprawdziwe.
+  en: |
+    The change calls for a review, though not because it breaks something - it
+    breaks nothing. The reason is another - a wider set of fields means larger log
+    files, and those grow at a rate set by the traffic and can fill the disk.
+
+    Before the change it is worth estimating the growth and checking whether log
+    rotation and removal after a time have been set up. A busy server without such
+    handling stops once the space runs out, and that is a worse fault than a few
+    fields missing from the record.
+
+    The second matter is the tools reading the log. Some of them assume a fixed
+    column layout and after fields are added stop parsing the files or assign
+    values to the wrong columns. Such an error is silent - the tool works and shows
+    data, only untrue data.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Pliki dziennika urosną, a na serwerze o dużym ruchu bez usuwania starych zapisów może zabraknąć miejsca na dysku
+      - Narzędzia zakładające stały układ kolumn przestaną parsować dziennik albo przypiszą wartości do niewłaściwych kolumn
+      - Błąd parsowania bywa cichy, bo narzędzie dalej pokazuje dane, tylko nieprawdziwe
+      - Zapisy zebrane przed zmianą mają dawny układ, więc analiza obejmująca oba okresy wymaga uwzględnienia różnicy
+      - Obsługa żądań, wydajność odpowiedzi, uwierzytelnianie i zawartość stron pozostają bez zmian
+    en:
+      - The log files grow, and on a busy server without removal of old records the disk space may run out
+      - Tools assuming a fixed column layout stop parsing the log or assign values to the wrong columns
+      - The parsing error tends to be silent, since the tool still shows data, only untrue data
+      - Records gathered before the change hold the former layout, so an analysis covering both periods has to allow for the difference
+      - Serving requests, response performance, authentication and page contents are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery o dużym ruchu bez ustawionego obracania i usuwania dzienników po czasie
+      - Środowiska, w których dziennik czyta narzędzie zakładające stały układ kolumn
+    en:
+      - Busy servers with no log rotation and no removal of records after a time set up
+      - Environments where the log is read by a tool assuming a fixed column layout
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name 'logExtFileFlags' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          else {
+            # The setting is a set of flags, so the reading checks that every field
+            # the item calls for is present instead of comparing the whole set. Any
+            # field beyond that list is left alone.
+            $present = ([string]$value) -split ',' | ForEach-Object { $_.Trim() }
+            $required = @('Date', 'Time', 'ClientIP', 'UserName', 'Method', 'UriStem',
+                          'UriQuery', 'HttpStatus', 'Referer')
+            $missing = @($required | Where-Object { $present -notcontains $_ })
+            if ($missing.Count -eq 0) { 'COMPLETE' }
+            else { 'MISSING_FIELDS ' + ($missing -join ',') }
+          }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'COMPLETE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name 'logExtFileFlags' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.applicationHost/sites/siteDefaults/logFile'
+      name    = 'logExtFileFlags'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name 'logExtFileFlags' -Value 'Date,Time,ClientIP,UserName,SiteName,ComputerName,ServerIP,Method,UriStem,UriQuery,HttpStatus,HttpSubStatus,Win32Status,TimeTaken,ServerPort,UserAgent,Referer'
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.applicationhost/sites/sitedefaults/logfile/
+
+notes:
+  pl: |
+    Odczyt sprawdza obecność pól wymaganych przez punkt i nie porównuje całego
+    zestawu, więc pola dodane poza listą nie powodują niezgodności. Braki
+    zgłaszane są z nazwy, żeby było widać, czego konkretnie nie ma. Zapis obejmuje
+    ustawienia domyślne witryn; witryna z własnym ustawieniem dziennika wymaga
+    poprawki na swoim poziomie.
+  en: |
+    The reading checks for the fields the item calls for and does not compare the
+    whole set, so fields added beyond the list cause no finding. The gaps are
+    reported by name, so that it is visible what exactly is absent. The setting
+    covers the site defaults; a site with a log setting of its own calls for a
+    correction at its own level.

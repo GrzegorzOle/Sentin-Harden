@@ -1,0 +1,207 @@
+id: iis-unlisted-cgi-programs-blocked
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Request Filtering and Other Restriction Modules
+  title:
+    pl: Programy bramkowe spoza listy niedopuszczane do uruchomienia
+    en: Gateway programs outside the list not admitted to run
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Obok modułów rozszerzeń serwer potrafi uruchamiać zwykłe programy przez
+    starszy mechanizm bramkowy. Program taki dostaje żądanie na wejściu i zwraca
+    odpowiedź na wyjściu, a działa jako osobny proces.
+
+    Bez listy dopuszczonych programów serwer uruchomi każdy plik wykonywalny,
+    który znajdzie się w katalogu zawartości. Skutek jest ten sam co przy
+    modułach rozszerzeń — wgranie jednego pliku daje wykonanie kodu — z tą
+    różnicą, że tutaj nie trzeba nawet pisać biblioteki pod serwer. Wystarczy
+    zwykły program, a takich jest pod ręką więcej.
+
+    Zasada jest bliźniacza do tej o modułach rozszerzeń i sama w sobie nie
+    wystarcza: obie trzeba ustawić, bo zamykają dwie osobne drogi do tego samego.
+  en: |
+    Beside extension modules the server can run ordinary programs through an older
+    gateway mechanism. Such a program receives a request on its input and returns
+    an answer on its output, and works as a separate process.
+
+    Without a list of permitted programs the server runs every executable file it
+    finds in the content folder. The effect is the same as with extension modules -
+    placing one file gives code execution - with the difference that here not even
+    a library built for the server has to be written. An ordinary program is
+    enough, and those are more readily at hand.
+
+    The rule is a twin of the one about extension modules and does not suffice by
+    itself - both have to be set, since they shut two separate roads to the same
+    place.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo starsze rozwiązania korzystają z tego mechanizmu
+    do dziś. Interpretery języków skryptowych wpięte jako program bramkowy,
+    narzędzia raportowe i drobne programy pomocnicze wystawione pod własnym
+    adresem — wszystkie przestaną się uruchamiać.
+
+    Objawem jest błąd serwera przy żądaniu, które dotąd działało, przy działającej
+    reszcie zasobu. Program bramkowy obsługuje zwykle jedną ścieżkę, więc
+    uszkodzenie jest wąskie i łatwo je przeoczyć przy pobieżnym sprawdzeniu po
+    wdrożeniu.
+
+    Przed zmianą trzeba przejrzeć listę zarejestrowanych programów bramkowych
+    i dopuścić z nazwy te faktycznie używane. Dotyczy to zwłaszcza interpreterów,
+    bo od nich zależy cała rodzina stron, a nie pojedynczy adres.
+  en: |
+    The change calls for a review, since older arrangements use this mechanism to
+    this day. Interpreters of scripting languages wired in as a gateway program,
+    report tools and small helper programs exposed at an address of their own - all
+    of them stop running.
+
+    The symptom is a server error on a request that worked before, while the rest
+    of the resource works. A gateway program usually serves one path, so the damage
+    is narrow and easy to miss on a quick check after the rollout.
+
+    Before the change the list of registered gateway programs has to be reviewed
+    and the ones really in use admitted by name. This holds especially for
+    interpreters, since a whole family of pages depends on them rather than a
+    single address.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - legacy-applications
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Programy bramkowe niewypisane z nazwy przestaną być uruchamiane i zwrócą błąd serwera
+      - Interpretery języków skryptowych wpięte tym mechanizmem przestaną obsługiwać całe rodziny stron
+      - Uszkodzenie jest wąskie, bo program obsługuje zwykle jedną ścieżkę, więc łatwo je przeoczyć po wdrożeniu
+      - Moduły rozszerzeń to osobne ustawienie i trzeba je zamknąć niezależnie
+      - Strony, skrypty obsługiwane wbudowanymi modułami, uwierzytelnianie i uprawnienia pozostają bez zmian
+    en:
+      - Gateway programs not named on the list stop being run and return a server error
+      - Interpreters of scripting languages wired in this way stop serving whole families of pages
+      - The damage is narrow, since a program usually serves one path, so it is easy to miss after the rollout
+      - Extension modules are a separate setting and have to be shut on their own
+      - Pages, scripts served by built-in modules, authentication and permissions are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery z interpreterem języka skryptowego wpiętym jako program bramkowy, dopóki nie zostanie dopuszczony z nazwy
+      - Środowiska, w których nie przejrzano listy zarejestrowanych programów bramkowych
+    en:
+      - Servers with a scripting language interpreter wired in as a gateway program, until it has been admitted by name
+      - Environments where the list of registered gateway programs has not been reviewed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/security/isapiCgiRestriction' -Name 'notListedCgisAllowed' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([string]$value -eq 'True') { 'TRUE' }
+          elseif ([string]$value -eq 'False') { 'FALSE' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'FALSE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/isapiCgiRestriction' -Name 'notListedCgisAllowed' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/security/isapiCgiRestriction'
+      name    = 'notListedCgisAllowed'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/isapiCgiRestriction' -Name 'notListedCgisAllowed' -Value $false
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/security/isapicgirestriction/
+
+notes:
+  pl: |
+    Zasada jest bliźniacza do tej o modułach rozszerzeń i obie ocenia się razem —
+    zamknięcie jednej przy otwartej drugiej niczego nie daje. Zapis idzie na
+    poziomie serwera; lista dopuszczonych programów jest wspólna dla całej
+    maszyny.
+  en: |
+    The rule is a twin of the one about extension modules and the two are judged
+    together - shutting one while the other stays open gives nothing. The setting
+    is written at server level; the list of permitted programs is shared by the
+    whole machine.

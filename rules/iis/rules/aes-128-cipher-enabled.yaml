@@ -1,0 +1,249 @@
+id: iis-aes-128-cipher-enabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Szyfr AES z kluczem 128-bitowym jawnie włączony
+    en: The AES cipher with a 128-bit key switched on outright
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: low
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Drugi z dwóch wpisów w tej grupie, które coś włączają zamiast wyłączać.
+    Dotyczy wariantu z krótszym kluczem — tego, który w praktyce uzgadnia
+    większość klientów, bo jest szybszy, a przy tym nie jest słabszy w żadnym
+    znanym sensie praktycznym.
+
+    Co to wnosi: zabezpieczenie przed zbyt gorliwym utwardzaniem. Częstym
+    błędem jest przyjęcie, że skoro dłuższy klucz jest lepszy, to krótszy można
+    wyłączyć. Maszyna zostaje wtedy z jednym zestawem, a każdy klient, który
+    z jakiegoś powodu nie może go użyć, przestaje się łączyć — przy czym objaw
+    to zwykły błąd połączenia, bez wskazania przyczyny. Jawny wpis mówi wprost,
+    że ten wariant ma działać, i zdejmuje pokusę usunięcia go przy najbliższym
+    przeglądzie.
+
+    Drugi skutek jest taki sam, jak przy wariancie z dłuższym kluczem: stan
+    przestaje zależeć od wydania systemu.
+  en: |
+    The second of the two entries in this group that switch something on rather than
+    off. It concerns the variant with the shorter key - the one most clients
+    actually agree on, being faster while not weaker in any known practical sense.
+
+    What it brings - protection against over-zealous hardening. A common mistake is
+    to assume that since the longer key is better, the shorter one can be switched
+    off. The machine is then left with one set, and every client that for whatever
+    reason cannot use it stops connecting - the symptom being an ordinary connection
+    error, with no cause given. An outright entry says plainly that this variant is
+    to work, and removes the temptation to take it away at the next review.
+
+    The second consequence is the same as with the longer-key variant - the state
+    stops depending on the release of the system.
+
+disruption_description:
+  pl: |
+    Zmiana niczego nie odbiera. Wariant ten jest włączony na każdym wspieranym
+    wydaniu Windows, więc wpis potwierdza stan już obowiązujący. Żaden klient,
+    który łączy się dziś, nie przestanie.
+
+    Tak jak przy wariancie z dłuższym kluczem, kolejność ma znaczenie: ten punkt
+    wykonaj przed wyłączaniem starych szyfrów. Wyłączenie najpierw wszystkiego,
+    co słabe, i dopiero potem potwierdzenie mocnego zostawia okno, w którym
+    ponowne uruchomienie potrafi wystawić maszynę bez żadnego zestawu do
+    zaproponowania.
+
+    Warto przy okazji odnotować, skąd bierze się pokusa wyłączenia tego
+    wariantu. W zestawieniach bywa opisywany jako „słabszy", co jest prawdą
+    wyłącznie w sensie długości klucza. Nie jest znany żaden praktyczny sposób
+    złamania go, a zestawy, które faktycznie trzeba wyłączyć, są przedmiotem
+    innych punktów w tej grupie.
+
+    Wpis obowiązuje od ponownego uruchomienia maszyny.
+  en: |
+    The change takes nothing away. This variant is switched on in every supported
+    release of Windows, so the entry confirms a state that already holds. No client
+    that connects today will stop.
+
+    As with the longer-key variant, the order matters - do this item before
+    switching the old ciphers off. Switching off everything weak first and only then
+    confirming the strong one leaves a window in which a restart can bring the
+    machine up with no set to propose at all.
+
+    It is worth noting in passing where the temptation to switch this variant off
+    comes from. In comparisons it is sometimes described as "weaker", which is true
+    only in the sense of key length. No practical way of breaking it is known, and
+    the sets that genuinely have to be switched off are the subject of other items in
+    this group.
+
+    The entry applies from the machine's next restart.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - web-server-services
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Nie przestaje działać nic — wpis potwierdza stan, który i tak obowiązuje na wspieranych wydaniach systemu
+      - Wykonanie tego punktu po wyłączeniu starszych szyfrów, a nie przed, zostawia okno bez potwierdzonego zestawu mocnego
+      - Zmiana obejmuje całą maszynę, nie tylko serwer sieciowy
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - Nothing stops working - the entry confirms a state that holds anyway on supported releases of the system
+      - Doing this item after switching off the older ciphers rather than before leaves a window with no confirmed strong set
+      - The change covers the whole machine and not the web server alone
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Brak znanych przypadków, w których ten wpis byłby błędem
+    en:
+      - No known case in which this entry would be a mistake
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        # The key name holds a slash, which the registry provider in PowerShell
+        # reads as a path separator. The .NET interface treats only the
+        # backslash that way, so it is used here.
+        $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+        $wrong = @()
+        foreach ($name in @('AES 128/128')) {
+          $key = $base.OpenSubKey($root + $name)
+          if ($null -eq $key) { $wrong += ($name + ':not-set'); continue }
+          $value = $key.GetValue('Enabled', $null)
+          $key.Close()
+          # An absent entry means the cipher follows the system default - which
+          # today is on, but is recorded nowhere and changes between releases,
+          # so it counts as unset rather than as met.
+          if ($null -eq $value) { $wrong += ($name + ':not-set') }
+          elseif ([int]$value -eq 0) { $wrong += ($name + ':disabled') }
+        }
+        $base.Close()
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    $saved = @()
+    foreach ($name in @('AES 128/128')) {
+      $key = $base.OpenSubKey($root + $name)
+      $value = $null
+      $existed = ($null -ne $key)
+      if ($existed) {
+        $value = $key.GetValue('Enabled', $null)
+        $key.Close()
+      }
+      $saved += [pscustomobject]@{
+        name          = $name
+        key_existed   = $existed
+        value         = $value
+        value_existed = ($null -ne $value)
+      }
+    }
+    $base.Close()
+    [pscustomobject]@{
+      cipher  = 'AES 128/128'
+      path    = $root
+      entries = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    $root = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\'
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($name in @('AES 128/128')) {
+      $key = $base.CreateSubKey($root + $name)
+      if ($null -eq $key) { throw ('The cipher key could not be created: ' + $name) }
+      # Minus one written as a four-byte value is the all-ones pattern this
+      # branch of the registry uses to mean switched on. Writing one instead
+      # would read as an unexpected value rather than as consent.
+      $key.SetValue('Enabled', -1, [Microsoft.Win32.RegistryValueKind]::DWord)
+      $key.Close()
+    }
+    $base.Close()
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Default')
+    foreach ($e in $b.entries) {
+      if (-not $e.key_existed) {
+        $base.DeleteSubKeyTree($b.path + $e.name, $false)
+        continue
+      }
+      $key = $base.CreateSubKey($b.path + $e.name)
+      if ($e.value_existed) {
+        $key.SetValue('Enabled', [int]$e.value, [Microsoft.Win32.RegistryValueKind]::DWord)
+      } else {
+        $key.DeleteValue('Enabled', $false)
+      }
+      $key.Close()
+    }
+    $base.Close()
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+  - https://learn.microsoft.com/windows/win32/secauthn/cipher-suites-in-schannel
+
+notes:
+  pl: |
+    Punkt jest bliźniaczy do tego o wariancie z dłuższym kluczem i tak samo ma
+    niską kategorię ryzyka — nie zamyka atakującemu żadnej drogi, tylko utrwala
+    stan już obowiązujący.
+
+    Różnica jest w tym, przed czym broni. Tamten pilnuje, żeby po wyłączeniu
+    słabych zestawów cokolwiek zostało. Ten pilnuje, żeby nie został wyłącznie
+    jeden — bo wariant z krótszym kluczem bywa usuwany przy utwardzaniu jako
+    rzekomo słabszy, a uzgadnia go większość klientów.
+
+    Wycofanie przywraca poprzedni stan wpisu, a nie wyłącza szyfru. Jeśli wpisu
+    wcześniej nie było, klucz zostaje usunięty i decyzja wraca do systemu.
+
+    Kolejność ani lista zestawów szyfrów nie należą do tego punktu — to osobne
+    ustawienie i osobna reguła.
+  en: |
+    The item is a twin of the one about the longer-key variant and likewise carries
+    a low risk category - it closes no road to an attacker, it fixes in place a
+    state that already holds.
+
+    The difference lies in what it guards against. That one sees to it that
+    something is left once the weak sets are switched off. This one sees to it that
+    only one is not left - because the shorter-key variant gets removed during
+    hardening as supposedly weaker, and it is what most clients agree on.
+
+    Rolling back restores the previous state of the entry rather than switching the
+    cipher off. Where no entry was there before, the key is removed and the decision
+    returns to the system.
+
+    Neither the order nor the list of cipher sets belongs to this item - that is a
+    separate setting and a separate rule.

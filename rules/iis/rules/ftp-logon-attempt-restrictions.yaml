@@ -1,0 +1,271 @@
+id: iis-ftp-logon-attempt-restrictions
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: FTP Requests
+  title:
+    pl: Seria nieudanych logowań do usługi plików kończy się rozłączeniem
+    en: A run of failed sign-ins to the file service ends in a disconnection
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Usługa przesyłania plików przyjmuje próby logowania jedna po drugiej, bez
+    żadnego naturalnego ograniczenia tempa. Osobne ustawienie każe jej rozłączyć
+    sesję po określonej liczbie nieudanych prób w wyznaczonym oknie czasu.
+
+    Co to odbiera atakującemu: możliwość zgadywania haseł hurtem. Protokół jest
+    prosty, a każda próba to kilka bajtów, więc z jednego połączenia da się
+    wykonać tysiące prób w minutę. Przy tym tempie słabe hasło pada w kilka
+    chwil, a popularne hasło sprawdzone kolejno na wszystkich znanych nazwach
+    użytkowników pada jeszcze szybciej — i to bez ryzyka zablokowania kont,
+    jeśli na każdą nazwę wypada tylko jedna próba.
+
+    Po zmianie każda seria kończy się zerwaniem połączenia, a atakujący musi je
+    zestawiać od nowa. To nie czyni zgadywania niemożliwym, ale zmienia jego
+    koszt o kilka rzędów wielkości i przenosi je z minut w dni. Po drodze
+    zostawia też ślad: zerwane połączenia widać w dzienniku, a tysiąc prób
+    w sekundę wtapia się w zwykły ruch.
+  en: |
+    The file transfer service takes sign-in attempts one after another with no
+    natural limit on the pace. A separate setting has it disconnect the session
+    after a given number of failed attempts within a set window of time.
+
+    What it takes away from an attacker - the ability to guess passwords wholesale.
+    The protocol is simple and each attempt is a few bytes, so thousands of attempts
+    a minute can be made over one connection. At that pace a weak password falls in
+    moments, and a popular password tried in turn against every known user name
+    falls faster still - and without any risk of locking accounts, where each name
+    takes only one attempt.
+
+    After the change every run ends with the connection dropped, and an attacker has
+    to establish it anew. That does not make guessing impossible, but it changes its
+    cost by several orders of magnitude and moves it from minutes into days. It
+    leaves a trace along the way too - dropped connections show in the log, whereas
+    a thousand attempts a second blends into ordinary traffic.
+
+disruption_description:
+  pl: |
+    Zmiana dotyka wyłącznie tych, którzy podają złe hasło, więc dla poprawnie
+    skonfigurowanych klientów jest niewidoczna. Uwaga należy się natomiast
+    kilku przypadkom, w których złe hasło podawane jest seryjnie i bez złych
+    zamiarów.
+
+    Pierwszy to klient z zapamiętanym starym hasłem, uruchamiany
+    z harmonogramu. Taki klient próbuje, dostaje odmowę, próbuje znowu —
+    i zamiast pojedynczego nieudanego logowania robi serię. Po zmianie zostanie
+    rozłączony, co w dzienniku klienta wygląda inaczej niż odmowa i bywa mylone
+    z awarią sieci.
+
+    Drugi to sytuacja, w której wielu klientów wychodzi do serwera przez jeden
+    adres — bramę albo translację adresów. Mechanizm liczy próby na adres
+    źródłowy, więc pomyłki kilku osób sumują się w jedną serię. Przy niskim
+    progu potrafi to rozłączyć osobę, która akurat wpisała hasło poprawnie.
+
+    Ustawienie ma też tryb wyłącznie rejestrujący, w którym nic nie jest
+    rozłączane, a przekroczenia trafiają do dziennika. To dobry sposób na
+    sprawdzenie progu przed jego włączeniem.
+  en: |
+    The change touches only those who give a wrong password, so for correctly
+    configured clients it is invisible. Attention is owed, though, to several cases
+    where a wrong password is given serially and without ill intent.
+
+    The first is a client with an old password remembered, run from a schedule. Such
+    a client tries, is refused, tries again - and instead of a single failed sign-in
+    makes a run. After the change it will be disconnected, which in the client's own
+    log looks different from a refusal and is often mistaken for a network fault.
+
+    The second is where many clients reach the server through one address - a
+    gateway or address translation. The mechanism counts attempts per source
+    address, so several people's mistakes add up into one run. With a low threshold
+    that can disconnect somebody who has just typed their password correctly.
+
+    The setting also has a logging-only mode in which nothing is disconnected and
+    the overruns go to the log. That is a good way to check the threshold before
+    turning it on.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - accounts-and-passwords
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Klient z zapamiętanym starym hasłem zostaje rozłączony zamiast dostać odmowę, co w jego dzienniku wygląda na awarię sieci
+      - Klienci wychodzący przez jeden adres bramy lub translacji sumują swoje pomyłki w jedną serię
+      - Skrypty ponawiające logowanie w pętli trafiają na próg szybciej niż człowiek
+      - Zbyt niski próg rozłącza osobę, która wpisała hasło poprawnie, bo licznik wyczerpali inni
+    en:
+      - A client with an old password remembered is disconnected rather than refused, which in its own log looks like a network fault
+      - Clients reaching out through one gateway or translation address add their mistakes up into a single run
+      - Scripts retrying a sign-in in a loop hit the threshold faster than a person does
+      - Too low a threshold disconnects somebody who typed their password correctly, the counter having been used up by others
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery obsługujące wielu klientów zza jednego adresu, dopóki próg nie zostanie dobrany do liczby tych klientów
+      - Maszyny, na których trwa wymiana haseł w klientach automatycznych — najpierw tryb rejestrujący
+    en:
+      - Servers serving many clients from behind one address, until the threshold has been matched to the number of those clients
+      - Machines where passwords in automated clients are being replaced - logging-only mode first
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name FTPSVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $filter = 'system.ftpServer/security/authentication/denyByFailure'
+          $enabled = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter $filter -Name 'enabled' -ErrorAction Stop
+          $value = $enabled
+          if ($null -ne $enabled -and $null -ne $enabled.Value) { $value = $enabled.Value }
+          if ($value -ne $true) { 'OFF' }
+          else {
+            $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+              -Filter $filter -Name 'loggingOnlyMode' -ErrorAction SilentlyContinue
+            $logging = $raw
+            if ($null -ne $raw -and $null -ne $raw.Value) { $logging = $raw.Value }
+            # Logging-only mode counts the attempts and disconnects nobody. It is
+            # a sound step on the way, and a wrong answer to the question this
+            # item asks - so it is named rather than folded into a plain failure.
+            if ($logging -eq $true) { 'LOGGING_ONLY' }
+            else { 'AS_REQUIRED' }
+          }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $stamp = 'sentin-ftp-denybyfailure-' + (Get-Date -Format 'yyyyMMddHHmmss')
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $filter = 'system.ftpServer/security/authentication/denyByFailure'
+    $state = @{}
+    foreach ($name in @('enabled', 'maxFailure', 'entryExpiration', 'loggingOnlyMode')) {
+      $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $filter -Name $name -ErrorAction SilentlyContinue
+      $value = $raw
+      if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+      $state[$name] = [string]$value
+    }
+    [pscustomobject]@{
+      filter = $filter
+      state  = $state
+      backup = $stamp
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and took a server configuration backup named $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $filter = 'system.ftpServer/security/authentication/denyByFailure'
+    # Five attempts in thirty seconds. Our own figure, chosen so that a person
+    # correcting a typed password never reaches it, while a client looping
+    # through guesses reaches it in the first second. The window is the
+    # mechanism's own default and is left alone.
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter $filter -Name 'maxFailure' -Value 5
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter $filter -Name 'entryExpiration' -Value '00:00:30'
+    # Logging-only mode would leave the counting in place and disconnect
+    # nobody, so it comes off along with the switch going on.
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter $filter -Name 'loggingOnlyMode' -Value $false
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter $filter -Name 'enabled' -Value $true
+
+  rollback_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($name in @('maxFailure', 'entryExpiration', 'loggingOnlyMode', 'enabled')) {
+      $value = [string]$b.state.$name
+      if ([string]::IsNullOrWhiteSpace($value)) { continue }
+      if ($name -eq 'maxFailure') {
+        Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          -Filter $b.filter -Name $name -Value ([int]$value)
+      }
+      elseif ($name -eq 'entryExpiration') {
+        Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          -Filter $b.filter -Name $name -Value $value
+      }
+      else {
+        Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          -Filter $b.filter -Name $name -Value ([bool]::Parse($value))
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.ftpserver/security/authentication/denybyfailure
+  - https://learn.microsoft.com/iis/publish/using-the-ftp-service/configuring-ftp-logon-attempt-restrictions-in-iis-8
+
+notes:
+  pl: |
+    Próg pięciu prób w trzydziestu sekundach jest naszym wyborem, nie wartością
+    z benchmarku. Dobrany tak, żeby człowiek poprawiający wpisane hasło nigdy go
+    nie dosięgnął, a klient przebiegający listę haseł dosięgnął w pierwszej
+    sekundzie. Okno jest domyślne dla samego mechanizmu i zostaje bez zmiany.
+
+    Tryb wyłącznie rejestrujący zgłaszany jest osobno, a nie jako zwykłe
+    niespełnienie. Liczenie prób bez rozłączania jest sensownym krokiem
+    przejściowym — sposobem na sprawdzenie progu przed jego włączeniem — więc
+    raport ma odróżniać „ustawione, ale nie działa" od „nieustawione".
+
+    Mechanizm liczy próby na adres źródłowy. Przy wielu klientach wychodzących
+    przez jeden adres bramy albo translacji ich pomyłki sumują się, więc próg
+    trzeba wtedy podnieść ponad wartość z naprawy.
+
+    Punkt nie zastępuje blokady konta po nieudanych logowaniach. Tamta chroni
+    jedno konto przed serią prób, ta chroni usługę przed serią prób do wielu
+    kont naraz — a atak przebiegający listę nazw użytkowników omija blokadę kont
+    z założenia.
+  en: |
+    The threshold of five attempts in thirty seconds is our choice, not a figure
+    from the benchmark. Matched so that a person correcting a typed password never
+    reaches it, while a client running through a list of passwords reaches it in the
+    first second. The window is the mechanism's own default and is left unchanged.
+
+    Logging-only mode is reported separately rather than as a plain failure.
+    Counting attempts without disconnecting is a sound intermediate step - a way of
+    checking the threshold before turning it on - so the report distinguishes "set
+    but not acting" from "not set".
+
+    The mechanism counts attempts per source address. With many clients reaching out
+    through one gateway or translation address their mistakes add up, so the
+    threshold then has to be raised above the figure the fix writes.
+
+    The item does not replace locking an account after failed sign-ins. That
+    protects one account against a run of attempts; this protects the service
+    against a run of attempts across many accounts at once - and an attack running
+    through a list of user names sidesteps account lockout by design.

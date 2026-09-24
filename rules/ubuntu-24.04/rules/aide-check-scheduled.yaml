@@ -1,0 +1,331 @@
+id: ubuntu2404-aide-check-scheduled
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 6.3.2
+  section: Logging and Auditing > Configure Integrity Checking
+  title:
+    pl: Integralność plików jest regularnie sprawdzana
+    en: Ensure filesystem integrity is regularly checked
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Baza AIDE nic nie daje, jeśli nikt nie porównuje z nią systemu. Regularne
+    sprawdzenie uruchamiane automatycznie pokazuje zmiany w plikach
+    systemowych krótko po tym, jak się pojawią.
+
+    Punkt wymaga regularnego sprawdzenia AIDE. Na Ubuntu uruchamia je timer
+    dailyaidecheck.timer z pakietu aide-common, który musi być włączony
+    i działać.
+  en: |
+    The AIDE database is of no use if nobody compares the system with it. A
+    regular check started automatically shows changes in system files soon
+    after they appear.
+
+    The item requires a regular AIDE check. On Ubuntu the
+    dailyaidecheck.timer timer from the aide-common package starts it, and
+    it has to be enabled and running.
+
+disruption_description:
+  pl: |
+    aide-common włącza ten timer przy instalacji, więc naprawa zwykle tylko
+    przywraca stan domyślny. Sprawdzenie startuje codziennie o 1:50
+    z losowym opóźnieniem do dwóch godzin i przez kilka minut czyta pliki
+    systemowe.
+  en: |
+    aide-common enables this timer when it is installed, so the remediation
+    usually only restores the default state. The check starts daily at 1:50
+    with a random delay of up to two hours and reads the system files for a
+    few minutes.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Po aktualizacjach pakietów raport AIDE zgłasza zmienione pliki, dopóki baza nie zostanie zaktualizowana
+    en:
+      - After package updates the AIDE report shows changed files until the database is updated
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Komputer, na którym nikt nie będzie przeglądał wyników sprawdzenia
+    en:
+      - A computer where nobody will review the check results
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1 || ! command -v systemctl >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    export LC_ALL=C
+    tmr=dailyaidecheck.timer
+    svc=dailyaidecheck.service
+    # cron_jobs: cron files with a job that runs aide --check, with (no-cron) when cron does not run
+    cron_jobs() {
+      local f c=""
+      systemctl is-active --quiet cron.service 2>/dev/null || c="(no-cron)"
+      for f in /etc/crontab /etc/cron.d/* /etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/* /var/spool/cron/crontabs/root; do
+        [ -f "$f" ] && [ -r "$f" ] || continue
+        if grep -Eqs '^[^#]*aide[^#]*(--check|[[:space:]]-C([[:space:]]|$))' "$f"; then echo "$f$c"; fi
+      done
+    }
+    # timer_jobs: enabled timers whose service runs aide --check or dailyaidecheck, with (inactive) when not running
+    timer_jobs() {
+      local t u
+      systemctl list-unit-files --type=timer --state=enabled --no-legend 2>/dev/null | awk '{ print $1 }' | while read -r t; do
+        u=$(systemctl show -p Unit --value "$t" 2>/dev/null)
+        [ -n "$u" ] || continue
+        systemctl show -p ExecStart --value "$u" 2>/dev/null |
+          grep -Eq 'aide[^;]*(--check|[[:space:]]-C([[:space:]]|$))|/dailyaidecheck([[:space:];]|$)' || continue
+        if systemctl is-active --quiet "$t"; then echo "$t"; else echo "$t(inactive)"; fi
+      done
+    }
+    evaluate() {
+      local j good
+      [ "$(dpkg-query -W -f='${db:Status-Status}' aide 2>/dev/null)" = installed ] || { echo "NOT_OK:aide-not-installed"; return; }
+      j=$( { cron_jobs; timer_jobs; } | paste -sd, -)
+      good=$(printf '%s\n' "$j" | tr , '\n' | grep -v ')$' | paste -sd, -)
+      if [ -n "$good" ]; then echo "OK:$good"
+      elif [ -n "$j" ]; then echo "NOT_OK:$j"
+      else echo "NOT_OK:not-scheduled"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    tmr=dailyaidecheck.timer
+    svc=dailyaidecheck.service
+    # cron_jobs: cron files with a job that runs aide --check, with (no-cron) when cron does not run
+    cron_jobs() {
+      local f c=""
+      systemctl is-active --quiet cron.service 2>/dev/null || c="(no-cron)"
+      for f in /etc/crontab /etc/cron.d/* /etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/* /var/spool/cron/crontabs/root; do
+        [ -f "$f" ] && [ -r "$f" ] || continue
+        if grep -Eqs '^[^#]*aide[^#]*(--check|[[:space:]]-C([[:space:]]|$))' "$f"; then echo "$f$c"; fi
+      done
+    }
+    # timer_jobs: enabled timers whose service runs aide --check or dailyaidecheck, with (inactive) when not running
+    timer_jobs() {
+      local t u
+      systemctl list-unit-files --type=timer --state=enabled --no-legend 2>/dev/null | awk '{ print $1 }' | while read -r t; do
+        u=$(systemctl show -p Unit --value "$t" 2>/dev/null)
+        [ -n "$u" ] || continue
+        systemctl show -p ExecStart --value "$u" 2>/dev/null |
+          grep -Eq 'aide[^;]*(--check|[[:space:]]-C([[:space:]]|$))|/dailyaidecheck([[:space:];]|$)' || continue
+        if systemctl is-active --quiet "$t"; then echo "$t"; else echo "$t(inactive)"; fi
+      done
+    }
+    evaluate() {
+      local j good
+      [ "$(dpkg-query -W -f='${db:Status-Status}' aide 2>/dev/null)" = installed ] || { echo "NOT_OK:aide-not-installed"; return; }
+      j=$( { cron_jobs; timer_jobs; } | paste -sd, -)
+      good=$(printf '%s\n' "$j" | tr , '\n' | grep -v ')$' | paste -sd, -)
+      if [ -n "$good" ]; then echo "OK:$good"
+      elif [ -n "$j" ]; then echo "NOT_OK:$j"
+      else echo "NOT_OK:not-scheduled"; fi
+    }
+      te=$(systemctl is-enabled "$tmr" 2>/dev/null) || true
+      ta=$(systemctl is-active "$tmr" 2>/dev/null) || true
+      se=$(systemctl is-enabled "$svc" 2>/dev/null) || true
+      printf '%s\n' format=aidecheck-u1 "timer ${te:-none} ${ta:-unknown}" "service ${se:-none}" > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aidecheck-u1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      read -r x te ta y < <(grep '^timer ' "$b") || true
+      read -r x se y2 < <(grep '^service ' "$b") || true
+      case "$te$ta$se" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      [ -n "$ta" ] && [ -n "$se" ] && [ -z "$y$y2" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    tmr=dailyaidecheck.timer
+    svc=dailyaidecheck.service
+    # cron_jobs: cron files with a job that runs aide --check, with (no-cron) when cron does not run
+    cron_jobs() {
+      local f c=""
+      systemctl is-active --quiet cron.service 2>/dev/null || c="(no-cron)"
+      for f in /etc/crontab /etc/cron.d/* /etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/* /var/spool/cron/crontabs/root; do
+        [ -f "$f" ] && [ -r "$f" ] || continue
+        if grep -Eqs '^[^#]*aide[^#]*(--check|[[:space:]]-C([[:space:]]|$))' "$f"; then echo "$f$c"; fi
+      done
+    }
+    # timer_jobs: enabled timers whose service runs aide --check or dailyaidecheck, with (inactive) when not running
+    timer_jobs() {
+      local t u
+      systemctl list-unit-files --type=timer --state=enabled --no-legend 2>/dev/null | awk '{ print $1 }' | while read -r t; do
+        u=$(systemctl show -p Unit --value "$t" 2>/dev/null)
+        [ -n "$u" ] || continue
+        systemctl show -p ExecStart --value "$u" 2>/dev/null |
+          grep -Eq 'aide[^;]*(--check|[[:space:]]-C([[:space:]]|$))|/dailyaidecheck([[:space:];]|$)' || continue
+        if systemctl is-active --quiet "$t"; then echo "$t"; else echo "$t(inactive)"; fi
+      done
+    }
+    evaluate() {
+      local j good
+      [ "$(dpkg-query -W -f='${db:Status-Status}' aide 2>/dev/null)" = installed ] || { echo "NOT_OK:aide-not-installed"; return; }
+      j=$( { cron_jobs; timer_jobs; } | paste -sd, -)
+      good=$(printf '%s\n' "$j" | tr , '\n' | grep -v ')$' | paste -sd, -)
+      if [ -n "$good" ]; then echo "OK:$good"
+      elif [ -n "$j" ]; then echo "NOT_OK:$j"
+      else echo "NOT_OK:not-scheduled"; fi
+    }
+    restore() {
+      case "$te" in
+        masked|masked-runtime) systemctl disable -q --now "$tmr" 2>/dev/null || true; systemctl mask -q "$tmr" ;;
+        disabled) systemctl disable -q "$tmr" ;;
+        enabled|enabled-runtime) systemctl unmask -q "$tmr"; systemctl enable -q "$tmr" ;;
+      esac
+      case "$te" in
+        masked*) ;;
+        *) case "$ta" in active|activating|reloading) systemctl start "$tmr" ;; *) systemctl stop "$tmr" ;; esac ;;
+      esac
+      case "$se" in masked|masked-runtime) systemctl mask -q "$svc" ;; esac
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        *aide-not-installed*) echo "aide is not installed; apply item 6.3.1 first" >&2; exit 1 ;;
+      esac
+      if [ -z "$(systemctl list-unit-files --no-legend "$tmr" 2>/dev/null)" ]; then
+        echo "$tmr is missing: aide-common is not installed; apply item 6.3.1 first" >&2; exit 1
+      fi
+      case "$(systemctl is-enabled "$svc" 2>/dev/null)" in masked*) systemctl unmask -q "$svc"; echo "Unmasked $svc" ;; esac
+      case "$(systemctl is-enabled "$tmr" 2>/dev/null)" in masked*) systemctl unmask -q "$tmr"; echo "Unmasked $tmr" ;; esac
+      if ! systemctl enable -q --now "$tmr"; then restore; echo "Could not start $tmr; restored its previous state" >&2; exit 1; fi
+      echo "Enabled and started $tmr"
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) restore; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aidecheck-u1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      read -r x te ta y < <(grep '^timer ' "$b") || true
+      read -r x se y2 < <(grep '^service ' "$b") || true
+      case "$te$ta$se" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      [ -n "$ta" ] && [ -n "$se" ] && [ -z "$y$y2" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    tmr=dailyaidecheck.timer
+    svc=dailyaidecheck.service
+    # cron_jobs: cron files with a job that runs aide --check, with (no-cron) when cron does not run
+    cron_jobs() {
+      local f c=""
+      systemctl is-active --quiet cron.service 2>/dev/null || c="(no-cron)"
+      for f in /etc/crontab /etc/cron.d/* /etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/* /var/spool/cron/crontabs/root; do
+        [ -f "$f" ] && [ -r "$f" ] || continue
+        if grep -Eqs '^[^#]*aide[^#]*(--check|[[:space:]]-C([[:space:]]|$))' "$f"; then echo "$f$c"; fi
+      done
+    }
+    # timer_jobs: enabled timers whose service runs aide --check or dailyaidecheck, with (inactive) when not running
+    timer_jobs() {
+      local t u
+      systemctl list-unit-files --type=timer --state=enabled --no-legend 2>/dev/null | awk '{ print $1 }' | while read -r t; do
+        u=$(systemctl show -p Unit --value "$t" 2>/dev/null)
+        [ -n "$u" ] || continue
+        systemctl show -p ExecStart --value "$u" 2>/dev/null |
+          grep -Eq 'aide[^;]*(--check|[[:space:]]-C([[:space:]]|$))|/dailyaidecheck([[:space:];]|$)' || continue
+        if systemctl is-active --quiet "$t"; then echo "$t"; else echo "$t(inactive)"; fi
+      done
+    }
+    evaluate() {
+      local j good
+      [ "$(dpkg-query -W -f='${db:Status-Status}' aide 2>/dev/null)" = installed ] || { echo "NOT_OK:aide-not-installed"; return; }
+      j=$( { cron_jobs; timer_jobs; } | paste -sd, -)
+      good=$(printf '%s\n' "$j" | tr , '\n' | grep -v ')$' | paste -sd, -)
+      if [ -n "$good" ]; then echo "OK:$good"
+      elif [ -n "$j" ]; then echo "NOT_OK:$j"
+      else echo "NOT_OK:not-scheduled"; fi
+    }
+    restore() {
+      case "$te" in
+        masked|masked-runtime) systemctl disable -q --now "$tmr" 2>/dev/null || true; systemctl mask -q "$tmr" ;;
+        disabled) systemctl disable -q "$tmr" ;;
+        enabled|enabled-runtime) systemctl unmask -q "$tmr"; systemctl enable -q "$tmr" ;;
+      esac
+      case "$te" in
+        masked*) ;;
+        *) case "$ta" in active|activating|reloading) systemctl start "$tmr" ;; *) systemctl stop "$tmr" ;; esac ;;
+      esac
+      case "$se" in masked|masked-runtime) systemctl mask -q "$svc" ;; esac
+    }
+      if [ -z "$(systemctl list-unit-files --no-legend "$tmr" 2>/dev/null)" ]; then echo "$tmr is not installed now, nothing to restore"; exit 0; fi
+      restore
+      echo "Restored $tmr ($te, $ta)"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://aide.github.io/doc/
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemctl.html
+
+notes:
+  pl: |
+    Sprawdzenie uznaje włączony i działający timer, którego usługa uruchamia
+    aide --check albo skrypt dailyaidecheck, oraz zadanie z aide --check
+    (albo -C) w /etc/crontab, /etc/cron.d, katalogach /etc/cron.hourly,
+    daily, weekly i monthly albo w crontabie roota, ale tylko wtedy, gdy
+    działa usługa cron; inaczej wynik oznacza je dopiskiem (no-cron). Plik
+    /etc/cron.daily/dailyaidecheck z aide-common kończy się od razu na
+    systemie z systemd, więc się nie liczy. Crontabu roota bez uprawnień
+    roota nie da się odczytać. Skrypt dailyaidecheck domyślnie wykonuje aide
+    --update (COMMAND=update w /etc/default/aide): porównuje system z bazą,
+    zapisuje nową bazę jako aide.db.new, a aide.db zostawia bez zmian
+    (COPYNEWDB=no).
+
+    Naprawa odmaskowuje dailyaidecheck.timer i dailyaidecheck.service, jeśli
+    były zamaskowane, oraz włącza i uruchamia timer. Wymaga zainstalowanego
+    aide-common (punkt 6.3.1). Wycofanie przywraca poprzedni stan timera
+    i maskowanie usługi; trwającego sprawdzenia nie przerywa.
+  en: |
+    The check accepts an enabled and running timer whose service runs aide
+    --check or the dailyaidecheck script, and a job with aide --check (or
+    -C) in /etc/crontab, /etc/cron.d, the /etc/cron.hourly, daily, weekly
+    and monthly directories or the crontab of root, but only when the cron
+    service runs; otherwise the result marks them with (no-cron). The
+    /etc/cron.daily/dailyaidecheck file from aide-common ends right away on
+    a system with systemd, so it does not count. The crontab of root cannot
+    be read without root privileges. By default the dailyaidecheck script
+    runs aide --update (COMMAND=update in /etc/default/aide): it compares
+    the system with the database, writes the new database as aide.db.new
+    and leaves aide.db unchanged (COPYNEWDB=no).
+
+    The remediation unmasks dailyaidecheck.timer and dailyaidecheck.service
+    if they were masked, and enables and starts the timer. It needs
+    aide-common to be installed (item 6.3.1). Rollback restores the previous
+    state of the timer and the masking of the service; it does not interrupt
+    a running check.

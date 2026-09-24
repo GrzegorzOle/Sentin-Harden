@@ -1,0 +1,162 @@
+id: ubuntu2404-audit-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 6.2.1.1
+  section: Logging and Auditing > System Accounting (auditd) > Configure auditd Service
+  title:
+    pl: Pakiety audytu są zainstalowane
+    en: Ensure auditd packages are installed
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Podsystem audytu jądra zapisuje zdarzenia ważne dla bezpieczeństwa:
+    logowania, zmiany uprawnień, dostęp do chronionych plików i użycie
+    uprawnień administratora. Usługa auditd odbiera te zdarzenia z jądra
+    i zapisuje je w /var/log/audit/audit.log. Bez niej większość zdarzeń
+    przepada albo trafia tylko do dziennika systemowego.
+
+    Punkt wymaga pakietów auditd i audispd-plugins. Drugi z nich zawiera
+    wtyczki, które przekazują zdarzenia audytu dalej, na przykład na zdalny
+    serwer.
+  en: |
+    The kernel audit subsystem records security events: logins, permission
+    changes, access to protected files and the use of administrator
+    privileges. The auditd service receives these events from the kernel
+    and writes them to /var/log/audit/audit.log. Without it most events are
+    lost or only reach the system log.
+
+    The item requires the auditd and audispd-plugins packages. The second
+    one contains plugins that pass audit events on, for example to a remote
+    server.
+
+disruption_description:
+  pl: |
+    Użytkownicy tego nie zauważą. Ubuntu nie instaluje auditd domyślnie;
+    instalacja pakietu włącza i uruchamia usługę auditd, która zaczyna
+    zapisywać zdarzenia w /var/log/audit. Które zdarzenia są zapisywane,
+    określają reguły audytu z punktów 6.2.3.
+  en: |
+    Users will not notice it. Ubuntu does not install auditd by default;
+    installing the package enables and starts the auditd service, which
+    starts writing events to /var/log/audit. Which events are recorded is
+    set by the audit rules of items 6.2.3.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Instalacja wymaga dostępu do repozytorium pakietów Ubuntu
+    en:
+      - The installation needs access to the Ubuntu package repository
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    have=""; miss=""
+    for p in auditd audispd-plugins; do
+      if [ "$(st "$p")" = installed ]; then have="$have,$p=$(dpkg-query -W -f='${Version}' "$p")"
+      else miss="$miss,$p"; fi
+    done
+    if [ -n "$miss" ]; then echo "NOT_INSTALLED:${miss#,}"; else echo "INSTALLED:${have#,}"; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      {
+        echo format=dpkg-on-1
+        for p in auditd audispd-plugins; do s=$(st "$p"); echo "$p ${s:-not-installed}"; done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      miss=""
+      for p in auditd audispd-plugins; do [ "$(st "$p")" = installed ] || miss="$miss $p"; done
+      if [ -z "$miss" ]; then echo "Already installed: auditd audispd-plugins"; exit 0; fi
+      export DEBIAN_FRONTEND=noninteractive
+      o="-y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+      # Stale package lists end in a download error; refresh them once and retry.
+      if ! apt-get install $o $miss; then apt-get update -qq; apt-get install $o $miss; fi
+      for p in $miss; do [ "$(st "$p")" = installed ] || { echo "$p is still not installed" >&2; exit 1; }; done
+      echo "Installed:$miss"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=dpkg-on-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | cut -d' ' -f1 | tr '\n' ' ')" = "auditd audispd-plugins " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      rm=""; purge=""
+      while read -r p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != installed ] && [ "$(st "$p")" = installed ] || continue
+        rm="$rm $p"
+        # A package that was not there at all loses its configuration files too.
+        [ "$s" != not-installed ] || purge="$purge $p"
+      done < <(tail -n +2 "$b")
+      if [ -z "$rm" ]; then echo "Nothing to restore"; exit 0; fi
+      # Packages installed since then may need them; then they stay.
+      if ! dpkg -r --dry-run $rm >/dev/null 2>&1; then
+        echo "Kept$rm: other installed packages need them now"; exit 0
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get remove -y -qq $rm
+      if [ -n "$purge" ]; then dpkg --purge $purge >/dev/null; fi
+      echo "Removed again:$rm"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/auditd.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+
+notes:
+  pl: |
+    Test sprawdza oba pakiety przez dpkg; wynik INSTALLED podaje ich wersje,
+    a NOT_INSTALLED brakujące pakiety. Naprawa instaluje brakujące
+    poleceniem apt-get. Wycofanie usuwa je ponownie, jeśli nie było ich
+    przed naprawą i żaden inny pakiet ich nie potrzebuje; pakiet, którego
+    wcześniej nie było wcale, traci też pliki konfiguracyjne. Usunięcie
+    auditd zatrzymuje też usługę.
+  en: |
+    The test checks both packages through dpkg; the INSTALLED result gives
+    their versions, and NOT_INSTALLED the missing packages. The remediation
+    installs the missing ones with apt-get. Rollback removes them again if
+    they were not there before the remediation and no other package needs
+    them; a package that was not there at all also loses its configuration
+    files. Removing auditd also stops the service.

@@ -1,0 +1,383 @@
+id: ubuntu2404-logfile-access
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 6.1.4.1
+  section: Logging and Auditing > System Logging > Configure Logfiles
+  title:
+    pl: Dostęp do plików dzienników jest ograniczony
+    en: Ensure access to all logfiles has been configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pliki w /var/log opisują logowania, błędy usług i działania
+    administratorów. Jeśli może je czytać każdy użytkownik, łatwo z nich
+    poznać nazwy kont i słabe punkty systemu; jeśli może je zmieniać ktoś
+    poza właścicielem, może zatrzeć ślady.
+
+    Punkt wymaga, żeby każdy plik w /var/log miał prawa nie szersze niż 0640
+    i należał do roota albo konta systemowego, z grupą root, adm albo
+    systemową. Wyjątki: lastlog, wtmp i btmp mogą mieć 0664 z grupą utmp,
+    cloud-init.log 0644, dzienniki SSSD i GDM 0660, a pliki journald grupę
+    systemd-journal.
+  en: |
+    The files in /var/log describe logins, service errors and the actions of
+    administrators. If every user can read them, it is easy to learn account
+    names and weak points of the system from them; if someone other than
+    the owner can change them, they can cover their tracks.
+
+    The item requires every file in /var/log to have a mode no wider than
+    0640 and to belong to root or a system account, with the root, adm or a
+    system group. Exceptions: lastlog, wtmp and btmp may have 0664 with the
+    utmp group, cloud-init.log 0644, SSSD and GDM logs 0660, and journald
+    files the systemd-journal group.
+
+disruption_description:
+  pl: |
+    Klasa wymaga przeglądu, bo zwykli użytkownicy tracą dostęp do dzienników,
+    które dotąd mogli czytać, na przykład /var/log/dpkg.log
+    i /var/log/apt/history.log z historią instalacji pakietów. Programy
+    uruchamiane bez uprawnień roota, które czytają takie pliki, przestają je
+    widzieć. Usługi piszące swoje dzienniki nadal działają, bo pliki zostają
+    przy właścicielu, jeśli jest kontem systemowym.
+  en: |
+    The class needs review because normal users lose access to logs they
+    could read before, for example /var/log/dpkg.log and
+    /var/log/apt/history.log with the package installation history. Programs
+    running without root privileges that read such files no longer see
+    them. Services writing their logs keep working, because the files stay
+    with their owner if it is a system account.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Zwykły użytkownik nie przeczyta bez sudo dzienników takich jak /var/log/dpkg.log i /var/log/apt/history.log
+    en:
+      - A normal user cannot read logs such as /var/log/dpkg.log and /var/log/apt/history.log without sudo
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Komputer, na którym narzędzie monitorujące działa bez uprawnień roota i czyta pliki z /var/log; trzeba mu wtedy nadać grupę adm
+    en:
+      - A computer where a monitoring tool runs without root privileges and reads files from /var/log; it then has to be given the adm group
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    # scan: files under /var/log with a wider mode, owner or group than allowed, as
+    # "MODE UID GID NEWMODE NEWUID NEWGID<TAB>PATH"
+    scan() {
+      local um gm
+      um=$(awk '$1 == "UID_MIN" { v = $2 } END { print (v ~ /^[0-9]+$/) ? v : 1000 }' /etc/login.defs 2>/dev/null)
+      gm=$(awk '$1 == "GID_MIN" { v = $2 } END { print (v ~ /^[0-9]+$/) ? v : 1000 }' /etc/login.defs 2>/dev/null)
+      find /var/log -xdev -type f -printf '%m\t%U\t%G\t%u\t%g\t%p\n' 2>/dev/null | awk -F'\t' -v um="${um:-1000}" -v gm="${gm:-1000}" '
+        function oct(s,  n, i) { n = 0; for (i = 1; i <= length(s); i++) n = n * 8 + substr(s, i, 1); return n }
+        function clr(m, k,  r, b) { r = 0; for (b = 2048; b >= 1; b = int(b / 2)) if (int(m / b) % 2 && !(int(k / b) % 2)) r += b; return r }
+        NF != 6 { next }
+        {
+          m = oct($1); u = $2 + 0; g = $3 + 0; un = $4; gn = $5; p = $6
+          b = p; sub(/.*\//, "", b)
+          if (b ~ /^(lastlog|wtmp|btmp)([.-].*)?$/ || b == "README") {
+            mask = oct("7113"); ou = (u == 0); og = (g == 0 || gn == "utmp")
+          } else if (b ~ /^(cloud-init\.log|localmessages|waagent\.log)/) {
+            mask = oct("7133"); ou = (u == 0 || un == "syslog"); og = (g == 0 || gn == "adm")
+          } else if (b ~ /^(secure|auth\.log|syslog|messages)([.-].*)?$/) {
+            mask = oct("7137"); ou = (u == 0 || un == "syslog"); og = (g == 0 || gn == "adm")
+          } else if (p ~ /^\/var\/log\/sssd\//) {
+            mask = oct("7117"); ou = (u == 0 || un == "sssd"); og = (g == 0 || gn == "sssd")
+          } else if (p ~ /^\/var\/log\/gdm3?\//) {
+            mask = oct("7117"); ou = (u == 0); og = (g == 0 || gn ~ /^gdm3?$/)
+          } else if (b ~ /\.journal~?$/) {
+            mask = oct("7137"); ou = (u == 0); og = (g == 0 || gn == "systemd-journal")
+          } else {
+            mask = oct("7137"); ou = (u == 0 || un == "syslog" || (u < um && u != 65534))
+            og = (g == 0 || gn == "adm" || (g < gm && g != 65534))
+          }
+          nm = clr(m, mask)
+          if (nm == m && ou && og) next
+          printf "%o %d %d %o %d %d\t%s\n", m, u, g, nm, (ou ? u : 0), (og ? g : 0), p
+        }'
+    }
+    odd_name() { find /var/log -xdev -type f -name "*[$(printf '\t\n')]*" -print -quit 2>/dev/null; }
+    denied() { find /var/log -xdev -type d \( ! -readable -o ! -executable \) -print -quit 2>/dev/null; }
+    evaluate() {
+      local bad n list r
+      [ -d /var/log ] || { echo "NOT_OK:no-var-log"; return; }
+      if [ -n "$(odd_name)" ]; then echo "NOT_OK:file-name-with-tab-or-newline"; return; fi
+      bad=$(scan)
+      if [ -n "$bad" ]; then
+        n=$(printf '%s\n' "$bad" | wc -l)
+        list=$(printf '%s\n' "$bad" | head -n 5 | awk -F'\t' '{ split($1, a, " "); printf "%s%s=%s:%s:%s", (NR > 1 ? "," : ""), $2, a[1], a[2], a[3] }')
+        r="NOT_OK:files=$n:$list"
+        [ "$n" -le 5 ] || r="$r,..."
+      fi
+      if [ -n "$(denied)" ]; then echo "${r:-NOT_OK:}${r:+,}needs-root"
+      elif [ -n "$r" ]; then echo "$r"
+      else echo "OK:$(find /var/log -xdev -type f 2>/dev/null | wc -l)-files"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    # scan: files under /var/log with a wider mode, owner or group than allowed, as
+    # "MODE UID GID NEWMODE NEWUID NEWGID<TAB>PATH"
+    scan() {
+      local um gm
+      um=$(awk '$1 == "UID_MIN" { v = $2 } END { print (v ~ /^[0-9]+$/) ? v : 1000 }' /etc/login.defs 2>/dev/null)
+      gm=$(awk '$1 == "GID_MIN" { v = $2 } END { print (v ~ /^[0-9]+$/) ? v : 1000 }' /etc/login.defs 2>/dev/null)
+      find /var/log -xdev -type f -printf '%m\t%U\t%G\t%u\t%g\t%p\n' 2>/dev/null | awk -F'\t' -v um="${um:-1000}" -v gm="${gm:-1000}" '
+        function oct(s,  n, i) { n = 0; for (i = 1; i <= length(s); i++) n = n * 8 + substr(s, i, 1); return n }
+        function clr(m, k,  r, b) { r = 0; for (b = 2048; b >= 1; b = int(b / 2)) if (int(m / b) % 2 && !(int(k / b) % 2)) r += b; return r }
+        NF != 6 { next }
+        {
+          m = oct($1); u = $2 + 0; g = $3 + 0; un = $4; gn = $5; p = $6
+          b = p; sub(/.*\//, "", b)
+          if (b ~ /^(lastlog|wtmp|btmp)([.-].*)?$/ || b == "README") {
+            mask = oct("7113"); ou = (u == 0); og = (g == 0 || gn == "utmp")
+          } else if (b ~ /^(cloud-init\.log|localmessages|waagent\.log)/) {
+            mask = oct("7133"); ou = (u == 0 || un == "syslog"); og = (g == 0 || gn == "adm")
+          } else if (b ~ /^(secure|auth\.log|syslog|messages)([.-].*)?$/) {
+            mask = oct("7137"); ou = (u == 0 || un == "syslog"); og = (g == 0 || gn == "adm")
+          } else if (p ~ /^\/var\/log\/sssd\//) {
+            mask = oct("7117"); ou = (u == 0 || un == "sssd"); og = (g == 0 || gn == "sssd")
+          } else if (p ~ /^\/var\/log\/gdm3?\//) {
+            mask = oct("7117"); ou = (u == 0); og = (g == 0 || gn ~ /^gdm3?$/)
+          } else if (b ~ /\.journal~?$/) {
+            mask = oct("7137"); ou = (u == 0); og = (g == 0 || gn == "systemd-journal")
+          } else {
+            mask = oct("7137"); ou = (u == 0 || un == "syslog" || (u < um && u != 65534))
+            og = (g == 0 || gn == "adm" || (g < gm && g != 65534))
+          }
+          nm = clr(m, mask)
+          if (nm == m && ou && og) next
+          printf "%o %d %d %o %d %d\t%s\n", m, u, g, nm, (ou ? u : 0), (og ? g : 0), p
+        }'
+    }
+    odd_name() { find /var/log -xdev -type f -name "*[$(printf '\t\n')]*" -print -quit 2>/dev/null; }
+    denied() { find /var/log -xdev -type d \( ! -readable -o ! -executable \) -print -quit 2>/dev/null; }
+    evaluate() {
+      local bad n list r
+      [ -d /var/log ] || { echo "NOT_OK:no-var-log"; return; }
+      if [ -n "$(odd_name)" ]; then echo "NOT_OK:file-name-with-tab-or-newline"; return; fi
+      bad=$(scan)
+      if [ -n "$bad" ]; then
+        n=$(printf '%s\n' "$bad" | wc -l)
+        list=$(printf '%s\n' "$bad" | head -n 5 | awk -F'\t' '{ split($1, a, " "); printf "%s%s=%s:%s:%s", (NR > 1 ? "," : ""), $2, a[1], a[2], a[3] }')
+        r="NOT_OK:files=$n:$list"
+        [ "$n" -le 5 ] || r="$r,..."
+      fi
+      if [ -n "$(denied)" ]; then echo "${r:-NOT_OK:}${r:+,}needs-root"
+      elif [ -n "$r" ]; then echo "$r"
+      else echo "OK:$(find /var/log -xdev -type f 2>/dev/null | wc -l)-files"; fi
+    }
+      if [ -n "$(odd_name)" ]; then echo "A file under /var/log has a tab or newline in its name; fix it by hand" >&2; exit 1; fi
+      s=$(scan)
+      { echo format=logaccess-1; if [ -n "$s" ]; then printf '%s\n' "$s"; fi; } > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=logaccess-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      if [ -n "$lines" ] && printf '%s\n' "$lines" | grep -vqE '^[0-7]+ [0-9]+ [0-9]+ [0-7]+ [0-9]+ [0-9]+	/var/log/'; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      if printf '%s\n' "$lines" | grep -q '/\.\./'; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+    export LC_ALL=C
+    # scan: files under /var/log with a wider mode, owner or group than allowed, as
+    # "MODE UID GID NEWMODE NEWUID NEWGID<TAB>PATH"
+    scan() {
+      local um gm
+      um=$(awk '$1 == "UID_MIN" { v = $2 } END { print (v ~ /^[0-9]+$/) ? v : 1000 }' /etc/login.defs 2>/dev/null)
+      gm=$(awk '$1 == "GID_MIN" { v = $2 } END { print (v ~ /^[0-9]+$/) ? v : 1000 }' /etc/login.defs 2>/dev/null)
+      find /var/log -xdev -type f -printf '%m\t%U\t%G\t%u\t%g\t%p\n' 2>/dev/null | awk -F'\t' -v um="${um:-1000}" -v gm="${gm:-1000}" '
+        function oct(s,  n, i) { n = 0; for (i = 1; i <= length(s); i++) n = n * 8 + substr(s, i, 1); return n }
+        function clr(m, k,  r, b) { r = 0; for (b = 2048; b >= 1; b = int(b / 2)) if (int(m / b) % 2 && !(int(k / b) % 2)) r += b; return r }
+        NF != 6 { next }
+        {
+          m = oct($1); u = $2 + 0; g = $3 + 0; un = $4; gn = $5; p = $6
+          b = p; sub(/.*\//, "", b)
+          if (b ~ /^(lastlog|wtmp|btmp)([.-].*)?$/ || b == "README") {
+            mask = oct("7113"); ou = (u == 0); og = (g == 0 || gn == "utmp")
+          } else if (b ~ /^(cloud-init\.log|localmessages|waagent\.log)/) {
+            mask = oct("7133"); ou = (u == 0 || un == "syslog"); og = (g == 0 || gn == "adm")
+          } else if (b ~ /^(secure|auth\.log|syslog|messages)([.-].*)?$/) {
+            mask = oct("7137"); ou = (u == 0 || un == "syslog"); og = (g == 0 || gn == "adm")
+          } else if (p ~ /^\/var\/log\/sssd\//) {
+            mask = oct("7117"); ou = (u == 0 || un == "sssd"); og = (g == 0 || gn == "sssd")
+          } else if (p ~ /^\/var\/log\/gdm3?\//) {
+            mask = oct("7117"); ou = (u == 0); og = (g == 0 || gn ~ /^gdm3?$/)
+          } else if (b ~ /\.journal~?$/) {
+            mask = oct("7137"); ou = (u == 0); og = (g == 0 || gn == "systemd-journal")
+          } else {
+            mask = oct("7137"); ou = (u == 0 || un == "syslog" || (u < um && u != 65534))
+            og = (g == 0 || gn == "adm" || (g < gm && g != 65534))
+          }
+          nm = clr(m, mask)
+          if (nm == m && ou && og) next
+          printf "%o %d %d %o %d %d\t%s\n", m, u, g, nm, (ou ? u : 0), (og ? g : 0), p
+        }'
+    }
+    odd_name() { find /var/log -xdev -type f -name "*[$(printf '\t\n')]*" -print -quit 2>/dev/null; }
+    denied() { find /var/log -xdev -type d \( ! -readable -o ! -executable \) -print -quit 2>/dev/null; }
+    evaluate() {
+      local bad n list r
+      [ -d /var/log ] || { echo "NOT_OK:no-var-log"; return; }
+      if [ -n "$(odd_name)" ]; then echo "NOT_OK:file-name-with-tab-or-newline"; return; fi
+      bad=$(scan)
+      if [ -n "$bad" ]; then
+        n=$(printf '%s\n' "$bad" | wc -l)
+        list=$(printf '%s\n' "$bad" | head -n 5 | awk -F'\t' '{ split($1, a, " "); printf "%s%s=%s:%s:%s", (NR > 1 ? "," : ""), $2, a[1], a[2], a[3] }')
+        r="NOT_OK:files=$n:$list"
+        [ "$n" -le 5 ] || r="$r,..."
+      fi
+      if [ -n "$(denied)" ]; then echo "${r:-NOT_OK:}${r:+,}needs-root"
+      elif [ -n "$r" ]; then echo "$r"
+      else echo "OK:$(find /var/log -xdev -type f 2>/dev/null | wc -l)-files"; fi
+    }
+    restore() {
+      local s p om ou og nm nu ng cur n=0 k=0
+      while IFS=$'\t' read -r s p; do
+        [ -n "$p" ] || continue
+        read -r om ou og nm nu ng <<< "$s"
+        [ -f "$p" ] && [ ! -L "$p" ] || continue
+        cur=$(stat -c '%a %u %g' -- "$p")
+        if [ "$cur" = "$nm $nu $ng" ]; then
+          chown -- "$ou:$og" "$p"; chmod -- "$om" "$p"; n=$((n + 1))
+        elif [ "$cur" != "$om $ou $og" ]; then
+          echo "Kept $p: changed since the remediation ($cur)"; k=$((k + 1))
+        fi
+      done <<< "$1"
+      echo "Restored the mode and owner of $n files"
+    }
+      if [ -n "$(odd_name)" ]; then echo "A file under /var/log has a tab or newline in its name; fix it by hand" >&2; exit 1; fi
+      s=$(scan)
+      if [ -z "$s" ]; then echo "Already meets the item, nothing to change"; exit 0; fi
+      while IFS= read -r l; do
+        printf '%s\n' "$lines" | grep -qxF -- "$l" || { echo "Not in the backup, run the backup again: ${l#*	}" >&2; exit 1; }
+      done <<< "$s"
+      n=0
+      while IFS=$'\t' read -r st p; do
+        read -r om ou og nm nu ng <<< "$st"
+        if [ "$ou $og" != "$nu $ng" ]; then chown -- "$nu:$ng" "$p"; fi
+        chmod -- "$nm" "$p"
+        n=$((n + 1))
+      done <<< "$s"
+      echo "Corrected the mode or owner of $n files under /var/log"
+      s=$(scan)
+      if [ -n "$s" ]; then
+        restore "$lines" >/dev/null
+        echo "Files are still too open after the change; restored the previous state:" >&2
+        printf '%s\n' "$s" | head -n 5 >&2; exit 1
+      fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=logaccess-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      lines=$(tail -n +2 "$b")
+      if [ -n "$lines" ] && printf '%s\n' "$lines" | grep -vqE '^[0-7]+ [0-9]+ [0-9]+ [0-7]+ [0-9]+ [0-9]+	/var/log/'; then
+        echo "Backup file is damaged: $b" >&2; exit 1
+      fi
+      if printf '%s\n' "$lines" | grep -q '/\.\./'; then echo "Backup file is damaged: $b" >&2; exit 1; fi
+    restore() {
+      local s p om ou og nm nu ng cur n=0 k=0
+      while IFS=$'\t' read -r s p; do
+        [ -n "$p" ] || continue
+        read -r om ou og nm nu ng <<< "$s"
+        [ -f "$p" ] && [ ! -L "$p" ] || continue
+        cur=$(stat -c '%a %u %g' -- "$p")
+        if [ "$cur" = "$nm $nu $ng" ]; then
+          chown -- "$ou:$og" "$p"; chmod -- "$om" "$p"; n=$((n + 1))
+        elif [ "$cur" != "$om $ou $og" ]; then
+          echo "Kept $p: changed since the remediation ($cur)"; k=$((k + 1))
+        fi
+      done <<< "$1"
+      echo "Restored the mode and owner of $n files"
+    }
+      restore "$lines"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man1/chmod.1.html
+  - https://refspecs.linuxfoundation.org/FHS_3.0/fhs/ch05s10.html
+
+notes:
+  pl: |
+    Sprawdzenie przegląda wszystkie zwykłe pliki pod /var/log na tym samym
+    systemie plików. Za konto i grupę systemową uznaje identyfikatory poniżej
+    UID_MIN i GID_MIN z /etc/login.defs, z wyjątkiem nobody. Wynik NOT_OK
+    podaje liczbę plików i do pięciu przykładów z prawami, UID i GID. Bez
+    uprawnień roota części katalogów, na przykład /var/log/private, nie da
+    się przejrzeć, więc wynik kończy się dopiskiem needs-root.
+
+    Na świeżo zainstalowanym Ubuntu test zgłasza pliki z trybem 0644, między
+    innymi dpkg.log, alternatives.log i apt/history.log. logrotate tworzy
+    nowe dpkg.log i alternatives.log z trybem 0644 (dyrektywa create 644
+    root root w /etc/logrotate.d/dpkg i alternatives), więc po rotacji test
+    może je zgłosić ponownie. Reguła nie zmienia konfiguracji logrotate, bo
+    należy ona do punktu 6.1.3.8, sprawdzanego ręcznie.
+
+    Naprawa odejmuje nadmiarowe prawa (chmod) i ustawia roota jako
+    właściciela albo grupę tylko tam, gdzie obecne są niedozwolone. Kopia
+    zapasowa zapisuje poprzednie prawa, UID i GID zmienianych plików.
+    Wycofanie przywraca je tylko plikom, które nadal mają stan ustawiony przez
+    naprawę; pliki zmienione od tego czasu wymienia i zostawia. Nazwy plików
+    z tabulatorem albo znakiem nowego wiersza powodują odmowę.
+  en: |
+    The check goes through all regular files under /var/log on the same file
+    system. It treats IDs below UID_MIN and GID_MIN from /etc/login.defs as
+    system accounts and groups, except nobody. The NOT_OK result gives the
+    number of files and up to five examples with the mode, UID and GID.
+    Without root privileges some directories, for example /var/log/private,
+    cannot be read, so the result ends with a needs-root note.
+
+    On a freshly installed Ubuntu the test reports files with mode 0644,
+    among them dpkg.log, alternatives.log and apt/history.log. logrotate
+    creates new dpkg.log and alternatives.log files with mode 0644 (the
+    create 644 root root directive in /etc/logrotate.d/dpkg and
+    alternatives), so after a rotation the test may report them again. The
+    rule does not change the logrotate configuration, because it belongs to
+    item 6.1.3.8, which is checked by hand.
+
+    The remediation removes the excess permissions (chmod) and sets root as
+    the owner or group only where the current one is not allowed. The backup
+    saves the previous mode, UID and GID of the changed files. Rollback
+    restores them only for files that still have the state set by the
+    remediation; it names and leaves files changed since then. File names
+    with a tab or newline cause a refusal.

@@ -1,0 +1,324 @@
+id: ubuntu2404-rsyslog-file-create-mode
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 6.1.3.4
+  section: Logging and Auditing > System Logging > Configure rsyslog
+  title:
+    pl: rsyslog tworzy pliki dzienników z prawami 0640
+    en: Ensure rsyslog log file creation mode is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy rsyslog tworzy nowy plik dziennika, na przykład po rotacji albo dla
+    nowej reguły, bez ustawienia trybu nadaje mu prawa 0644, bo na Ubuntu
+    usługa ma maskę praw 0022, więc każdy użytkownik może go przeczytać.
+    Dzienniki zawierają nazwy kont, adresy i treść błędów, które pomagają
+    w ataku.
+
+    Punkt wymaga ustawienia $FileCreateMode na 0640 albo ostrzej i braku
+    słabszych ustawień w konfiguracji rsysloga.
+  en: |
+    When rsyslog creates a new log file, for example after rotation or for a
+    new rule, without a mode setting it gives it the 0644 mode, because on
+    Ubuntu the service has the 0022 permission mask, so every user can read
+    it. Logs contain account names, addresses and error details that help an
+    attack.
+
+    The item requires $FileCreateMode to be set to 0640 or stricter and no
+    weaker settings in the rsyslog configuration.
+
+disruption_description:
+  pl: |
+    Nikt tego nie zauważy: /etc/rsyslog.conf na Ubuntu ma domyślnie
+    $FileCreateMode 0640, a pliki należą do grupy adm, której członkowie
+    nadal je czytają. Naprawa jest potrzebna tylko wtedy, gdy ktoś usunął to
+    ustawienie.
+  en: |
+    Nobody will notice: /etc/rsyslog.conf on Ubuntu has $FileCreateMode 0640
+    by default, and the files belong to the adm group, whose members can
+    still read them. The remediation is only needed when someone removed
+    this setting.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Nowo tworzone pliki dzienników rsysloga czytają tylko root i członkowie grupy adm
+    en:
+      - Only root and members of the adm group can read newly created rsyslog log files
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    in_use() { case "$(systemctl is-enabled "$1.service" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active --quiet "$1.service" 2>/dev/null; }
+    if ! in_use rsyslog; then echo NOT_APPLICABLE; exit 0; fi
+    export LC_ALL=C
+    # rs_files: the main rsyslog file and the drop-ins it includes by default
+    rs_files() {
+      local f
+      [ -f /etc/rsyslog.conf ] && echo /etc/rsyslog.conf
+      for f in /etc/rsyslog.d/*.conf; do [ -f "$f" ] && echo "$f"; done
+      return 0
+    }
+    f_own=/etc/rsyslog.d/00-sentin-harden-filecreatemode.conf
+    mark='# Sentin-Harden: ubuntu2404-rsyslog-file-create-mode'
+    # fcm_values: "global|action MODE FILE" for every file creation mode set for
+    # log files; the state file mode of imjournal is not about log files
+    fcm_values() {
+      local f s v
+      for f in $(rs_files); do
+        awk -v f="$f" 'tolower($1) == "$filecreatemode" { print "global", $2, f }' "$f"
+        sed -e 's/#.*//' -e '/^[[:space:]]*\$/d' "$f" | tr '\n' ' ' | tr ')' '\n' | grep -i 'filecreatemode' | grep -vi 'imjournal' |
+        while IFS= read -r s; do
+          v=$(printf '%s\n' "$s" | grep -oiE 'filecreatemode[[:space:]]*=[[:space:]]*"?[0-7]+' | grep -oE '[0-7]+$' | tail -n 1)
+          [ -n "$v" ] || continue
+          if printf '%s\n' "$s" | grep -qi 'builtin:omfile'; then echo "global $v $f"; else echo "action $v $f"; fi
+        done
+      done
+    }
+    evaluate() {
+      local k m f g="" bad=""
+      while read -r k m f; do
+        [ -n "$k" ] || continue
+        if ! printf '%s\n' "$m" | grep -qxE '0?[0-7]{3}' || [ $(( 0$m & 0137 )) -ne 0 ]; then bad="$bad${bad:+,}$m@$f"
+        elif [ "$k" = global ]; then g="$g${g:+,}$m"; fi
+      done <<< "$(fcm_values)"
+      if [ -n "$bad" ]; then echo "NOT_OK:$bad"
+      elif [ -z "$g" ]; then echo "NOT_OK:not-set"
+      else echo "OK:$g"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/rsyslog.d/00-sentin-harden-filecreatemode.conf
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=rsfcm-1
+        if [ -e "$f" ]; then echo existed=1; else echo existed=0; fi
+        echo ---
+        if [ -e "$f" ]; then cat "$f"; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      in_use() { case "$(systemctl is-enabled "$1.service" 2>/dev/null)" in enabled|enabled-runtime) return 0 ;; esac; systemctl is-active --quiet "$1.service" 2>/dev/null; }
+      if ! in_use rsyslog; then
+        echo "rsyslog is switched off, so this item does not apply; nothing to change"; exit 0
+      fi
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rsfcm-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    export LC_ALL=C
+    # rs_files: the main rsyslog file and the drop-ins it includes by default
+    rs_files() {
+      local f
+      [ -f /etc/rsyslog.conf ] && echo /etc/rsyslog.conf
+      for f in /etc/rsyslog.d/*.conf; do [ -f "$f" ] && echo "$f"; done
+      return 0
+    }
+    f_own=/etc/rsyslog.d/00-sentin-harden-filecreatemode.conf
+    mark='# Sentin-Harden: ubuntu2404-rsyslog-file-create-mode'
+    # fcm_values: "global|action MODE FILE" for every file creation mode set for
+    # log files; the state file mode of imjournal is not about log files
+    fcm_values() {
+      local f s v
+      for f in $(rs_files); do
+        awk -v f="$f" 'tolower($1) == "$filecreatemode" { print "global", $2, f }' "$f"
+        sed -e 's/#.*//' -e '/^[[:space:]]*\$/d' "$f" | tr '\n' ' ' | tr ')' '\n' | grep -i 'filecreatemode' | grep -vi 'imjournal' |
+        while IFS= read -r s; do
+          v=$(printf '%s\n' "$s" | grep -oiE 'filecreatemode[[:space:]]*=[[:space:]]*"?[0-7]+' | grep -oE '[0-7]+$' | tail -n 1)
+          [ -n "$v" ] || continue
+          if printf '%s\n' "$s" | grep -qi 'builtin:omfile'; then echo "global $v $f"; else echo "action $v $f"; fi
+        done
+      done
+    }
+    evaluate() {
+      local k m f g="" bad=""
+      while read -r k m f; do
+        [ -n "$k" ] || continue
+        if ! printf '%s\n' "$m" | grep -qxE '0?[0-7]{3}' || [ $(( 0$m & 0137 )) -ne 0 ]; then bad="$bad${bad:+,}$m@$f"
+        elif [ "$k" = global ]; then g="$g${g:+,}$m"; fi
+      done <<< "$(fcm_values)"
+      if [ -n "$bad" ]; then echo "NOT_OK:$bad"
+      elif [ -z "$g" ]; then echo "NOT_OK:not-set"
+      else echo "OK:$g"; fi
+    }
+    undo() {
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f_own" ;;
+        0) rm -f "$f_own" ;;
+      esac
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        NOT_OK:not-set) ;;
+        *) echo "A weaker file creation mode is set (${r#NOT_OK:}); correct it by hand" >&2; exit 1 ;;
+      esac
+      mkdir -p /etc/rsyslog.d
+      printf '%s\n' "$mark" '$FileCreateMode 0640' > "$f_own"
+      chmod 0644 "$f_own"
+      if command -v rsyslogd >/dev/null 2>&1 && ! rsyslogd -N1 >/dev/null 2>&1; then
+        undo; echo "rsyslogd -N1 rejects the configuration; restored the previous state" >&2; exit 1
+      fi
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) undo; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Set \$FileCreateMode 0640 in $f_own"
+      if [ -d /run/systemd/system ]; then
+        systemctl reset-failed rsyslog.service >/dev/null 2>&1 || true
+        systemctl try-restart rsyslog.service
+        echo "Restarted rsyslog if it was running"
+      fi
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rsfcm-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      existed=$(sed -n '2s/^existed=//p' "$b")
+      case "$existed" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    export LC_ALL=C
+    # rs_files: the main rsyslog file and the drop-ins it includes by default
+    rs_files() {
+      local f
+      [ -f /etc/rsyslog.conf ] && echo /etc/rsyslog.conf
+      for f in /etc/rsyslog.d/*.conf; do [ -f "$f" ] && echo "$f"; done
+      return 0
+    }
+    f_own=/etc/rsyslog.d/00-sentin-harden-filecreatemode.conf
+    mark='# Sentin-Harden: ubuntu2404-rsyslog-file-create-mode'
+    # fcm_values: "global|action MODE FILE" for every file creation mode set for
+    # log files; the state file mode of imjournal is not about log files
+    fcm_values() {
+      local f s v
+      for f in $(rs_files); do
+        awk -v f="$f" 'tolower($1) == "$filecreatemode" { print "global", $2, f }' "$f"
+        sed -e 's/#.*//' -e '/^[[:space:]]*\$/d' "$f" | tr '\n' ' ' | tr ')' '\n' | grep -i 'filecreatemode' | grep -vi 'imjournal' |
+        while IFS= read -r s; do
+          v=$(printf '%s\n' "$s" | grep -oiE 'filecreatemode[[:space:]]*=[[:space:]]*"?[0-7]+' | grep -oE '[0-7]+$' | tail -n 1)
+          [ -n "$v" ] || continue
+          if printf '%s\n' "$s" | grep -qi 'builtin:omfile'; then echo "global $v $f"; else echo "action $v $f"; fi
+        done
+      done
+    }
+    evaluate() {
+      local k m f g="" bad=""
+      while read -r k m f; do
+        [ -n "$k" ] || continue
+        if ! printf '%s\n' "$m" | grep -qxE '0?[0-7]{3}' || [ $(( 0$m & 0137 )) -ne 0 ]; then bad="$bad${bad:+,}$m@$f"
+        elif [ "$k" = global ]; then g="$g${g:+,}$m"; fi
+      done <<< "$(fcm_values)"
+      if [ -n "$bad" ]; then echo "NOT_OK:$bad"
+      elif [ -z "$g" ]; then echo "NOT_OK:not-set"
+      else echo "OK:$g"; fi
+    }
+    undo() {
+      case "$existed" in
+        1) sed '1,/^---$/d' "$b" > "$f_own" ;;
+        0) rm -f "$f_own" ;;
+      esac
+    }
+      undo
+      echo "Restored the previous state of $f_own"
+      if [ -d /run/systemd/system ]; then
+        systemctl reset-failed rsyslog.service >/dev/null 2>&1 || true
+        systemctl try-restart rsyslog.service
+        echo "Restarted rsyslog if it was running"
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.rsyslog.com/doc/configuration/modules/omfile.html
+  - https://man7.org/linux/man-pages/man8/rsyslogd.8.html
+
+notes:
+  pl: |
+    Sprawdzenie zbiera wszystkie ustawienia trybu tworzenia plików
+    w /etc/rsyslog.conf i /etc/rsyslog.d/*.conf: dyrektywę $FileCreateMode,
+    parametr fileCreateMode modułu builtin:omfile i akcji omfile. Pomija
+    parametr FileCreateMode modułu imjournal, bo dotyczy on pliku stanu, a nie
+    dzienników. Wynik OK podaje ustawienia ogólne; NOT_OK:not-set oznacza
+    brak ustawienia ogólnego (rsyslog przyjmuje wtedy 0644), a NOT_OK
+    z listą wartość słabszą niż 0640 i plik, w którym jest.
+
+    Naprawa tworzy /etc/rsyslog.d/00-sentin-harden-filecreatemode.conf z $FileCreateMode 0640.
+    Dyrektywa działa na reguły zapisu, które są po niej, a Ubuntu trzyma je
+    w /etc/rsyslog.d/50-default.conf, więc nazwa pliku zaczyna się od 00-.
+    Reguły zapisu dopisane w /etc/rsyslog.conf przed wierszem
+    $IncludeConfig trzeba sprawdzić ręcznie. Słabsze ustawienie w innym
+    pliku powoduje odmowę, bo jego poprawa wymaga decyzji administratora.
+    Naprawa sprawdza nową konfigurację poleceniem rsyslogd -N1 i cofa
+    zmianę, gdy zostanie odrzucona.
+
+    rsyslog nie wczytuje konfiguracji ponownie po sygnale, więc naprawa
+    i wycofanie restartują usługę, jeśli działa. Komunikaty wysłane w tym
+    czasie nie giną, bo gniazdo sysloga (syslog.socket) należy do systemd
+    i czekają w nim na ponowne uruchomienie rsysloga.
+
+    Punkty 6.1.3 dotyczą komputerów, na których dzienniki prowadzi rsyslog.
+    Uznaję go za używany, gdy jest włączony albo działa (tak samo rozstrzyga
+    punkt 6.1.1.4); w przeciwnym razie wynik to NOT_APPLICABLE, naprawa
+    niczego nie zmienia i obowiązują punkty 6.1.2.
+  en: |
+    The check collects all file creation mode settings in /etc/rsyslog.conf
+    and /etc/rsyslog.d/*.conf: the $FileCreateMode directive and the
+    fileCreateMode parameter of the builtin:omfile module and of omfile
+    actions. It skips the FileCreateMode parameter of the imjournal module,
+    because it concerns the state file, not logs. The OK result gives the
+    general settings; NOT_OK:not-set means that there is no general setting
+    (rsyslog then uses 0644), and NOT_OK with a list gives a value weaker
+    than 0640 and the file it is in.
+
+    The remediation creates /etc/rsyslog.d/00-sentin-harden-filecreatemode.conf with
+    $FileCreateMode 0640. The directive applies to the write rules after it,
+    and Ubuntu keeps them in /etc/rsyslog.d/50-default.conf, so the file
+    name starts with 00-. Write rules added to /etc/rsyslog.conf before the
+    $IncludeConfig line have to be checked by hand. A weaker setting in
+    another file causes a refusal, because correcting it needs a decision by
+    the administrator. The remediation checks the new configuration with
+    rsyslogd -N1 and undoes the change when it is rejected.
+
+    rsyslog does not reread its configuration on a signal, so the
+    remediation and rollback restart the service if it runs. Messages sent
+    in the meantime are not lost, because the syslog socket (syslog.socket)
+    belongs to systemd and they wait in it until rsyslog starts again.
+
+    Items 6.1.3 apply to computers where rsyslog keeps the logs. It counts
+    as used when it is enabled or running (item 6.1.1.4 decides the same
+    way); otherwise the result is NOT_APPLICABLE, the remediation changes
+    nothing and items 6.1.2 apply.

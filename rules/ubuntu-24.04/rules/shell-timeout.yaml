@@ -1,0 +1,253 @@
+id: ubuntu2404-shell-timeout
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.4.3.2
+  section: Access Control > User Accounts and Environment > Configure user default environment
+  title:
+    pl: Bezczynna powłoka kończy się po 15 minutach
+    en: Ensure default user shell timeout is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Zostawiona otwarta powłoka, zwłaszcza z uprawnieniami roota, może użyć
+    każdy, kto podejdzie do komputera albo przejmie sesję terminala.
+    Zmienna TMOUT sprawia, że bash kończy interaktywną powłokę po podanej
+    liczbie sekund bez wpisania polecenia.
+
+    Punkt wymaga, żeby TMOUT była ustawiona na wartość od 1 do 900 sekund,
+    tylko do odczytu i eksportowana, w /etc/profile, /etc/bash.bashrc albo
+    w pliku /etc/profile.d/*.sh, i żeby żaden z tych plików nie ustawiał
+    dłuższego czasu.
+  en: |
+    A shell left open, especially with root privileges, can be used by
+    anyone who walks up to the computer or takes over the terminal session.
+    The TMOUT variable makes bash end an interactive shell after the given
+    number of seconds without a command.
+
+    The item requires TMOUT to be set to a value from 1 to 900 seconds,
+    read-only and exported, in /etc/profile, /etc/bash.bashrc or a
+    /etc/profile.d/*.sh file, and none of these files to set a longer time.
+
+disruption_description:
+  pl: |
+    Ubuntu nie ustawia TMOUT. Po naprawie powłoka bash z sesji logowania,
+    na przykład przez ssh albo na konsoli, zamyka się po 15 minutach
+    bezczynności, a powłoki uruchomione z niej dziedziczą tę wartość.
+    Zmiennej nie da się zmienić w tej samej powłoce.
+  en: |
+    Ubuntu does not set TMOUT. After the remediation a bash shell of a login
+    session, for example over ssh or on the console, closes after 15 idle
+    minutes, and shells started from it inherit the value. The variable
+    cannot be changed in the same shell.
+
+implementation_consequences:
+  impact_areas:
+    - user-interface
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Karty terminala i sesje ssh zamykają się po 15 minutach bez polecenia; długie zadania trzeba uruchamiać w tmux albo screen, gdzie nowa powłoka też ma limit
+      - "Skrypty bash czekające na odpowiedź przez read bez -t: TMOUT jest eksportowana, więc read kończy się po 15 minutach"
+    en:
+      - Terminal tabs and ssh sessions close after 15 minutes without a command; long jobs have to run in tmux or screen, where a new shell has the limit too
+      - "bash scripts waiting for an answer with read without -t: TMOUT is exported, so read ends after 15 minutes"
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stacja robocza programisty, który trzyma otwarte terminale przez cały dzień i blokuje ekran przy odejściu
+    en:
+      - A developer workstation with terminals open all day where the screen is locked when leaving
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    pf=/etc/profile.d/sentin-harden-tmout.sh
+    mark='# Sentin-Harden: ubuntu2404-shell-timeout'
+    # tmout_scan: "file|values|readonly|export" for files that mention TMOUT
+    tmout_scan() {
+      local f
+      for f in /etc/profile /etc/bash.bashrc /etc/profile.d/*.sh; do
+        [ -f "$f" ] || continue
+        awk -v f="$f" '
+          { x = $0; sub(/#.*/, "", x); s = x
+            while (match(s, /(^|[;&|[:space:]])TMOUT=[^;&|[:space:]]*/)) {
+              t = substr(s, RSTART, RLENGTH); sub(/^[;&|[:space:]]/, "", t); v = substr(t, 7); gsub(/["\047]/, "", v)
+              vals = vals (vals == "" ? "" : "/") v; s = substr(s, RSTART + RLENGTH)
+            }
+          }
+          x ~ /(^|[;&|[:space:]])readonly[[:space:]]+([^;&|]*[[:space:]])?TMOUT([=;&|[:space:]]|$)/ { ro = 1 }
+          x ~ /(^|[;&|[:space:]])(declare|typeset)[[:space:]]+-[a-z]*r[a-z]*[[:space:]]+([^;&|]*[[:space:]])?TMOUT([=;&|[:space:]]|$)/ { ro = 1 }
+          x ~ /(^|[;&|[:space:]])export[[:space:]]+([^;&|]*[[:space:]])?TMOUT([=;&|[:space:]]|$)/ { ex = 1 }
+          x ~ /(^|[;&|[:space:]])(declare|typeset)[[:space:]]+-[a-z]*x[a-z]*[[:space:]]+([^;&|]*[[:space:]])?TMOUT([=;&|[:space:]]|$)/ { ex = 1 }
+          END { if (vals != "" || ro || ex) print f "|" vals "|" ro + 0 "|" ex + 0 }' "$f"
+      done
+    }
+    # tmout_bad: "file:TMOUT=value" for values outside 1-900
+    tmout_bad() {
+      local f vals ro ex v
+      tmout_scan | while IFS='|' read -r f vals ro ex; do
+        for v in $(echo "$vals" | tr / ' '); do
+          case "$v" in
+            [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) [ "$v" -le 900 ] || echo "$f:TMOUT=$v" ;;
+            *) echo "$f:TMOUT=$v" ;;
+          esac
+        done
+      done
+    }
+    evaluate() {
+      local bad good half
+      bad=$(tmout_bad | paste -sd, -)
+      [ -z "$bad" ] || { echo "NOT_OK:$bad"; return; }
+      good=$(tmout_scan | awk -F'|' '$2 != "" && $3 == 1 && $4 == 1 { print $1; exit }')
+      half=$(tmout_scan | awk -F'|' '$2 != "" && !($3 == 1 && $4 == 1) { print $1 }' | paste -sd, -)
+      if [ -n "$good" ]; then echo "OK:$good"
+      elif [ -n "$half" ]; then echo "NOT_OK:not-readonly-or-exported=$half"
+      else echo "NOT_OK:not-set"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      echo format=shelltimeout-1 > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=shelltimeout-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    pf=/etc/profile.d/sentin-harden-tmout.sh
+    mark='# Sentin-Harden: ubuntu2404-shell-timeout'
+    # tmout_scan: "file|values|readonly|export" for files that mention TMOUT
+    tmout_scan() {
+      local f
+      for f in /etc/profile /etc/bash.bashrc /etc/profile.d/*.sh; do
+        [ -f "$f" ] || continue
+        awk -v f="$f" '
+          { x = $0; sub(/#.*/, "", x); s = x
+            while (match(s, /(^|[;&|[:space:]])TMOUT=[^;&|[:space:]]*/)) {
+              t = substr(s, RSTART, RLENGTH); sub(/^[;&|[:space:]]/, "", t); v = substr(t, 7); gsub(/["\047]/, "", v)
+              vals = vals (vals == "" ? "" : "/") v; s = substr(s, RSTART + RLENGTH)
+            }
+          }
+          x ~ /(^|[;&|[:space:]])readonly[[:space:]]+([^;&|]*[[:space:]])?TMOUT([=;&|[:space:]]|$)/ { ro = 1 }
+          x ~ /(^|[;&|[:space:]])(declare|typeset)[[:space:]]+-[a-z]*r[a-z]*[[:space:]]+([^;&|]*[[:space:]])?TMOUT([=;&|[:space:]]|$)/ { ro = 1 }
+          x ~ /(^|[;&|[:space:]])export[[:space:]]+([^;&|]*[[:space:]])?TMOUT([=;&|[:space:]]|$)/ { ex = 1 }
+          x ~ /(^|[;&|[:space:]])(declare|typeset)[[:space:]]+-[a-z]*x[a-z]*[[:space:]]+([^;&|]*[[:space:]])?TMOUT([=;&|[:space:]]|$)/ { ex = 1 }
+          END { if (vals != "" || ro || ex) print f "|" vals "|" ro + 0 "|" ex + 0 }' "$f"
+      done
+    }
+    # tmout_bad: "file:TMOUT=value" for values outside 1-900
+    tmout_bad() {
+      local f vals ro ex v
+      tmout_scan | while IFS='|' read -r f vals ro ex; do
+        for v in $(echo "$vals" | tr / ' '); do
+          case "$v" in
+            [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) [ "$v" -le 900 ] || echo "$f:TMOUT=$v" ;;
+            *) echo "$f:TMOUT=$v" ;;
+          esac
+        done
+      done
+    }
+    evaluate() {
+      local bad good half
+      bad=$(tmout_bad | paste -sd, -)
+      [ -z "$bad" ] || { echo "NOT_OK:$bad"; return; }
+      good=$(tmout_scan | awk -F'|' '$2 != "" && $3 == 1 && $4 == 1 { print $1; exit }')
+      half=$(tmout_scan | awk -F'|' '$2 != "" && !($3 == 1 && $4 == 1) { print $1 }' | paste -sd, -)
+      if [ -n "$good" ]; then echo "OK:$good"
+      elif [ -n "$half" ]; then echo "NOT_OK:not-readonly-or-exported=$half"
+      else echo "NOT_OK:not-set"; fi
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "Already meets the item (${r#OK:}), nothing to change"; exit 0 ;; esac
+      bad=$(tmout_bad | paste -sd, -)
+      [ -z "$bad" ] || { echo "TMOUT is set to a value outside 1-900 that has to be fixed by hand: $bad" >&2; exit 1; }
+      half=$(tmout_scan | awk -F'|' '$1 != pf { print $1 }' pf="$pf" | paste -sd, -)
+      [ -z "$half" ] || { echo "TMOUT is already set in $half without readonly and export; fix it there by hand" >&2; exit 1; }
+      if [ -e "$pf" ] && ! grep -qxF "$mark" "$pf"; then echo "$pf exists and was not created by this rule" >&2; exit 1; fi
+      t=$(mktemp /etc/profile.d/.sentin-harden.XXXXXX)
+      trap 'rm -f "$t"' EXIT
+      printf '%s\n' "$mark" 'case $(readonly -p 2>/dev/null) in' '  *TMOUT=*) ;;' '  *) TMOUT=900; readonly TMOUT; export TMOUT ;;' 'esac' > "$t"
+      chmod 644 "$t"; chown root:root "$t"; mv -f "$t" "$pf"
+      echo "Created $pf with TMOUT=900"
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) rm -f "$pf"; echo "The item is not met after the change ($r); removed $pf" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      pf=/etc/profile.d/sentin-harden-tmout.sh
+      mark='# Sentin-Harden: ubuntu2404-shell-timeout'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=shelltimeout-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if [ -f "$pf" ] && grep -qxF "$mark" "$pf"; then rm -f "$pf"; echo "Removed $pf"; else echo "$pf of this rule not found, nothing to remove"; fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://www.gnu.org/software/bash/manual/html_node/Bash-Variables.html
+  - https://www.gnu.org/software/bash/manual/html_node/Bash-Startup-Files.html
+
+notes:
+  pl: |
+    Naprawa tworzy /etc/profile.d/sentin-harden-tmout.sh z TMOUT=900, readonly
+    i export. Wartość ustawia tylko wtedy, gdy TMOUT nie jest jeszcze tylko do
+    odczytu, bo zwykły zapis z CIS wczytany drugi raz w tej samej powłoce
+    kończy powłokę sh błędem readonly variable. Na Ubuntu /etc/profile czyta
+    pliki profile.d dla powłok logowania bash i dash, a /etc/bash.bashrc ich
+    nie czyta, więc pozostałe powłoki interaktywne dostają TMOUT tylko przez
+    dziedziczenie zmiennej. W kontenerze Ubuntu 24.04 sprawdziłem, że po su -
+    TMOUT ma wartość 900 i jest tylko do odczytu, a powłoka potomna też ją ma.
+
+    Gdy któryś plik ustawia TMOUT na 0, na wartość powyżej 900 albo na
+    zmienną, naprawa niczego nie zmienia i trzeba to poprawić ręcznie.
+    Wycofanie usuwa plik reguły. Powłoki csh i zsh nie czytają tych
+    plików w ten sposób i reguła ich nie obejmuje.
+  en: |
+    The remediation creates /etc/profile.d/sentin-harden-tmout.sh with
+    TMOUT=900, readonly and export. It sets the value only when TMOUT is not
+    read-only yet, because the plain form from CIS, read a second time in
+    the same shell, ends an sh shell with a readonly variable error. On
+    Ubuntu /etc/profile reads the profile.d files for bash and dash login
+    shells, and /etc/bash.bashrc does not read them, so the other
+    interactive shells get TMOUT only by inheriting the variable. An Ubuntu
+    24.04 container showed that after su - TMOUT is 900 and read-only, and
+    a child shell has it too.
+
+    When a file sets TMOUT to 0, to a value above 900 or to a variable, the
+    remediation changes nothing and it has to be fixed by hand. Rollback
+    removes the file of the rule. The csh and zsh shells do not read these
+    files this way, and the rule does not cover them.

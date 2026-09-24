@@ -1,0 +1,395 @@
+id: ubuntu2404-default-umask
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.4.3.3
+  section: Access Control > User Accounts and Environment > Configure user default environment
+  title:
+    pl: Domyślna maska umask użytkowników to 027
+    en: Ensure default user umask is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Maska umask decyduje o prawach nowych plików. Domyślna maska 022 daje
+    każdemu prawo odczytu nowych plików i katalogów, więc dokumenty
+    użytkownika poza katalogiem domowym, np. w /tmp albo na wspólnych
+    dyskach, może czytać każdy.
+
+    Punkt wymaga maski 027 albo ostrzejszej w ustawieniach systemu (UMASK
+    w /etc/login.defs, którą Ubuntu stosuje przez pam_umask, i umask
+    w plikach startowych powłoki) oraz braku słabszej maski w tych
+    plikach i w argumentach pam_umask.
+  en: |
+    The umask decides the permissions of new files. The default mask 022
+    gives everybody read access to new files and directories, so user
+    documents outside the home directory, for example in /tmp or on shared
+    disks, can be read by everybody.
+
+    The item requires the mask 027 or stricter in the system settings
+    (UMASK in /etc/login.defs, which Ubuntu applies through pam_umask, and
+    umask in the shell startup files) and no weaker mask in these files or
+    in the pam_umask arguments.
+
+disruption_description:
+  pl: |
+    Ubuntu ustawia UMASK 022. Po naprawie nowe pliki użytkowników nie są
+    czytelne dla innych. Dotyczy to też poleceń uruchamianych przez sudo
+    z takiej powłoki: plik utworzony w /etc przez sudo dostaje prawa 640
+    i usługa działająca na innym koncie może go nie odczytać. Nowe
+    ustawienia działają od następnego logowania.
+  en: |
+    Ubuntu uses UMASK 022. After the remediation new user files are not
+    readable by others. This also applies to commands run through sudo from
+    such a shell: a file created in /etc through sudo gets mode 640, and a
+    service running as another account may not be able to read it. The new
+    settings apply from the next login.
+
+implementation_consequences:
+  impact_areas:
+    - file-sharing
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Pliki tworzone przez sudo w /etc albo /usr/local, które mają czytać usługi lub inni użytkownicy; trzeba im poprawić prawa chmod
+      - Wspólne katalogi, w których inni użytkownicy mają czytać tworzone pliki
+    en:
+      - Files created through sudo in /etc or /usr/local that services or other users have to read; their permissions have to be fixed with chmod
+      - Shared directories where other users have to read the created files
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Komputer, na którym kilka osób świadomie dzieli się plikami przez grupy i katalogi wspólne
+    en:
+      - A computer where several people deliberately share files through groups and shared directories
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    # pam_first KEY: value of the first entry, which pam_unix uses
+    pam_first() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { split(x, w, /[ \t=]+/); if (toupper(w[1]) != k) next; print w[2]; f = 1; exit }
+        END { exit !f }' /etc/login.defs
+    }
+    pf=/etc/profile.d/sentin-harden-umask.sh
+    pmark='# Sentin-Harden: ubuntu2404-default-umask'
+    mark='# Sentin-Harden: ubuntu2404-default-umask'
+    line='UMASK 027'
+    # umask_awk MODE FILES: MODE is "shell" (umask lines), "pam" (pam_umask umask=) or "value" (stdin)
+    umask_awk() {
+      awk -v mode="$1" '
+        function weak(a,   n, g, o, c, k, w, op, p) {
+          if (a ~ /^[0-7]+$/ && length(a) <= 4) {
+            a = substr("0000" a, length(a) + 1); g = substr(a, 3, 1) + 0; o = substr(a, 4, 1) + 0
+            return int(g / 2) % 2 == 0 || o != 7
+          }
+          if (a !~ /^[ugoa]*[=+-][rwxst]*(,[ugoa]*[=+-][rwxst]*)*$/) return 0
+          n = split(a, c, ",")
+          for (k = 1; k <= n; k++) {
+            match(c[k], /[=+-]/)
+            w = substr(c[k], 1, RSTART - 1); op = substr(c[k], RSTART, 1); p = substr(c[k], RSTART + 1)
+            if (w == "") w = "a"
+            if (op == "-") continue
+            if ((w ~ /[ga]/) && p ~ /w/) return 1
+            if ((w ~ /[oa]/) && p != "") return 1
+          }
+          return 0
+        }
+        { x = $0; sub(/#.*/, "", x); lx = tolower(x) }
+        mode == "shell" && lx ~ /^[ \t]*umask[ \t]+/ {
+          split(lx, f, /[ \t;]+/); i = (f[1] == "") ? 3 : 2
+          while (f[i] ~ /^-/) i++
+          if (f[i] != "" && f[i] ~ /^([0-7]+|[ugoa]*[=+-].*)$/) print (weak(f[i]) ? "weak" : "strict"), FILENAME ":" FNR
+        }
+        mode == "pam" && x ~ /pam_umask\.so/ {
+          n = split(x, f, /[ \t]+/)
+          for (i = 1; i <= n; i++) if (f[i] ~ /^umask=/) { v = substr(f[i], 7); print (weak(v) ? "weak" : "strict"), FILENAME ":" FNR }
+        }
+        mode == "value" { print (($0 ~ /^[0-7]+$/ && !weak($0)) ? "strict" : "weak") }' "${@:2}"
+    }
+    strict() { [ "$(printf '%s\n' "$1" | umask_awk value)" = strict ]; }
+    evaluate() {
+      local p l s bad="" okshell="" files="" f w
+      if p=$(pam_first UMASK); then
+        s="UMASK=$p"
+        strict "$p" || bad="UMASK=first:$p"
+        if l=$(defs_get UMASK); then
+          l=${l#* }
+          strict "$l" || bad="$bad${bad:+,}UMASK=last:$l"
+        else
+          bad="$bad${bad:+,}UMASK=last:not-set"
+        fi
+      else
+        s="UMASK=not-set"; bad="$s"
+      fi
+      for f in /etc/profile /etc/bash.bashrc /etc/profile.d/*.sh; do [ -f "$f" ] && files="$files $f"; done
+      if [ -n "$files" ]; then
+        w=$(umask_awk shell $files | awk '$1 == "weak" { print $2 }' | paste -sd, -)
+        okshell=$(umask_awk shell $files | awk '$1 == "strict" { print $2; exit }')
+        [ -z "$w" ] || bad="$bad${bad:+,}weak=$w"
+      fi
+      files=$(for f in /etc/pam.d/*; do [ -f "$f" ] && echo "$f"; done)
+      if [ -n "$files" ]; then
+        w=$(umask_awk pam $files | awk '$1 == "weak" { print $2 }' | paste -sd, -)
+        [ -z "$w" ] || bad="$bad${bad:+,}pam=$w"
+      fi
+      [ -n "$okshell" ] || bad="$bad${bad:+,}shell=not-set"
+      if [ -z "$bad" ]; then echo "OK:$s,shell=$okshell"; else echo "NOT_OK:$bad"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      echo format=defaultumask-1 > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/login.defs
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=defaultumask-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    # pam_first KEY: value of the first entry, which pam_unix uses
+    pam_first() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { split(x, w, /[ \t=]+/); if (toupper(w[1]) != k) next; print w[2]; f = 1; exit }
+        END { exit !f }' /etc/login.defs
+    }
+    pf=/etc/profile.d/sentin-harden-umask.sh
+    pmark='# Sentin-Harden: ubuntu2404-default-umask'
+    mark='# Sentin-Harden: ubuntu2404-default-umask'
+    line='UMASK 027'
+    # umask_awk MODE FILES: MODE is "shell" (umask lines), "pam" (pam_umask umask=) or "value" (stdin)
+    umask_awk() {
+      awk -v mode="$1" '
+        function weak(a,   n, g, o, c, k, w, op, p) {
+          if (a ~ /^[0-7]+$/ && length(a) <= 4) {
+            a = substr("0000" a, length(a) + 1); g = substr(a, 3, 1) + 0; o = substr(a, 4, 1) + 0
+            return int(g / 2) % 2 == 0 || o != 7
+          }
+          if (a !~ /^[ugoa]*[=+-][rwxst]*(,[ugoa]*[=+-][rwxst]*)*$/) return 0
+          n = split(a, c, ",")
+          for (k = 1; k <= n; k++) {
+            match(c[k], /[=+-]/)
+            w = substr(c[k], 1, RSTART - 1); op = substr(c[k], RSTART, 1); p = substr(c[k], RSTART + 1)
+            if (w == "") w = "a"
+            if (op == "-") continue
+            if ((w ~ /[ga]/) && p ~ /w/) return 1
+            if ((w ~ /[oa]/) && p != "") return 1
+          }
+          return 0
+        }
+        { x = $0; sub(/#.*/, "", x); lx = tolower(x) }
+        mode == "shell" && lx ~ /^[ \t]*umask[ \t]+/ {
+          split(lx, f, /[ \t;]+/); i = (f[1] == "") ? 3 : 2
+          while (f[i] ~ /^-/) i++
+          if (f[i] != "" && f[i] ~ /^([0-7]+|[ugoa]*[=+-].*)$/) print (weak(f[i]) ? "weak" : "strict"), FILENAME ":" FNR
+        }
+        mode == "pam" && x ~ /pam_umask\.so/ {
+          n = split(x, f, /[ \t]+/)
+          for (i = 1; i <= n; i++) if (f[i] ~ /^umask=/) { v = substr(f[i], 7); print (weak(v) ? "weak" : "strict"), FILENAME ":" FNR }
+        }
+        mode == "value" { print (($0 ~ /^[0-7]+$/ && !weak($0)) ? "strict" : "weak") }' "${@:2}"
+    }
+    strict() { [ "$(printf '%s\n' "$1" | umask_awk value)" = strict ]; }
+    evaluate() {
+      local p l s bad="" okshell="" files="" f w
+      if p=$(pam_first UMASK); then
+        s="UMASK=$p"
+        strict "$p" || bad="UMASK=first:$p"
+        if l=$(defs_get UMASK); then
+          l=${l#* }
+          strict "$l" || bad="$bad${bad:+,}UMASK=last:$l"
+        else
+          bad="$bad${bad:+,}UMASK=last:not-set"
+        fi
+      else
+        s="UMASK=not-set"; bad="$s"
+      fi
+      for f in /etc/profile /etc/bash.bashrc /etc/profile.d/*.sh; do [ -f "$f" ] && files="$files $f"; done
+      if [ -n "$files" ]; then
+        w=$(umask_awk shell $files | awk '$1 == "weak" { print $2 }' | paste -sd, -)
+        okshell=$(umask_awk shell $files | awk '$1 == "strict" { print $2; exit }')
+        [ -z "$w" ] || bad="$bad${bad:+,}weak=$w"
+      fi
+      files=$(for f in /etc/pam.d/*; do [ -f "$f" ] && echo "$f"; done)
+      if [ -n "$files" ]; then
+        w=$(umask_awk pam $files | awk '$1 == "weak" { print $2 }' | paste -sd, -)
+        [ -z "$w" ] || bad="$bad${bad:+,}pam=$w"
+      fi
+      [ -n "$okshell" ] || bad="$bad${bad:+,}shell=not-set"
+      if [ -z "$bad" ]; then echo "OK:$s,shell=$okshell"; else echo "NOT_OK:$bad"; fi
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "Already meets the item (${r#OK:}), nothing to change"; exit 0 ;; esac
+      case "$r" in
+        *weak=*|*pam=*) echo "A weak umask is set in shell startup files or PAM and has to be fixed by hand (${r#NOT_OK:})" >&2; exit 1 ;;
+      esac
+      fix=0
+      case "$r" in *UMASK=*) fix=1 ;; esac
+      mkpf=0
+      case "$r" in *shell=not-set*) mkpf=1 ;; esac
+      if [ "$mkpf" = 1 ] && [ -e "$pf" ] && ! grep -qxF "$pmark" "$pf"; then echo "$pf exists and was not created by this rule" >&2; exit 1; fi
+      [ "$fix" = 0 ] || [ -f "$f" ] || { echo "$f not found" >&2; exit 1; }
+      old=$(mktemp /etc/.sentin-harden-old.XXXXXX)
+      t=$(mktemp /etc/.sentin-harden.XXXXXX)
+      trap 'rm -f "$old" "$t"' EXIT
+      had=1
+      if [ "$fix" = 1 ]; then
+        cat "$f" > "$old"
+        { if [ "$had" = 1 ]; then awk -v mark="$mark" -v line="$line" -v k=UMASK '
+            skip { skip = 0; if ($0 == line) next }
+            $0 == mark { skip = 1; next }
+            !done { x = $0; sub(/^[ \t]+/, "", x); if (x !~ /^#/) { split(x, w, /[ \t=]+/); if (toupper(w[1]) == k) { print mark; print line; done = 1 } } }
+            { print }
+            END { print mark; print line }' "$f"
+          else echo "$mark"; echo "$line"; fi; } > "$t"
+        chmod --reference="$f" "$t"; chown --reference="$f" "$t"
+        mv -f "$t" "$f"
+        echo "Set $line in $f"
+      fi
+      if [ "$mkpf" = 1 ]; then
+        printf '%s\n' "$pmark" 'umask 027' > "$pf"
+        chmod 644 "$pf"; chown root:root "$pf"
+        echo "Created $pf with umask 027"
+      fi
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *)
+          if [ "$fix" = 1 ]; then cat "$old" > "$f"; fi
+          if [ "$mkpf" = 1 ]; then rm -f "$pf"; fi
+          echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/login.defs
+      pf=/etc/profile.d/sentin-harden-umask.sh
+      mark='# Sentin-Harden: ubuntu2404-default-umask'
+      line='UMASK 027'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=defaultumask-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      if [ -f "$pf" ] && grep -qxF "$mark" "$pf"; then rm -f "$pf"; echo "Removed $pf"; fi
+      if [ -f "$f" ] && grep -qxF "$mark" "$f"; then
+        t=$(mktemp /etc/.sentin-harden.XXXXXX)
+        trap 'rm -f "$t"' EXIT
+        if grep -A 1 -xF "$mark" "$f" | grep -qxF "$line"; then kept=0; else kept=1; fi
+        awk -v mark="$mark" -v line="$line" 'skip { skip = 0; if ($0 == line) next } $0 == mark { skip = 1; next } { print }' "$f" > "$t"
+        chmod --reference="$f" "$t"; chown --reference="$f" "$t"; mv -f "$t" "$f"
+        if [ "$kept" = 1 ]; then echo "Removed the comment of this rule from $f; the line under it was changed by hand and stays"
+        else echo "Removed the UMASK line of this rule from $f"; fi
+      fi
+      echo "Rollback finished"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/login.defs.5.html
+  - https://man7.org/linux/man-pages/man8/pam_umask.8.html
+  - https://www.gnu.org/software/bash/manual/html_node/Bourne-Shell-Builtins.html
+
+notes:
+  pl: |
+    pam_umask bierze pierwszy wpis UMASK w /etc/login.defs, nie rozróżnia
+    wielkości liter w nazwie i przyjmuje zapis UMASK=wartość, a narzędzia
+    shadow biorą ostatni wpis. Sprawdzenie wymaga więc maski 027 albo
+    ostrzejszej w obu tych wpisach, a naprawa wstawia UMASK 027 przed
+    pierwszym wpisem i na końcu pliku. Przy USERGROUPS_ENAB yes pam_umask
+    daje użytkownikowi z własną grupą prywatną prawa grupy takie jak
+    właściciela, czyli z UMASK 027 maskę 007; do tej grupy należy tylko on.
+    Powłoka logowania czyta potem plik reguły w /etc/profile.d i ustawia 027.
+    Sprawdziłem to w kontenerze Ubuntu 24.04. Katalogi domowe nowych kont
+    mają prawa z HOME_MODE (na Ubuntu 0750), a nie z UMASK.
+
+    Pliki startowe powłoki to /etc/profile, /etc/bash.bashrc
+    i /etc/profile.d/*.sh; liczą się wiersze zaczynające się od umask, tak
+    jak przy masce roota (punkt 5.4.2.6). Sprawdzam też argumenty umask=
+    modułu pam_umask w /etc/pam.d. Sprawdzenie wymaga ścisłej maski
+    w login.defs i w plikach startowych, a nie w jednym z tych miejsc jak
+    CIS, bo nie każda powłoka pochodzi z sesji PAM z pam_umask. Naprawa
+    tworzy też /etc/profile.d/sentin-harden-umask.sh z umask 027. Słabą
+    maskę w plikach startowych albo w PAM trzeba poprawić ręcznie; wtedy
+    naprawa niczego nie zmienia. Wycofanie usuwa wiersze i plik reguły.
+  en: |
+    pam_umask takes the first UMASK entry in /etc/login.defs, ignores the
+    case of the name and accepts the UMASK=value form, while the shadow
+    tools take the last entry. The check therefore requires the mask 027 or
+    stricter in both of these entries, and the remediation inserts UMASK 027
+    before the first entry and at the end of the file. With USERGROUPS_ENAB
+    yes pam_umask gives a user with their own private group the same group
+    permissions as the owner, so UMASK 027 becomes the mask 007; only that
+    user belongs to the group. A login shell then reads the file of the rule
+    in /etc/profile.d and sets 027. This was checked in an Ubuntu 24.04
+    container. The home directories of new accounts get their mode from
+    HOME_MODE (0750 on Ubuntu), not from UMASK.
+
+    The shell startup files are /etc/profile, /etc/bash.bashrc and
+    /etc/profile.d/*.sh; lines that start with umask count, as for the root
+    mask (item 5.4.2.6). The umask= arguments of the pam_umask module in
+    /etc/pam.d are checked too. The check requires a strict mask in
+    login.defs and in the startup files, not in one of these places as CIS
+    does, because not every shell comes from a PAM session with pam_umask.
+    The remediation also creates /etc/profile.d/sentin-harden-umask.sh with
+    umask 027. A weak mask in the startup files or in PAM has to be fixed by
+    hand; then the remediation changes nothing. Rollback removes the lines
+    and the file of the rule.

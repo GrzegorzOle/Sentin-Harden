@@ -21,7 +21,7 @@ rules/
 ```
 
 Cele: `windows-10`, `windows-11`, `windows-server-2016`, `windows-server-2025`, `iis`,
-`debian-13`, `ubuntu-24.04`, `fedora-44`.
+`ubuntu-24.04`, `fedora-44`.
 
 `iis` jest **nakładką** — audytuje się go zawsze razem z paczką systemu gospodarza.
 

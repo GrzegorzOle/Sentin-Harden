@@ -63,7 +63,7 @@ widać różnicę między decyzją a zaniedbaniem. Akceptacja wygasa i wraca do 
 | Windows 10, Windows 11 | PowerShell |
 | Windows Server (wspierane wersje) | PowerShell |
 | IIS | PowerShell |
-| Debian, Ubuntu | bash |
+| Ubuntu | bash |
 | Fedora | bash |
 
 Dystrybucja: instalator dla Windows, samodzielny obraz dla Linuksa. **Python nie jest wymagany

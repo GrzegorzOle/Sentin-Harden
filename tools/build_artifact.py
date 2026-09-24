@@ -15,6 +15,7 @@ Exit code 0 means the artifact was built and its rule base was found in place.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -54,7 +55,9 @@ def verify() -> None:
     empty, so the rule base is counted here instead of being taken on trust.
     """
     print("==> checking the artifact")
-    executable = DIST / "Sentin-Harden.exe"
+    # The suffix is Windows-only. Naming it unconditionally made this check fail
+    # on Linux after a freeze that had in fact succeeded.
+    executable = DIST / ("Sentin-Harden.exe" if os.name == "nt" else "Sentin-Harden")
     if not executable.exists():
         raise SystemExit(f"the executable is missing: {executable}")
 

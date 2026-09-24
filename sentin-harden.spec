@@ -32,9 +32,11 @@ datas = [
     (str(PROJECT / "LICENSE"), "."),
 ]
 
-# The window icon travels as data; the executable's own icon is set below and
-# is a build-time property rather than something loaded at run time.
-ICON = PROJECT / "assets" / ("sentin-harden.ico" if os.name == "nt" else "sentin-harden.png")
+# The window icon travels as data and is set by the application itself, which is
+# the only route that works on Linux - PyInstaller embeds an icon on Windows and
+# macOS only, and warns about it everywhere else. So the embedded icon is asked
+# for on those two platforms and left alone on the third.
+ICON = PROJECT / "assets" / "sentin-harden.ico" if os.name == "nt" else None
 
 # yaml and jsonschema reach for parts of themselves by name, which the import
 # graph does not see.
@@ -111,7 +113,7 @@ exe = EXE(
     # rather than reporting an item as unmet, so it starts without demanding
     # elevation and asks for it only where a change is to be made.
     uac_admin=False,
-    icon=str(ICON) if ICON.exists() else None,
+    icon=str(ICON) if ICON and ICON.exists() else None,
 )
 
 coll = COLLECT(

@@ -1,0 +1,216 @@
+id: iis-tls-1-2-enabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Protokół TLS 1.2 włączony jawnie
+    en: The TLS 1.2 protocol switched on expressly
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    TLS 1.2 wprowadza szyfry uwierzytelniające treść i nowsze funkcje skrótu przy
+    uzgadnianiu połączenia. Jest to najniższy protokół, o którym dziś można
+    powiedzieć, że nie ma znanej słabości konstrukcyjnej.
+
+    Na nowszych wydaniach systemu jest włączony domyślnie, ale domyślnie znaczy
+    tu „dopóki ktoś nie zapisze czegoś innego". Wpis w gałęzi protokołów
+    przesądza sprawę jawnie i zabezpiecza przed sytuacją, w której późniejsza
+    zmiana albo zasada z domeny wyłączy go po cichu.
+
+    Jest to także warunek wstępny dla pozostałych reguł z tej rodziny: wyłączanie
+    starszych protokołów bez pewności, że ten działa, odcina maszynę od świata.
+  en: |
+    TLS 1.2 brings in ciphers that authenticate the contents and newer hash
+    functions for negotiating a connection. It is the lowest protocol of which it
+    can be said today that it holds no known weakness of design.
+
+    On newer releases of the system it is switched on by default, but by default
+    here means until somebody writes down something else. An entry in the protocol
+    branch settles the matter expressly and guards against a later change or a
+    domain policy switching it off quietly.
+
+    It is also the precondition for the remaining rules of this family - switching
+    off older protocols without being sure this one works cuts the machine off from
+    the world.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, choć sama w sobie niczego nie odbiera — włączenie
+    protokołu nie zabiera żadnej możliwości, tylko dokłada.
+
+    Powodów do ostrożności są dwa. Pierwszy to restart: wpis obowiązuje dopiero
+    po ponownym uruchomieniu maszyny, więc trzeba na nie okno. Drugi jest
+    subtelniejszy — na maszynie w domenie ustawienie protokołów bywa narzucane
+    zasadą i wtedy wpis zostanie nadpisany przy najbliższym odświeżeniu. Objawem
+    jest reguła, która po sprawdzeniu jest zgodna, a po kilku godzinach znowu nie.
+
+    Dlatego przy maszynie w domenie warto najpierw ustalić, czy ta gałąź nie jest
+    już przez coś zarządzana, zanim zmiana zostanie uznana za wykonaną.
+  en: |
+    The change calls for a review, though by itself it takes nothing away -
+    switching a protocol on removes no possibility, it only adds one.
+
+    There are two reasons for care. The first is the restart - the entry holds only
+    after the machine is restarted, so a window is needed for it. The second is
+    subtler - on a machine in a domain the protocol settings are sometimes imposed
+    by policy, and then the entry is overwritten at the next refresh. The symptom
+    is a rule that is compliant when checked and not compliant again a few hours
+    later.
+
+    Hence on a machine in a domain it is worth establishing first whether that
+    branch is already managed by something, before the change is held to be done.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - web-server-services
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Na maszynie w domenie wpis może zostać nadpisany przy odświeżeniu zasad i reguła wróci do niespełnionych
+      - Ponowne uruchomienie maszyny przerwie wszystkie połączenia i zatrzyma usługi na czas restartu
+      - Włączenie protokołu samo w sobie niczego nie odbiera, więc klienci używający dotąd starszych wariantów działają dalej
+      - Uwierzytelnianie, uprawnienia, zawartość stron i połączenia wychodzące pozostają bez zmian
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - On a machine in a domain the entry may be overwritten at a policy refresh and the rule returns to being unmet
+      - Restarting the machine breaks every connection and stops the services for the duration
+      - Switching the protocol on takes nothing away by itself, so clients using older variants until now carry on
+      - Authentication, permissions, page contents and outgoing connections are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny w domenie, na których gałąź protokołów jest już zarządzana zasadą, dopóki nie zostanie to ustalone
+      - Serwery, dla których nie ma okna na ponowne uruchomienie, bo bez niego zmiana i tak nie obowiązuje
+    en:
+      - Machines in a domain where the protocol branch is already managed by policy, until that has been established
+      - Servers with no window for a restart, since without one the change does not hold anyway
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $roles = @('Server', 'Client')
+        $wrong = @()
+        foreach ($role in $roles) {
+          # The two roles are separate keys and the machine may well have one set and
+          # the other left alone. Reporting them together would hide exactly the half
+          # that is still open.
+          $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\' + $role
+          $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+          if ($null -eq $item) {
+            # An absent key means the protocol follows the system default rather than
+            # nothing at all, so it is counted as unset and not as compliant.
+            $wrong += ($role + ':not-set')
+          }
+          elseif ($item.Enabled -ne 1 -or $item.DisabledByDefault -ne 0) {
+            $wrong += ($role + ':other')
+          }
+        }
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $roles = @('Server', 'Client')
+    $saved = @()
+    foreach ($role in $roles) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\' + $role
+      $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+      $saved += [pscustomobject]@{
+        role             = $role
+        path             = $path
+        key_existed      = (Test-Path $path)
+        enabled          = if ($null -ne $item) { $item.Enabled } else { $null }
+        enabled_existed  = ($null -ne $item -and $null -ne $item.Enabled)
+        default          = if ($null -ne $item) { $item.DisabledByDefault } else { $null }
+        default_existed  = ($null -ne $item -and $null -ne $item.DisabledByDefault)
+      }
+    }
+    [pscustomobject]@{
+      protocol = 'TLS 1.2'
+      roles    = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    foreach ($role in @('Server', 'Client')) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\' + $role
+      # The whole branch may be absent, so it is created rather than assumed. The
+      # protocol name holds spaces and a dot, hence the path is quoted whole.
+      if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+      New-ItemProperty -Path $path -Name 'Enabled' -Value 1 -PropertyType DWord -Force | Out-Null
+      New-ItemProperty -Path $path -Name 'DisabledByDefault' -Value 0 -PropertyType DWord -Force | Out-Null
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($r in $b.roles) {
+      if (-not $r.key_existed) {
+        # The branch did not exist before the change, so it goes away whole
+        # instead of being left behind holding values nobody wrote.
+        Remove-Item -Path $r.path -Recurse -Force -ErrorAction SilentlyContinue
+        continue
+      }
+      if (-not (Test-Path $r.path)) { New-Item -Path $r.path -Force | Out-Null }
+      if ($r.enabled_existed) {
+        New-ItemProperty -Path $r.path -Name 'Enabled' -Value $r.enabled -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'Enabled' -ErrorAction SilentlyContinue
+      }
+      if ($r.default_existed) {
+        New-ItemProperty -Path $r.path -Name 'DisabledByDefault' -Value $r.default -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'DisabledByDefault' -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+
+notes:
+  pl: |
+    Ta reguła ma pierwszeństwo przed pozostałymi z rodziny — wyłączanie starszych
+    protokołów wykonuje się po niej, nie przed. Wartości są odwrotne niż przy
+    protokołach wyłączanych: protokół włączony i niewyłączony domyślnie. Odczyt
+    ocenia obie role naraz, a brak gałęzi liczy jako stan nieustawiony, bo wtedy
+    obowiązuje ustawienie domyślne systemu, a nie zapis.
+  en: |
+    This rule takes precedence over the others of the family - the switching off of
+    older protocols is done after it and not before. The values are the reverse of
+    those for the protocols being switched off - the protocol switched on and not
+    disabled by default. The reading judges both roles at once and counts an absent
+    branch as unset, since the system default then holds rather than a written
+    entry.

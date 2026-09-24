@@ -1,0 +1,207 @@
+id: iis-multi-protocol-unified-hello-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Uzgadnianie wielu protokołów jednym powitaniem wyłączone
+    en: Negotiating several protocols with one greeting switched off
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Jest to mechanizm z czasów, gdy konkurowało ze sobą kilka niezgodnych
+    protokołów szyfrowania. Pozwalał otworzyć połączenie jednym powitaniem
+    rozumianym przez wszystkie, a właściwy protokół wybierano dopiero potem.
+
+    Dziś nie ma czego uzgadniać — konkurencja skończyła się dawno i została jedna
+    rodzina protokołów. Pozostał natomiast sam mechanizm, a każdy sposób
+    uzgadniania, który dopuszcza warianty starsze, jest miejscem, w którym można
+    wymusić zejście do słabszego.
+
+    Wyłączenie go usuwa drogę, z której nic korzystnego już nie przychodzi.
+  en: |
+    This is a mechanism from the days when several incompatible encryption
+    protocols competed. It allowed a connection to be opened with one greeting
+    understood by all of them, the actual protocol being chosen afterwards.
+
+    Today there is nothing to negotiate - the competition ended long ago and one
+    family of protocols remains. The mechanism, however, remains as well, and every
+    way of negotiating that admits older variants is a place where a fall back to
+    something weaker can be forced.
+
+    Switching it off removes a road from which nothing useful arrives any more.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia głównie formalnie. Mechanizm nie jest używany przez
+    żadne współczesne oprogramowanie i w praktyce jego wyłączenie przechodzi
+    niezauważone.
+
+    Powód, dla którego reguła nie trafia do klasy bez uciążliwości, jest inny:
+    zmiana obowiązuje dopiero po ponownym uruchomieniu maszyny, a restart
+    serwera nigdy nie jest bezkosztowny. Do tego czasu odczyt pokazuje stan
+    docelowy, choć połączenia idą jeszcze po staremu.
+
+    Warto ją wdrażać przy okazji wyłączania starszych protokołów, w tym samym
+    oknie, zamiast osobno — sam mechanizm nie jest wart własnego restartu.
+  en: |
+    The change calls for a review mostly as a formality. The mechanism is used by
+    no modern software and in practice switching it off passes unnoticed.
+
+    The reason the rule does not fall into the class with no disruption is
+    another - the change holds only after the machine is restarted, and restarting
+    a server is never without cost. Until then the reading shows the intended state
+    while connections still run the old way.
+
+    It is worth rolling out alongside the switching off of older protocols, in the
+    same window, rather than apart - the mechanism itself is not worth a restart of
+    its own.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - legacy-applications
+    - web-server-services
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Ponowne uruchomienie maszyny przerwie wszystkie połączenia i zatrzyma usługi na czas restartu
+      - Bardzo stare oprogramowanie korzystające z tego sposobu uzgadniania przestanie nawiązywać połączenie
+      - Rola kliencka jest ustawiana razem z serwerową, więc połączenia wychodzące też stracą ten mechanizm
+      - Połączenia po protokołach z rodziny TLS, uwierzytelnianie, uprawnienia i zawartość stron pozostają bez zmian
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - Restarting the machine breaks every connection and stops the services for the duration
+      - Very old software using this way of negotiating stops connecting
+      - The client role is set together with the server one, so outgoing connections lose the mechanism as well
+      - Connections over protocols of the TLS family, authentication, permissions and page contents are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery, dla których nie ma okna na ponowne uruchomienie, bo bez niego zmiana i tak nie obowiązuje
+      - Maszyny obsługujące bardzo stare oprogramowanie korzystające z tego sposobu uzgadniania
+    en:
+      - Servers with no window for a restart, since without one the change does not hold anyway
+      - Machines serving very old software that uses this way of negotiating
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $roles = @('Server', 'Client')
+        $wrong = @()
+        foreach ($role in $roles) {
+          # The two roles are separate keys and the machine may well have one set and
+          # the other left alone. Reporting them together would hide exactly the half
+          # that is still open.
+          $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\Multi-Protocol Unified Hello\' + $role
+          $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+          if ($null -eq $item) {
+            # An absent key means the protocol follows the system default rather than
+            # nothing at all, so it is counted as unset and not as compliant.
+            $wrong += ($role + ':not-set')
+          }
+          elseif ($item.Enabled -ne 0 -or $item.DisabledByDefault -ne 1) {
+            $wrong += ($role + ':other')
+          }
+        }
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $roles = @('Server', 'Client')
+    $saved = @()
+    foreach ($role in $roles) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\Multi-Protocol Unified Hello\' + $role
+      $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+      $saved += [pscustomobject]@{
+        role             = $role
+        path             = $path
+        key_existed      = (Test-Path $path)
+        enabled          = if ($null -ne $item) { $item.Enabled } else { $null }
+        enabled_existed  = ($null -ne $item -and $null -ne $item.Enabled)
+        default          = if ($null -ne $item) { $item.DisabledByDefault } else { $null }
+        default_existed  = ($null -ne $item -and $null -ne $item.DisabledByDefault)
+      }
+    }
+    [pscustomobject]@{
+      protocol = 'Multi-Protocol Unified Hello'
+      roles    = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    foreach ($role in @('Server', 'Client')) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\Multi-Protocol Unified Hello\' + $role
+      # The whole branch may be absent, so it is created rather than assumed. The
+      # protocol name holds spaces and a dot, hence the path is quoted whole.
+      if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+      New-ItemProperty -Path $path -Name 'Enabled' -Value 0 -PropertyType DWord -Force | Out-Null
+      New-ItemProperty -Path $path -Name 'DisabledByDefault' -Value 1 -PropertyType DWord -Force | Out-Null
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($r in $b.roles) {
+      if (-not $r.key_existed) {
+        # The branch did not exist before the change, so it goes away whole
+        # instead of being left behind holding values nobody wrote.
+        Remove-Item -Path $r.path -Recurse -Force -ErrorAction SilentlyContinue
+        continue
+      }
+      if (-not (Test-Path $r.path)) { New-Item -Path $r.path -Force | Out-Null }
+      if ($r.enabled_existed) {
+        New-ItemProperty -Path $r.path -Name 'Enabled' -Value $r.enabled -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'Enabled' -ErrorAction SilentlyContinue
+      }
+      if ($r.default_existed) {
+        New-ItemProperty -Path $r.path -Name 'DisabledByDefault' -Value $r.default -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'DisabledByDefault' -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+
+notes:
+  pl: |
+    Nazwa gałęzi zawiera spacje i myślnik, więc ścieżka cytowana jest w całości —
+    inaczej powłoka rozbiłaby ją na kawałki. Odczyt ocenia obie role naraz, a brak
+    gałęzi liczy jako stan nieustawiony.
+  en: |
+    The branch name holds spaces and a hyphen, so the path is quoted whole -
+    otherwise the shell would break it into pieces. The reading judges both roles
+    at once and counts an absent branch as unset.

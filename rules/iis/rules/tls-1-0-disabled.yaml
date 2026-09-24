@@ -1,0 +1,224 @@
+id: iis-tls-1-0-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Protokół TLS 1.0 wyłączony
+    en: The TLS 1.0 protocol switched off
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    TLS 1.0 jest następcą SSL 3.0 i dziedziczy po nim część konstrukcji, w tym
+    sposób dopełniania bloków. Nie jest złamany tak dotkliwie jak poprzednicy,
+    ale opiera się na funkcjach skrótu i szyfrach uznanych już za za słabe, a
+    jego naprawa wymagałaby zmiany samego protokołu.
+
+    Znaczenie ma tu nie tyle pojedynczy atak, co brak zapasu. Protokół nie ma
+    już miejsca na wycofanie się do czegoś mocniejszego w ramach własnej
+    konstrukcji — każda kolejna słabość w szyfrach, które dopuszcza, uderza
+    bezpośrednio w niego.
+
+    Wyłączenie go jest wymagane także przez wymogi branżowe dotyczące obsługi
+    płatności, więc bywa nie tyle decyzją, co obowiązkiem.
+  en: |
+    TLS 1.0 is the successor of SSL 3.0 and inherits part of its design, including
+    the way blocks are padded. It is not broken as severely as its predecessors,
+    but it rests on hash functions and ciphers already held to be too weak, and
+    repairing it would call for changing the protocol itself.
+
+    What matters here is not so much a single attack as the absence of any margin.
+    The protocol has no room left to fall back to something stronger within its own
+    design - every further weakness in the ciphers it admits strikes it directly.
+
+    Switching it off is also called for by industry requirements around handling
+    payments, so it is sometimes less a decision than an obligation.
+
+disruption_description:
+  pl: |
+    To jest zmiana wymagająca świadomego wdrożenia i w tej rodzinie pierwsza,
+    która naprawdę boli. TLS 1.0 był przez lata ustawieniem domyślnym i dużo
+    rzeczy nadal go używa, choć na papierze umie więcej.
+
+    Najczęstsze ofiary to trzy grupy. Starsze sterowniki baz danych, które nawet
+    na nowym systemie domyślnie nie sięgają po nowszy protokół. Aplikacje
+    napisane w starszych wersjach środowiska wykonawczego, gdzie nowszy protokół
+    trzeba włączyć jawnie w kodzie albo ustawieniem. Wreszcie połączenia
+    wychodzące z tej maszyny do usług obcych — bo ustawienie obejmuje też rolę
+    kliencką.
+
+    Ta ostatnia grupa jest najbardziej podstępna: awaria nie dotyczy witryny,
+    tylko integracji, która przestaje pobierać dane, i objawia się jako puste
+    raporty albo niezrealizowane wysyłki. Dlatego przed zmianą trzeba przejrzeć
+    nie tylko to, kto łączy się z maszyną, ale też z czym maszyna łączy się sama.
+  en: |
+    This is a change calling for a planned rollout and the first in this family
+    that really hurts. TLS 1.0 was the default for years and plenty of things still
+    use it, though on paper they know more.
+
+    The commonest victims are three groups. Older database drivers, which even on a
+    new system do not reach for a newer protocol by default. Applications written
+    against older versions of the runtime, where a newer protocol has to be
+    switched on expressly in code or by a setting. Finally, connections going out
+    from this machine to outside services - because the setting covers the client
+    role as well.
+
+    That last group is the most treacherous - the fault does not touch the site but
+    an integration, which stops fetching data and shows up as empty reports or
+    deliveries never made. Hence, before the change, not only who connects to the
+    machine has to be reviewed, but also what the machine connects to itself.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - legacy-applications
+    - web-server-services
+    - network-and-firewall
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Starsze sterowniki baz danych przestaną nawiązywać połączenie, bo domyślnie nie sięgają po nowszy protokół
+      - Aplikacje napisane w starszych wersjach środowiska wykonawczego stracą połączenia wychodzące, jeśli nowszy protokół nie jest w nich włączony jawnie
+      - Integracje pobierające dane z usług obcych zaczną zwracać puste wyniki zamiast błędu, bo zrywa się połączenie, nie żądanie
+      - Połączenia po nowszych protokołach, uwierzytelnianie, uprawnienia i zawartość stron pozostają bez zmian
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - Older database drivers stop connecting, since they do not reach for a newer protocol by default
+      - Applications written against older runtime versions lose outgoing connections unless a newer protocol is switched on expressly in them
+      - Integrations fetching data from outside services begin returning empty results rather than an error, since it is the connection that breaks and not the request
+      - Connections over newer protocols, authentication, permissions and page contents are all unchanged
+  interruption: system-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny łączące się ze starszym serwerem bazy danych sterownikiem bez obsługi nowszego protokołu
+      - Serwery, na których nie przejrzano połączeń wychodzących do usług obcych
+      - Środowiska z aplikacjami w starszych wersjach środowiska wykonawczego, dopóki nowszy protokół nie zostanie w nich włączony
+    en:
+      - Machines connecting to an older database server with a driver lacking support for a newer protocol
+      - Servers where outgoing connections to outside services have not been reviewed
+      - Environments with applications on older runtime versions, until a newer protocol has been switched on in them
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $roles = @('Server', 'Client')
+        $wrong = @()
+        foreach ($role in $roles) {
+          # The two roles are separate keys and the machine may well have one set and
+          # the other left alone. Reporting them together would hide exactly the half
+          # that is still open.
+          $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\' + $role
+          $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+          if ($null -eq $item) {
+            # An absent key means the protocol follows the system default rather than
+            # nothing at all, so it is counted as unset and not as compliant.
+            $wrong += ($role + ':not-set')
+          }
+          elseif ($item.Enabled -ne 0 -or $item.DisabledByDefault -ne 1) {
+            $wrong += ($role + ':other')
+          }
+        }
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $roles = @('Server', 'Client')
+    $saved = @()
+    foreach ($role in $roles) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\' + $role
+      $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+      $saved += [pscustomobject]@{
+        role             = $role
+        path             = $path
+        key_existed      = (Test-Path $path)
+        enabled          = if ($null -ne $item) { $item.Enabled } else { $null }
+        enabled_existed  = ($null -ne $item -and $null -ne $item.Enabled)
+        default          = if ($null -ne $item) { $item.DisabledByDefault } else { $null }
+        default_existed  = ($null -ne $item -and $null -ne $item.DisabledByDefault)
+      }
+    }
+    [pscustomobject]@{
+      protocol = 'TLS 1.0'
+      roles    = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    foreach ($role in @('Server', 'Client')) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\' + $role
+      # The whole branch may be absent, so it is created rather than assumed. The
+      # protocol name holds spaces and a dot, hence the path is quoted whole.
+      if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+      New-ItemProperty -Path $path -Name 'Enabled' -Value 0 -PropertyType DWord -Force | Out-Null
+      New-ItemProperty -Path $path -Name 'DisabledByDefault' -Value 1 -PropertyType DWord -Force | Out-Null
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($r in $b.roles) {
+      if (-not $r.key_existed) {
+        # The branch did not exist before the change, so it goes away whole
+        # instead of being left behind holding values nobody wrote.
+        Remove-Item -Path $r.path -Recurse -Force -ErrorAction SilentlyContinue
+        continue
+      }
+      if (-not (Test-Path $r.path)) { New-Item -Path $r.path -Force | Out-Null }
+      if ($r.enabled_existed) {
+        New-ItemProperty -Path $r.path -Name 'Enabled' -Value $r.enabled -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'Enabled' -ErrorAction SilentlyContinue
+      }
+      if ($r.default_existed) {
+        New-ItemProperty -Path $r.path -Name 'DisabledByDefault' -Value $r.default -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'DisabledByDefault' -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+
+notes:
+  pl: |
+    Kolejność wdrożenia jest tu rozstrzygająca: najpierw włącza się TLS 1.2,
+    uruchamia maszynę ponownie i sprawdza, że połączenia działają, a dopiero potem
+    wyłącza starsze protokoły. Odwrotna kolejność zostawia maszynę bez wspólnego
+    protokołu z resztą świata. Ustawienie obejmuje całą maszynę i obie role.
+  en: |
+    The order of the rollout settles matters here - TLS 1.2 is switched on first,
+    the machine is restarted and the connections checked, and only then are the
+    older protocols switched off. The reverse order leaves the machine with no
+    protocol in common with the rest of the world. The setting covers the whole
+    machine and both roles.

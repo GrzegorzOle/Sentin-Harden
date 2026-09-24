@@ -1,0 +1,215 @@
+id: iis-ssl-2-0-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Protokół SSL 2.0 wyłączony
+    en: The SSL 2.0 protocol switched off
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    SSL 2.0 to pierwsza powszechnie użyta wersja szyfrowania transportu i od
+    dawna jest złamana. Nie chodzi o pojedynczą lukę, tylko o wady samej
+    konstrukcji: uzgodnienie połączenia nie jest chronione przed zmianą po
+    drodze, a zakończenie sesji można podrobić.
+
+    Skutkiem praktycznym jest to, że ruch osłonięty tym protokołem daje się
+    odczytać i zmienić przez kogoś, kto siedzi na trasie. Ochrona jest pozorna —
+    kłódka w przeglądarce wygląda tak samo jak przy połączeniu prawdziwie
+    bezpiecznym, więc użytkownik nie ma jak odróżnić jednego od drugiego.
+
+    Wyłączenie protokołu usuwa tę pozorną ochronę zamiast utrzymywać ją dla
+    klientów, których i tak już nie ma.
+  en: |
+    SSL 2.0 is the first widely used version of transport encryption and has long
+    been broken. It is not one flaw but faults of the design itself - the
+    negotiation of a connection is not protected against being altered on the way,
+    and the ending of a session can be forged.
+
+    The practical effect is that traffic covered by this protocol can be read and
+    altered by somebody sitting on the route. The protection is apparent only - the
+    padlock in the browser looks the same as on a truly safe connection, so a user
+    has no way of telling one from the other.
+
+    Switching the protocol off removes that apparent protection instead of keeping
+    it for clients that are no longer there anyway.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, choć w praktyce ryzyko jest tu najmniejsze z całej
+    rodziny. Żadna przeglądarka używana dziś nie sięga po ten protokół i system
+    od wielu wydań nie włącza go domyślnie.
+
+    Realnym zagrożeniem są urządzenia wbudowane i sprzęt przemysłowy ze starym
+    stosem sieciowym — drukarki, sterowniki, aparatura pomiarowa. Takie
+    urządzenie nie zgłosi błędu zrozumiale, tylko przestanie się łączyć, a objaw
+    pojawi się tam, gdzie nikt nie szuka.
+
+    Zmiana obowiązuje dopiero po ponownym uruchomieniu maszyny. Do tego czasu
+    odczyt pokazuje stan docelowy, a połączenia dalej idą po staremu — o tej
+    różnicy trzeba pamiętać przy sprawdzaniu skutku.
+  en: |
+    The change calls for a review, though in practice the risk here is the
+    smallest of the whole family. No browser in use today reaches for this
+    protocol, and the system has not switched it on by default for many releases.
+
+    The real danger is embedded devices and industrial equipment with an old
+    network stack - printers, controllers, measuring apparatus. Such a device does
+    not report an error intelligibly, it simply stops connecting, and the symptom
+    appears where nobody is looking.
+
+    The change holds only after the machine is restarted. Until then the reading
+    shows the intended state while connections still run the old way - that
+    difference has to be kept in mind when checking the effect.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - legacy-applications
+    - web-server-services
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Klienci nieobsługujący nowszego protokołu przestaną nawiązać połączenie i zobaczą błąd połączenia, nie błąd strony
+      - Zmiana obejmuje całą maszynę, a nie tylko serwer sieciowy, więc dotknie też połączeń wychodzących i innych usług
+      - Rola kliencka jest ustawiana razem z serwerową, więc programy łączące się z tej maszyny na zewnątrz też stracą ten protokół
+      - Połączenia po nowszych protokołach, uwierzytelnianie, uprawnienia i zawartość stron pozostają bez zmian
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - Clients not supporting a newer protocol stop connecting and see a connection error rather than a page error
+      - The change covers the whole machine and not the web server alone, so it reaches outgoing connections and other services too
+      - The client role is set together with the server one, so programs connecting outward from this machine lose the protocol as well
+      - Connections over newer protocols, authentication, permissions and page contents are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny obsługujące urządzenia wbudowane albo aparaturę przemysłową ze starym stosem sieciowym
+      - Serwery, dla których nie ma okna na ponowne uruchomienie, bo bez niego zmiana i tak nie obowiązuje
+    en:
+      - Machines serving embedded devices or industrial apparatus with an old network stack
+      - Servers with no window for a restart, since without one the change does not hold anyway
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $roles = @('Server', 'Client')
+        $wrong = @()
+        foreach ($role in $roles) {
+          # The two roles are separate keys and the machine may well have one set and
+          # the other left alone. Reporting them together would hide exactly the half
+          # that is still open.
+          $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 2.0\' + $role
+          $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+          if ($null -eq $item) {
+            # An absent key means the protocol follows the system default rather than
+            # nothing at all, so it is counted as unset and not as compliant.
+            $wrong += ($role + ':not-set')
+          }
+          elseif ($item.Enabled -ne 0 -or $item.DisabledByDefault -ne 1) {
+            $wrong += ($role + ':other')
+          }
+        }
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $roles = @('Server', 'Client')
+    $saved = @()
+    foreach ($role in $roles) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 2.0\' + $role
+      $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+      $saved += [pscustomobject]@{
+        role             = $role
+        path             = $path
+        key_existed      = (Test-Path $path)
+        enabled          = if ($null -ne $item) { $item.Enabled } else { $null }
+        enabled_existed  = ($null -ne $item -and $null -ne $item.Enabled)
+        default          = if ($null -ne $item) { $item.DisabledByDefault } else { $null }
+        default_existed  = ($null -ne $item -and $null -ne $item.DisabledByDefault)
+      }
+    }
+    [pscustomobject]@{
+      protocol = 'SSL 2.0'
+      roles    = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    foreach ($role in @('Server', 'Client')) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 2.0\' + $role
+      # The whole branch may be absent, so it is created rather than assumed. The
+      # protocol name holds spaces and a dot, hence the path is quoted whole.
+      if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+      New-ItemProperty -Path $path -Name 'Enabled' -Value 0 -PropertyType DWord -Force | Out-Null
+      New-ItemProperty -Path $path -Name 'DisabledByDefault' -Value 1 -PropertyType DWord -Force | Out-Null
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($r in $b.roles) {
+      if (-not $r.key_existed) {
+        # The branch did not exist before the change, so it goes away whole
+        # instead of being left behind holding values nobody wrote.
+        Remove-Item -Path $r.path -Recurse -Force -ErrorAction SilentlyContinue
+        continue
+      }
+      if (-not (Test-Path $r.path)) { New-Item -Path $r.path -Force | Out-Null }
+      if ($r.enabled_existed) {
+        New-ItemProperty -Path $r.path -Name 'Enabled' -Value $r.enabled -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'Enabled' -ErrorAction SilentlyContinue
+      }
+      if ($r.default_existed) {
+        New-ItemProperty -Path $r.path -Name 'DisabledByDefault' -Value $r.default -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'DisabledByDefault' -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+
+notes:
+  pl: |
+    Odczyt ocenia obie role naraz — serwerową i kliencką — bo maszyna często ma
+    ustawioną jedną, a drugą pozostawioną samą sobie. Brak gałęzi liczony jest
+    jako stan nieustawiony, a nie zgodny, bo wtedy obowiązuje ustawienie domyślne
+    systemu. Ustawienie dotyczy całej maszyny, nie samego serwera sieciowego.
+  en: |
+    The reading judges both roles at once - the server one and the client one -
+    since a machine often has one set and the other left to itself. An absent
+    branch counts as unset rather than compliant, since the system default then
+    holds. The setting covers the whole machine and not the web server alone.

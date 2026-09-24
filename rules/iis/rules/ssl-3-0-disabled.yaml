@@ -1,0 +1,213 @@
+id: iis-ssl-3-0-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Transport Encryption
+  title:
+    pl: Protokół SSL 3.0 wyłączony
+    en: The SSL 3.0 protocol switched off
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    SSL 3.0 naprawiał wady poprzednika, ale sam został złamany w sposób, którego
+    nie da się załatać bez zmiany protokołu. Słabość leży w sposobie dopełniania
+    bloków szyfru i pozwala odczytywać ruch bajt po bajcie.
+
+    Znaczenie ma jeden szczegół: atak działa na dane powtarzane w wielu żądaniach.
+    Ciasteczko sesji jest dokładnie takimi danymi — idzie z każdym żądaniem na to
+    samo miejsce. Wystarczy więc skłonić przeglądarkę do wysłania odpowiednio
+    wielu żądań, a to potrafi zrobić skrypt na dowolnej innej stronie.
+
+    Groźniejsze jest jednak to, że klient i serwer potrafią zejść do tego
+    protokołu, choć oba umieją coś lepszego. Sama jego dostępność wystarcza, żeby
+    ktoś na trasie wymusił zejście — dlatego nie wolno go zostawić włączonego
+    tylko dlatego, że normalnie nie jest używany.
+  en: |
+    SSL 3.0 repaired the faults of its predecessor but was itself broken in a way
+    that cannot be patched without changing the protocol. The weakness lies in how
+    cipher blocks are padded and allows traffic to be read byte by byte.
+
+    One detail matters - the attack works on data repeated across many requests. A
+    session cookie is exactly such data, since it goes with every request to the
+    same place. It is therefore enough to induce the browser to send suitably many
+    requests, and a script on any other page can do that.
+
+    Worse, though, is that a client and a server can fall back to this protocol
+    even though both know something better. Its mere availability is enough for
+    somebody on the route to force that fall back - which is why it must not be
+    left switched on merely because it is not normally used.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, ale próg jest tu niski. Przeglądarki przestały
+    używać tego protokołu lata temu, a systemy przestały go włączać domyślnie.
+
+    Uwagę zwracają dwie grupy. Pierwsza to klienci napisani w starszych
+    środowiskach programistycznych, w których wybór protokołu zapisano na sztywno
+    w kodzie — taki program nie sięgnie po nic nowszego, nawet jeśli system to
+    umie. Druga to urządzenia wbudowane, tak jak przy poprzednim protokole.
+
+    Objawem jest zerwane połączenie, a nie błąd strony, więc w dziennikach serwera
+    nie zostanie po nim ślad w postaci nieudanego żądania. To szczególnie
+    utrudnia rozpoznanie: klient widzi awarię, a serwer nie widzi niczego.
+  en: |
+    The change calls for a review, but the threshold here is low. Browsers stopped
+    using this protocol years ago and systems stopped switching it on by default.
+
+    Two groups draw attention. The first is clients written in older programming
+    environments where the choice of protocol was fixed in the code - such a
+    program reaches for nothing newer even where the system knows how. The second
+    is embedded devices, as with the previous protocol.
+
+    The symptom is a broken connection rather than a page error, so no trace of it
+    is left in the server logs in the shape of a failed request. That makes finding
+    the cause especially hard - the client sees a fault and the server sees nothing.
+
+implementation_consequences:
+  impact_areas:
+    - encryption-and-tls
+    - legacy-applications
+    - web-server-services
+  what_breaks:
+    pl:
+      - Zmiana zaczyna obowiązywać dopiero po ponownym uruchomieniu maszyny, więc do tego czasu stan zgłaszany i rzeczywisty się różnią
+      - Klienci nieobsługujący nowszego protokołu przestaną nawiązać połączenie i zobaczą błąd połączenia, nie błąd strony
+      - Zmiana obejmuje całą maszynę, a nie tylko serwer sieciowy, więc dotknie też połączeń wychodzących i innych usług
+      - Rola kliencka jest ustawiana razem z serwerową, więc programy łączące się z tej maszyny na zewnątrz też stracą ten protokół
+      - Połączenia po nowszych protokołach, uwierzytelnianie, uprawnienia i zawartość stron pozostają bez zmian
+    en:
+      - The change takes effect only after the machine is restarted, so until then the reported state and the real one differ
+      - Clients not supporting a newer protocol stop connecting and see a connection error rather than a page error
+      - The change covers the whole machine and not the web server alone, so it reaches outgoing connections and other services too
+      - The client role is set together with the server one, so programs connecting outward from this machine lose the protocol as well
+      - Connections over newer protocols, authentication, permissions and page contents are all unchanged
+  interruption: system-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny obsługujące klientów, w których wybór protokołu zapisano na sztywno w kodzie
+      - Serwery współpracujące z urządzeniami wbudowanymi ze starym stosem sieciowym
+    en:
+      - Machines serving clients where the choice of protocol was fixed in the code
+      - Servers working with embedded devices holding an old network stack
+  reversibility: after-restart
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $roles = @('Server', 'Client')
+        $wrong = @()
+        foreach ($role in $roles) {
+          # The two roles are separate keys and the machine may well have one set and
+          # the other left alone. Reporting them together would hide exactly the half
+          # that is still open.
+          $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 3.0\' + $role
+          $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+          if ($null -eq $item) {
+            # An absent key means the protocol follows the system default rather than
+            # nothing at all, so it is counted as unset and not as compliant.
+            $wrong += ($role + ':not-set')
+          }
+          elseif ($item.Enabled -ne 0 -or $item.DisabledByDefault -ne 1) {
+            $wrong += ($role + ':other')
+          }
+        }
+        if ($wrong.Count -eq 0) { 'AS_REQUIRED' }
+        else { 'OTHER ' + ($wrong -join ',') }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    $roles = @('Server', 'Client')
+    $saved = @()
+    foreach ($role in $roles) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 3.0\' + $role
+      $item = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+      $saved += [pscustomobject]@{
+        role             = $role
+        path             = $path
+        key_existed      = (Test-Path $path)
+        enabled          = if ($null -ne $item) { $item.Enabled } else { $null }
+        enabled_existed  = ($null -ne $item -and $null -ne $item.Enabled)
+        default          = if ($null -ne $item) { $item.DisabledByDefault } else { $null }
+        default_existed  = ($null -ne $item -and $null -ne $item.DisabledByDefault)
+      }
+    }
+    [pscustomobject]@{
+      protocol = 'SSL 3.0'
+      roles    = $saved
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}}"
+
+  change_command: |
+    foreach ($role in @('Server', 'Client')) {
+      $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 3.0\' + $role
+      # The whole branch may be absent, so it is created rather than assumed. The
+      # protocol name holds spaces and a dot, hence the path is quoted whole.
+      if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+      New-ItemProperty -Path $path -Name 'Enabled' -Value 0 -PropertyType DWord -Force | Out-Null
+      New-ItemProperty -Path $path -Name 'DisabledByDefault' -Value 1 -PropertyType DWord -Force | Out-Null
+    }
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($r in $b.roles) {
+      if (-not $r.key_existed) {
+        # The branch did not exist before the change, so it goes away whole
+        # instead of being left behind holding values nobody wrote.
+        Remove-Item -Path $r.path -Recurse -Force -ErrorAction SilentlyContinue
+        continue
+      }
+      if (-not (Test-Path $r.path)) { New-Item -Path $r.path -Force | Out-Null }
+      if ($r.enabled_existed) {
+        New-ItemProperty -Path $r.path -Name 'Enabled' -Value $r.enabled -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'Enabled' -ErrorAction SilentlyContinue
+      }
+      if ($r.default_existed) {
+        New-ItemProperty -Path $r.path -Name 'DisabledByDefault' -Value $r.default -PropertyType DWord -Force | Out-Null
+      } else {
+        Remove-ItemProperty -Path $r.path -Name 'DisabledByDefault' -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings
+
+notes:
+  pl: |
+    Zejście do starszego protokołu jest możliwe, dopóki jest on dostępny, więc
+    pozostawienie go włączonego „na wszelki wypadek" nie jest neutralne. Odczyt
+    ocenia obie role naraz, a brak gałęzi liczy jako stan nieustawiony.
+  en: |
+    Falling back to an older protocol is possible as long as it is available, so
+    leaving it switched on just in case is not neutral. The reading judges both
+    roles at once and counts an absent branch as unset.

@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows installer for Sentin-Harden.
+
+  The product of this file is one per-machine MSI holding the frozen
+  application. Three things in it are not cosmetic:
+
+  * The application is installed into Program Files, which is read-only for the
+    account that runs it. Everything the application writes - backups taken
+    before a change, reports, recorded decisions - lives under ProgramData
+    instead, and this installer creates that directory and then leaves it
+    alone. A backup that an uninstall takes with it is not a backup, so the
+    component holding the data directory is permanent by design.
+
+  * The installation is a directory, not a single packed file. PySide6 is under
+    the LGPL, which requires its libraries to stay replaceable.
+
+  * A major upgrade is configured, so installing a newer version replaces the
+    old one in place rather than leaving two entries behind. The data directory
+    is untouched by it, which is what lets recorded exceptions and backups
+    survive an upgrade.
+
+  The file list itself is not written here. It is harvested from the built
+  artifact by heat.exe into a second source file, because the frozen runtime is
+  several hundred files and a hand-kept list would be wrong within a release.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <Product Id="*"
+           Name="Sentin-Harden"
+           Language="1033"
+           Version="$(var.Version)"
+           Manufacturer="$(var.Manufacturer)"
+           UpgradeCode="8010D25A-1811-4D7D-A813-143940E0FBE6">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Manufacturer="$(var.Manufacturer)"
+             Description="CIS benchmark audit and hardening assistant" />
+
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      DowngradeErrorMessage="A newer version of Sentin-Harden is already installed." />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- 64-bit only. The frozen runtime is 64-bit and a 32-bit package would
+         be redirected into Program Files (x86), where it does not belong. -->
+    <Condition Message="Sentin-Harden requires a 64-bit edition of Windows.">
+      <![CDATA[VersionNT64]]>
+    </Condition>
+
+    <Icon Id="AppIcon" SourceFile="$(var.SourceDir)\Sentin-Harden.exe" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Sentin-Harden" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppMenuFolder" Name="Sentin-Harden" />
+      </Directory>
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="DataFolder" Name="Sentin-Harden" />
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="AppMenuFolder">
+      <Component Id="AppShortcut" Guid="8B915F66-34EB-43CD-9C00-D7CC2ED3B56B">
+        <!-- A plain shortcut, not an elevated one. The audit is read-only and
+             runs as an ordinary user; the application recognises a missing
+             privilege and says so, which is better than demanding one on every
+             start for a report somebody only wants to read. Whoever intends to
+             apply a change starts it with "Run as administrator". -->
+        <Shortcut Id="StartMenuShortcut"
+                  Name="Sentin-Harden"
+                  Description="CIS benchmark audit and hardening assistant"
+                  Target="[INSTALLFOLDER]Sentin-Harden.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveAppMenuFolder" Directory="AppMenuFolder" On="uninstall" />
+        <!-- Per user, although the installation is per machine. The shortcut
+             file lands in the shared Start Menu either way; what belongs to the
+             user is the record that it is there, which is what a repair checks
+             against. Anchoring it in HKLM instead is the standard way to earn
+             two validation errors and a shortcut that repairs for one account
+             only. -->
+        <RegistryValue Root="HKCU"
+                       Key="Software\Sentin-Harden"
+                       Name="Shortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <!-- Where the application landed, written down so that a later build, a
+           packaged update or a support script can find it without guessing at
+           Program Files. Removed on uninstall, unlike the data directory. -->
+      <Component Id="AppRegistration" Guid="B6C0F5B2-7C4A-4D3E-9E35-2A1B8C4D5E6F">
+        <RegistryValue Root="HKLM"
+                       Key="Software\Sentin-Harden"
+                       Name="InstallFolder"
+                       Type="string"
+                       Value="[INSTALLFOLDER]"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DataFolder">
+      <!-- Created by the installer so that its permissions are set once, by an
+           elevated process, rather than by whichever account happens to run the
+           application first. Permanent: an uninstall must not carry away the
+           backups taken before a change, and it must not carry away the record
+           of which items were deliberately accepted. The directory is its own
+           key path, so nothing is left in the registry to outlive it. -->
+      <Component Id="DataDirectory"
+                 Guid="7C947360-8860-4B6A-9CC7-C4FE611EB372"
+                 Permanent="yes">
+        <CreateFolder />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="Sentin-Harden" Level="1" Absent="disallow">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="AppShortcut" />
+      <ComponentRef Id="AppRegistration" />
+      <ComponentRef Id="DataDirectory" />
+    </Feature>
+
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <UIRef Id="WixUI_InstallDir" />
+
+  </Product>
+</Wix>

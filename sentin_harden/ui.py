@@ -33,6 +33,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QIcon,
     QPageLayout,
     QPageSize,
     QPalette,
@@ -1041,6 +1042,12 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication([])
+    # Resolved through paths.resource so it works the same from sources and
+    # from the artifact. A missing file is not worth failing over - Qt falls
+    # back to the platform default icon.
+    icon_file = paths.resource("assets", "sentin-harden.png")
+    if icon_file.exists():
+        app.setWindowIcon(QIcon(str(icon_file)))
     window = MainWindow()
     window.show()
     return app.exec()

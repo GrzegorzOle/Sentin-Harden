@@ -3,8 +3,9 @@
 Graficzne narzędzie do audytu i utwardzania konfiguracji systemów według CIS Benchmarks —
 z naciskiem na to, czego sam benchmark nie mówi: **co przestanie działać po wdrożeniu zasady.**
 
-> **Status: wczesny etap prac.** Repozytorium zawiera na razie założenia projektowe.
-> Kod aplikacji dopiero powstaje.
+> **Status: w budowie, ale działa.** Aplikacja uruchamia się ze źródeł i jako zamrożony
+> artefakt, audytuje maszynę i stosuje pojedyncze naprawy. Baza liczy ponad 2400 reguł
+> w siedmiu celach. Nie ma jeszcze rejestru świadomie odpuszczonych punktów ani testów.
 
 ## Problem
 
@@ -52,8 +53,10 @@ widać różnicę między decyzją a zaniedbaniem. Akceptacja wygasa i wraca do 
 - Kopia zapasowa modyfikowanego zasobu **przed** każdą zmianą.
 - Punkt bez zdefiniowanej kopii i procedury wycofania można wyłącznie skopiować — nie uruchomić
   z poziomu aplikacji.
-- Podsumowanie konsekwencji przed wykonaniem, także przy zmianach zbiorczych.
-- Zbiorczo stosuje się wyłącznie zmiany zaklasyfikowane jako nieuciążliwe.
+- Podgląd skutków przed wykonaniem: najpierw obszary, w które zmiana uderzy — zawężone
+  do tego, co faktycznie stoi na maszynie — a dopiero potem same polecenia.
+- **Zmiany stosuje się wyłącznie pojedynczo.** Nie ma trybu zbiorczego i nie ma do niego
+  drogi. Każdy punkt to osobna decyzja i osobny wynik ponownego sprawdzenia.
 - Po naprawie punkt jest audytowany ponownie — to jedyny dowód, że zadziałała.
 
 ## Platformy docelowe
@@ -102,6 +105,25 @@ python tools/validate_rules.py
 
 Interfejs zbudowany na PySide6 (LGPL). Język przełącza się w oknie, bez ponownego uruchamiania —
 opisy reguł są w bazie dwujęzyczne.
+
+## Budowanie artefaktów
+
+Aplikacja jest zamrażana PyInstallerem do katalogu, nie do pojedynczego pliku — wymaga tego
+licencja LGPL biblioteki PySide6.
+
+```bash
+python tools/build_artifact.py            # zamrożenie runtime'u do dist/Sentin-Harden/
+python tools/build_installer.py           # Windows: pakiet MSI (wymaga WiX Toolset)
+python3 tools/build_appimage.py           # Linux: obraz AppImage
+python tools/make_icon.py                 # odrysowanie ikony
+```
+
+Obraz linuksowy buduj na **najstarszej wspieranej dystrybucji** — glibc jest zgodne w przód,
+nie wstecz, więc artefakt zbudowany na Fedorze nie uruchomi się na starszym Debianie. Oba
+artefakty powstają też automatycznie przy każdym wypchnięciu na `main`.
+
+Pakiet Windows i obraz linuksowy nie są podpisane w automatycznym budowaniu — certyfikat należy
+do wydającego. `tools/build_installer.py --sign-with <odcisk>` podpisuje binarkę i pakiet.
 
 ## Zastrzeżenie
 

@@ -16,6 +16,7 @@ The rule base travels with the artifact as data. It is read through
 nothing here may assume a path relative to the sources.
 """
 
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
@@ -26,9 +27,14 @@ PROJECT = Path(SPECPATH)
 # reads meta.yaml per target, so the shape matters as much as the files.
 datas = [
     (str(PROJECT / "rules"), "rules"),
+    (str(PROJECT / "assets"), "assets"),
     (str(PROJECT / "NOTICE"), "."),
     (str(PROJECT / "LICENSE"), "."),
 ]
+
+# The window icon travels as data; the executable's own icon is set below and
+# is a build-time property rather than something loaded at run time.
+ICON = PROJECT / "assets" / ("sentin-harden.ico" if os.name == "nt" else "sentin-harden.png")
 
 # yaml and jsonschema reach for parts of themselves by name, which the import
 # graph does not see.
@@ -105,6 +111,7 @@ exe = EXE(
     # rather than reporting an item as unmet, so it starts without demanding
     # elevation and asks for it only where a change is to be made.
     uac_admin=False,
+    icon=str(ICON) if ICON.exists() else None,
 )
 
 coll = COLLECT(

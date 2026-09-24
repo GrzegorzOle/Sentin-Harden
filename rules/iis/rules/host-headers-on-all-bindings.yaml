@@ -1,0 +1,227 @@
+id: iis-host-headers-on-all-bindings
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Basic Configurations
+  title:
+    pl: Każde powiązanie serwisu wskazuje nazwę, nie sam adres
+    en: Every site binding names a host rather than an address alone
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Powiązanie mówi serwerowi, na co ma odpowiadać: na którym adresie, na którym
+    porcie i pod jaką nazwą. Trzecia z tych rzeczy bywa pusta — wtedy serwis
+    odpowiada na każde żądanie, które trafi na ten port, niezależnie od tego,
+    jaką nazwą posłużył się pytający.
+
+    Co to odbiera atakującemu: prosty sposób na znalezienie serwisu i podanie go
+    dalej pod cudzą nazwą. Serwis bez nazwy odpowiada na żądanie skierowane wprost
+    na adres liczbowy, więc trafia do wyników przemiatania adresów tak samo, jak
+    znalazłby się przez nazwę. Odpowiada też na dowolną nazwę wskazującą ten
+    adres, co pozwala pokazać go pod domeną należącą do kogoś innego — razem
+    z ciasteczkami wystawionymi na tamtą domenę.
+
+    Po zmianie serwis odpowiada wyłącznie na uzgodnioną nazwę, a żądania
+    skierowane na sam adres trafiają tam, gdzie powinny: donikąd albo do serwisu
+    zastępczego.
+  en: |
+    A binding tells the server what to answer on - which address, which port and
+    under what name. The third of these is sometimes empty, and then the site
+    answers every request reaching that port, whatever name the asker used.
+
+    What it takes away from an attacker - an easy way of finding the site and
+    serving it on under somebody else's name. A site with no name answers a request
+    aimed straight at the numeric address, so it turns up in an address sweep just
+    as it would have been found by name. It also answers any name pointing at that
+    address, which allows it to be shown under a domain belonging to somebody else
+    - along with the cookies issued for that domain.
+
+    After the change the site answers only on the agreed name, and requests aimed
+    at the bare address go where they should - nowhere, or to a stand-in site.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo dopisanie nazwy do powiązania odcina wszystkie
+    pozostałe drogi dojścia do serwisu — łącznie z tymi, o których nikt nie
+    pamięta.
+
+    Najczęstsze przypadki, które przestają działać: skrót na pulpicie wskazujący
+    adres liczbowy, monitoring odpytujący serwis po adresie, skrypt integracyjny
+    z zapisanym adresem zamiast nazwy, a także dojście po nazwie skróconej, gdy
+    powiązanie dostanie nazwę pełną. Każdy z nich zobaczy po zmianie odpowiedź
+    mówiącą, że serwisu nie znaleziono, a nie błąd nazwy — co kieruje diagnozę
+    w stronę aplikacji, a nie konfiguracji serwera.
+
+    Osobno warto sprawdzić, czy na tej maszynie stoi więcej niż jeden serwis na
+    tym samym porcie. Jeśli tak, nazwy rozstrzygają, który z nich odpowiada,
+    a pomyłka w nazwie kieruje ruch do sąsiada zamiast zwrócić błąd.
+
+    Dlatego ta reguła niczego nie ustawia sama. Nazwy nie da się zgadnąć
+    z konfiguracji — trzeba ją znać. Polecenie jest przygotowane do skopiowania
+    i uzupełnienia.
+  en: |
+    The change calls for a look, because adding a name to a binding cuts off every
+    other road to the site - including those nobody remembers.
+
+    The commonest things that stop working - a desktop shortcut pointing at the
+    numeric address, monitoring polling the site by address, an integration script
+    with an address recorded instead of a name, and also reaching it by a short
+    name where the binding is given the full one. Each of them sees, after the
+    change, an answer saying the site was not found rather than a name error -
+    which sends the diagnosis toward the application rather than the server
+    configuration.
+
+    It is worth checking separately whether more than one site stands on this
+    machine on the same port. If so, the names decide which of them answers, and a
+    mistake in a name sends traffic to the neighbour instead of returning an error.
+
+    This is why the rule sets nothing by itself. The name cannot be guessed from
+    the configuration - it has to be known. The command is prepared for copying
+    and filling in.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - network-and-firewall
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Dojście do serwisu po adresie liczbowym przestaje działać i zwraca odpowiedź o nieznalezieniu serwisu, a nie błąd nazwy
+      - Monitoring odpytujący serwis po adresie zaczyna zgłaszać awarię, choć serwis działa
+      - Skrypty integracyjne z zapisanym adresem zamiast nazwy przestają się wykonywać
+      - Dojście po nazwie skróconej przestaje działać, gdy powiązanie dostanie nazwę pełną
+      - Przy kilku serwisach na jednym porcie pomyłka w nazwie kieruje ruch do sąsiedniego serwisu zamiast zwrócić błąd
+    en:
+      - Reaching the site by numeric address stops working and returns a site-not-found answer rather than a name error
+      - Monitoring polling the site by address starts reporting a failure although the site is running
+      - Integration scripts with an address recorded instead of a name stop running
+      - Reaching it by a short name stops working where the binding is given the full one
+      - With several sites on one port a mistake in a name sends traffic to the neighbouring site instead of returning an error
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwisy dostępne celowo wyłącznie po adresie, bez przypisanej nazwy w systemie nazw
+      - Maszyny, na których adres jest używany w integracjach, dopóki te nie zostaną przestawione na nazwę
+    en:
+      - Sites deliberately reachable only by address, with no name assigned in the naming system
+      - Machines where the address is used in integrations, until those have been switched over to a name
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $sites = @(Get-ChildItem -Path 'IIS:\Sites' -ErrorAction Stop)
+          if ($sites.Count -eq 0) { 'NO_SITES' }
+          else {
+            $open = @()
+            foreach ($site in $sites) {
+              foreach ($binding in @($site.Bindings.Collection)) {
+                # Only the protocols where a name has any meaning are judged.
+                # A binding for another protocol carries no host name by
+                # design, and reporting it would be noise.
+                if ($binding.protocol -ne 'http' -and $binding.protocol -ne 'https') { continue }
+                # The binding reads as address:port:name, and the name is the
+                # part after the second colon. An empty part means the site
+                # answers whatever name was asked for.
+                $parts = ([string]$binding.bindingInformation).Split(':')
+                $host_name = ''
+                if ($parts.Count -ge 3) { $host_name = $parts[2] }
+                if ([string]::IsNullOrWhiteSpace($host_name)) {
+                  $open += ($site.Name + '/' + $binding.protocol + ':' + $parts[1])
+                }
+              }
+            }
+            if ($open.Count -eq 0) { 'AS_REQUIRED' }
+            else { 'OPEN ' + ($open -join ',') }
+          }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(AS_REQUIRED|NO_SITES)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  change_command: |
+    # Prepared for copying, not for running. The name the site is to answer on
+    # is not in the configuration anywhere - that is the whole reason the
+    # binding is open - so it has to be filled in below. Running this with the
+    # placeholder left in would make the site answer on nothing.
+    Import-Module WebAdministration -ErrorAction Stop
+
+    $site = 'Default Web Site'
+    $name = 'www.example.invalid'
+    $port = 80
+
+    # The binding is replaced rather than a second one added, since leaving the
+    # open one in place changes nothing - the site would still answer on
+    # anything.
+    Get-WebBinding -Name $site -Port $port -Protocol 'http' |
+      Where-Object { $_.bindingInformation -match ':$' } |
+      Remove-WebBinding
+    New-WebBinding -Name $site -Protocol 'http' -Port $port -HostHeader $name
+
+privileges: administrator
+runnable: false
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.applicationhost/sites/site/bindings/
+  - https://learn.microsoft.com/iis/get-started/planning-your-iis-architecture/understanding-sites-applications-and-virtual-directories-on-iis
+
+notes:
+  pl: |
+    Reguła jest wyłącznie do skopiowania i to jest decyzja, nie brak.
+    Nazwa, pod którą serwis ma odpowiadać, nie występuje nigdzie
+    w konfiguracji — właśnie dlatego powiązanie jest otwarte. Aplikacja, która
+    wpisałaby cokolwiek w to miejsce, zgadywałaby, a pomyłka odcina serwis
+    wszystkim naraz.
+
+    Sprawdzenie ocenia tylko powiązania protokołów, w których nazwa ma
+    znaczenie, i wymienia z nazwy każdy serwis wraz z portem, na którym
+    powiązanie zostało otwarte. Serwer bez serwisów zgłasza osobny stan.
+
+    Przy protokole szyfrowanym dopisanie nazwy wymaga dodatkowo certyfikatu
+    obejmującego tę nazwę oraz obsługi wskazywania nazwy serwera przez klienta.
+    To osobne zagadnienie i osobny punkt.
+  en: |
+    The rule is for copying only, and that is a decision rather than a gap. The
+    name the site is to answer on appears nowhere in the configuration - which is
+    precisely why the binding is open. An application writing anything into that
+    place would be guessing, and a mistake cuts the site off from everybody at
+    once.
+
+    The check judges only bindings of the protocols where a name has meaning, and
+    names every site along with the port on which the binding was left open. A
+    server with no sites reports a state of its own.
+
+    With the encrypted protocol, adding a name calls additionally for a
+    certificate covering that name and for the client announcing which server name
+    it wants. That is a separate matter and a separate item.

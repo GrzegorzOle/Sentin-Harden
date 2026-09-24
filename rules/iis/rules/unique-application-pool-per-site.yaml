@@ -1,0 +1,308 @@
+id: iis-unique-application-pool-per-site
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Basic Configurations
+  title:
+    pl: Każdy serwis w osobnej puli aplikacji
+    en: Each site in an application pool of its own
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pula aplikacji to proces, w którym wykonuje się kod serwisu. Kilka serwisów
+    przypisanych do jednej puli dzieli ten sam proces, ten sam identyfikator
+    użytkownika, tę samą pamięć i ten sam czas życia.
+
+    Co to odbiera atakującemu: przejście z jednego serwisu do drugiego bez
+    żadnego dodatkowego kroku. Kto zdoła wykonać własny kod w serwisie A —
+    przez lukę w nim, przez wgrany plik, przez podatną bibliotekę — działa
+    z uprawnieniami procesu, a ten obsługuje również serwis B. Pliki serwisu B,
+    jego ciągi połączenia do bazy, jego klucze i stan sesji są wtedy w zasięgu
+    ręki, choć w samym serwisie B nie było żadnego błędu. Oddzielenie procesów
+    sprawia, że taki ruch wymaga osobnego kroku — podniesienia uprawnień
+    w systemie, a nie tylko wykonania kodu.
+
+    Rozdział ma też skutek uboczny, który widać na co dzień: serwis, który się
+    zawiesza albo zużywa całą pamięć, przestaje przy okazji zabierać ze sobą
+    sąsiadów.
+  en: |
+    An application pool is the process in which a site's code runs. Several sites
+    assigned to one pool share that process, the same user identity, the same
+    memory and the same lifetime.
+
+    What it takes away from an attacker - moving from one site to another with no
+    further step. Whoever manages to run their own code in site A - through a flaw
+    in it, through an uploaded file, through a vulnerable library - acts with the
+    process's privileges, and that process serves site B as well. The files of site
+    B, its database connection strings, its keys and its session state are then
+    within reach, even though site B itself held no fault. Separating the processes
+    means such a move calls for a step of its own - raising privileges in the
+    system, not merely running code.
+
+    The separation has a side effect visible in everyday work too - a site that
+    hangs or uses up all the memory stops taking its neighbours down with it.
+
+disruption_description:
+  pl: |
+    Ta zmiana dotyka sposobu, w jaki serwisy są uruchomione, więc wymaga okna
+    serwisowego. Każdy przenoszony serwis zostaje na moment przerwany —
+    użytkownicy zobaczą krótką niedostępność, a stan sesji trzymany w pamięci
+    procesu przepadnie razem ze starą pulą. Jeśli serwisy trzymają sesję
+    w pamięci, a nie w bazie ani w usłudze stanu, ludzie zostaną wylogowani.
+
+    Druga rzecz jest ważniejsza i mniej oczywista. Nowa pula dostaje ustawienia
+    domyślne wszędzie tam, gdzie ich nie przepiszemy. Ta reguła przepisuje
+    wersję środowiska uruchomieniowego, tryb potoku i typ tożsamości — bo bez
+    nich serwis często w ogóle nie wystartuje. Nie przepisuje natomiast
+    ustawień odzysku, limitów pamięci, czasu bezczynności, listy zmiennych
+    środowiskowych ani żadnych ustawień własnych. Jeśli poprzednia pula była
+    dostrojona, po przeniesieniu trzeba to dostrojenie powtórzyć.
+
+    Trzecia rzecz dotyczy tożsamości. Gdy wspólna pula działa na koncie
+    wskazanym z nazwy i hasłem, nowej puli nie da się utworzyć z tym samym
+    kontem — hasła nie można odczytać z konfiguracji. W takim przypadku zmiana
+    odmawia działania dla tego serwisu i mówi wprost, że pulę trzeba założyć
+    ręcznie, razem z poświadczeniami.
+
+    Na koniec koszt zasobów: każda pula to osobny proces. Dziesięć serwisów
+    w dziesięciu pulach zajmuje wyraźnie więcej pamięci niż dziesięć serwisów
+    w jednej.
+  en: |
+    This change touches how the sites are running, so it calls for a service
+    window. Every site moved is interrupted for a moment - users see a brief
+    unavailability, and session state held in the process's memory goes with the
+    old pool. If the sites keep sessions in memory rather than in a database or a
+    state service, people are signed out.
+
+    The second thing matters more and is less obvious. A new pool gets default
+    settings everywhere they are not carried over. This rule carries over the
+    runtime version, the pipeline mode and the identity type - because without
+    them a site often will not start at all. It does not carry over recycling
+    settings, memory limits, the idle period, the list of environment variables or
+    any settings of one's own. If the previous pool had been tuned, that tuning has
+    to be repeated after the move.
+
+    The third thing concerns identity. Where the shared pool runs under an account
+    named explicitly with a password, a new pool cannot be created with the same
+    account - the password cannot be read out of the configuration. In that case
+    the change refuses to act for that site and says outright that the pool has to
+    be created by hand, together with the credentials.
+
+    Finally the cost in resources - every pool is a separate process. Ten sites in
+    ten pools take up noticeably more memory than ten sites in one.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - virtualization-and-containers
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Każdy przenoszony serwis jest na moment przerwany, więc użytkownicy zobaczą krótką niedostępność
+      - Sesje trzymane w pamięci procesu przepadają i zalogowani użytkownicy zostają wylogowani
+      - Nowa pula dostaje ustawienia domyślne odzysku, limitów pamięci i czasu bezczynności, więc dostrojenie poprzedniej puli trzeba powtórzyć
+      - Serwis działający na puli z kontem wskazanym z nazwy nie zostanie przeniesiony, bo hasła nie da się odczytać z konfiguracji
+      - Każda nowa pula to osobny proces, więc zużycie pamięci na maszynie rośnie
+      - Zmienne środowiskowe i ustawienia własne poprzedniej puli nie są przepisywane
+    en:
+      - Every site moved is interrupted for a moment, so users see a brief unavailability
+      - Sessions held in the process memory are lost and signed-in users are signed out
+      - The new pool gets default recycling, memory limit and idle period settings, so the previous pool's tuning has to be repeated
+      - A site running on a pool with an explicitly named account is not moved, because the password cannot be read out of the configuration
+      - Every new pool is a separate process, so memory use on the machine rises
+      - Environment variables and any settings of one's own from the previous pool are not carried over
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Maszyny bez zapasu pamięci, na których kilkanaście osobnych procesów nie zmieści się obok siebie
+      - Serwisy celowo współdzielące stan w pamięci jednego procesu
+      - Pule działające na koncie wskazanym z nazwy, dopóki nie przygotowano poświadczeń dla nowych pul
+    en:
+      - Machines with no spare memory, where a dozen separate processes will not fit alongside one another
+      - Sites deliberately sharing state in the memory of one process
+      - Pools running under an explicitly named account, until credentials for the new pools have been prepared
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $sites = Get-ChildItem -Path 'IIS:\Sites' -ErrorAction Stop
+          if ($null -eq $sites -or @($sites).Count -eq 0) {
+            # A server with no sites has nothing to separate. That is not the
+            # same as a server whose sites share a pool, so it is said under its
+            # own name.
+            'NO_SITES'
+          }
+          else {
+            $shared = @()
+            $groups = @($sites) | Group-Object -Property applicationPool
+            foreach ($group in $groups) {
+              if ($group.Count -gt 1) {
+                # The pool is named along with how many sites sit in it, so the
+                # report says where the work is rather than only that there is
+                # some.
+                $shared += ($group.Name + '(' + $group.Count + ')')
+              }
+            }
+            if ($shared.Count -eq 0) { 'AS_REQUIRED' }
+            else { 'SHARED ' + ($shared -join ',') }
+          }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(AS_REQUIRED|NO_SITES)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $stamp = 'sentin-app-pools-' + (Get-Date -Format 'yyyyMMddHHmmss')
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    # Which site sat in which pool is what the undo needs, and it is the one
+    # thing that cannot be worked out afterwards - once the sites have been
+    # moved, the previous arrangement is gone.
+    $sites = @()
+    foreach ($site in Get-ChildItem -Path 'IIS:\Sites' -ErrorAction SilentlyContinue) {
+      $sites += [pscustomobject]@{
+        name = $site.Name
+        pool = $site.applicationPool
+      }
+    }
+    $pools = @()
+    foreach ($pool in Get-ChildItem -Path 'IIS:\AppPools' -ErrorAction SilentlyContinue) {
+      $pools += $pool.Name
+    }
+    [pscustomobject]@{
+      scope  = 'apphost'
+      sites  = $sites
+      pools  = $pools
+      backup = $stamp
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and took a server configuration backup named $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $sites = @(Get-ChildItem -Path 'IIS:\Sites' -ErrorAction Stop)
+    $groups = $sites | Group-Object -Property applicationPool
+    foreach ($group in $groups) {
+      if ($group.Count -le 1) { continue }
+      # The first site keeps the existing pool. Moving every one of them would
+      # leave a pool behind with nothing in it and rename what people already
+      # know by sight for no gain.
+      $rest = @($group.Group) | Select-Object -Skip 1
+      $source = Get-Item -Path ('IIS:\AppPools\' + $group.Name) -ErrorAction Stop
+      $identityType = $source.processModel.identityType
+      if ($identityType -eq 'SpecificUser') {
+        throw ('The pool ' + $group.Name + ' runs under a named account, whose password cannot be read out of the configuration. Create the pools for these sites by hand, with their credentials, and apply this item again.')
+      }
+      foreach ($site in $rest) {
+        $name = $site.Name + ' - pool'
+        if (Test-Path ('IIS:\AppPools\' + $name)) {
+          throw ('A pool named ' + $name + ' already exists, so nothing was changed for this site. Rename it or move the site by hand.')
+        }
+        New-WebAppPool -Name $name -ErrorAction Stop | Out-Null
+        # Only what a site usually cannot start without is carried over. The
+        # rest stays at the defaults, deliberately and stated in the
+        # description - guessing which tuning still applies would be worse than
+        # leaving the question to whoever set it.
+        Set-ItemProperty -Path ('IIS:\AppPools\' + $name) -Name 'managedRuntimeVersion' -Value $source.managedRuntimeVersion
+        Set-ItemProperty -Path ('IIS:\AppPools\' + $name) -Name 'managedPipelineMode' -Value $source.managedPipelineMode
+        Set-ItemProperty -Path ('IIS:\AppPools\' + $name) -Name 'processModel.identityType' -Value $identityType
+        Set-ItemProperty -Path ('IIS:\Sites\' + $site.Name) -Name 'applicationPool' -Value $name
+      }
+    }
+
+  rollback_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    # The sites go back to their recorded pools first, so that no pool is
+    # removed while a site is still pointing at it.
+    foreach ($s in $b.sites) {
+      if (Test-Path ('IIS:\Sites\' + $s.name)) {
+        Set-ItemProperty -Path ('IIS:\Sites\' + $s.name) -Name 'applicationPool' -Value $s.pool
+      }
+    }
+    # Only pools absent before the change are removed. One somebody else created
+    # in the meantime is left where it is.
+    foreach ($pool in Get-ChildItem -Path 'IIS:\AppPools' -ErrorAction SilentlyContinue) {
+      if ($b.pools -notcontains $pool.Name) {
+        Remove-WebAppPool -Name $pool.Name -ErrorAction SilentlyContinue
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.applicationhost/applicationpools/
+  - https://learn.microsoft.com/iis/manage/configuring-security/application-pool-identities
+
+notes:
+  pl: |
+    Naprawa zostawia pierwszy serwis w istniejącej puli, a przenosi pozostałe.
+    Nowa pula nazywa się nazwą serwisu z dopiskiem, a jeśli taka już istnieje,
+    zmiana odmawia działania zamiast nadpisywać cudzą pulę.
+
+    Przepisywane są trzy ustawienia: wersja środowiska uruchomieniowego, tryb
+    potoku i typ tożsamości. To minimum, bez którego serwis zwykle nie wstaje.
+    Reszta zostaje domyślna świadomie — zgadywanie, które dostrojenie starej
+    puli nadal ma sens dla pojedynczego serwisu, byłoby gorsze niż zostawienie
+    tej decyzji człowiekowi, który je wprowadzał.
+
+    Pula działająca na koncie wskazanym z nazwy zatrzymuje naprawę
+    z komunikatem. Hasła nie da się odczytać z konfiguracji, więc utworzona
+    pula ruszyłaby z inną tożsamością niż poprzednia, a serwis straciłby dostęp
+    do zasobów przyznanych tamtemu kontu — po cichu i dopiero przy pierwszym
+    żądaniu.
+
+    Serwer bez serwisów zgłasza osobny stan. Nie ma tam czego rozdzielać, ale
+    to nie to samo co serwer, na którym rozdzielono wszystko.
+  en: |
+    The fix leaves the first site in the existing pool and moves the rest. A new
+    pool is named after the site with a suffix, and where such a pool already
+    exists the change refuses to act rather than overwriting somebody else's pool.
+
+    Three settings are carried over - the runtime version, the pipeline mode and
+    the identity type. That is the minimum without which a site usually will not
+    come up. The rest stays at the defaults deliberately; guessing which of the old
+    pool's tuning still makes sense for a single site would be worse than leaving
+    that decision to whoever introduced it.
+
+    A pool running under an explicitly named account stops the fix with a message.
+    The password cannot be read out of the configuration, so a pool created here
+    would start under a different identity from the previous one, and the site
+    would lose access to resources granted to that account - quietly, and only at
+    the first request.
+
+    A server with no sites reports a state of its own. There is nothing to separate
+    there, but that is not the same as a server on which everything has been
+    separated.

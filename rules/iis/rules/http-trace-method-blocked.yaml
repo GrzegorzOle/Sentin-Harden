@@ -1,0 +1,236 @@
+id: iis-http-trace-method-blocked
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Request Filtering and Other Restriction Modules
+  title:
+    pl: Metoda TRACE zablokowana jawnie
+    en: The TRACE method blocked outright
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    TRACE to metoda diagnostyczna: serwer odsyła w odpowiedzi to samo żądanie,
+    które dostał, razem ze wszystkimi nagłówkami. Powstała po to, żeby dało się
+    sprawdzić, co dokładnie dociera do serwera po przejściu przez pośredniki
+    i rozdzielacze ruchu.
+
+    Co to odbiera atakującemu: sposób na odczytanie nagłówków, do których skrypt
+    w przeglądarce nie ma dostępu. Ciasteczko oznaczone jako niedostępne dla
+    skryptów jest właśnie taką wartością — przeglądarka dołącza je do żądania,
+    ale nie pozwala go odczytać kodowi strony. TRACE obchodzi to ograniczenie,
+    bo serwer sam odsyła treść żądania w odpowiedzi, a odpowiedź skrypt czytać
+    może. Atak wymaga dodatkowego warunku — możliwości wykonania skryptu
+    w kontekście tej strony — i dlatego ryzyko jest tu średnie, a nie wysokie.
+
+    Po zmianie serwer odrzuca to żądanie zamiast na nie odpowiadać, więc
+    zabezpieczenie ciasteczka przestaje mieć obejście.
+  en: |
+    TRACE is a diagnostic method - the server sends back in its reply the very
+    request it received, along with all the headers. It came about so that it could
+    be checked what exactly reaches the server after passing through intermediaries
+    and traffic distributors.
+
+    What it takes away from an attacker - a way of reading headers a script in the
+    browser has no access to. A cookie marked as unavailable to scripts is exactly
+    such a value; the browser attaches it to the request but does not let the
+    page's code read it. TRACE gets around that restriction, because the server
+    itself sends the request contents back in the reply, and a script may read a
+    reply. The attack calls for a further condition - the ability to run a script
+    in the context of that page - which is why the risk here is medium rather than
+    high.
+
+    After the change the server refuses the request instead of answering it, so the
+    cookie's protection stops having a way around it.
+
+disruption_description:
+  pl: |
+    Zmiana nie psuje niczego w normalnej pracy. Przeglądarki nie wysyłają tej
+    metody z własnej woli — nowoczesne wręcz odmawiają jej wysłania, nawet gdy
+    skrypt o to poprosi. Aplikacje sieciowe jej nie używają, bo nie służy do
+    przenoszenia danych.
+
+    Traci ją wyłącznie ten, kto diagnozuje trasę żądania przez pośredniki.
+    To realne zastosowanie, ale okazjonalne i wykonywane przez osobę, która
+    wie, co robi — a taka osoba może metodę odblokować na czas pracy i zablokować
+    z powrotem.
+
+    Warto wiedzieć, że ta reguła zachodzi na punkt blokujący metody spoza listy
+    dozwolonych. Tam TRACE jest odrzucana razem ze wszystkim, czego nie ma na
+    liście; tutaj jest wymieniona z nazwy. Obie drogi prowadzą do tego samego
+    skutku, ale wpis imienny działa niezależnie od tego, czy ktoś kiedyś
+    poszerzy listę dozwolonych metod i przypadkiem wpuści tę jedną z powrotem.
+  en: |
+    The change breaks nothing in normal work. Browsers do not send this method of
+    their own accord - modern ones refuse to send it even when a script asks. Web
+    applications do not use it, since it does not serve to carry data.
+
+    The only one who loses it is whoever diagnoses the route of a request through
+    intermediaries. That is a real use, but an occasional one carried out by
+    somebody who knows what they are doing - and such a person can unblock the
+    method for the duration of the work and block it again afterwards.
+
+    It is worth knowing that this rule overlaps the item blocking methods outside
+    the allowed list. There TRACE is refused along with everything not on the list;
+    here it is named. Both roads lead to the same effect, but a named entry works
+    regardless of whether somebody later widens the list of allowed methods and
+    inadvertently lets this one back in.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Diagnozowanie trasy żądania przez pośredniki tą metodą przestaje być możliwe
+      - Narzędzia sprawdzające konfigurację serwera mogą zgłosić metodę jako nieobsługiwaną, co bywa mylone z awarią
+      - Zwykłe żądania, uwierzytelnianie, zawartość stron i pozostałe metody pozostają bez zmian
+      - Zmiana nie wymaga restartu i obowiązuje od następnego żądania
+    en:
+      - Diagnosing the route of a request through intermediaries by this method stops being possible
+      - Tools checking the server configuration may report the method as unsupported, which is sometimes mistaken for a fault
+      - Ordinary requests, authentication, page contents and the other methods are all unchanged
+      - The change needs no restart and applies from the next request
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Środowiska, w których ta metoda jest częścią uzgodnionej procedury diagnostycznej między zespołami
+    en:
+      - Environments where this method is part of an agreed diagnostic procedure between teams
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          # The named entry is what is being looked for, not the state of the
+          # unlisted-method gate. That gate is a separate item, and a machine may
+          # well have one without the other.
+          $verbs = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/security/requestFiltering/verbs' -ErrorAction Stop
+          $entry = $null
+          if ($null -ne $verbs) {
+            $entry = $verbs.Collection | Where-Object { $_.verb -eq 'TRACE' } | Select-Object -First 1
+          }
+          if ($null -eq $entry) { 'NOT_LISTED' }
+          elseif ([bool]$entry.allowed) { 'ALLOWED' }
+          else { 'AS_REQUIRED' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'AS_REQUIRED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $stamp = 'sentin-trace-verb-' + (Get-Date -Format 'yyyyMMddHHmmss')
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $verbs = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering/verbs' -ErrorAction SilentlyContinue
+    $entry = $null
+    if ($null -ne $verbs) {
+      $entry = $verbs.Collection | Where-Object { $_.verb -eq 'TRACE' } | Select-Object -First 1
+    }
+    [pscustomobject]@{
+      scope   = 'apphost'
+      filter  = 'system.webServer/security/requestFiltering/verbs'
+      verb    = 'TRACE'
+      existed = ($null -ne $entry)
+      allowed = if ($null -ne $entry) { [bool]$entry.allowed } else { $null }
+      backup  = $stamp
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and took a server configuration backup named $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # An entry already present is corrected rather than added a second time.
+    # Adding a duplicate key throws, and the failure would come after the backup
+    # with nothing changed - a confusing outcome for something this simple.
+    $verbs = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/requestFiltering/verbs' -ErrorAction Stop
+    $entry = $null
+    if ($null -ne $verbs) {
+      $entry = $verbs.Collection | Where-Object { $_.verb -eq 'TRACE' } | Select-Object -First 1
+    }
+    if ($null -eq $entry) {
+      Add-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter 'system.webServer/security/requestFiltering/verbs' -Name '.' `
+        -Value @{ verb = 'TRACE'; allowed = $false }
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter "system.webServer/security/requestFiltering/verbs/add[@verb='TRACE']" `
+        -Name 'allowed' -Value $false
+    }
+
+  rollback_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    if (-not $b.existed) {
+      # The entry was added by the change, so it goes away whole rather than
+      # being left behind saying the method is allowed - which is not the same
+      # as the entry never having been there.
+      Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter 'system.webServer/security/requestFiltering/verbs' -Name '.' `
+        -AtElement @{ verb = 'TRACE' }
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter "system.webServer/security/requestFiltering/verbs/add[@verb='TRACE']" `
+        -Name 'allowed' -Value ([bool]$b.allowed)
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/security/requestfiltering/verbs/
+  - https://datatracker.ietf.org/doc/html/rfc9110
+
+notes:
+  pl: |
+    Punkt zachodzi na regułę blokującą metody spoza listy dozwolonych i to jest
+    zamierzone. Tamta zamyka wszystko, czego nie wymieniono; ta wymienia jedną
+    metodę z nazwy, więc trzyma się nawet wtedy, gdy ktoś poszerzy listę
+    dozwolonych albo odwróci tamto ustawienie.
+
+    Sprawdzenie rozróżnia trzy stany: wpisu nie ma, wpis jest i dopuszcza
+    metodę, wpis jest i ją blokuje. Brak wpisu liczy się jako niespełnienie —
+    metoda bywa wtedy odrzucana przez tamtą drugą regułę, ale nie wynika to
+    z niczego, co byłoby zapisane tutaj.
+  en: |
+    The item overlaps the rule blocking methods outside the allowed list, and that
+    is intended. The other closes everything not named; this one names a single
+    method, so it holds even where somebody widens the allowed list or reverses
+    that setting.
+
+    The check distinguishes three states - no entry, an entry admitting the
+    method, and an entry blocking it. An absent entry counts as unmet; the method
+    may then be refused by that other rule, but that does not follow from anything
+    recorded here.

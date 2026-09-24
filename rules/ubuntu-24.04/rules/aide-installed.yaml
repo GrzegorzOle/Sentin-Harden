@@ -1,0 +1,259 @@
+id: ubuntu2404-aide-installed
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 6.3.1
+  section: Logging and Auditing > Configure Integrity Checking
+  title:
+    pl: AIDE jest zainstalowany
+    en: Ensure AIDE is installed
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    AIDE zapisuje w bazie sumy kontrolne, prawa i właścicieli plików
+    systemowych, a potem porównuje z nią bieżący stan. Pozwala to zauważyć
+    podmienione programy, zmienione pliki konfiguracyjne i inne ślady
+    włamania, które nie widać w zwykłej pracy.
+
+    Punkt wymaga pakietów aide i aide-common; drugi dostarcza konfigurację
+    w /etc/aide, skrypt aideinit i codzienne sprawdzenie. Bez bazy AIDE nie
+    ma z czym porównywać, więc naprawa od razu ją też tworzy.
+  en: |
+    AIDE records the checksums, permissions and owners of system files in a
+    database and then compares the current state with it. This makes it
+    possible to notice replaced programs, changed configuration files and
+    other traces of an intrusion that are not visible in normal work.
+
+    The item requires the aide and aide-common packages; the second one
+    provides the configuration in /etc/aide, the aideinit script and the
+    daily check. Without a database AIDE has nothing to compare with, so the
+    remediation also creates it right away.
+
+disruption_description:
+  pl: |
+    Budowanie bazy czyta cały system plików i na zwykłym komputerze trwa
+    kilka minut, z niskim priorytetem procesora i dysku. aide-common włącza
+    codzienne sprawdzenie, a baza opisuje stan z chwili jej utworzenia, więc
+    po każdej aktualizacji pakietów raport AIDE zgłasza zmienione pliki,
+    dopóki administrator nie przejrzy wyniku i nie zaktualizuje bazy.
+  en: |
+    Building the database reads the whole file system and takes a few minutes
+    on a normal computer, with low processor and disk priority. aide-common
+    turns on a daily check, and the database describes the state from the
+    moment it was created, so after every package update the AIDE report
+    shows changed files until an administrator reviews the result and
+    updates the database.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+    - updates-and-servicing
+  what_breaks:
+    pl:
+      - Po aktualizacjach pakietów trzeba przejrzeć raport AIDE i zaktualizować bazę (aideinit -y -f)
+    en:
+      - After package updates the AIDE report has to be reviewed and the database updated (aideinit -y -f)
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Komputer, na którym nikt nie będzie przeglądał raportów AIDE; wtedy baza tylko zajmuje miejsce
+    en:
+      - A computer where nobody will review AIDE reports; then the database only takes up space
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    if ! command -v dpkg-query >/dev/null 2>&1; then echo CHECK_ERROR; exit 0; fi
+    export LC_ALL=C
+    db=/var/lib/aide/aide.db
+    new=/var/lib/aide/aide.db.new
+    unit=sentin-harden-aide-init
+    db_state() {
+      if [ ! -r /var/lib/aide ] || [ ! -x /var/lib/aide ]; then echo unknown
+      elif [ -e "$db" ]; then echo present
+      elif systemctl is-active --quiet "$unit.service" 2>/dev/null; then echo building
+      else echo missing; fi
+    }
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+    have=""; miss=""
+    for p in aide aide-common; do
+      if [ "$(st "$p")" = installed ]; then have="$have,$p=$(dpkg-query -W -f='${Version}' "$p")"
+      else miss="$miss,$p"; fi
+    done
+    if [ -n "$miss" ]; then echo "NOT_INSTALLED:${miss#,}"; else echo "INSTALLED:${have#,},database=$(db_state)"; fi
+  expected: '^INSTALLED:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    db=/var/lib/aide/aide.db
+    new=/var/lib/aide/aide.db.new
+    unit=sentin-harden-aide-init
+    db_state() {
+      if [ ! -r /var/lib/aide ] || [ ! -x /var/lib/aide ]; then echo unknown
+      elif [ -e "$db" ]; then echo present
+      elif systemctl is-active --quiet "$unit.service" 2>/dev/null; then echo building
+      else echo missing; fi
+    }
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      {
+        echo format=aide-u1
+        for p in aide aide-common; do s=$(st "$p"); echo "pkg $p ${s:-not-installed}"; done
+        if [ -e "$db" ]; then echo database=1; else echo database=0; fi
+        if [ -e "$new" ]; then echo newdb=1; else echo newdb=0; fi
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aide-u1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    db=/var/lib/aide/aide.db
+    new=/var/lib/aide/aide.db.new
+    unit=sentin-harden-aide-init
+    db_state() {
+      if [ ! -r /var/lib/aide ] || [ ! -x /var/lib/aide ]; then echo unknown
+      elif [ -e "$db" ]; then echo present
+      elif systemctl is-active --quiet "$unit.service" 2>/dev/null; then echo building
+      else echo missing; fi
+    }
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      miss=""
+      for p in aide aide-common; do [ "$(st "$p")" = installed ] || miss="$miss $p"; done
+      if [ -n "$miss" ]; then
+        export DEBIAN_FRONTEND=noninteractive
+        # Without the recommended packages: aide-common recommends cron and a mail program (postfix).
+        o="-y -qq --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+        # Stale package lists end in a download error; refresh them once and retry.
+        if ! apt-get install $o $miss; then apt-get update -qq; apt-get install $o $miss; fi
+        for p in $miss; do [ "$(st "$p")" = installed ] || { echo "$p is still not installed" >&2; exit 1; }; done
+        echo "Installed:$miss"
+      fi
+      if [ -e "$db" ]; then echo "The AIDE database already exists"; exit 0; fi
+      if systemctl is-active --quiet "$unit.service"; then echo "The AIDE database is already being built ($unit.service)"; exit 0; fi
+      systemctl reset-failed "$unit.service" >/dev/null 2>&1 || true
+      systemd-run --quiet --unit="$unit" --description="Sentin-Harden: build the AIDE database" \
+        -p Nice=19 -p IOSchedulingClass=idle /usr/sbin/aideinit -y -f
+      echo "Started building the AIDE database in the background ($unit.service); it takes a few minutes"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aide-u1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(sed -n 's/^pkg \([^ ]*\) .*/\1/p' "$b" | tr '\n' ' ')" = "aide aide-common " ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    db=/var/lib/aide/aide.db
+    new=/var/lib/aide/aide.db.new
+    unit=sentin-harden-aide-init
+    db_state() {
+      if [ ! -r /var/lib/aide ] || [ ! -x /var/lib/aide ]; then echo unknown
+      elif [ -e "$db" ]; then echo present
+      elif systemctl is-active --quiet "$unit.service" 2>/dev/null; then echo building
+      else echo missing; fi
+    }
+    st() { dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true; }
+      dbx=$(sed -n 's/^database=//p' "$b"); nx=$(sed -n 's/^newdb=//p' "$b")
+      case "$dbx$nx" in [01][01]) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+      rm=""; purge=""
+      while read -r tag p s x; do
+        case "$s" in ""|*[!a-z-]*) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+        [ -z "$x" ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+        [ "$s" != installed ] && [ "$(st "$p")" = installed ] || continue
+        rm="$rm $p"
+        # A package that was not there at all loses its configuration files too.
+        [ "$s" != not-installed ] || purge="$purge $p"
+      done < <(grep '^pkg ' "$b")
+      systemctl stop "$unit.service" >/dev/null 2>&1 || true
+      systemctl reset-failed "$unit.service" >/dev/null 2>&1 || true
+      if [ "$dbx" = 0 ] && [ -e "$db" ]; then rm -f "$db"; echo "Removed the AIDE database created after the backup"; fi
+      if [ "$nx" = 0 ] && [ -e "$new" ]; then rm -f "$new"; fi
+      if [ -n "$rm" ]; then
+        # Packages installed since then may need them; then they stay.
+        if dpkg -r --dry-run $rm >/dev/null 2>&1; then
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get remove -y -qq $rm
+          # Only a package with configuration files left is still known to dpkg.
+          for p in $purge; do [ "$(st "$p")" != config-files ] || dpkg --purge "$p" >/dev/null; done
+          echo "Removed again:$rm"
+        else
+          echo "Kept$rm: other installed packages need them now"
+        fi
+      fi
+      echo "Rollback finished"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://aide.github.io/doc/
+  - https://man.archlinux.org/man/aide.conf.5.en
+  - https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html
+
+notes:
+  pl: |
+    Wynik INSTALLED podaje wersje obu pakietów i stan bazy
+    /var/lib/aide/aide.db: present (jest), building (jest budowana), missing
+    (brak) albo unknown (katalog bazy może czytać tylko jego właściciel
+    _aide i root). Tak jak w CIS, o zgodności decydują tylko pakiety.
+
+    Naprawa instaluje brakujące pakiety bez polecanych: aide-common poleca
+    cron i program pocztowy, co ściąga serwer pocztowy postfix, a codzienne
+    sprawdzenie i tak uruchamia timer systemd. Kto chce dostawać raporty
+    AIDE pocztą, instaluje program pocztowy osobno. Jeśli bazy nie ma,
+    naprawa uruchamia w tle jednostkę sentin-harden-aide-init z poleceniem
+    aideinit -y -f, które wykonuje aide --init i kopiuje nową bazę na
+    miejsce aide.db. Baza powstaje w tle, bo jej budowa trwa dłużej, niż
+    może działać jedno polecenie naprawy.
+
+    Wycofanie zatrzymuje tę jednostkę, usuwa bazę, jeśli nie było jej przed
+    naprawą, i usuwa pakiety zainstalowane przez naprawę, jeśli żaden inny
+    pakiet ich nie potrzebuje; pakiet, którego wcześniej nie było wcale,
+    traci też pliki konfiguracyjne. Dzienniki aideinit w /var/log/aide
+    zostają.
+  en: |
+    The INSTALLED result gives the versions of both packages and the state
+    of the database /var/lib/aide/aide.db: present, building, missing or
+    unknown (only its owner _aide and root can read the database directory).
+    As in CIS, only the packages decide compliance.
+
+    The remediation installs the missing packages without the recommended
+    ones: aide-common recommends cron and a mail program, which pulls in the
+    postfix mail server, while a systemd timer starts the daily check anyway.
+    Whoever wants to get AIDE reports by mail installs a mail program
+    separately. If there is no database, the remediation starts the
+    sentin-harden-aide-init unit in the background with the aideinit -y -f
+    command, which runs aide --init and copies the new database to aide.db.
+    The database is built in the background because building it takes longer
+    than a single remediation command may run.
+
+    Rollback stops this unit, removes the database if there was none before
+    the remediation, and removes the packages the remediation installed if
+    no other package needs them; a package that was not there at all also
+    loses its configuration files. The aideinit logs in /var/log/aide stay.

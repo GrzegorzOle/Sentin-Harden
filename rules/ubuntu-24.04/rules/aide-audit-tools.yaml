@@ -1,0 +1,281 @@
+id: ubuntu2404-aide-audit-tools
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 6.3.3
+  section: Logging and Auditing > Configure Integrity Checking
+  title:
+    pl: AIDE chroni integralność narzędzi audytu
+    en: Ensure cryptographic mechanisms are used to protect the integrity of audit tools
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Narzędzia audytu, takie jak auditctl, ausearch i aureport, decydują o tym,
+    co system zapisuje i co pokazuje administratorowi. Podmieniona wersja
+    może ukrywać ślady włamania, więc zmiana tych plików musi być widoczna.
+
+    Punkt wymaga, żeby AIDE sprawdzał narzędzia audytu z atrybutami p, i, n,
+    u, g, s, b, acl, xattrs i sha512, czyli prawami, i-węzłem, liczbą
+    dowiązań, właścicielem, grupą, rozmiarem, liczbą bloków, listami ACL,
+    atrybutami rozszerzonymi i skrótem SHA-512.
+  en: |
+    The audit tools, such as auditctl, ausearch and aureport, decide what the
+    system records and what it shows to the administrator. A replaced version
+    can hide traces of an intrusion, so a change to these files has to be
+    visible.
+
+    The item requires AIDE to check the audit tools with the p, i, n, u, g,
+    s, b, acl, xattrs and sha512 attributes, that is the permissions, inode,
+    link count, owner, group, size, block count, ACLs, extended attributes
+    and the SHA-512 hash.
+
+disruption_description:
+  pl: |
+    Użytkownicy tego nie zauważą: naprawa dodaje tylko plik z regułami
+    w /etc/aide/aide.conf.d. Administrator może zobaczyć w najbliższym
+    raporcie AIDE narzędzia audytu jako zmienione, bo baza powstała
+    z innymi atrybutami.
+  en: |
+    Users will not notice it: the remediation only adds a file with rules in
+    /etc/aide/aide.conf.d. The administrator may see the audit tools as
+    changed in the next AIDE report, because the database was built with
+    other attributes.
+
+implementation_consequences:
+  impact_areas:
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Najbliższy raport AIDE zgłasza narzędzia audytu jako zmienione, dopóki baza nie zostanie zaktualizowana
+    en:
+      - The next AIDE report shows the audit tools as changed until the database is updated
+  interruption: none
+  user_visible: false
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    conf=/etc/aide/aide.conf
+    drop=/etc/aide/aide.conf.d/00-sentin-harden-audit-tools
+    mark='# Sentin-Harden: ubuntu2404-aide-audit-tools'
+    attrs='p+i+n+u+g+s+b+acl+xattrs+sha512'
+    # tools: real paths of the audit tools that exist
+    tools() {
+      local t
+      for t in auditctl auditd ausearch aureport autrace augenrules; do
+        if [ -e "/sbin/$t" ]; then readlink -f "/sbin/$t"; fi
+      done
+    }
+    # missing PATH: attributes of this item that the rule matching PATH lacks
+    missing() {
+      local r a x m=""
+      r=$(aide -c "$conf" --path-check "f:$1" 2>/dev/null | sed -n "s/^\[[xX]\].* rule: '\([^']*\)'.*/\1/p" | head -n 1)
+      a=$(printf '%s\n' "$r" | awk '{ print $NF }')
+      for x in p i n u g s b acl xattrs sha512; do
+        case "+$a+" in *"+$x+"*) ;; *) m="$m${m:+/}$x" ;; esac
+      done
+      echo "$m"
+    }
+    evaluate() {
+      local p m bad="" all
+      command -v aide >/dev/null 2>&1 || { echo "NOT_OK:aide-not-installed"; return; }
+      [ -e "$conf" ] || { echo "NOT_OK:no-aide-conf"; return; }
+      [ -r "$conf" ] || { echo "NOT_OK:needs-root"; return; }
+      all=$(tools | paste -sd, -)
+      [ -n "$all" ] || { echo "OK:no-audit-tools"; return; }
+      for p in $(tools); do
+        m=$(missing "$p")
+        [ -z "$m" ] || bad="$bad${bad:+,}$p=$m"
+      done
+      if [ -z "$bad" ]; then echo "OK:$all"; else echo "NOT_OK:$bad"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      echo format=aidetools-1 > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aidetools-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    conf=/etc/aide/aide.conf
+    drop=/etc/aide/aide.conf.d/00-sentin-harden-audit-tools
+    mark='# Sentin-Harden: ubuntu2404-aide-audit-tools'
+    attrs='p+i+n+u+g+s+b+acl+xattrs+sha512'
+    # tools: real paths of the audit tools that exist
+    tools() {
+      local t
+      for t in auditctl auditd ausearch aureport autrace augenrules; do
+        if [ -e "/sbin/$t" ]; then readlink -f "/sbin/$t"; fi
+      done
+    }
+    # missing PATH: attributes of this item that the rule matching PATH lacks
+    missing() {
+      local r a x m=""
+      r=$(aide -c "$conf" --path-check "f:$1" 2>/dev/null | sed -n "s/^\[[xX]\].* rule: '\([^']*\)'.*/\1/p" | head -n 1)
+      a=$(printf '%s\n' "$r" | awk '{ print $NF }')
+      for x in p i n u g s b acl xattrs sha512; do
+        case "+$a+" in *"+$x+"*) ;; *) m="$m${m:+/}$x" ;; esac
+      done
+      echo "$m"
+    }
+    evaluate() {
+      local p m bad="" all
+      command -v aide >/dev/null 2>&1 || { echo "NOT_OK:aide-not-installed"; return; }
+      [ -e "$conf" ] || { echo "NOT_OK:no-aide-conf"; return; }
+      [ -r "$conf" ] || { echo "NOT_OK:needs-root"; return; }
+      all=$(tools | paste -sd, -)
+      [ -n "$all" ] || { echo "OK:no-audit-tools"; return; }
+      for p in $(tools); do
+        m=$(missing "$p")
+        [ -z "$m" ] || bad="$bad${bad:+,}$p=$m"
+      done
+      if [ -z "$bad" ]; then echo "OK:$all"; else echo "NOT_OK:$bad"; fi
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        *aide-not-installed*|*no-aide-conf*) echo "aide with aide-common is not installed; apply item 6.3.1 first" >&2; exit 1 ;;
+        *needs-root*) echo "Cannot read $conf; run as root" >&2; exit 1 ;;
+      esac
+      if [ -e "$drop" ] && ! grep -qxF "$mark" "$drop"; then echo "$drop exists and was not created by this rule" >&2; exit 1; fi
+      old=""
+      if [ -e "$drop" ]; then old=$(cat "$drop"); fi
+      put_back() { if [ -n "$old" ]; then printf '%s\n' "$old" > "$drop"; else rm -f "$drop"; fi; }
+      t=$(mktemp /etc/aide/aide.conf.d/.sentin-harden.XXXXXX)
+      trap 'rm -f "$t"' EXIT
+      { echo "$mark"; for p in $(tools); do printf '%s$ %s\n' "$p" "$attrs"; done; } > "$t"
+      chmod 644 "$t"; mv -f "$t" "$drop"
+      if ! aide -c "$conf" --config-check >/dev/null 2>&1; then
+        put_back; echo "aide --config-check failed; restored the previous state" >&2; exit 1
+      fi
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Added rules for $(tools | paste -sd' ' -) in $drop" ;;
+        *) put_back; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=aidetools-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    conf=/etc/aide/aide.conf
+    drop=/etc/aide/aide.conf.d/00-sentin-harden-audit-tools
+    mark='# Sentin-Harden: ubuntu2404-aide-audit-tools'
+    attrs='p+i+n+u+g+s+b+acl+xattrs+sha512'
+    # tools: real paths of the audit tools that exist
+    tools() {
+      local t
+      for t in auditctl auditd ausearch aureport autrace augenrules; do
+        if [ -e "/sbin/$t" ]; then readlink -f "/sbin/$t"; fi
+      done
+    }
+    # missing PATH: attributes of this item that the rule matching PATH lacks
+    missing() {
+      local r a x m=""
+      r=$(aide -c "$conf" --path-check "f:$1" 2>/dev/null | sed -n "s/^\[[xX]\].* rule: '\([^']*\)'.*/\1/p" | head -n 1)
+      a=$(printf '%s\n' "$r" | awk '{ print $NF }')
+      for x in p i n u g s b acl xattrs sha512; do
+        case "+$a+" in *"+$x+"*) ;; *) m="$m${m:+/}$x" ;; esac
+      done
+      echo "$m"
+    }
+    evaluate() {
+      local p m bad="" all
+      command -v aide >/dev/null 2>&1 || { echo "NOT_OK:aide-not-installed"; return; }
+      [ -e "$conf" ] || { echo "NOT_OK:no-aide-conf"; return; }
+      [ -r "$conf" ] || { echo "NOT_OK:needs-root"; return; }
+      all=$(tools | paste -sd, -)
+      [ -n "$all" ] || { echo "OK:no-audit-tools"; return; }
+      for p in $(tools); do
+        m=$(missing "$p")
+        [ -z "$m" ] || bad="$bad${bad:+,}$p=$m"
+      done
+      if [ -z "$bad" ]; then echo "OK:$all"; else echo "NOT_OK:$bad"; fi
+    }
+      if [ ! -e "$drop" ]; then echo "$drop does not exist, nothing to remove"; exit 0; fi
+      if ! grep -qxF "$mark" "$drop"; then echo "$drop was replaced by hand; left it in place"; exit 0; fi
+      rm -f "$drop"
+      echo "Removed $drop"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man.archlinux.org/man/aide.conf.5.en
+  - https://aide.github.io/doc/
+
+notes:
+  pl: |
+    Sprawdzenie pyta AIDE (aide --path-check), która reguła naprawdę obejmuje
+    każde z narzędzi auditctl, auditd, ausearch, aureport, autrace
+    i augenrules, jeśli istnieje, i czy ma ona wymagane atrybuty. Na Ubuntu
+    /sbin jest dowiązaniem do usr/sbin, więc sprawdzane są ścieżki
+    w /usr/sbin. Domyślna konfiguracja aide-common obejmuje cały system
+    regułą / Full z pliku 99_aide_root, która ma wszystkie wymagane
+    atrybuty, więc zwykle wynik to OK. Bez pakietu auditd wynik to
+    OK:no-audit-tools. Wynik NOT_OK podaje narzędzia i brakujące atrybuty.
+    Pliki konfiguracji AIDE są czytelne dla wszystkich, więc test działa
+    także bez roota.
+
+    Naprawa zapisuje reguły dla prawdziwych ścieżek narzędzi w pliku
+    /etc/aide/aide.conf.d/00-sentin-harden-audit-tools i sprawdza
+    konfigurację poleceniem aide --config-check. Z dwóch reguł dla tej samej
+    ścieżki AIDE bierze tę wczytaną wcześniej, stąd przedrostek 00-;
+    aide.conf wczytuje tylko pliki, których nazwy składają się z liter, cyfr,
+    - i _. Wymaga zainstalowanego aide-common (punkt 6.3.1). Plik o tej
+    nazwie, który nie pochodzi z tej reguły, powoduje odmowę. Po zmianie
+    trzeba przejrzeć najbliższy raport i zaktualizować bazę. Wycofanie
+    usuwa plik.
+  en: |
+    The check asks AIDE (aide --path-check) which rule really covers each of
+    the auditctl, auditd, ausearch, aureport, autrace and augenrules tools,
+    if it exists, and whether that rule has the required attributes. On
+    Ubuntu /sbin is a link to usr/sbin, so the paths in /usr/sbin are
+    checked. The default aide-common configuration covers the whole system
+    with the / Full rule from the 99_aide_root file, which has all the
+    required attributes, so the result is usually OK. Without the auditd
+    package the result is OK:no-audit-tools. The NOT_OK result gives the
+    tools and the missing attributes. The AIDE configuration files can be
+    read by everyone, so the test also works without root.
+
+    The remediation writes rules for the real paths of the tools to the
+    /etc/aide/aide.conf.d/00-sentin-harden-audit-tools file and checks the
+    configuration with aide --config-check. Of two rules for the same path
+    AIDE takes the one read first, hence the 00- prefix; aide.conf only
+    reads files whose names consist of letters, digits, - and _. It needs
+    aide-common to be installed (item 6.3.1). A file with this name that
+    does not come from this rule causes a refusal. After the change the next
+    report has to be reviewed and the database updated. Rollback removes
+    the file.

@@ -1,0 +1,239 @@
+id: iis-basic-authentication-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Authentication
+  title:
+    pl: Uwierzytelnianie podstawowe wyłączone
+    en: Basic authentication is off
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Uwierzytelnianie podstawowe przesyła nazwę użytkownika i hasło w nagłówku
+    żądania, zakodowane sposobem, który nie jest szyfrowaniem i który odwraca się
+    jedną operacją. Każdy, kto widzi ruch, widzi hasło.
+
+    Co to odbiera atakującemu: przy połączeniu bez szyfrowania wystarczy nasłuch
+    w tej samej sieci — hasło leci otwartym tekstem w każdym żądaniu, nie tylko
+    przy logowaniu. Przy połączeniu szyfrowanym problem się nie kończy, tylko
+    przesuwa: hasło w postaci nadającej się do ponownego użycia dociera do serwera
+    i przechodzi przez każde urządzenie, które ruch rozszywa — bramę, serwer
+    pośredniczący, system inspekcji. Wpis w dzienniku takiego urządzenia,
+    zrzut pamięci procesu albo jeden błędnie skonfigurowany serwer pośredniczący
+    wystarczą, by hasło wyciekło w postaci gotowej do zalogowania się gdzie indziej.
+
+    Mechanizmy oparte na wyzwaniu i odpowiedzi nie przesyłają hasła w ogóle, więc
+    nie da się go przechwycić ani z ruchu, ani z dziennika po drodze. To jest
+    różnica, którą ten punkt wprowadza.
+  en: |
+    Basic authentication sends the user name and password in a request header,
+    encoded in a way that is not encryption and that reverses in one operation.
+    Anybody who sees the traffic sees the password.
+
+    What it takes away from an attacker - over an unencrypted connection
+    listening on the same network is enough - the password travels in the clear
+    in every request, not only at sign-in. Over an encrypted connection the
+    problem does not end, it moves - the password arrives at the server in a form
+    fit for reuse and passes through every device that unwraps the traffic - a
+    gateway, a proxy, an inspection system. A log entry on such a device, a
+    memory dump of a process or one misconfigured proxy is enough for the
+    password to leak in a form ready for signing in somewhere else.
+
+    Challenge-and-response mechanisms do not send the password at all, so it
+    cannot be picked up either from the traffic or from a log along the way. That
+    is the difference this item brings.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga świadomego wdrożenia, bo wyłączenie uwierzytelniania
+    podstawowego odcina dostęp każdemu klientowi, który innego sposobu nie zna.
+
+    Tak działa spora część integracji: skrypty wysyłające żądania z nazwą
+    użytkownika i hasłem, starsze biblioteki klienckie, urządzenia wysyłające
+    dane na serwer, narzędzia wiersza poleceń pobierające pliki z chronionego
+    katalogu. Wszystkie one przestaną działać natychmiast, a komunikat, który
+    zobaczą, to odmowa dostępu — bez wskazówki, co się zmieniło.
+
+    Osobna grupa to klienci spoza domeny. Uwierzytelnianie zintegrowane wymaga
+    przynależności do domeny albo dodatkowej konfiguracji; komputer, którego
+    w domenie nie ma, po prostu nie ma czym się przedstawić.
+
+    Dlatego przed zmianą trzeba wiedzieć, kto z tej metody korzysta. Dziennik
+    serwera pokazuje to wprost — żądania uwierzytelnione podstawowo niosą nagłówek
+    autoryzacji i dają się policzyć. Zmiana bez takiego przeglądu to wyłączenie
+    integracji, o której się nie wiedziało.
+  en: |
+    The change calls for a planned rollout, because turning basic authentication
+    off cuts off access for every client that knows no other way.
+
+    That is how a good part of integrations work - scripts sending requests with
+    a user name and password, older client libraries, devices sending data to the
+    server, command-line tools fetching files from a protected directory. All of
+    them stop working at once, and the message they see is an access denial, with
+    no hint of what changed.
+
+    A separate group is clients outside the domain. Integrated authentication
+    needs domain membership or extra configuration; a computer that is not in the
+    domain simply has nothing to present.
+
+    So before the change it has to be known who uses this method. The server log
+    shows it plainly - requests authenticated this way carry an authorisation
+    header and can be counted. A change without such a review is the turning off
+    of an integration nobody knew about.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - legacy-authentication
+  what_breaks:
+    pl:
+      - Skrypty i integracje wysyłające nazwę użytkownika i hasło w nagłówku żądania przestaną się uwierzytelniać
+      - Starsze biblioteki klienckie i urządzenia znające wyłącznie tę metodę stracą dostęp bez możliwości przełączenia
+      - Klienci spoza domeny nie zalogują się przez uwierzytelnianie zintegrowane bez dodatkowej konfiguracji
+      - Komunikat widziany przez klienta to odmowa dostępu, więc przyczyna nie będzie dla nikogo oczywista
+      - Witryny dostępne anonimowo działają bez zmian, bo punkt dotyczy wyłącznie tej jednej metody uwierzytelniania
+    en:
+      - Scripts and integrations sending a user name and password in a request header stop authenticating
+      - Older client libraries and devices that know only this method lose access with no way to switch
+      - Clients outside the domain do not sign in through integrated authentication without extra configuration
+      - The message the client sees is an access denial, so the cause is obvious to nobody
+      - Sites open anonymously carry on unchanged, since the item concerns only this one authentication method
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwery obsługujące integracje, które innej metody uwierzytelniania nie znają, dopóki nie zostaną przeniesione
+      - Witryny udostępniane klientom spoza domeny, gdzie uwierzytelnianie zintegrowane nie zadziała
+      - Środowiska, w których nie przejrzano dziennika pod kątem żądań korzystających z tej metody
+    en:
+      - Servers carrying integrations that know no other authentication method, until they have been moved over
+      - Sites served to clients outside the domain, where integrated authentication will not work
+      - Environments where the log has not been reviewed for requests using this method
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          # The whole feature can be absent from the installation. That is a
+          # stronger state than the setting being off and is reported as such
+          # rather than through a reading that would fail for want of a section.
+          $feature = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/security/authentication/basicAuthentication' -ErrorAction SilentlyContinue
+          if ($null -eq $feature) { 'NOT_INSTALLED' }
+          else {
+            $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+              -Filter 'system.webServer/security/authentication/basicAuthentication' `
+              -Name 'enabled' -ErrorAction Stop
+            $value = $raw
+            if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+            if ($null -eq $value) { 'MISSING' }
+            elseif ([bool]$value) { 'ENABLED' }
+            else { 'DISABLED' }
+          }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: '^(DISABLED|NOT_INSTALLED)$'
+  comparison: regex
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/authentication/basicAuthentication' `
+      -Name 'enabled' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/security/authentication/basicAuthentication'
+      name    = 'enabled'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/authentication/basicAuthentication' `
+      -Name 'enabled' -Value $false
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value ([bool]::Parse($b.value))
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/security/authentication/basicauthentication
+
+notes:
+  pl: |
+    Odczyt dopuszcza dwa stany jako zgodne — ustawienie wyłączone oraz brak samego
+    składnika w instalacji. Serwer bez zainstalowanego uwierzytelniania
+    podstawowego nie ma czego wyłączać i zgłaszanie mu niezgodności byłoby myleniem
+    braku funkcji z jej złym ustawieniem.
+
+    Zapis obejmuje poziom całego serwera. Witryna albo aplikacja z własnym wpisem
+    dla tej metody wymaga poprawki na swoim poziomie, a ustawienie serwera może być
+    tam zablokowane do zmiany — wtedy odblokowanie sekcji jest osobną decyzją,
+    której ten punkt nie podejmuje.
+  en: |
+    The reading accepts two states as compliant - the setting turned off, and the
+    component absent from the installation altogether. A server without basic
+    authentication installed has nothing to turn off, and reporting a finding
+    against it would confuse a missing feature with a badly set one.
+
+    The setting covers the whole server. A site or application with an entry of
+    its own for this method calls for a correction at its own level, and the
+    server setting may be locked against change there - unlocking the section is
+    then a separate decision, which this item does not take.

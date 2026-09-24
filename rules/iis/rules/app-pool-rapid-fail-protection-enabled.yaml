@@ -1,0 +1,227 @@
+id: iis-app-pool-rapid-fail-protection-enabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Application Pools
+  title:
+    pl: Ochrona przed serią szybkich awarii puli aplikacji włączona
+    en: Rapid-fail protection for the application pool is on
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Pula aplikacji, której proces roboczy przewraca się raz za razem, jest
+    restartowana przez serwer w kółko. Każdy restart to nowy proces, nowy przydział
+    pamięci i nowe wczytanie aplikacji — a gdy padanie następuje kilka razy na
+    minutę, serwer zajmuje się wyłącznie wstawaniem.
+
+    Ochrona przed serią szybkich awarii przerywa ten cykl — po ustalonej liczbie
+    awarii w ustalonym oknie czasu pula zostaje zatrzymana i przestaje być
+    podnoszona. Witryna odpowiada wtedy błędem, zamiast pozornie działać.
+
+    Co to odbiera atakującemu: żądanie, które niezawodnie przewraca proces roboczy,
+    jest gotowym narzędziem odmowy usługi. Bez tej ochrony wystarczy je powtarzać,
+    żeby utrzymać maszynę w stanie ciągłego restartu — koszt po stronie atakującego
+    jest znikomy, po stronie serwera pełny. Z ochroną seria kończy się szybko
+    i zostaje po niej jednoznaczny zapis w dzienniku zdarzeń, zamiast tysięcy
+    restartów, w których nie widać, co się właściwie stało.
+
+    Punkt nie zamyka drogi wejścia. Ogranicza szkodę i sprawia, że awaria jest
+    widoczna zamiast rozmyta.
+  en: |
+    An application pool whose worker process falls over again and again is
+    restarted by the server over and over. Every restart is a new process, a new
+    memory allocation and a new load of the application - and when the falling
+    over happens several times a minute, the server does nothing but get back up.
+
+    Rapid-fail protection breaks that cycle - after a set number of failures in a
+    set window the pool is stopped and no longer raised. The site then answers
+    with an error instead of appearing to work.
+
+    What it takes away from an attacker - a request that reliably knocks the
+    worker process over is a ready denial-of-service tool. Without this
+    protection, repeating it is enough to hold the machine in perpetual restart,
+    at a negligible cost to the attacker and the full cost to the server. With it
+    the series ends quickly and leaves one unambiguous record in the event log
+    rather than thousands of restarts in which nothing can be made out.
+
+    The item closes no way in. It limits the damage and makes a failure visible
+    rather than smeared out.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo jej skutek jest widoczny dokładnie wtedy, gdy
+    coś już jest nie tak — i wtedy zmienia zachowanie serwera z „ciągle próbuje"
+    na „przestał".
+
+    Aplikacja, która przewraca się regularnie, ale między awariami zdąży obsłużyć
+    ruch, przy włączonej ochronie zostanie zatrzymana. Z punktu widzenia
+    użytkownika to różnica między witryną działającą z przerwami a witryną
+    niedostępną do czasu ręcznej interwencji. Serwer nie podniesie puli sam —
+    trzeba ją uruchomić, a wcześniej dowiedzieć się, że stoi.
+
+    Dlatego przed zmianą sprawdź dwie rzeczy: czy ktokolwiek monitoruje stan pul
+    aplikacji i czy w dzienniku zdarzeń z ostatnich tygodni nie ma już serii
+    awarii procesu roboczego. Włączenie ochrony na aplikacji, która i tak pada,
+    zamieni znośną niestabilność w przestój.
+  en: |
+    The change calls for a review, because its effect shows exactly when
+    something is already wrong - and it then changes the server from "keeps
+    trying" to "stopped".
+
+    An application that falls over regularly but manages to serve traffic between
+    failures will, with the protection on, be stopped. From the user s side that
+    is the difference between a site working in fits and a site unavailable until
+    somebody intervenes. The server will not raise the pool by itself - it has to
+    be started, and before that somebody has to learn that it is down.
+
+    So check two things beforehand - whether anybody watches the state of the
+    application pools, and whether the event log of the last few weeks already
+    holds series of worker process failures. Turning the protection on for an
+    application that falls over anyway turns bearable instability into an outage.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - logging-and-audit
+  what_breaks:
+    pl:
+      - Pula aplikacji padająca seryjnie zostanie zatrzymana i nie podniesie się sama, więc witryna będzie niedostępna do ręcznego uruchomienia
+      - Aplikacja niestabilna, ale obsługująca ruch między awariami, przestanie odpowiadać zamiast działać z przerwami
+      - Bez monitorowania stanu pul nikt się nie dowie, że pula stoi, poza zgłoszeniem od użytkownika
+      - Wdrożenie nowej wersji aplikacji z błędem w starcie zatrzyma pulę po kilku próbach zamiast ponawiać je w nieskończoność
+      - Aplikacje stabilne nie odczują zmiany w żaden sposób, bo ochrona uruchamia się dopiero przy serii awarii
+    en:
+      - An application pool failing in series is stopped and does not come back by itself, so the site stays unavailable until started by hand
+      - An unstable application that serves traffic between failures stops answering instead of working in fits
+      - Without monitoring of pool state nobody learns that the pool is down other than from a user report
+      - Rolling out a new version of the application with a startup fault stops the pool after a few attempts instead of retrying endlessly
+      - Stable applications feel nothing at all, since the protection engages only on a series of failures
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery z aplikacją znaną z regularnych awarii procesu roboczego, dopóki przyczyna nie zostanie usunięta
+      - Środowiska bez monitorowania stanu pul aplikacji, w których zatrzymanie puli pozostanie niezauważone
+    en:
+      - Servers with an application known for regular worker process failures, until the cause has been removed
+      - Environments with no monitoring of application pool state, where a stopped pool would go unnoticed
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/failure' `
+            -Name 'rapidFailProtection' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([bool]$value) { 'ENABLED' }
+          else { 'DISABLED' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'ENABLED'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/failure' `
+      -Name 'rapidFailProtection' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.applicationHost/applicationPools/applicationPoolDefaults/failure'
+      name    = 'rapidFailProtection'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/failure' `
+      -Name 'rapidFailProtection' -Value $true
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value ([bool]::Parse($b.value))
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.applicationhost/applicationpools/add/failure
+
+notes:
+  pl: |
+    Zapis obejmuje ustawienia domyślne pul aplikacji, czyli wartość dziedziczoną
+    przez pule bez własnego ustawienia. Pula z własnym wpisem wymaga poprawki na
+    swoim poziomie — odczyt tego nie pokaże, bo pyta wyłącznie o wartość domyślną.
+
+    Sama ochrona to trzy ustawienia działające razem — włącznik, liczba awarii
+    i okno czasu. Ten punkt rozstrzyga o włączniku; progi zostawia takimi, jakie
+    zastał, bo ich właściwa wartość zależy od aplikacji.
+  en: |
+    The setting covers the application pool defaults, that is, the value
+    inherited by pools with no setting of their own. A pool with its own entry
+    calls for a correction at its own level - the reading will not show it, as it
+    asks only about the default.
+
+    The protection itself is three settings working together - the switch, the
+    number of failures and the time window. This item settles the switch and
+    leaves the thresholds as it found them, since their right value depends on
+    the application.

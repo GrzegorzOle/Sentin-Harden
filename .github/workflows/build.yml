@@ -35,6 +35,20 @@ jobs:
         run: pip install PyYAML jsonschema
       - name: check the rule base
         run: python tools/validate_rules.py
+      - name: check the tag against the version
+        # Both build scripts name their output after the version in the package,
+        # not after the tag. Left unchecked, a tag that disagrees produces a
+        # release called one thing carrying files called another - and it is
+        # found at the end of a twenty-minute build rather than at the start.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION=$(python -c "import re,pathlib; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', pathlib.Path('sentin_harden/__init__.py').read_text()).group(1))")
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "the tag says $TAG and the package says $VERSION"
+            exit 1
+          fi
+          echo "tag and version agree on $VERSION"
 
   linux:
     name: AppImage
@@ -148,3 +162,49 @@ jobs:
           path: dist/*.msi
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: release
+    needs: [linux, windows]
+    # Only for a tag. Every push to the main branch builds both artifacts and
+    # leaves them in the run, where they expire; a release is the deliberate
+    # act of keeping a pair of them and saying which commit they came from.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      # The only job here that writes anything back to the repository.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: gather the files and compute their checksums
+        # Neither artifact is signed, so a checksum is the only thing a person
+        # downloading them can check against. It is computed here, from the
+        # files actually being published, rather than written by hand.
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.msi' -o -name '*.AppImage' \) \
+            -exec cp {} release/ \;
+          cd release
+          COUNT=$(ls -1 | wc -l)
+          if [ "$COUNT" -ne 2 ]; then
+            echo "expected the installer and the image, found $COUNT file(s):"
+            ls -l
+            exit 1
+          fi
+          sha256sum *.msi *.AppImage > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --verify-tag \
+            --title "Sentin-Harden $GITHUB_REF_NAME" \
+            --notes "$(cat .github/release-notes.md)" \
+            --generate-notes

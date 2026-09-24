@@ -90,6 +90,17 @@ Po dokument benchmarku sięgnij bezpośrednio do CIS.
 Pełne zastrzeżenie o braku afiliacji i o znakach towarowych znajduje się w pliku
 [NOTICE](NOTICE). Wyniki działania narzędzia nie są certyfikacją ani atestacją CIS.
 
+## Gotowa wersja do pobrania
+
+Wydania leżą w zakładce [Releases](../../releases): instalator MSI dla Windows
+i obraz AppImage dla Linuksa, oba budowane automatycznie z oznaczonego commitu.
+Python nie jest potrzebny.
+
+Artefakty nie są podpisane cyfrowo — do każdego wydania dołączony jest plik
+`SHA256SUMS.txt` i warto porównać z nim sumę kontrolną pobranego pliku.
+Obraz linuksowy buduje się na Ubuntu 22.04, więc startuje na tej i każdej
+nowszej dystrybucji.
+
 ## Uruchomienie ze źródeł
 
 ```bash

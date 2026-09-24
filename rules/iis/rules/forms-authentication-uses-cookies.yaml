@@ -1,0 +1,243 @@
+id: iis-forms-authentication-uses-cookies
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Configure Authentication and Authorization
+  title:
+    pl: Przepustka logowania wyłącznie w ciasteczku, nigdy w adresie
+    en: The sign-in pass only in a cookie, never in the address
+
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: critical
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Przepustka wystawiona przy logowaniu musi jakoś wracać z każdym żądaniem.
+    Normalnie jedzie w ciasteczku. Istnieje jednak tryb, w którym środowisko
+    wpisuje ją zamiast tego wprost w adres strony — powstał po to, żeby obsłużyć
+    przeglądarki bez obsługi ciasteczek. Domyślne ustawienie nie rozstrzyga
+    sprawy: każe rozpoznać możliwości klienta i wybrać jeden z tych dwóch
+    sposobów.
+
+    Co to odbiera atakującemu: przepustkę leżącą w miejscu, które wszyscy
+    kopiują i zapisują. Adres strony trafia do historii przeglądarki, do
+    zakładek, do dzienników serwera i każdego pośrednika po drodze, a przy
+    kliknięciu w odnośnik zewnętrzny jest wysyłany obcemu serwisowi
+    w nagłówku mówiącym, skąd użytkownik przyszedł. Osoba, która wkleja komuś
+    adres „zobacz to", wysyła razem z nim własną tożsamość. Ciasteczko żadnego
+    z tych miejsc nie odwiedza.
+
+    Po zmianie środowisko przestaje wybierać i zawsze używa ciasteczka.
+    Klient bez ich obsługi nie zaloguje się wcale — zamiast zalogować się
+    w sposób, który zostawia przepustkę w dziesięciu miejscach naraz.
+  en: |
+    The pass issued at sign-in has to come back somehow with every request.
+    Normally it travels in a cookie. There is, however, a mode in which the runtime
+    writes it into the page address instead - it came about to serve browsers with
+    no cookie support. The default setting does not settle the matter; it asks for
+    the client's capabilities to be worked out and one of the two ways chosen.
+
+    What it takes away from an attacker - a pass lying in a place everybody copies
+    and records. A page address goes into the browser history, into bookmarks, into
+    the server logs and those of every intermediary along the way, and on clicking
+    an outside link it is sent to a foreign site in the header saying where the
+    user came from. Somebody pasting an address to a colleague with "look at this"
+    sends their own identity along with it. A cookie visits none of those places.
+
+    After the change the runtime stops choosing and always uses a cookie. A client
+    without cookie support will not sign in at all - rather than signing in in a
+    way that leaves the pass in ten places at once.
+
+disruption_description:
+  pl: |
+    W praktyce zmiana dotyka niewielu, ale trzeba spojrzeć, kogo dokładnie.
+    Każda używana dziś przeglądarka obsługuje ciasteczka, więc zwykły użytkownik
+    nie zauważy niczego.
+
+    Zauważą natomiast klienci, którzy przeglądarką nie są: skrypty odpytujące
+    aplikację, integracje napisane pod zapisywanie przepustki w adresie oraz
+    starsze narzędzia testowe, które ciasteczek nie przechowują między
+    żądaniami. Taki klient po zmianie loguje się poprawnie, a przy następnym
+    żądaniu jest znów anonimowy — i wpada w pętlę logowania, zamiast dostać
+    czytelny błąd.
+
+    Osobno warto sprawdzić, czy w organizacji nie krążą zapisane odnośniki
+    z przepustką w adresie. Po zmianie przestaną działać, co jest skutkiem
+    pożądanym, ale komuś przerwie pracę w połowie.
+
+    Zapis idzie do konfiguracji głównej środowiska uruchomieniowego, więc
+    obejmuje wszystkie aplikacje na serwerze naraz.
+  en: |
+    In practice the change touches few people, but it is worth looking at exactly
+    whom. Every browser in use today supports cookies, so an ordinary user notices
+    nothing.
+
+    What will notice are clients that are not browsers - scripts polling the
+    application, integrations written around recording the pass in the address, and
+    older test tools that do not keep cookies between requests. Such a client signs
+    in correctly after the change and is anonymous again at the next request - and
+    falls into a sign-in loop instead of getting a legible error.
+
+    It is worth checking separately whether saved links carrying a pass in the
+    address are circulating in the organisation. They stop working after the
+    change, which is the wanted effect, but it interrupts somebody's work halfway.
+
+    The write goes to the runtime's root configuration, so it covers every
+    application on the server at once.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Klient nieprzechowujący ciasteczek między żądaniami wpada w pętlę logowania zamiast dostać czytelny błąd
+      - Integracje napisane pod przepustkę zapisywaną w adresie przestają się uwierzytelniać
+      - Zapisane odnośniki zawierające przepustkę w adresie przestają działać
+      - Starsze narzędzia testowe przestają utrzymywać sesję między żądaniami
+      - Zmiana obejmuje wszystkie aplikacje na serwerze naraz
+    en:
+      - A client not keeping cookies between requests falls into a sign-in loop instead of getting a legible error
+      - Integrations written around a pass recorded in the address stop authenticating
+      - Saved links carrying a pass in the address stop working
+      - Older test tools stop holding a session between requests
+      - The change covers every application on the server at once
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Aplikacje obsługujące klientów, o których wiadomo, że nie przechowują ciasteczek, dopóki ci nie zostaną przerobieni
+      - Integracje uwierzytelniające się przepustką zapisaną w adresie
+    en:
+      - Applications serving clients known not to keep cookies, until those have been reworked
+      - Integrations authenticating with a pass recorded in the address
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT' `
+            -Filter 'system.web/authentication/forms' -Name 'cookieless' -ErrorAction Stop
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          else {
+            # The three other settings are reported as they stand. Two of them
+            # put the pass in the address outright and one leaves the choice to
+            # the client, which is a different conversation - so they are not
+            # folded into a single verdict.
+            [string]$value
+          }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'UseCookies'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $files = @()
+    foreach ($base in @('Framework', 'Framework64')) {
+      $source = Join-Path $env:windir ('Microsoft.NET\' + $base + '\v4.0.30319\Config\web.config')
+      if (Test-Path $source) {
+        $copy = '{{backup_file}}' + '.' + $base + '.web.config'
+        Copy-Item -Path $source -Destination $copy -Force
+        $files += [pscustomobject]@{ source = $source; copy = $copy }
+      }
+    }
+    if ($files.Count -eq 0) {
+      throw 'The framework root configuration was not found, so nothing was secured and nothing may be changed.'
+    }
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT' `
+      -Filter 'system.web/authentication/forms' -Name 'cookieless' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'framework-root'
+      filter  = 'system.web/authentication/forms'
+      name    = 'cookieless'
+      value   = [string]$value
+      existed = ($null -ne $value)
+      files   = $files
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and copied the framework root configuration"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT' `
+      -Filter 'system.web/authentication/forms' -Name 'cookieless' -Value 'UseCookies'
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    foreach ($f in $b.files) {
+      if (-not (Test-Path $f.copy)) {
+        throw 'A copy recorded in the backup file is missing, so nothing was restored.'
+      }
+    }
+    foreach ($f in $b.files) {
+      Copy-Item -Path $f.copy -Destination $f.source -Force
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/dotnet/api/system.web.configuration.formsauthenticationconfiguration.cookieless
+  - https://learn.microsoft.com/dotnet/api/system.web.httpcookiemode
+
+notes:
+  pl: |
+    Wartość domyślna nie jest ani dobra, ani zła sama w sobie — jest
+    nierozstrzygnięta. Środowisko pyta wtedy o możliwości klienta i część
+    klientów dostaje przepustkę w adresie. Skoro jeden użytkownik na tysiąc
+    wystarczy, żeby ta przepustka trafiła do dziennika pośrednika, wartość
+    domyślna liczy się jako niespełnienie.
+
+    Ta reguła i reguła o ochronie ciasteczka logowania mówią o dwóch różnych
+    rzeczach. Tamta rozstrzyga, jak zawartość przepustki jest zabezpieczona; ta
+    rozstrzyga, gdzie ta przepustka w ogóle leży. Zaszyfrowana przepustka
+    wklejona w adres jest nadal przepustką, którą ktoś może skopiować razem
+    z odnośnikiem.
+
+    Ustawienie dotyczy wyłącznie aplikacji logujących użytkownika własnym
+    formularzem.
+  en: |
+    The default value is neither good nor bad in itself - it is unsettled. The
+    runtime then asks after the client's capabilities and some clients get the pass
+    in the address. Since one user in a thousand suffices for that pass to reach an
+    intermediary's log, the default counts as unmet.
+
+    This rule and the rule about protecting the sign-in cookie speak of two
+    different things. That one settles how the contents of the pass are secured;
+    this one settles where the pass lies at all. An encrypted pass pasted into an
+    address is still a pass somebody can copy along with the link.
+
+    The setting concerns only applications signing a user in with a form of their
+    own.

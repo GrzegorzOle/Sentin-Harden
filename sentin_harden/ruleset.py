@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -149,16 +149,26 @@ class RuleBase:
     def rules_touching(self, area_id: str) -> list[Rule]:
         """Every rule in the base whose consequences reach into one area.
 
-        The reverse index, and the whole of it: no extra data is needed to ask
-        the question the other way round, only a walk of what is already here.
+        The reverse index over everything there is. Asked of one machine the
+        question is narrower - :func:`touching` takes the rules to search, and
+        the audited scope is the set worth searching there.
         """
-        found = [
-            rule
-            for target in self.targets.values()
-            for rule in target.rules
-            if area_id in (rule.consequences.get("impact_areas") or [])
-        ]
-        return sorted(found, key=lambda rule: rule.matrix_key)
+        return touching(
+            (rule for target in self.targets.values() for rule in target.rules),
+            area_id,
+        )
+
+
+def touching(rules: Iterable[Rule], area_id: str) -> list[Rule]:
+    """Rules whose consequences reach into one impact area, in matrix order.
+
+    The reverse index, and the whole of it: asking the question the other way
+    round takes no extra data, only a walk of what the rules already carry.
+    """
+    found = [
+        rule for rule in rules if area_id in (rule.consequences.get("impact_areas") or [])
+    ]
+    return sorted(found, key=lambda rule: rule.matrix_key)
 
 
 def load(root: Path | None = None) -> RuleBase:

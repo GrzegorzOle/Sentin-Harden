@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QTableView,
     QTextBrowser,
     QVBoxLayout,
@@ -62,6 +63,7 @@ from .audit import AuditResult, AuditRunner, Outcome, Scope, summarise
 from .i18n import Language, ui
 from .inventory import Inventory, Presence, collect
 from .preview import PRESENCE_KEY, OutcomeDialog, PreviewDialog
+from .reverse import ReverseView
 from .ruleset import DISRUPTION_ORDER, RISK_ORDER, Rule, RuleBase, Target, load
 
 # Two colour sets. The table follows the system theme, so its colours have to
@@ -671,9 +673,25 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 5)
         splitter.setSizes([520, 660])
 
+        # The reverse view stands beside the audit rather than inside its
+        # toolbar. It answers a different question and it answers it before any
+        # scan has been run, so a filter on the audit table would not do.
+        self.reverse = ReverseView(self.base, self.language)
+        self.reverse.rule_chosen.connect(self._open_in_audit)
+
+        audit_page = QWidget()
+        audit_layout = QVBoxLayout()
+        audit_layout.setContentsMargins(0, 0, 0, 0)
+        audit_layout.addWidget(splitter)
+        audit_page.setLayout(audit_layout)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(audit_page, "")
+        self.tabs.addTab(self.reverse, "")
+
         layout = QVBoxLayout()
         layout.addLayout(top)
-        layout.addWidget(splitter)
+        layout.addWidget(self.tabs)
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
@@ -692,6 +710,10 @@ class MainWindow(QMainWindow):
         self.scope = AuditRunner().detect_scope(self.base)
         self.target = self.scope.host
         self.overlays = self.scope.overlays
+        # The reverse view works on the rules that would be audited here, and
+        # it works straight away: the question it answers does not wait for a
+        # scan, only its last column does.
+        self.reverse.set_rules(self.scope.rules, {})
 
     def _retranslate_system_label(self) -> None:
         """Name what will be audited, and what was found and will not be.
@@ -753,8 +775,12 @@ class MainWindow(QMainWindow):
             box.setCurrentIndex(index if index >= 0 else 0)
             box.blockSignals(False)
 
+        self.tabs.setTabText(0, ui("tab_audit", self.language))
+        self.tabs.setTabText(1, ui("tab_reverse", self.language))
+
         self._retranslate_system_label()
 
+        self.reverse.retranslate()
         self.model.retranslate()
         self.detail.retranslate()
         self._update_summary()
@@ -801,6 +827,8 @@ class MainWindow(QMainWindow):
         self._results = results
         self.inventory = inventory
         self.detail.set_inventory(inventory)
+        self.reverse.set_results(results)
+        self.reverse.set_inventory(inventory)
         self.scan_button.setEnabled(True)
         self.report_button.setEnabled(bool(results))
         if self.model.rowCount():
@@ -895,6 +923,27 @@ class MainWindow(QMainWindow):
             and item.is_finding
             and bool(item.rule.remediation.get("change_command"))
         )
+
+    def _open_in_audit(self, identifier: str) -> None:
+        """Take an item picked in the reverse view back to the audit.
+
+        The reverse view says which items matter for what somebody uses; the
+        audit says what each one is and what to do about it. Jumping between
+        them is the point of having both.
+        """
+        self.tabs.setCurrentIndex(0)
+        row = self.model.row_of(identifier)
+        if row < 0 and self.model.has_results():
+            # Hidden by a filter rather than absent. Clearing the filters is
+            # less surprising than a double click that appears to do nothing.
+            for box in (self.risk_filter, self.disruption_filter, self.outcome_filter):
+                box.setCurrentIndex(0)
+            row = self.model.row_of(identifier)
+        if row >= 0:
+            self.table.selectRow(row)
+            self.table.setFocus()
+        elif not self.model.has_results():
+            self.statusBar().showMessage(ui("reverse_scan_first", self.language), 6000)
 
     def apply_selected(self) -> None:
         """Preview one change, and run it only if it is confirmed.

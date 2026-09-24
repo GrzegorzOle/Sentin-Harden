@@ -336,6 +336,40 @@ UI_TEXT: dict[str, dict[str, str]] = {
             "from before the change."
         ),
     },
+    # -- reverse view ------------------------------------------------------
+    "tab_audit": {"pl": "Audyt", "en": "Audit"},
+    "tab_reverse": {"pl": "Z czego korzystam", "en": "What I use"},
+    "reverse_lead": {
+        "pl": (
+            "Pytanie odwrotne: zamiast zaczynać od punktu benchmarku, zacznij "
+            "od tego, z czego korzystasz. Wskaż obszar po lewej, a po prawej "
+            "zobaczysz punkty, które w niego uderzają. Pogrubione obszary to "
+            "te, po których ta maszyna pokazuje ślad użycia — ale brak śladu "
+            "nie jest dowodem, że nikt z nich nie korzysta. "
+            "Dwuklik otwiera punkt w widoku audytu."
+        ),
+        "en": (
+            "The question the other way round: instead of starting from a "
+            "benchmark item, start from what you use. Pick an area on the left "
+            "and the items that reach into it appear on the right. The areas in "
+            "bold are those this machine shows signs of using - but no sign is "
+            "not proof that nobody uses them. "
+            "A double click opens the item in the audit view."
+        ),
+    },
+    "reverse_caption": {
+        "pl": "{area}: {total} punktów, z tego {failing} niespełnionych na tej maszynie.",
+        "en": "{area}: {total} items, {failing} of them unmet on this machine.",
+    },
+    "reverse_caption_unscanned": {
+        "pl": "{area}: {total} punktów w zakresie. Uruchom skanowanie, żeby zobaczyć, które są niespełnione.",
+        "en": "{area}: {total} items in scope. Run a scan to see which of them are unmet.",
+    },
+    "reverse_unchecked": {"pl": "—", "en": "-"},
+    "reverse_scan_first": {
+        "pl": "Najpierw uruchom skanowanie — bez niego nie ma czego otworzyć w widoku audytu.",
+        "en": "Run a scan first - without one there is nothing to open in the audit view.",
+    },
     "system_unknown": {"pl": "System nierozpoznany", "en": "System not recognised"},
     "summary": {
         "pl": "{total} reguł: {passed} spełnionych, {failed} niespełnionych, {errors} bez rozstrzygnięcia",

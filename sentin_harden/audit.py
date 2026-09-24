@@ -13,7 +13,7 @@ have, so the reserved output tokens are handled before any comparison.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from .executor import CommandResult, Executor
@@ -41,6 +41,30 @@ class AuditResult:
     @property
     def is_finding(self) -> bool:
         return self.outcome is Outcome.FAIL
+
+
+@dataclass
+class Scope:
+    """What this machine turned out to be, and what is to be checked on it.
+
+    ``excluded`` holds overlays found on the machine that the host pack does not
+    declare - a web server on a system the pack was not written for, say. They
+    are carried here rather than discarded so the interface can say what it
+    saw and left out, instead of showing a scan that merely looks complete.
+    """
+
+    host: Target | None = None
+    overlays: list[Target] = field(default_factory=list)
+    excluded: list[Target] = field(default_factory=list)
+
+    @property
+    def targets(self) -> list[Target]:
+        """Everything to be audited, host first."""
+        return ([self.host] if self.host else []) + list(self.overlays)
+
+    @property
+    def rules(self) -> list[Rule]:
+        return [rule for target in self.targets for rule in target.rules]
 
 
 def compare(actual: str, expected: str, method: str) -> bool:
@@ -99,13 +123,18 @@ class AuditRunner:
         result = self.executor.run(target.shell, command)
         return re.search(pattern, result.last_line) is not None
 
-    def detect_scope(self, base) -> tuple[Target | None, list[Target]]:
+    def detect_scope(self, base) -> Scope:
         """Find the host system, then the overlays that apply on top of it.
 
         An overlay such as IIS must never be chosen as the host, even when it is
         present: its rules extend the host pack rather than replacing it. Picking
         the first matching target would silently audit a web server instead of
         the operating system it runs on.
+
+        An overlay found on the machine but not declared for this host is kept
+        apart rather than dropped. Dropping it would leave the interface showing
+        a scan that looks complete while a server it just detected went
+        unexamined, and silence there reads as a clean result.
         """
         host: Target | None = None
         for target in base.targets.values():
@@ -116,14 +145,18 @@ class AuditRunner:
                 break
 
         if host is None:
-            return None, []
+            return Scope(host=None)
 
-        overlays = [
-            target
-            for target in base.targets.values()
-            if target.applies_to_host(host) and self.detect(target)
-        ]
-        return host, overlays
+        overlays: list[Target] = []
+        excluded: list[Target] = []
+        for target in base.targets.values():
+            if not target.is_overlay or not self.detect(target):
+                continue
+            if target.applies_to_host(host):
+                overlays.append(target)
+            else:
+                excluded.append(target)
+        return Scope(host=host, overlays=overlays, excluded=excluded)
 
     def run_rule(self, rule: Rule) -> AuditResult:
         audit = rule.audit

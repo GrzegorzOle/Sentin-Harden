@@ -108,6 +108,24 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "pl": "Dla wykrytego systemu nie ma jeszcze reguł w bazie.",
         "en": "No rules in the base for the detected system yet.",
     },
+    "overlay_excluded": {
+        "pl": "wykryte, poza zakresem skanowania",
+        "en": "detected, outside the scope of the scan",
+    },
+    "overlay_excluded_hint": {
+        "pl": (
+            "Na tej maszynie wykryto: %s. Paczka reguł dla tego składnika nie "
+            "obejmuje wykrytego systemu, więc jego punkty nie zostaną "
+            "sprawdzone. Raport nie mówi o nim nic — ani że jest w porządku, "
+            "ani że nie jest."
+        ),
+        "en": (
+            "Found on this machine: %s. The rule pack for that component does "
+            "not cover the detected system, so its items will not be checked. "
+            "The report says nothing about it - neither that it is in order nor "
+            "that it is not."
+        ),
+    },
 }
 
 

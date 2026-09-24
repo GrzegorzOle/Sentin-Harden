@@ -9,7 +9,6 @@ skips the backup would violate the rule the whole project rests on.
 from __future__ import annotations
 
 import html
-from datetime import datetime
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont, QPalette
@@ -30,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import paths
-from .audit import AuditResult, AuditRunner, Outcome, summarise
+from .audit import AuditResult, AuditRunner, Outcome, Scope, summarise
 from .i18n import Language, ui
 from .ruleset import DISRUPTION_ORDER, RISK_ORDER, Rule, RuleBase, Target, load
 
@@ -94,13 +93,16 @@ class ScanWorker(QThread):
     progress = Signal(int, int, object)
     finished_with = Signal(object)
 
-    def __init__(self, target: Target) -> None:
+    def __init__(self, rules: list[Rule]) -> None:
         super().__init__()
-        self._target = target
+        # A flat list rather than a target, because a scan covers the host pack
+        # and every overlay that applies on top of it. One progress bar has to
+        # count them together or it restarts halfway through.
+        self._rules = list(rules)
 
     def run(self) -> None:
         runner = AuditRunner()
-        rules = self._target.rules
+        rules = self._rules
         total = len(rules)
         results: list[AuditResult] = []
         for index, rule in enumerate(rules):
@@ -381,6 +383,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.language = Language()
         self.base: RuleBase = load()
+        self.scope = Scope()
         self.target: Target | None = None
         self.overlays: list[Target] = []
         self._worker: ScanWorker | None = None
@@ -399,6 +402,7 @@ class MainWindow(QMainWindow):
 
         self.scan_button = QPushButton()
         self.scan_button.clicked.connect(self.start_scan)
+
 
         self.risk_filter = QComboBox()
         self.disruption_filter = QComboBox()
@@ -483,9 +487,38 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("")
 
     def _detect_system(self) -> None:
-        host, overlays = AuditRunner().detect_scope(self.base)
-        self.target = host
-        self.overlays = overlays
+        self.scope = AuditRunner().detect_scope(self.base)
+        self.target = self.scope.host
+        self.overlays = self.scope.overlays
+
+    def _retranslate_system_label(self) -> None:
+        """Name what will be audited, and what was found and will not be.
+
+        An overlay detected on the machine but not declared for this host is
+        spelled out instead of passed over. A scan that quietly leaves out a
+        server it has just recognised reads as a clean result, and that is the
+        one thing the report must never say by omission.
+        """
+        if self.target is None:
+            self.system_label.setText(ui("system_unknown", self.language))
+            self.system_label.setToolTip("")
+            return
+
+        parts = [self.language.text(self.target.name)]
+        parts += [self.language.text(item.name) for item in self.overlays]
+        text = " + ".join(parts)
+
+        if self.scope.excluded:
+            names = ", ".join(
+                self.language.text(item.name) for item in self.scope.excluded
+            )
+            text += "   ⚠ %s: %s" % (names, ui("overlay_excluded", self.language))
+            self.system_label.setToolTip(
+                ui("overlay_excluded_hint", self.language) % names
+            )
+        else:
+            self.system_label.setToolTip("")
+        self.system_label.setText(text)
 
     # -- behaviour ---------------------------------------------------------
 
@@ -513,10 +546,7 @@ class MainWindow(QMainWindow):
             box.setCurrentIndex(index if index >= 0 else 0)
             box.blockSignals(False)
 
-        if self.target is None:
-            self.system_label.setText(ui("system_unknown", self.language))
-        else:
-            self.system_label.setText(self.language.text(self.target.name))
+        self._retranslate_system_label()
 
         self.model.retranslate()
         self.detail.retranslate()
@@ -526,17 +556,21 @@ class MainWindow(QMainWindow):
         if self.target is None:
             self.statusBar().showMessage(ui("system_unknown", self.language))
             return
-        if not self.target.rules:
+        # The host pack and every overlay that applies, counted as one run. An
+        # overlay left out here would be a web server detected and then not
+        # examined, which the summary would report as nothing to answer for.
+        rules = self.scope.rules
+        if not rules:
             self.statusBar().showMessage(ui("no_rules", self.language))
             return
 
         self.scan_button.setEnabled(False)
         self.statusBar().showMessage(ui("scanning", self.language))
-        self.progress.setRange(0, len(self.target.rules))
+        self.progress.setRange(0, len(rules))
         self.progress.setValue(0)
         self.progress.setVisible(True)
 
-        self._worker = ScanWorker(self.target)
+        self._worker = ScanWorker(rules)
         self._worker.progress.connect(self._scan_progress)
         self._worker.finished_with.connect(self._scan_finished)
         self._worker.start()

@@ -1,0 +1,289 @@
+id: iis-dynamic-ip-restrictions-request-rate
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: Request Filtering and Other Restriction Modules
+  title:
+    pl: Adres zasypujący serwer żądaniami zostaje czasowo odcięty
+    en: An address burying the server in requests is cut off for a while
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Serwer domyślnie obsługuje każde żądanie, które do niego dotrze, i nie
+    interesuje się tym, że tysiąc z nich przyszło w ciągu sekundy z jednego
+    adresu. To ustawienie każe mu liczyć tempo i odmawiać obsługi adresowi,
+    który wyraźnie odstaje od reszty.
+
+    Co to odbiera atakującemu: tanie próbowanie w pętli. Zgadywanie haseł,
+    przemiatanie ścieżek w poszukiwaniu panelu administracyjnego, wyliczanie
+    identyfikatorów w adresach — wszystko to opiera się na tym, że jedna
+    maszyna może zadać bardzo dużo pytań w krótkim czasie i nic się nie stanie.
+    Po zmianie takie zachowanie kosztuje czas: narzędzie, które chodziło setki
+    razy na sekundę, dostaje odmowę i musi zwolnić na tyle, że atak przestaje
+    być opłacalny, a przy okazji staje się widoczny w dziennikach.
+
+    Ogranicznik nie jest obroną przed rozproszonym zalewem ruchu — ten
+    przychodzi z tysięcy adresów, więc żaden z nich nie przekracza progu.
+    Broni przed pojedynczym uporczywym klientem, i w tej roli działa dobrze.
+  en: |
+    By default the server handles every request that reaches it, and takes no
+    interest in the fact that a thousand of them came within a second from one
+    address. This setting tells it to count the rate and refuse service to an
+    address that plainly stands out from the rest.
+
+    What it takes away from an attacker - cheap trying in a loop. Guessing
+    passwords, sweeping paths in search of an administrative panel, enumerating
+    identifiers in addresses - all of it rests on one machine being able to ask a
+    great many questions in a short time with nothing happening. After the change
+    such behaviour costs time - a tool that ran hundreds of times a second is
+    refused and has to slow down enough that the attack stops being worthwhile,
+    and becomes visible in the logs while it is at it.
+
+    The limiter is not a defence against a distributed flood of traffic - that
+    arrives from thousands of addresses, so none of them crosses the threshold.
+    It defends against a single persistent client, and in that role it works
+    well.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia z jednego powodu: serwer widzi adres źródłowy,
+    a ten nie zawsze odpowiada jednemu człowiekowi. Gdy ruch idzie przez
+    rozdzielacz obciążenia, serwer pośredniczący albo translację adresów,
+    wszyscy użytkownicy z danej lokalizacji przychodzą pod jednym adresem.
+    Wtedy próg liczony na adres jest w istocie progiem na całą firmę i biuro
+    z pięćdziesięcioma osobami potrafi go przekroczyć zwykłą pracą.
+
+    Drugi przypadek to klienci nie będący ludźmi: integracja odpytująca
+    interfejs w pętli, monitoring sprawdzający dostępność co sekundę, skaner
+    bezpieczeństwa uruchamiany planowo. Każdy z nich wygląda dokładnie tak, jak
+    zachowanie, które ten mechanizm ma blokować, i zostanie odcięty razem
+    z resztą.
+
+    Objaw jest przy tym mylący: użytkownik nie dostaje komunikatu
+    o przekroczeniu limitu, tylko odmowę — a najczęściej po prostu widzi, że
+    strona przestała się ładować. Diagnozowanie tego od strony aplikacji nie
+    przynosi nic, bo aplikacja tych żądań w ogóle nie zobaczyła.
+
+    Przed wdrożeniem warto więc raz spojrzeć w dzienniki na to, ile żądań na
+    sekundę generuje normalny ruch, i dopiero wtedy ustalić próg. Reguła włącza
+    mechanizm z progiem ostrożnym; zawężanie go to osobna decyzja.
+  en: |
+    The change calls for a look for one reason - the server sees a source
+    address, and that does not always correspond to one person. Where traffic
+    goes through a load distributor, an intermediary server or address
+    translation, every user from a given location arrives under a single
+    address. The per-address threshold is then in effect a threshold for a whole
+    company, and an office of fifty people can cross it by working normally.
+
+    The second case is clients that are not people - an integration polling an
+    interface in a loop, monitoring checking availability every second, a
+    security scanner run on a schedule. Each of them looks exactly like the
+    behaviour this mechanism is meant to block, and will be cut off along with
+    the rest.
+
+    The symptom is misleading while at it - the user gets no message about a
+    limit being exceeded, only a refusal, and most often simply sees the page
+    stop loading. Diagnosing it from the application side yields nothing, because
+    the application never saw those requests.
+
+    So before rolling this out it is worth looking once at the logs to see how
+    many requests a second normal traffic generates, and only then settling on a
+    threshold. The rule turns the mechanism on with a cautious threshold;
+    narrowing it is a separate decision.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - network-and-firewall
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Użytkownicy zza jednego adresu wyjściowego — biuro, translacja adresów, serwer pośredniczący — liczą się łącznie i potrafią przekroczyć próg zwykłą pracą
+      - Integracje i monitoring odpytujące serwer w pętli zostają odcięte jak atak
+      - Strona przestaje się ładować bez czytelnego komunikatu, więc zgłoszenie trafia najpierw do zespołu aplikacji, który tych żądań w ogóle nie widzi
+      - Planowe skanowanie bezpieczeństwa zwraca niepełny wynik, bo połowę żądań serwer odrzucił
+      - Przy ruchu idącym przez rozdzielacz obciążenia mechanizm widzi adres rozdzielacza i odcina wszystkich naraz, o ile nie skonfigurowano odczytu adresu pierwotnego
+    en:
+      - Users behind one outgoing address - an office, address translation, an intermediary server - count together and can cross the threshold by working normally
+      - Integrations and monitoring polling the server in a loop are cut off as an attack
+      - The page stops loading with no readable message, so the report goes first to the application team, which never sees those requests
+      - A scheduled security scan returns an incomplete result, because the server refused half the requests
+      - Where traffic goes through a load distributor the mechanism sees the distributor's address and cuts everybody off at once, unless reading the original address has been configured
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Serwery za rozdzielaczem obciążenia, dopóki nie czytają adresu pierwotnego klienta
+      - Interfejsy programistyczne obsługujące klientów odpytujących je z założenia często
+      - Środowiska, w których wielu użytkowników wychodzi do serwera spod jednego adresu
+    en:
+      - Servers behind a load distributor, until they read the original client address
+      - Programming interfaces serving clients that poll them frequently by design
+      - Environments where many users reach the server from a single address
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          # The section belongs to a role service that is not installed by
+          # default, and an absent section is not the same as one turned off.
+          # It is reported as its own state rather than as unable to check,
+          # because the protection is genuinely missing either way - silence
+          # here must not read as a guarantee.
+          $declared = $null -ne (Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/security/dynamicIpSecurity' -ErrorAction SilentlyContinue)
+          if (-not $declared) { 'NOT_INSTALLED' }
+          else {
+            $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+              -Filter 'system.webServer/security/dynamicIpSecurity/denyByRequestRate' `
+              -Name 'enabled' -ErrorAction Stop
+            $value = $raw
+            if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+            if ($null -eq $value) { 'MISSING' } else { ([string]$value).ToUpperInvariant() }
+          }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'TRUE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # The server's own backup covers this one, because the section lives in the
+    # server configuration file. It is taken first, and the individual values
+    # are recorded beside it so that a rollback does not depend on finding the
+    # named backup afterwards.
+    $stamp = 'sentin-dynamic-ip-' + (Get-Date -Format 'yyyyMMddHHmmss')
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $declared = $null -ne (Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/dynamicIpSecurity' -ErrorAction SilentlyContinue)
+    $state = @{}
+    if ($declared) {
+      foreach ($name in @('enabled', 'requests', 'timePeriod')) {
+        $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          -Filter 'system.webServer/security/dynamicIpSecurity/denyByRequestRate' `
+          -Name $name -ErrorAction SilentlyContinue
+        $value = $raw
+        if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+        $state[$name] = [string]$value
+      }
+    }
+    [pscustomobject]@{
+      scope    = 'apphost'
+      filter   = 'system.webServer/security/dynamicIpSecurity/denyByRequestRate'
+      declared = $declared
+      state    = $state
+      backup   = $stamp
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and took a server configuration backup named $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Refuse outright rather than write into a section nobody declared. Setting
+    # a property of an absent section reports success and changes nothing, and
+    # the next audit would then say the protection is missing with no
+    # explanation of why the fix did not take.
+    $declared = $null -ne (Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/dynamicIpSecurity' -ErrorAction SilentlyContinue)
+    if (-not $declared) {
+      throw 'The IP and domain restrictions role service is not installed, so there is nothing to turn on. Install it first, then apply this item again.'
+    }
+    # The threshold is deliberately loose. It stops a tool running hundreds of
+    # times a second without touching an office behind one outgoing address.
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/dynamicIpSecurity/denyByRequestRate' `
+      -Name 'requests' -Value 120
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/dynamicIpSecurity/denyByRequestRate' `
+      -Name 'timePeriod' -Value 5000
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/security/dynamicIpSecurity/denyByRequestRate' `
+      -Name 'enabled' -Value $true
+
+  rollback_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    # The recorded values go back one by one rather than the whole server
+    # configuration being restored. Restoring the backup would also undo
+    # anything else changed since it was taken, which is not what undoing this
+    # single item means.
+    if (-not $b.declared) {
+      throw 'The section was absent before the change, so there is no earlier state to return to. Uninstall the role service to go back.'
+    }
+    foreach ($name in @('requests', 'timePeriod', 'enabled')) {
+      $value = $b.state.$name
+      if ($null -ne $value -and $value -ne '') {
+        if ($name -eq 'enabled') { $value = [bool]::Parse($value) } else { $value = [int]$value }
+        Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          -Filter 'system.webServer/security/dynamicIpSecurity/denyByRequestRate' `
+          -Name $name -Value $value
+      }
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/security/dynamicipsecurity/
+  - https://learn.microsoft.com/iis/get-started/whats-new-in-iis-8/iis-80-dynamic-ip-address-restrictions
+
+notes:
+  pl: |
+    Mechanizm należy do usługi roli, której nie ma w domyślnej instalacji
+    serwera. Gdy jej brak, sprawdzenie zwraca własny stan mówiący wprost, że
+    nie ma czego włączać, i traktuje to jako punkt niespełniony — bo ochrony
+    faktycznie nie ma. Naprawa w takiej sytuacji odmawia działania
+    z czytelnym komunikatem, zamiast zapisywać ustawienie w nieistniejącej
+    sekcji; taki zapis zgłasza powodzenie i nie robi nic.
+
+    Próg — sto dwadzieścia żądań w pięć sekund — jest naszym wyborem, nie
+    wartością z benchmarku. Dobrany tak, żeby mieścił zwykłą pracę biura
+    wychodzącego spod jednego adresu i nie mieścił narzędzia chodzącego
+    w pętli. Zawężenie go wymaga spojrzenia we własne dzienniki.
+
+    Reguła nie ustawia trybu, w którym odrzucone żądanie dostaje zamiast
+    odmowy zerwane połączenie, ani odczytu adresu pierwotnego zza
+    rozdzielacza obciążenia. Obie rzeczy to osobne decyzje i osobne punkty.
+  en: |
+    The mechanism belongs to a role service absent from a default installation
+    of the server. Where it is missing, the check returns a state of its own
+    saying outright that there is nothing to turn on, and treats that as an item
+    unmet - because the protection genuinely is absent. The fix in that situation
+    refuses to run with a readable message rather than writing a setting into a
+    section that does not exist; such a write reports success and does nothing.
+
+    The threshold - a hundred and twenty requests in five seconds - is our
+    choice, not a value from the benchmark. It is picked to accommodate the
+    normal work of an office leaving under one address and not to accommodate a
+    tool running in a loop. Narrowing it calls for a look at one's own logs.
+
+    The rule does not set the mode in which a refused request has its connection
+    dropped instead of being answered, nor the reading of the original address
+    from behind a load distributor. Both are separate decisions and separate
+    items.

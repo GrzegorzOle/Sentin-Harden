@@ -1,0 +1,275 @@
+id: iis-machine-key-validation-method
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: ASP.NET Configuration Recommendations
+  title:
+    pl: Pieczęć chroniąca dane sesji liczona nowoczesnym algorytmem
+    en: The seal protecting session data is computed with a modern algorithm
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Aplikacja odsyła część swojego stanu do przeglądarki i przyjmuje go z
+    powrotem — stan kontrolek na stronie, ciasteczko uwierzytelniające, token
+    chroniący formularz. Skoro te dane spędzają czas po stronie użytkownika,
+    serwer musi umieć rozpoznać, że wróciły niezmienione. Służy do tego
+    pieczęć liczona kluczem, którego zna tylko on. To ustawienie rozstrzyga,
+    jakim algorytmem jest liczona.
+
+    Co to odbiera atakującemu: możliwość podrobienia pieczęci. Starsze
+    algorytmy liczą ją w sposób, który pozwala dopisać coś do danych
+    i przeliczyć pieczęć bez znajomości klucza — a serwer przyjmuje wynik jako
+    własny. Stamtąd droga prowadzi wprost do podmiany tożsamości w ciasteczku
+    albo do wstrzyknięcia danych, które aplikacja odczyta jako swoje.
+
+    Po zmianie pieczęć liczy algorytm, dla którego taka sztuczka nie działa:
+    bez klucza nie da się wyprodukować pieczęci pasującej do zmienionych
+    danych, więc podrobiony stan zostaje odrzucony, zamiast zostać wykonany.
+  en: |
+    An application sends part of its own state to the browser and takes it back -
+    the state of the controls on a page, the authentication cookie, the token
+    guarding a form. Since those data spend time on the user's side, the server
+    has to be able to tell that they came back unchanged. A seal computed with a
+    key only the server knows does that. This setting decides which algorithm
+    computes it.
+
+    What it takes away from an attacker - the ability to forge the seal. Older
+    algorithms compute it in a way that allows something to be appended to the
+    data and the seal recomputed without knowing the key, and the server takes
+    the result as its own. From there the road leads straight to swapping the
+    identity in a cookie, or to injecting data the application reads as its own.
+
+    After the change the seal is computed by an algorithm for which that trick
+    does not work - without the key no seal matching altered data can be
+    produced, so forged state is rejected instead of being acted on.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga świadomego wdrożenia z jednego powodu: unieważnia wszystko,
+    co zostało opieczętowane starym algorytmem. Dzieje się to w chwili zapisu,
+    bez ostrzeżenia i bez okresu przejściowego.
+
+    Praktycznie znaczy to, że każdy zalogowany użytkownik zostaje wylogowany,
+    a strona otwarta w przeglądarce w momencie zmiany przestaje działać —
+    odesłanie formularza z niej kończy się błędem stanu, nie komunikatem
+    o wygaśnięciu sesji. Użytkownik zobaczy stronę błędu, nie prośbę
+    o ponowne zalogowanie.
+
+    Drugi przypadek jest poważniejszy i łatwy do przeoczenia: gdy ta sama
+    aplikacja stoi na kilku serwerach za rozdzielaczem ruchu, wszystkie muszą
+    mieć ten sam klucz i ten sam algorytm. Zmiana na jednym z nich sprawia, że
+    pieczęcie wystawione przez pozostałe przestają być uznawane — użytkownicy
+    zaczynają być wylogowywani losowo, zależnie od tego, na który serwer
+    trafili. Objaw wygląda na awarię przypadkową i bywa diagnozowany godzinami.
+
+    Wdrażaj więc w oknie serwisowym i na wszystkich serwerach naraz, a przed
+    zmianą sprawdź, czy któraś aplikacja nie nadpisuje tego ustawienia we
+    własnym pliku konfiguracyjnym.
+  en: |
+    The change calls for a planned rollout for one reason - it invalidates
+    everything sealed with the old algorithm. That happens at the moment of the
+    write, with no warning and no transition period.
+
+    In practice this means every signed-in user is signed out, and a page open in
+    a browser at the moment of the change stops working - submitting a form from
+    it ends in a state error, not a message about an expired session. The user
+    sees an error page, not a request to sign in again.
+
+    The second case is graver and easy to miss - where the same application
+    stands on several servers behind a traffic distributor, all of them must have
+    the same key and the same algorithm. Changing it on one means the seals
+    issued by the others stop being accepted - users start being signed out at
+    random, depending on which server they reached. The symptom looks like a
+    chance failure and is sometimes diagnosed for hours.
+
+    So roll it out in a service window and on every server at once, and before
+    the change check whether some application overrides this setting in a
+    configuration file of its own.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - encryption-and-tls
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Wszyscy zalogowani użytkownicy zostają wylogowani w chwili zapisu ustawienia
+      - Strona otwarta w przeglądarce w momencie zmiany zwraca błąd stanu po odesłaniu formularza, a nie komunikat o wygaśnięciu sesji
+      - Aplikacja stojąca na kilku serwerach zaczyna wylogowywać użytkowników losowo, dopóki wszystkie serwery nie zostaną zmienione
+      - Starsze aplikacje przypisane do zgodności z wcześniejszą wersją środowiska mogą odmówić uruchomienia z nowym algorytmem
+      - Zaplanowane zadania i integracje trzymające otwartą sesję stracą ją bez czytelnego błędu
+    en:
+      - Every signed-in user is signed out at the moment the setting is written
+      - A page open in a browser at the moment of the change returns a state error on submitting a form, not a message about an expired session
+      - An application standing on several servers starts signing users out at random until every server has been changed
+      - Older applications pinned to compatibility with an earlier version of the runtime may refuse to start with the new algorithm
+      - Scheduled jobs and integrations holding a session open lose it with no readable error
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Aplikacje rozłożone na kilka serwerów, dopóki zmiana nie zostanie wykonana na wszystkich w jednym oknie
+      - Środowiska, w których pracuje się w godzinach przyjęcia zgłoszeń, bo wylogowanie obejmie wszystkich naraz
+      - Aplikacje przypisane do zgodności ze starszą wersją środowiska uruchomieniowego
+    en:
+      - Applications spread over several servers, until the change has been made on all of them in one window
+      - Environments worked in during business hours, since the sign-out reaches everybody at once
+      - Applications pinned to compatibility with an older version of the runtime
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          # Read from the framework root, where this section may be set as a
+          # server-wide default. The server configuration file does not declare
+          # this section group at all.
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT' `
+            -Filter 'system.web/machineKey' -Name 'validation' -ErrorAction Stop
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          else {
+            # The names of the weak algorithms are not repeated here. Anything
+            # other than the three keyed variants is reported as it stands, so
+            # a value nobody anticipated shows up as itself rather than being
+            # folded into a verdict.
+            $name = [string]$value
+            if ($name -eq 'HMACSHA256' -or $name -eq 'HMACSHA384' -or $name -eq 'HMACSHA512') {
+              'STRONG'
+            } else { $name }
+          }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'STRONG'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # This setting lives in the framework root configuration and not in the
+    # server configuration file, so the server's own backup mechanism does not
+    # cover it. The file itself is copied instead - both variants of it,
+    # because a 32-bit application pool reads a different copy than a 64-bit
+    # one does.
+    $files = @()
+    foreach ($base in @('Framework', 'Framework64')) {
+      $source = Join-Path $env:windir ('Microsoft.NET\' + $base + '\v4.0.30319\Config\web.config')
+      if (Test-Path $source) {
+        $copy = '{{backup_file}}' + '.' + $base + '.web.config'
+        Copy-Item -Path $source -Destination $copy -Force
+        $files += [pscustomobject]@{ source = $source; copy = $copy }
+      }
+    }
+    if ($files.Count -eq 0) {
+      throw 'The framework root configuration was not found, so nothing was secured and nothing may be changed.'
+    }
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT' `
+      -Filter 'system.web/machineKey' -Name 'validation' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'framework-root'
+      filter  = 'system.web/machineKey'
+      name    = 'validation'
+      value   = [string]$value
+      existed = ($null -ne $value)
+      files   = $files
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and copied the framework root configuration"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # The write goes to the framework root configuration, which is where this
+    # section may be set as a server-wide default. The server configuration
+    # file does not declare this section group at all, so a write aimed there
+    # fails rather than taking effect quietly.
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT' `
+      -Filter 'system.web/machineKey' -Name 'validation' -Value 'HMACSHA256'
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    # The whole file goes back rather than one attribute being rewritten. The
+    # copy taken before the change is the only complete record of what the
+    # framework root configuration held, and putting it back cannot leave the
+    # file half restored.
+    foreach ($f in $b.files) {
+      if (-not (Test-Path $f.copy)) {
+        throw 'A copy recorded in the backup file is missing, so nothing was restored.'
+      }
+    }
+    foreach ($f in $b.files) {
+      Copy-Item -Path $f.copy -Destination $f.source -Force
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/dotnet/api/system.web.configuration.machinekeysection.validation
+  - https://learn.microsoft.com/aspnet/whitepapers/aspnet4/breaking-changes
+
+notes:
+  pl: |
+    Sprawdzenie uznaje za spełnione trzy algorytmy z rodziny liczącej pieczęć
+    kluczem, a każdą inną wartość zgłasza dosłownie — także taką, której nikt tu
+    nie przewidział. Naprawa wpisuje najsłabszy z tych trzech, bo to on jest
+    najszerzej obsługiwany; wyższe warianty ustawia się ręcznie i wymagają
+    sprawdzenia, czy aplikacja je przyjmie.
+
+    Ustawienie i klucz to dwie różne rzeczy. Ta reguła dotyczy wyłącznie
+    algorytmu; sam klucz domyślnie generuje się osobno dla każdej aplikacji
+    i przy pojedynczym serwerze nie wymaga uwagi. Przy aplikacji rozłożonej na
+    kilka maszyn klucz trzeba ustawić jawnie i jednakowo — to osobne zadanie,
+    poza zakresem tego punktu.
+
+    Zapis idzie do konfiguracji głównej środowiska uruchomieniowego. Aplikacja
+    z własnym wpisem w swoim pliku konfiguracyjnym nadpisuje tę wartość
+    i wymaga poprawki u siebie.
+  en: |
+    The check takes three algorithms from the family that computes the seal with
+    a key as compliant, and reports any other value literally - including one
+    nobody here anticipated. The fix writes the weakest of the three, since that
+    is the most widely supported; the higher variants are set by hand and call
+    for a check that the application accepts them.
+
+    The setting and the key are two different things. This rule concerns the
+    algorithm alone; the key itself is generated separately for each application
+    by default and on a single server needs no attention. For an application
+    spread over several machines the key has to be set explicitly and
+    identically - a separate task, outside the scope of this item.
+
+    The write goes to the framework root configuration. An application with an
+    entry of its own in its configuration file overrides that value and calls for
+    a correction there.

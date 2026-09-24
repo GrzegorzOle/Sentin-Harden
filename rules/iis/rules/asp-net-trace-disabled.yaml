@@ -1,0 +1,199 @@
+id: iis-asp-net-trace-disabled
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: ASP.NET Configuration Recommendations
+  title:
+    pl: Śledzenie żądań w aplikacji wyłączone
+    en: Tracing of requests in the application switched off
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Śledzenie żądań to narzędzie do rozwiązywania problemów. Zapisuje przebieg
+    obsługi żądania i wystawia go pod osobnym adresem: nagłówki, ciasteczka, dane
+    formularza, zmienne serwera, zapytania do bazy.
+
+    Włączone na maszynie dostępnej z zewnątrz jest to jedna z najkrótszych dróg do
+    przejęcia sesji. Ciasteczko uwierzytelniające widoczne w zapisie śledzenia
+    wystarczy skopiować — nie trzeba łamać hasła ani wykorzystywać żadnej luki.
+    Razem z danymi formularza wypływają też hasła wpisywane przez użytkowników
+    i parametry połączenia z bazą.
+
+    Jest to narzędzie warsztatowe, które na serwerze produkcyjnym nie ma czego
+    szukać.
+  en: |
+    Request tracing is a troubleshooting tool. It records the course of serving a
+    request and exposes it at an address of its own - headers, cookies, form data,
+    server variables, database queries.
+
+    Switched on where the machine is reachable from outside, it is one of the
+    shortest roads to a session being taken over. An authentication cookie visible
+    in the trace record only has to be copied - no password has to be broken and no
+    flaw used. Along with the form data, passwords typed by users and database
+    connection parameters flow out as well.
+
+    It is a workshop tool with no business on a production server.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo na maszynach testowych śledzenie bywa włączone
+    celowo i ktoś z niego właśnie korzysta. Wyłączenie zabierze mu narzędzie
+    w trakcie pracy, a objawem będzie pusta strona zamiast zapisu przebiegu.
+
+    Na serwerze produkcyjnym włączone śledzenie jest niemal zawsze pozostałością
+    po rozwiązywaniu problemu, o której zapomniano. Wtedy wyłączenie nikomu nie
+    przeszkodzi — ale warto to najpierw ustalić, a nie zakładać.
+
+    Koszt poza tym jest ten sam co przy pozostałych zmianach konfiguracji:
+    odświeżenie pul aplikacji przerywa żądania w locie.
+  en: |
+    The change calls for a review, since on test machines tracing is sometimes
+    switched on deliberately and somebody is using it right then. Switching it off
+    takes the tool away mid-work, and the symptom is an empty page in place of the
+    recorded course.
+
+    On a production server, tracing switched on is nearly always a leftover from
+    troubleshooting that was forgotten. Then switching it off troubles nobody - but
+    that is worth establishing first rather than assuming.
+
+    The cost beyond that is the same as with the other configuration changes - the
+    pool recycle breaks requests in flight.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - diagnostics-and-reporting
+  what_breaks:
+    pl:
+      - Adres wystawiający zapis przebiegu żądania przestanie zwracać dane
+      - Osoba rozwiązująca właśnie problem na maszynie testowej straci narzędzie w trakcie pracy
+      - Odświeżenie pul aplikacji przerwie żądania w locie i skasuje sesje trzymane w pamięci procesu
+      - Zapisy śledzenia zebrane wcześniej nie znikają i trzeba je usunąć osobno
+      - Strony, skrypty, uwierzytelnianie, przesyłanie plików i dzienniki serwera pozostają bez zmian
+    en:
+      - The address exposing the recorded course of a request stops returning data
+      - Somebody troubleshooting right then on a test machine loses the tool mid-work
+      - The pool recycle breaks requests in flight and clears sessions held in the process memory
+      - Trace records gathered earlier do not go away and have to be removed apart
+      - Pages, scripts, authentication, file uploads and the server logs are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Maszyny warsztatowe, na których ktoś właśnie rozwiązuje problem przy użyciu śledzenia
+      - Środowiska testowe odcięte od sieci, w których śledzenie włączono świadomie i na stałe
+    en:
+      - Workshop machines where somebody is troubleshooting with tracing right then
+      - Test environments cut off from the network where tracing was switched on deliberately and for good
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.web/trace' -Name 'enabled' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([string]$value -eq 'True') { 'TRUE' }
+          elseif ([string]$value -eq 'False') { 'FALSE' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'FALSE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/trace' -Name 'enabled' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.web/trace'
+      name    = 'enabled'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/trace' -Name 'enabled' -Value $false
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/dotnet/api/system.web.configuration.tracesection
+
+notes:
+  pl: |
+    Wyłączenie zamyka dostęp do zapisu, ale nie kasuje zapisów zebranych
+    wcześniej — te trzeba usunąć osobno. Zasada uzupełnia wyłączenie trybu
+    diagnostycznego aplikacji i obie ocenia się razem, bo obie zdejmują z serwera
+    produkcyjnego narzędzia warsztatowe.
+  en: |
+    Switching it off shuts access to the record but does not clear the records
+    gathered earlier - those have to be removed apart. The rule completes the
+    switching off of the application debug mode, and the two are judged together,
+    since both take workshop tools off a production server.

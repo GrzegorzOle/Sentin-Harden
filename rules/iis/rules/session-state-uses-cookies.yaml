@@ -1,0 +1,202 @@
+id: iis-session-state-uses-cookies
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: ASP.NET Configuration Recommendations
+  title:
+    pl: Stan sesji przenoszony ciasteczkiem, nie adresem
+    en: Session state carried by a cookie, not by the address
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Gdy przeglądarka nie przyjmuje ciasteczek, aplikacja może wpisać identyfikator
+    sesji wprost do adresu. Był to sposób na obsłużenie starych przeglądarek
+    i dziś jest wyłącznie kłopotem.
+
+    Identyfikator w adresie wycieka wszędzie tam, gdzie trafia adres. Zapisuje się
+    w dziennikach serwera, w historii przeglądarki, w zakładkach, w nagłówku
+    odsyłającym wysyłanym do obcych witryn. Użytkownik, który wklei komuś odnośnik,
+    oddaje razem z nim swoją sesję i zwykle nie ma pojęcia, że to zrobił. Ciasteczko
+    ma przynajmniej tę własność, że nie da się go przekleić.
+
+    Wymuszenie ciasteczek sprawia, że identyfikator sesji nie podróżuje w miejscu
+    przeznaczonym do pokazywania i kopiowania.
+  en: |
+    Where a browser does not take cookies, the application may write the session
+    identifier straight into the address. It was a way of serving old browsers and
+    today it is trouble and nothing else.
+
+    An identifier in the address leaks everywhere the address reaches. It is
+    written into the server logs, into the browser history, into the bookmarks,
+    into the referring header sent to outside sites. A user who pastes somebody a
+    link hands over their session with it and usually has no idea of having done
+    so. A cookie has at least the property of not being pasteable.
+
+    Forcing cookies means the session identifier does not travel in a place meant
+    for showing and copying.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo dotknie klientów, którzy ciasteczek nie
+    przyjmują. W praktyce nie są to dziś przeglądarki, tylko skrypty i integracje
+    wywołujące zasób bez obsługi ciasteczek — takie połączenie straci sesję przy
+    pierwszym przekierowaniu i zacznie dostawać stronę logowania zamiast danych.
+
+    Objawem po stronie integracji jest odpowiedź poprawna formalnie, ale
+    z niewłaściwą treścią. Nie pojawia się błąd, więc problem bywa zauważany
+    dopiero po czasie, po pustych wynikach w raporcie.
+
+    Przed zmianą warto ustalić, czy jakakolwiek integracja korzysta z adresów
+    z wpisanym identyfikatorem sesji. Odnośniki i zakładki zapisane w takiej
+    postaci przestaną otwierać sesję i zaczną prowadzić do logowania.
+  en: |
+    The change calls for a review, since it touches clients that do not take
+    cookies. In practice these are not browsers today but scripts and integrations
+    calling the resource with no cookie handling - such a connection loses its
+    session on the first redirection and begins receiving the login page in place
+    of data.
+
+    The symptom on the integration side is an answer formally correct but with the
+    wrong contents. No error appears, so the trouble tends to be noticed only later,
+    after empty results in a report.
+
+    Before the change it is worth establishing whether any integration uses
+    addresses with the session identifier written in. Links and bookmarks saved in
+    that form stop opening a session and begin leading to the login page.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Skrypty i integracje wywołujące zasób bez obsługi ciasteczek stracą sesję i dostaną stronę logowania
+      - Odpowiedź dla takiej integracji jest formalnie poprawna, więc puste wyniki bywają zauważane dopiero po czasie
+      - Odnośniki i zakładki z wpisanym identyfikatorem sesji przestaną otwierać sesję
+      - Klienci z wyłączoną obsługą ciasteczek w przeglądarce nie zalogują się w ogóle
+      - Zwykłe logowanie w przeglądarce, przesyłanie plików, uprawnienia i zawartość stron pozostają bez zmian
+    en:
+      - Scripts and integrations calling the resource with no cookie handling lose the session and receive the login page
+      - The answer to such an integration is formally correct, so empty results tend to be noticed only later
+      - Links and bookmarks with the session identifier written in stop opening a session
+      - Clients with cookie handling switched off in the browser cannot log in at all
+      - Ordinary logging in through a browser, file uploads, permissions and page contents are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Zasoby wywoływane przez integracje, które nie obsługują ciasteczek
+      - Środowiska, w których odnośniki z identyfikatorem sesji rozesłano i są nadal używane
+    en:
+      - Resources called by integrations that do not handle cookies
+      - Environments where links holding the session identifier were sent out and are still in use
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.web/sessionState' -Name 'cookieless' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'UseCookies'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/sessionState' -Name 'cookieless' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.web/sessionState'
+      name    = 'cookieless'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/sessionState' -Name 'cookieless' -Value 'UseCookies'
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/dotnet/api/system.web.configuration.sessionstatesection
+
+notes:
+  pl: |
+    Odczyt zwraca nazwę trybu zastaną w konfiguracji, żeby było widać, który
+    wariant jest ustawiony, a nie tylko że jest niewłaściwy. Tryb dobierający
+    sposób przenoszenia automatycznie także nie spełnia punktu, bo pozostawia
+    przejście na adres w rękach klienta.
+  en: |
+    The reading returns the mode name found in the configuration, so that it is
+    visible which variant is set rather than only that it is the wrong one. The
+    mode choosing the way of carrying automatically does not meet the item either,
+    since it leaves the fall back to the address in the client hands.

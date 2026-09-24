@@ -1,0 +1,201 @@
+id: iis-x-powered-by-header-removed
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: ASP.NET Configuration Recommendations
+  title:
+    pl: Nagłówek z informacją o technologii usunięty
+    en: The header naming the technology removed
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Do każdej odpowiedzi serwer dokłada nagłówek mówiący, na czym stoi aplikacja.
+    Odwiedzający go nie widzi, ale widzi go każde narzędzie czytające odpowiedź.
+
+    Sam nagłówek niczego nie otwiera. Jest natomiast pierwszym krokiem rozpoznania,
+    bo zamienia pytanie „czy tu coś podatnego działa" w pytanie „która wersja".
+    Narzędzia skanujące sieć zbierają go masowo i układają z niego listę celów
+    pasujących do świeżo ogłoszonej luki. Maszyna, która nie odpowiada na to
+    pytanie, po prostu nie trafia na taką listę.
+
+    Usunięcie nagłówka nie utwardza aplikacji, tylko przestaje ją reklamować.
+  en: |
+    The server adds a header to every response naming what the application rests
+    on. A visitor does not see it, but every tool reading the response does.
+
+    The header alone opens nothing. It is, however, the first step of
+    reconnaissance, since it turns the question "is something vulnerable running
+    here" into the question "which version". Tools scanning the network gather it
+    in bulk and build from it a list of targets matching a freshly announced flaw.
+    A machine that does not answer that question simply does not reach such a list.
+
+    Removing the header does not harden the application, it merely stops
+    advertising it.
+
+disruption_description:
+  pl: |
+    Sam nagłówek nie niesie żadnej funkcji — usunięcie go jest dla odwiedzających
+    niewidoczne. Zmiana trafia jednak do konfiguracji serwera, a każda taka zmiana
+    odświeża pule aplikacji: żądania będące w locie mogą zostać przerwane, a stan
+    sesji trzymany w pamięci procesu przepada.
+
+    To jest jedyny realny koszt tej zasady i to on decyduje o klasie. Punkt
+    wygląda na całkowicie niegroźny i taki jest w treści, ale zastosowany na
+    serwerze produkcyjnym w godzinach pracy wyloguje ludzi trzymających sesję
+    w pamięci procesu.
+
+    Rzadziej, ale zdarza się: narzędzia monitorujące bywają ustawione tak, że
+    sprawdzają obecność tego nagłówka jako dowód, iż odpowiada właściwy serwer.
+    Taki test zacznie zgłaszać awarię.
+  en: |
+    The header itself carries no function - removing it is invisible to visitors.
+    The change does, however, reach the server configuration, and every such change
+    recycles the application pools - requests in flight may be broken, and session
+    state held in the process memory is lost.
+
+    That is the only real cost of this rule and it is what settles its class. The
+    item looks wholly harmless and in substance it is, but applied to a production
+    server during working hours it logs out people whose session is held in the
+    process memory.
+
+    More rarely, but it happens - monitoring tools are sometimes set to check for
+    this header as proof that the right server is answering. Such a test begins to
+    report a fault.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+  what_breaks:
+    pl:
+      - Odświeżenie pul aplikacji przerwie żądania w locie i skasuje sesje trzymane w pamięci procesu
+      - Narzędzia monitorujące sprawdzające obecność tego nagłówka zaczną zgłaszać awarię
+      - Dla odwiedzającego zmiana jest niewidoczna, bo nagłówek nie niesie żadnej funkcji
+      - Nagłówek dodawany przez samą aplikację w kodzie nie zniknie i trzeba go usunąć osobno
+      - Strony, skrypty, uwierzytelnianie, przesyłanie plików i uprawnienia pozostają bez zmian
+    en:
+      - The pool recycle breaks requests in flight and clears sessions held in the process memory
+      - Monitoring tools checking for this header begin to report a fault
+      - For a visitor the change is invisible, since the header carries no function
+      - A header added by the application itself in code does not go away and has to be removed apart
+      - Pages, scripts, authentication, file uploads and permissions are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwery produkcyjne w godzinach pracy, dopóki nie ma okna na odświeżenie pul aplikacji
+      - Środowiska, w których sprawdzanie tego nagłówka wpięto w monitorowanie dostępności
+    en:
+      - Production servers during working hours, until there is a window for the pool recycle
+      - Environments where checking for this header has been wired into availability monitoring
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $h = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.webServer/httpProtocol/customHeaders' -ErrorAction Stop
+          # The header is one entry of a collection rather than an attribute, so the
+          # reading looks for it by name instead of reading a single value.
+          $entry = $h.Collection | Where-Object { $_.name -eq 'X-Powered-By' }
+          if ($null -eq $entry) { 'ABSENT' } else { 'PRESENT' }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'ABSENT'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server own
+    # mechanism and covers the whole configuration; the entry written below lets
+    # the rollback put back one header without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $h = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/httpProtocol/customHeaders' -ErrorAction SilentlyContinue
+    $entry = $h.Collection | Where-Object { $_.name -eq 'X-Powered-By' }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.webServer/httpProtocol/customHeaders'
+      name    = 'X-Powered-By'
+      value   = [string]$entry.value
+      existed = ($null -ne $entry)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # The entry is taken out of the collection rather than being set empty. A
+    # header written with an empty value is still sent, merely without contents,
+    # and that tells the same thing about the server.
+    Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.webServer/httpProtocol/customHeaders' -Name '.' `
+      -AtElement @{name='X-Powered-By'} -ErrorAction SilentlyContinue
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if ($b.existed) {
+      Add-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name '.' -Value @{name=$b.name; value=$b.value}
+    } else {
+      # The header was not there before the change, so putting it back would add
+      # something this server never sent. The named configuration backup recorded
+      # in that file stays available for a full restore.
+      'Nothing to restore, the header was absent before the change.'
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/iis/configuration/system.webserver/httpprotocol/customheaders/
+
+notes:
+  pl: |
+    Pozycja usuwana jest z kolekcji, a nie ustawiana na wartość pustą — nagłówek
+    zapisany jako pusty nadal jest wysyłany i mówi to samo. Wycofanie odtwarza go
+    wyłącznie wtedy, gdy przed zmianą faktycznie istniał; w przeciwnym razie nie
+    dopisuje niczego, czego serwer sam nie wysyłał. Nagłówek dodawany przez kod
+    aplikacji jest poza zasięgiem tej zasady.
+  en: |
+    The entry is taken out of the collection rather than set to an empty value - a
+    header written as empty is still sent and says the same thing. The rollback
+    restores it only where it really existed before the change; otherwise it adds
+    nothing the server did not send by itself. A header added by application code
+    lies outside the reach of this rule.

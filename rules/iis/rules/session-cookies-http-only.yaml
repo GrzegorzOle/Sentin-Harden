@@ -1,0 +1,207 @@
+id: iis-session-cookies-http-only
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: ASP.NET Configuration Recommendations
+  title:
+    pl: Ciasteczka niedostępne dla skryptów w przeglądarce
+    en: Cookies out of reach of scripts in the browser
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Domyślnie skrypt działający na stronie może odczytać ciasteczka tej strony.
+    Dotyczy to każdego skryptu, także tego, który znalazł się tam nie z woli
+    autora.
+
+    Na tym opiera się cała wartość wstrzyknięcia skryptu. Kod podstawiony przez
+    komentarz, nazwę pliku albo parametr adresu odczytuje ciasteczko sesji
+    i wysyła je dalej — od tej chwili atakujący jest zalogowany jako ofiara,
+    bez znajomości hasła i bez drugiego składnika. Znacznik odbierający skryptom
+    dostęp do ciasteczka odcina ten krok: skrypt nadal się wykona, ale wyjdzie
+    z niego z pustymi rękami.
+
+    Nie zastępuje to oczyszczania danych wejściowych. Ogranicza natomiast skutki
+    wstrzyknięcia, które i tak się zdarzy.
+  en: |
+    By default a script running on a page may read that page cookies. This holds
+    for every script, including one that got there against the author will.
+
+    The whole worth of a script injection rests on this. Code placed through a
+    comment, a file name or an address parameter reads the session cookie and sends
+    it onward - from that moment the attacker is logged in as the victim, with no
+    knowledge of the password and no second factor. The marker taking cookie access
+    away from scripts cuts that step off - the script still runs, but leaves
+    empty-handed.
+
+    This does not stand in for cleaning the input data. It does limit the effects
+    of an injection that happens anyway.
+
+disruption_description:
+  pl: |
+    Zmiana wymaga sprawdzenia, bo część aplikacji czyta własne ciasteczka
+    skryptem — najczęściej po to, żeby rozpoznać zalogowanego użytkownika bez
+    pytania serwera albo żeby przenieść znacznik do wywołania w tle.
+
+    Objawem jest strona, która wczytuje się poprawnie, ale zachowuje się tak,
+    jakby nikt nie był zalogowany: znika nazwa użytkownika, wywołania w tle
+    zwracają odmowę, koszyk albo formularz gubi stan. Reszta witryny działa, więc
+    rozpoznanie bywa długie.
+
+    Przed zmianą warto przejrzeć skrypty pod kątem odwołań do ciasteczek.
+    Właściwą naprawą dla aplikacji, która ich potrzebuje, jest przeniesienie
+    takiego znacznika do osobnego ciasteczka bez danych uwierzytelniających — nie
+    zniesienie tej zasady.
+  en: |
+    The change calls for a review, since some applications read their own cookies
+    with a script - most often to recognise a logged-in user without asking the
+    server, or to carry a marker into a background call.
+
+    The symptom is a page that loads properly but behaves as though nobody were
+    logged in - the user name disappears, background calls return a refusal, a
+    basket or a form loses its state. The rest of the site works, so finding the
+    cause tends to take long.
+
+    Before the change it is worth reviewing the scripts for references to cookies.
+    The proper repair for an application that needs them is moving such a marker
+    into a separate cookie holding no authentication data rather than lifting this
+    rule.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - scripting-and-automation
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Skrypty odczytujące ciasteczko sesji przestaną je widzieć i zachowają się tak, jakby nikt nie był zalogowany
+      - Wywołania w tle przenoszące znacznik z ciasteczka zaczną zwracać odmowę
+      - Strona wczytuje się poprawnie, więc objaw wygląda na błąd aplikacji, a nie na zmianę ustawienia
+      - Ciasteczka ustawiane samodzielnie w kodzie aplikacji nie są objęte i trzeba je poprawić osobno
+      - Logowanie, przesyłanie plików, uprawnienia i zawartość stron pozostają bez zmian
+    en:
+      - Scripts reading the session cookie stop seeing it and behave as though nobody were logged in
+      - Background calls carrying a marker out of the cookie begin returning a refusal
+      - The page loads properly, so the symptom looks like an application error rather than a changed setting
+      - Cookies set by hand in application code are not covered and have to be corrected apart
+      - Logging in, file uploads, permissions and page contents are all unchanged
+  interruption: service-restart
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Aplikacje odczytujące własne ciasteczko sesji skryptem po stronie przeglądarki
+      - Zasoby, na których znacznik z ciasteczka przenoszony jest do wywołań w tle
+    en:
+      - Applications reading their own session cookie with a script on the browser side
+      - Resources where a marker out of the cookie is carried into background calls
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.web/httpCookies' -Name 'httpOnlyCookies' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([string]$value -eq 'True') { 'TRUE' }
+          elseif ([string]$value -eq 'False') { 'FALSE' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'TRUE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/httpCookies' -Name 'httpOnlyCookies' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.web/httpCookies'
+      name    = 'httpOnlyCookies'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/httpCookies' -Name 'httpOnlyCookies' -Value $true
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/dotnet/api/system.web.configuration.httpcookiessection
+
+notes:
+  pl: |
+    Ustawienie obejmuje ciasteczka wystawiane przez środowisko wykonawcze.
+    Ciasteczka tworzone samodzielnie w kodzie niosą własny znacznik i pozostają
+    poza zasięgiem tej zasady. Ocenia się ją razem z wymogiem połączenia
+    szyfrowanego, bo dopiero obie razem zamykają sesję.
+  en: |
+    The setting covers the cookies issued by the runtime. Cookies created by hand
+    in code carry a marker of their own and stay outside the reach of this rule. It
+    is judged together with the requirement of an encrypted connection, since only
+    the two together shut a session.

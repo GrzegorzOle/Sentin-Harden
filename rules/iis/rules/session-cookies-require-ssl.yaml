@@ -1,0 +1,212 @@
+id: iis-session-cookies-require-ssl
+
+benchmark:
+  name: CIS Microsoft IIS Benchmark
+  version: TBD
+  item: TBD
+  section: ASP.NET Configuration Recommendations
+  title:
+    pl: Ciasteczka wysyłane wyłącznie połączeniem szyfrowanym
+    en: Cookies sent over an encrypted connection only
+  level: 1
+  profile: application
+
+platform:
+  system: iis
+
+risk_category: high
+disruption: needs-planned-rollout
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Ciasteczko sesji jest odpowiednikiem hasła — kto je ma, ten jest zalogowany.
+    Bez tego ustawienia przeglądarka odeśle je także połączeniem nieszyfrowanym,
+    jeżeli tylko trafi na adres bez szyfrowania.
+
+    Wystarczy jedno takie żądanie. Obrazek wstawiony w treści, stary odnośnik
+    w zakładkach, przekierowanie z adresu bez szyfrowania — i ciasteczko leci
+    siecią otwartym tekstem. W sieci współdzielonej przechwycenie go nie wymaga
+    niczego poza nasłuchem, a przejęta sesja nie różni się niczym od
+    prawidłowego zalogowania.
+
+    Ustawienie każe przeglądarce odmówić wysłania ciasteczka, gdy połączenie nie
+    jest szyfrowane. Jest to zabezpieczenie po stronie klienta i działa nawet
+    wtedy, gdy serwer o pomyłce nie wie.
+  en: |
+    A session cookie is the equivalent of a password - whoever holds it is logged
+    in. Without this setting the browser sends it back over an unencrypted
+    connection too, whenever it meets an address without encryption.
+
+    One such request is enough. An image placed in the contents, an old link in
+    the bookmarks, a redirection from an address without encryption - and the
+    cookie travels the network in the clear. On a shared network intercepting it
+    calls for nothing beyond listening, and a session taken over differs in nothing
+    from a proper login.
+
+    The setting tells the browser to refuse sending the cookie where the connection
+    is not encrypted. It is a protection on the client side and works even where
+    the server knows nothing of the mistake.
+
+disruption_description:
+  pl: |
+    To jest zmiana wymagająca świadomego wdrożenia i jedna z niewielu, które
+    potrafią odciąć zasób całkowicie. Jeżeli witryna jest choć częściowo
+    dostępna bez szyfrowania, logowanie na tej części przestanie działać
+    natychmiast: przeglądarka odbierze ciasteczko, ale go nie odeśle, więc
+    użytkownik po zalogowaniu wróci na stronę logowania.
+
+    Objaw jest wyjątkowo mylący, bo wygląda na błąd hasła albo na awarię
+    uwierzytelniania, a nie na ustawienie transportu. Pętla logowania bez
+    komunikatu błędu to typowy obraz tej zmiany wdrożonej bez przygotowania.
+
+    Warunkiem jest to, żeby cała witryna — łącznie ze stroną logowania,
+    zasobami statycznymi i adresami wywoływanymi przez skrypty — chodziła po
+    szyfrowaniu, a adresy bez szyfrowania były przekierowywane. Dopiero wtedy ta
+    zasada jest bezpieczna.
+  en: |
+    This is a change calling for a planned rollout and one of the few able to cut
+    a resource off entirely. Where a site is reachable even partly without
+    encryption, logging in on that part stops working at once - the browser
+    receives the cookie but does not send it back, so after logging in the user
+    returns to the login page.
+
+    The symptom is uncommonly misleading, since it looks like a wrong password or
+    a fault in authentication rather than a transport setting. A login loop with no
+    error message is the typical picture of this change rolled out unprepared.
+
+    The condition is that the whole site - including the login page, the static
+    resources and the addresses called by scripts - runs over encryption, and that
+    addresses without encryption are redirected. Only then is this rule safe.
+
+implementation_consequences:
+  impact_areas:
+    - web-server-services
+    - encryption-and-tls
+    - legacy-applications
+  what_breaks:
+    pl:
+      - Logowanie na części witryny dostępnej bez szyfrowania przestanie działać natychmiast
+      - Użytkownik wpada w pętlę logowania bez komunikatu błędu, bo ciasteczko nie wraca do serwera
+      - Objaw wygląda na błąd hasła albo awarię uwierzytelniania, a nie na ustawienie transportu
+      - Skrypty odwołujące się do adresów bez szyfrowania stracą sesję przy takim wywołaniu
+      - Witryny w całości chodzące po szyfrowaniu, przesyłanie plików, uprawnienia i zawartość stron pozostają bez zmian
+    en:
+      - Logging in on the part of a site reachable without encryption stops working at once
+      - The user falls into a login loop with no error message, since the cookie does not return to the server
+      - The symptom looks like a wrong password or an authentication fault rather than a transport setting
+      - Scripts calling addresses without encryption lose the session on such a call
+      - Sites running wholly over encryption, file uploads, permissions and page contents are all unchanged
+  interruption: service-restart
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Witryny dostępne choć częściowo bez szyfrowania, dopóki cała nie zostanie przeniesiona na połączenie szyfrowane
+      - Zasoby wewnętrzne bez certyfikatu, na których szyfrowanie nie zostało jeszcze uruchomione
+      - Środowiska, w których szyfrowanie kończy się na serwerze pośredniczącym, a dalej ruch idzie otwarty
+    en:
+      - Sites reachable even partly without encryption, until the whole of it has moved to an encrypted connection
+      - Internal resources without a certificate, where encryption has not yet been set up
+      - Environments where encryption ends at an intermediary server and traffic runs open beyond it
+  reversibility: immediate
+
+audit:
+  shell: powershell
+  test_command: |
+    try {
+      # The overlay is judged only where the web server is installed at all.
+      # Without the service the question does not apply, and that is a finding
+      # rather than an inability to check.
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        'NOT_APPLICABLE'
+      }
+      else {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          # The server configuration is unreadable without elevation. That is a
+          # missing privilege, not a setting out of place, so it is said plainly
+          # instead of being reported as an item unmet.
+          [Console]::Error.WriteLine('Reading the web server configuration requires elevation.')
+          'CHECK_ERROR'
+        }
+        else {
+          Import-Module WebAdministration -ErrorAction Stop
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter 'system.web/httpCookies' -Name 'requireSSL' -ErrorAction Stop
+          # The cmdlet hands back an attribute object for some settings and a bare
+          # value for others, so both shapes are reduced to one before comparing.
+          $value = $raw
+          if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+          if ($null -eq $value) { 'MISSING' }
+          elseif ([string]$value -eq 'True') { 'TRUE' }
+          elseif ([string]$value -eq 'False') { 'FALSE' }
+          else { [string]$value }
+        }
+      }
+    } catch {
+      'CHECK_ERROR'
+    }
+  expected: 'TRUE'
+  comparison: equals
+
+remediation:
+  shell: powershell
+  backup_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    # Two backups, on purpose. The named configuration backup is the server's own
+    # mechanism and covers the whole configuration; the value written below lets
+    # the rollback put back one setting without restoring everything around it.
+    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Backup-WebConfiguration -Name $stamp | Out-Null
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/httpCookies' -Name 'requireSSL' -ErrorAction SilentlyContinue
+    $value = $raw
+    if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
+    [pscustomobject]@{
+      scope   = 'server'
+      backup  = $stamp
+      filter  = 'system.web/httpCookies'
+      name    = 'requireSSL'
+      value   = [string]$value
+      existed = ($null -ne $value)
+    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+
+  change_command: |
+    Import-Module WebAdministration -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter 'system.web/httpCookies' -Name 'requireSSL' -Value $true
+
+  rollback_command: |
+    $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
+    Import-Module WebAdministration -ErrorAction Stop
+    if (-not $b.existed) {
+      # Nothing was written here before, so the setting goes back to being
+      # inherited rather than being written with a guessed value. The named
+      # configuration backup recorded in that file stays available for a full
+      # restore of the server configuration.
+      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
+    } else {
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter $b.filter -Name $b.name -Value $b.value
+    }
+
+privileges: administrator
+runnable: true
+
+sources:
+  - https://learn.microsoft.com/dotnet/api/system.web.configuration.httpcookiessection
+
+notes:
+  pl: |
+    Ustawienie obejmuje ciasteczka wystawiane przez środowisko wykonawcze
+    aplikacji. Ciasteczka ustawiane samodzielnie w kodzie mają własny znacznik
+    i trzeba je poprawić osobno. Zasadę ocenia się razem z ustawieniem
+    odbierającym skryptom dostęp do ciasteczek, bo dopiero obie razem zamykają
+    sesję.
+  en: |
+    The setting covers the cookies issued by the application runtime. Cookies set
+    by hand in code carry a marker of their own and have to be corrected apart. The
+    rule is judged together with the setting taking cookie access away from
+    scripts, since only the two together shut a session.

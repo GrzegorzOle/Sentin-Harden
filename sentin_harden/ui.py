@@ -796,18 +796,31 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(ui("copied_rollback", self.language), 6000)
 
     def _update_summary(self) -> None:
-        results = [
-            self.model.result_at(row) for row in range(self.model.rowCount())
-        ]
-        results = [item for item in results if item is not None]
-        if not results:
+        """Counts for the whole scan, with the filtered count in brackets.
+
+        Counting only the visible rows would make the summary move with the
+        filters, and a figure that drops when a filter is set reads as a scan
+        that found less. What was found does not change because of what is on
+        screen, so the two numbers are shown apart.
+        """
+        if not self._results:
             # Only meaningful once something has been scanned; before that the
             # status bar belongs to whatever the scan is saying.
-            if self.model.has_results():
-                self.statusBar().showMessage(ui("no_matches", self.language))
             return
-        counts = summarise(results)
-        self.statusBar().showMessage(ui("summary", self.language, **counts))
+
+        visible = len([
+            item
+            for item in (self.model.result_at(row) for row in range(self.model.rowCount()))
+            if item is not None
+        ])
+        message = ui("summary", self.language, **summarise(self._results))
+        if visible != len(self._results):
+            message += "   " + ui("summary_filtered", self.language, visible=visible)
+        self.statusBar().showMessage(message)
+        if not visible and self.model.has_results():
+            self.statusBar().showMessage(
+                message + "   " + ui("no_matches", self.language)
+            )
 
 
 def main() -> int:

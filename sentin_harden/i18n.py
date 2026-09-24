@@ -152,6 +152,10 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "pl": "{total} reguł: {passed} spełnionych, {failed} niespełnionych, {errors} bez rozstrzygnięcia",
         "en": "{total} rules: {passed} compliant, {failed} non-compliant, {errors} undetermined",
     },
+    "summary_filtered": {
+        "pl": "(widocznych: {visible})",
+        "en": "(visible: {visible})",
+    },
     "no_matches": {
         "pl": "Żaden punkt nie pasuje do ustawionych filtrów.",
         "en": "No item matches the selected filters.",

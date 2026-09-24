@@ -135,10 +135,6 @@ UI_TEXT: dict[str, dict[str, str]] = {
     "detail_areas": {"pl": "Obszary wpływu", "en": "Impact areas"},
     "detail_benchmark": {"pl": "Punkt benchmarku", "en": "Benchmark item"},
     "detail_empty": {"pl": "Wybierz punkt z listy.", "en": "Select an item from the list."},
-    "run_unavailable": {
-        "pl": "Uruchamianie z poziomu aplikacji nie jest jeszcze dostępne. Skopiuj polecenie i wykonaj je we własnej konsoli.",
-        "en": "Running from the application is not available yet. Copy the command and run it in your own console.",
-    },
     "no_impact_assessed": {
         "pl": "Sprawdzono — nie znaleziono skutków eksploatacyjnych.",
         "en": "Checked - no operational consequences found.",
@@ -146,6 +142,199 @@ UI_TEXT: dict[str, dict[str, str]] = {
     "not_assessed": {
         "pl": "Wpływu jeszcze nie oceniono. Brak listy skutków nie oznacza, że ich nie ma.",
         "en": "Impact not assessed yet. An empty list does not mean there are none.",
+    },
+    # -- simulation and execution -----------------------------------------
+    "run": {"pl": "Zastosuj…", "en": "Apply…"},
+    "run_hint": {
+        "pl": (
+            "Pokazuje, co dokładnie się zmieni i czego to dotknie na tej "
+            "maszynie. Nic nie zostanie wykonane przed potwierdzeniem."
+        ),
+        "en": (
+            "Shows exactly what will change and what it reaches into on this "
+            "machine. Nothing runs before it is confirmed."
+        ),
+    },
+    "preview_title": {"pl": "Co się wydarzy", "en": "What will happen"},
+    "preview_lead": {
+        "pl": (
+            "Nic jeszcze nie zostało wykonane. Poniżej jest wykaz skutków, "
+            "a dopiero pod nim polecenia, które je wywołają."
+        ),
+        "en": (
+            "Nothing has been done yet. Below is the list of consequences, and "
+            "only under it the commands that bring them about."
+        ),
+    },
+    "preview_areas": {"pl": "Co zostanie dotknięte", "en": "What will be touched"},
+    "preview_no_areas": {
+        "pl": (
+            "Reguła nie wskazuje żadnego obszaru wpływu. To nie znaczy, że "
+            "zmiana jest niegroźna — znaczy, że nikt jeszcze tego nie ocenił."
+        ),
+        "en": (
+            "The rule points at no impact area. That does not mean the change "
+            "is harmless - it means nobody has assessed it yet."
+        ),
+    },
+    "preview_sequence": {"pl": "Kolejność wykonania", "en": "Order of execution"},
+    "preview_stage_missing": {
+        "pl": "Reguła nie definiuje tego kroku.",
+        "en": "The rule does not define this step.",
+    },
+    "preview_rollback_hint": {
+        "pl": (
+            "Zostanie zapisane razem z kopią. Nie wykonuje się samo — jest do "
+            "użycia wtedy, gdy zmiana okaże się błędem."
+        ),
+        "en": (
+            "Recorded together with the backup. It does not run by itself - it "
+            "is there for when the change turns out to be a mistake."
+        ),
+    },
+    "preview_user_visible": {
+        "pl": "Użytkownik to zauważy",
+        "en": "The user will notice",
+    },
+    "preview_yes": {"pl": "tak", "en": "yes"},
+    "preview_no": {"pl": "nie", "en": "no"},
+    "preview_blocked": {
+        "pl": "Dlaczego nie można tego uruchomić",
+        "en": "Why this cannot be run",
+    },
+    "preview_copy_instead": {
+        "pl": (
+            "Polecenie pozostaje do skopiowania i wykonania we własnej konsoli. "
+            "Blokada dotyczy uruchamiania z aplikacji, nie samej zmiany."
+        ),
+        "en": (
+            "The command remains available to copy and run in your own console. "
+            "The block concerns running it from the application, not the change "
+            "itself."
+        ),
+    },
+    "preview_single_only": {
+        "pl": (
+            "Jeden punkt, jedna decyzja. Aplikacja nie stosuje zmian zbiorczo — "
+            "każdy punkt ma własny podgląd i własny wynik sprawdzenia."
+        ),
+        "en": (
+            "One item, one decision. The application applies nothing in bulk - "
+            "every item gets its own preview and its own re-check."
+        ),
+    },
+    "preview_run": {"pl": "Wykonaj", "en": "Run"},
+    "preview_cancel": {"pl": "Nie zmieniaj niczego", "en": "Change nothing"},
+    "stage_backup": {"pl": "Kopia zapasowa", "en": "Backup"},
+    "stage_change": {"pl": "Zmiana", "en": "Change"},
+    "stage_verify": {"pl": "Ponowne sprawdzenie", "en": "Re-check"},
+    "blocker_no_backup": {
+        "pl": "Reguła nie ma polecenia kopii zapasowej.",
+        "en": "The rule has no backup command.",
+    },
+    "blocker_no_rollback": {
+        "pl": "Reguła nie ma polecenia wycofania.",
+        "en": "The rule has no rollback command.",
+    },
+    "blocker_no_change": {
+        "pl": "Reguła nie ma polecenia naprawczego.",
+        "en": "The rule has no remediation command.",
+    },
+    "blocker_not_runnable": {
+        "pl": "Reguła nie jest oznaczona jako gotowa do uruchomienia.",
+        "en": "The rule is not marked as ready to run.",
+    },
+    "blocker_needs_elevation": {
+        "pl": (
+            "Aplikacja nie ma uprawnień administratora. Uruchom ją jako "
+            "administrator albo skopiuj polecenie do konsoli z uprawnieniami."
+        ),
+        "en": (
+            "The application has no administrative rights. Start it as an "
+            "administrator or copy the command into an elevated console."
+        ),
+    },
+    "presence_in_use": {
+        "pl": "wykryto na tej maszynie",
+        "en": "found on this machine",
+    },
+    "presence_no_sign": {
+        "pl": "nie znaleziono śladu",
+        "en": "no sign of it found",
+    },
+    "presence_undetermined": {
+        "pl": "nie ustalono",
+        "en": "not determined",
+    },
+    "presence_caveat": {
+        "pl": (
+            "Inwentaryzacja jest przesłanką, nie dowodem. Brak śladu na tej "
+            "maszynie nie znaczy, że nikt z tego nie korzysta."
+        ),
+        "en": (
+            "The inventory is a premise, not a proof. No sign on this machine "
+            "does not mean nobody uses it."
+        ),
+    },
+    "presence_partial": {
+        "pl": (
+            "Części informacji nie dało się odczytać bez uprawnień "
+            "administratora — stąd pozycje bez rozstrzygnięcia."
+        ),
+        "en": (
+            "Some of the information could not be read without administrative "
+            "rights - hence the undetermined entries."
+        ),
+    },
+    "applying": {"pl": "Wykonywanie zmiany…", "en": "Applying the change…"},
+    "outcome_title": {"pl": "Wynik", "en": "Outcome"},
+    "outcome_close": {"pl": "Zamknij", "en": "Close"},
+    "outcome_verified": {
+        "pl": "Zmiana wykonana i potwierdzona ponownym sprawdzeniem.",
+        "en": "The change was applied and confirmed by a re-check.",
+    },
+    "outcome_not_verified": {
+        "pl": (
+            "Polecenie się wykonało, ale ponowne sprawdzenie nadal nie wykazuje "
+            "zgodności. Stan systemu mógł się nie zmienić."
+        ),
+        "en": (
+            "The command ran, but the re-check still does not show compliance. "
+            "The state of the system may not have changed."
+        ),
+    },
+    "outcome_backup_failed": {
+        "pl": (
+            "Kopia zapasowa się nie powiodła, więc zmiana nie została "
+            "wykonana. System pozostał nietknięty."
+        ),
+        "en": (
+            "The backup failed, so the change was not applied. The system was "
+            "left untouched."
+        ),
+    },
+    "outcome_blocked": {
+        "pl": "Wykonanie zostało wstrzymane. System pozostał nietknięty.",
+        "en": "Execution was withheld. The system was left untouched.",
+    },
+    "outcome_backup_at": {
+        "pl": "Kopia zapasowa: {path}",
+        "en": "Backup: {path}",
+    },
+    "outcome_skipped": {
+        "pl": "Krok pominięty, bo poprzedni się nie powiódł.",
+        "en": "Step skipped because the previous one failed.",
+    },
+    "outcome_exit": {"pl": "Kod wyjścia: {code}", "en": "Exit code: {code}"},
+    "outcome_rollback_hint": {
+        "pl": (
+            "Skopiuj i uruchom w konsoli z uprawnieniami administratora, żeby "
+            "wrócić do stanu sprzed zmiany."
+        ),
+        "en": (
+            "Copy and run it in an elevated console to get back to the state "
+            "from before the change."
+        ),
     },
     "system_unknown": {"pl": "System nierozpoznany", "en": "System not recognised"},
     "summary": {

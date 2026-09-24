@@ -1,9 +1,17 @@
 """The audit window.
 
-First stage only: detect the system, run the rules, show what was found and let
-the user copy a remediation command. There is deliberately no Run button - it
-belongs with the backup machinery, which is not built yet, and a Run button that
-skips the backup would violate the rule the whole project rests on.
+Detect the system, run the rules, show what was found, and let the user either
+copy a remediation command or apply it. Both stages of the product meet here,
+and three things about the way they meet are deliberate:
+
+* **Copy is always available; Run is not.** A rule without a backup and a way
+  back is offered to copy and never to run. The block is explained rather than
+  left as a greyed-out button.
+* **Run goes through the preview, never around it.** The button opens the
+  simulation, and the simulation is the only thing that can start a change.
+* **Nothing is applied in bulk.** There is no checkbox column, no "apply the
+  safe ones" and no hidden path to one. Each item is decided on its own, and
+  each gets its own re-check afterwards.
 """
 
 from __future__ import annotations
@@ -34,6 +42,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -48,9 +57,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import paths, report
+from . import paths, remediation, report
 from .audit import AuditResult, AuditRunner, Outcome, Scope, summarise
 from .i18n import Language, ui
+from .inventory import Inventory, Presence, collect
+from .preview import PRESENCE_KEY, OutcomeDialog, PreviewDialog
 from .ruleset import DISRUPTION_ORDER, RISK_ORDER, Rule, RuleBase, Target, load
 
 # Two colour sets. The table follows the system theme, so its colours have to
@@ -111,16 +122,22 @@ class ScanWorker(QThread):
 
     # (rules done, rules total, the rule about to be checked)
     progress = Signal(int, int, object)
-    finished_with = Signal(object)
+    finished_with = Signal(object, object)
 
-    def __init__(self, rules: list[Rule]) -> None:
+    def __init__(self, rules: list[Rule], signals: dict) -> None:
         super().__init__()
         # A flat list rather than a target, because a scan covers the host pack
         # and every overlay that applies on top of it. One progress bar has to
         # count them together or it restarts halfway through.
         self._rules = list(rules)
+        self._signals = signals
 
     def run(self) -> None:
+        # The inventory is read first and read here, because the audit is
+        # already walking the system and a second pass would be a second set of
+        # commands for information the scan could have collected on the way.
+        inventory = collect(self._signals)
+
         runner = AuditRunner()
         rules = self._rules
         total = len(rules)
@@ -130,7 +147,25 @@ class ScanWorker(QThread):
             # is the rule the user is actually waiting for.
             self.progress.emit(index, total, rule)
             results.append(runner.run_rule(rule))
-        self.finished_with.emit(results)
+        self.finished_with.emit(results, inventory)
+
+
+class ApplyWorker(QThread):
+    """Runs one plan off the interface thread.
+
+    One plan. The constructor takes a single :class:`Plan` and there is no
+    variant of this class that takes a list - a queue of changes running
+    unattended is exactly the bulk mode the application does not have.
+    """
+
+    finished_with = Signal(object)
+
+    def __init__(self, plan) -> None:
+        super().__init__()
+        self._plan = plan
+
+    def run(self) -> None:
+        self.finished_with.emit(remediation.Remediator().apply(self._plan))
 
 
 class ResultsModel(QAbstractTableModel):
@@ -172,6 +207,28 @@ class ResultsModel(QAbstractTableModel):
             and (not self._disruption_filter or item.rule.disruption == self._disruption_filter)
             and (not self._outcome_filter or item.outcome.value == self._outcome_filter)
         ]
+
+    def replace_result(self, result: AuditResult) -> None:
+        """Put the re-check of one rule in place of its earlier outcome.
+
+        Called after a change has been applied. The row has to move to what the
+        machine says now - leaving the old verdict on screen would show a fixed
+        item as still failing, and re-running the whole scan to correct one row
+        would cost minutes.
+        """
+        self.beginResetModel()
+        self._all = [
+            result if item.rule.identifier == result.rule.identifier else item
+            for item in self._all
+        ]
+        self._apply_filters()
+        self.endResetModel()
+
+    def row_of(self, identifier: str) -> int:
+        for row, item in enumerate(self._rows):
+            if item.rule.identifier == identifier:
+                return row
+        return -1
 
     def has_results(self) -> bool:
         """Whether a scan has produced anything, regardless of the filters."""
@@ -245,6 +302,7 @@ class DetailPanel(QTextBrowser):
         self._base = base
         self._language = language
         self._current: AuditResult | None = None
+        self._inventory: Inventory | None = None
         # One backup path per rule for the whole session. The rollback command
         # reads the file the backup command wrote, so the two copies have to name
         # the same path - a fresh timestamp on the second copy would hand the
@@ -270,6 +328,11 @@ class DetailPanel(QTextBrowser):
         self.setHtml(self._build_html(item))
 
     def retranslate(self) -> None:
+        self.show_result(self._current)
+
+    def set_inventory(self, inventory: Inventory | None) -> None:
+        """Hand the panel what the scan found, so warnings can name this machine."""
+        self._inventory = inventory
         self.show_result(self._current)
 
     def command_for_clipboard(self) -> str:
@@ -410,9 +473,8 @@ class DetailPanel(QTextBrowser):
 
         areas = rule.consequences.get("impact_areas") or []
         if areas:
-            names = [self._t(self._base.area_name(a)) for a in areas]
             out.append(f"<h3>{ui('detail_areas', lang)}</h3>")
-            out.append(f"<p>{html.escape(', '.join(names))}</p>")
+            out.append(self._areas_html(areas))
 
         facts = []
         if rule.consequences.get("interruption"):
@@ -432,7 +494,6 @@ class DetailPanel(QTextBrowser):
         if command:
             out.append(f"<h3>{ui('detail_command', lang)}</h3>")
             out.append(f"<pre>{html.escape(command)}</pre>")
-            out.append(f"<p style='color:#5a6472'>{ui('run_unavailable', lang)}</p>")
 
         # Shown next to the remediation, not only behind the button, so that the
         # way back is visible at the moment the change is being considered
@@ -452,6 +513,35 @@ class DetailPanel(QTextBrowser):
 
         return "".join(out)
 
+    def _areas_html(self, areas: list[str]) -> str:
+        """Impact areas, each marked with what the scan found on this machine.
+
+        A warning reading "you have this here" is worth several reading "this
+        may bother somebody", which is the whole reason the audit collects an
+        inventory. The reservation is printed underneath rather than implied:
+        no sign of something is not evidence that nobody uses it.
+        """
+        lang = self._language
+        names = [(area, self._t(self._base.area_name(area), area)) for area in areas]
+        if self._inventory is None or not self._inventory.collected:
+            return f"<p>{html.escape(', '.join(name for _, name in names))}</p>"
+
+        rows = []
+        for area, name in names:
+            presence = self._inventory.presence(area)
+            mark = html.escape(ui(PRESENCE_KEY[presence], lang))
+            ink = "#b3261e" if presence is Presence.IN_USE else "#5a6472"
+            weight = "bold" if presence is Presence.IN_USE else "normal"
+            rows.append(
+                "<li>%s &mdash; <span style='color:%s;font-weight:%s'>%s</span></li>"
+                % (html.escape(name), ink, weight, mark)
+            )
+        return (
+            "<ul>"
+            + "".join(rows)
+            + f"</ul><p style='color:#5a6472'>{ui('presence_caveat', lang)}</p>"
+        )
+
     @staticmethod
     def _paragraphs(text: str) -> str:
         chunks = [html.escape(c.strip()) for c in text.split("\n\n") if c.strip()]
@@ -467,9 +557,12 @@ class MainWindow(QMainWindow):
         self.target: Target | None = None
         self.overlays: list[Target] = []
         self._worker: ScanWorker | None = None
+        self._applier: ApplyWorker | None = None
         # The whole scan, kept apart from the table model: the report covers
         # everything that was checked, not the rows left visible by a filter.
         self._results: list[AuditResult] = []
+        self._selected: AuditResult | None = None
+        self.inventory: Inventory | None = None
 
         self.model = ResultsModel(self.base, self.language)
         self.detail = DetailPanel(self.base, self.language)
@@ -509,6 +602,14 @@ class MainWindow(QMainWindow):
         self.rollback_button = QPushButton()
         self.rollback_button.clicked.connect(self.copy_rollback)
         self.rollback_button.setEnabled(False)
+
+        # Opens the preview, which changes nothing, so it stays enabled even for
+        # a rule that may not be run. A greyed-out button would leave the reason
+        # unsaid; the preview says it, and offers the copy path in the same
+        # breath.
+        self.run_button = QPushButton()
+        self.run_button.clicked.connect(self.apply_selected)
+        self.run_button.setEnabled(False)
 
         language_box = QComboBox()
         language_box.addItems(["Polski", "English"])
@@ -553,6 +654,7 @@ class MainWindow(QMainWindow):
         self.table.selectionModel().selectionChanged.connect(self._selection_changed)
 
         buttons = QHBoxLayout()
+        buttons.addWidget(self.run_button)
         buttons.addWidget(self.copy_button)
         buttons.addWidget(self.rollback_button)
 
@@ -633,6 +735,8 @@ class MainWindow(QMainWindow):
         self.copy_button.setText(ui("copy", self.language))
         self.rollback_button.setText(ui("copy_rollback", self.language))
         self.rollback_button.setToolTip(ui("copy_rollback_hint", self.language))
+        self.run_button.setText(ui("run", self.language))
+        self.run_button.setToolTip(ui("run_hint", self.language))
 
         for box, key, vocabulary in (
             (self.risk_filter, "filter_risk", "risk_category"),
@@ -673,7 +777,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.progress.setVisible(True)
 
-        self._worker = ScanWorker(rules)
+        self._worker = ScanWorker(rules, self.base.area_signals)
         self._worker.progress.connect(self._scan_progress)
         self._worker.finished_with.connect(self._scan_finished)
         self._worker.start()
@@ -690,11 +794,13 @@ class MainWindow(QMainWindow):
             )
         )
 
-    def _scan_finished(self, results: list[AuditResult]) -> None:
+    def _scan_finished(self, results: list[AuditResult], inventory: Inventory) -> None:
         self.progress.setValue(self.progress.maximum())
         self.progress.setVisible(False)
         self.model.set_results(results)
         self._results = results
+        self.inventory = inventory
+        self.detail.set_inventory(inventory)
         self.scan_button.setEnabled(True)
         self.report_button.setEnabled(bool(results))
         if self.model.rowCount():
@@ -777,9 +883,70 @@ class MainWindow(QMainWindow):
     def _selection_changed(self) -> None:
         rows = self.table.selectionModel().selectedRows()
         item = self.model.result_at(rows[0].row()) if rows else None
+        self._selected = item
         self.detail.show_result(item)
         self.copy_button.setEnabled(bool(self.detail.command_for_clipboard()))
         self.rollback_button.setEnabled(self.detail.has_rollback())
+        # Offered for items that are not met. Applying a fix to something that
+        # already passes changes nothing and only invites the question of what
+        # it just did.
+        self.run_button.setEnabled(
+            item is not None
+            and item.is_finding
+            and bool(item.rule.remediation.get("change_command"))
+        )
+
+    def apply_selected(self) -> None:
+        """Preview one change, and run it only if it is confirmed.
+
+        The single place in the application where the state of the system can
+        be altered. It takes one item, the one selected, and it goes through
+        the preview every time - there is no argument to this method that makes
+        it skip the dialog and no caller that would want one.
+        """
+        item = self._selected
+        if item is None or self._applier is not None:
+            return
+
+        plan = remediation.plan(item.rule, self.base, self.inventory)
+        dialog = PreviewDialog(self.base, plan, self.language, self.inventory, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        if not plan.runnable:
+            # Belt and braces: the dialog disables the button, and refusing
+            # here as well means a future change to the dialog cannot let a
+            # blocked rule through.
+            return
+
+        self.run_button.setEnabled(False)
+        self.scan_button.setEnabled(False)
+        self.statusBar().showMessage(ui("applying", self.language))
+
+        self._applier = ApplyWorker(plan)
+        self._applier.finished_with.connect(self._apply_finished)
+        self._applier.start()
+
+    def _apply_finished(self, applied) -> None:
+        self._applier = None
+        self.scan_button.setEnabled(True)
+
+        # The re-check is the only evidence the change took, so its result
+        # replaces the row rather than being shown and forgotten.
+        if applied.audit is not None:
+            self.model.replace_result(applied.audit)
+            self._results = [
+                applied.audit
+                if r.rule.identifier == applied.audit.rule.identifier
+                else r
+                for r in self._results
+            ]
+            row = self.model.row_of(applied.audit.rule.identifier)
+            if row >= 0:
+                self.table.selectRow(row)
+
+        OutcomeDialog(self.base, applied, self.language, self).exec()
+        self._selection_changed()
+        self._update_summary()
 
     def copy_command(self) -> None:
         command = self.detail.command_for_clipboard()

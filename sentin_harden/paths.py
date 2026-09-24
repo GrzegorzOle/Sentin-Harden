@@ -26,6 +26,29 @@ def is_frozen() -> bool:
     return getattr(sys, "frozen", False)
 
 
+def is_elevated() -> bool:
+    """Whether this process can change the system.
+
+    Asked before a remediation is offered, never after it has failed. A rule
+    reported as unmet because the check could not read a protected key is the
+    worst answer this application could give, so the lack of a privilege is
+    established in advance and said plainly.
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            # An unreadable answer is treated as "not elevated". Guessing the
+            # other way would offer a Run button that cannot work.
+            return False
+    try:
+        return os.geteuid() == 0
+    except AttributeError:
+        return False
+
+
 def resource_root() -> Path:
     """Directory holding bundled, read-only resources."""
     if is_frozen():

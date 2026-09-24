@@ -133,6 +133,33 @@ class RuleBase:
             return {"pl": area_id, "en": area_id}
         return area.get("name") or {"pl": area_id, "en": area_id}
 
+    @property
+    def area_signals(self) -> dict[str, dict[str, Any]]:
+        """What points at each area being in use, for the inventory to match.
+
+        Areas with no signals are carried as an empty entry rather than left
+        out, so the inventory can tell "nothing points at this" from "nobody
+        said what would point at this".
+        """
+        return {
+            area_id: (area.get("signals") or {})
+            for area_id, area in self.impact_areas.items()
+        }
+
+    def rules_touching(self, area_id: str) -> list[Rule]:
+        """Every rule in the base whose consequences reach into one area.
+
+        The reverse index, and the whole of it: no extra data is needed to ask
+        the question the other way round, only a walk of what is already here.
+        """
+        found = [
+            rule
+            for target in self.targets.values()
+            for rule in target.rules
+            if area_id in (rule.consequences.get("impact_areas") or [])
+        ]
+        return sorted(found, key=lambda rule: rule.matrix_key)
+
 
 def load(root: Path | None = None) -> RuleBase:
     root = root or paths.rules_root()

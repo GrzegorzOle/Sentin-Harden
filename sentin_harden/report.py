@@ -23,6 +23,7 @@ import html
 from datetime import datetime
 from typing import Iterable
 
+from . import paths
 from .audit import AuditResult, Outcome, Scope, summarise
 from .i18n import Language
 from .ruleset import Rule, RuleBase
@@ -182,6 +183,87 @@ TEXT: dict[str, dict[str, str]] = {
             "of consequences does not mean there are none."
         ),
     },
+    "restore_heading": {
+        "pl": "Jak cofnąć tę zmianę z kopii",
+        "en": "How to undo this change from the backup",
+    },
+    "restore_heading_manual": {
+        "pl": "Powrót do stanu sprzed zmiany",
+        "en": "Getting back to the state before the change",
+    },
+    "restore_intro": {
+        "pl": (
+            "Polecenie kopii zapasowej zapisuje stan sprzed zmiany do pliku "
+            "JSON, a polecenie wycofania odczytuje ten plik i przywraca z niego "
+            "poprzednią wartość. Obydwa odwołują się do tego samego miejsca "
+            "przez zapis <code>{{backup_file}}</code> — to nie jest nazwa "
+            "pliku, tylko miejsce, w które wpisujesz ścieżkę."
+        ),
+        "en": (
+            "The backup command writes the state from before the change to a "
+            "JSON file, and the rollback command reads that file and restores "
+            "the previous value from it. Both refer to the same place through "
+            "<code>{{backup_file}}</code> - that is not a file name but a slot "
+            "where you put a path."
+        ),
+    },
+    "restore_steps": {
+        "pl": (
+            "<li>Ustal ścieżkę kopii. Uruchamiając polecenia z aplikacji, "
+            "dostajesz ją już wpisaną — kopie trafiają do katalogu "
+            "<code>%(dir)s</code> pod nazwą <code>%(pattern)s</code>. "
+            "Uruchamiając je ręcznie, obowiązuje ścieżka podana "
+            "w poleceniu kopii.</li>"
+            "<li>W poleceniu wycofania wstaw tę samą ścieżkę w miejsce "
+            "<code>{{backup_file}}</code>. Inna ścieżka niż przy kopii oznacza "
+            "przywracanie z pliku, którego nie ma, albo z cudzego stanu.</li>"
+            "<li>Uruchom polecenie wycofania w konsoli z uprawnieniami "
+            "administratora, w tej samej powłoce co polecenie naprawcze.</li>"
+            "<li>Sprawdź punkt ponownie. Dopiero powtórzony audyt jest dowodem, "
+            "że stan wrócił — sam brak błędu nim nie jest.</li>"
+        ),
+        "en": (
+            "<li>Establish the path of the backup. Running the commands from "
+            "the application gives it to you already filled in - backups go to "
+            "<code>%(dir)s</code> under the name <code>%(pattern)s</code>. "
+            "Running them by hand, the path that counts is the one you gave in "
+            "the backup command.</li>"
+            "<li>Put that same path into the rollback command in place of "
+            "<code>{{backup_file}}</code>. A different path than the backup "
+            "used means restoring from a file that is not there, or from "
+            "somebody else's state.</li>"
+            "<li>Run the rollback command in a console with administrative "
+            "rights, in the same shell as the remediation command.</li>"
+            "<li>Check the item again. Only a repeated audit is proof that the "
+            "state came back - the absence of an error is not.</li>"
+        ),
+    },
+    "restore_no_rollback": {
+        "pl": (
+            "Ten punkt nie ma polecenia wycofania. Kopia zapisuje stan sprzed "
+            "zmiany i pozwala odczytać, co obowiązywało, ale przywrócenie tej "
+            "wartości wykonujesz samodzielnie. Zmieniaj ten punkt wyłącznie "
+            "świadomie."
+        ),
+        "en": (
+            "This item has no rollback command. The backup records the state "
+            "from before the change and lets you read what was in force, but "
+            "restoring that value is your own work. Change this item "
+            "deliberately or not at all."
+        ),
+    },
+    "restore_no_backup": {
+        "pl": (
+            "Ten punkt nie ma ani polecenia kopii zapasowej, ani polecenia "
+            "wycofania. Przed zmianą zapisz stan zastany we własnym zakresie — "
+            "bez tego powrót do poprzedniej konfiguracji opiera się na pamięci."
+        ),
+        "en": (
+            "This item has neither a backup command nor a rollback command. "
+            "Record the current state yourself before changing it - without "
+            "that, getting back to the previous configuration rests on memory."
+        ),
+    },
     "page": {"pl": "Strona", "en": "Page"},
 }
 
@@ -231,6 +313,11 @@ pre { font-family: "Consolas", monospace; font-size: 8.5pt; background: #f4f4f4;
       white-space: pre-wrap; word-wrap: break-word; page-break-inside: avoid; }
 .warn { color: #8a3500; font-weight: 600; }
 .quiet { color: #4d5766; }
+.restore { margin-top: 10pt; padding: 6pt 9pt; border-left: 3pt solid #8a8f98;
+           background: #f4f5f7; page-break-inside: avoid; }
+.restore h4 { margin: 0 0 4pt 0; font-size: 10pt; }
+.restore ol { margin: 4pt 0 0 0; padding-left: 16pt; }
+.restore code { font-family: Consolas, "DejaVu Sans Mono", monospace; font-size: 9pt; }
 .part { page-break-before: always; }
 @media print { .reservation { background: #fff; } }
 """
@@ -319,6 +406,41 @@ def _listing(base: RuleBase, results: list[AuditResult], language: Language) -> 
     )
 
 
+def _restore_section(rule: Rule, language: Language) -> str:
+    """Closing section of every instruction: getting back to where it was.
+
+    Printed even where the rule has no rollback, because that is the case the
+    reader most needs to know about before typing the command above. The
+    placeholder in the commands is a slot, not a file name, and a document read
+    away from the application has nothing else to explain it.
+    """
+    remediation = rule.remediation
+
+    if not remediation.get("rollback_command"):
+        # No copy to restore from means the heading cannot promise one.
+        has_backup = bool(remediation.get("backup_command"))
+        key = "restore_no_rollback" if has_backup else "restore_no_backup"
+        heading = "restore_heading" if has_backup else "restore_heading_manual"
+        return "<div class='restore'><h4>%s</h4><p class='warn'>%s</p></div>" % (
+            _esc(_t(heading, language)),
+            _esc(_t(key, language)),
+        )
+
+    body = "<h4>%s</h4>" % _esc(_t("restore_heading", language))
+
+    steps = _t("restore_steps", language) % {
+        "dir": _esc(str(paths.backup_dir())),
+        "pattern": _esc("%s-RRRRMMDD-GGMMSS.json" % rule.identifier)
+        if language.code == "pl"
+        else _esc("%s-YYYYMMDD-HHMMSS.json" % rule.identifier),
+    }
+    return "<div class='restore'>%s<p>%s</p><ol>%s</ol></div>" % (
+        body,
+        _t("restore_intro", language),
+        steps,
+    )
+
+
 def _rule_section(
     base: RuleBase, item: AuditResult, language: Language, number: int
 ) -> str:
@@ -397,6 +519,7 @@ def _rule_section(
     if not rule.runnable:
         parts.append(f"<p class='warn'>{_t('no_rollback', language)}</p>")
 
+    parts.append(_restore_section(rule, language))
     parts.append("</div>")
     return "".join(parts)
 

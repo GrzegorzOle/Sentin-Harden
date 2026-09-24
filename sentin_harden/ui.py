@@ -245,6 +245,11 @@ class DetailPanel(QTextBrowser):
         self._base = base
         self._language = language
         self._current: AuditResult | None = None
+        # One backup path per rule for the whole session. The rollback command
+        # reads the file the backup command wrote, so the two copies have to name
+        # the same path - a fresh timestamp on the second copy would hand the
+        # user a rollback pointing at a file that was never created.
+        self._backup_files: dict[str, Path] = {}
         self.setOpenExternalLinks(True)
         # A fixed light document rather than a themed widget. Under a dark system
         # theme Qt forces light text, which turned the command box - deliberately
@@ -279,9 +284,6 @@ class DetailPanel(QTextBrowser):
         if not remediation:
             return ""
 
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_file = paths.backup_dir() / f"{self._current.rule.identifier}-{stamp}.json"
-
         parts: list[str] = []
         backup = remediation.get("backup_command")
         if backup:
@@ -289,7 +291,54 @@ class DetailPanel(QTextBrowser):
         change = remediation.get("change_command")
         if change:
             parts.append(change.strip())
-        return "\n\n".join(parts).replace("{{backup_file}}", str(backup_file))
+        return self._fill(self._backup_path(self._current.rule), "\n\n".join(parts))
+
+    def has_rollback(self) -> bool:
+        """Whether the selected rule can be taken back at all."""
+        if self._current is None:
+            return False
+        return bool(self._current.rule.remediation.get("rollback_command"))
+
+    def rollback_for_clipboard(self) -> str:
+        """The rollback command, pointed at the backup this rule actually has.
+
+        Offered apart from the remediation copy because it is used at a
+        different moment - after the change, usually after something turned out
+        to be broken by it. Whoever reaches for it is not going to be in the
+        mood to work out what the placeholder in the command means.
+        """
+        if not self.has_rollback():
+            return ""
+        rule = self._current.rule
+        backup_file = self._existing_backup(rule) or self._backup_path(rule)
+        command = str(rule.remediation["rollback_command"]).strip()
+        return self._fill(backup_file, command)
+
+    def _backup_path(self, rule: Rule) -> Path:
+        path = self._backup_files.get(rule.identifier)
+        if path is None:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            path = paths.backup_dir() / f"{rule.identifier}-{stamp}.json"
+            self._backup_files[rule.identifier] = path
+        return path
+
+    @staticmethod
+    def _existing_backup(rule: Rule) -> Path | None:
+        """Newest backup already on disk for this rule, if there is one.
+
+        Preferred over the path prepared for this session, because a rollback
+        is worth something only when it names a file that exists. A backup left
+        by an earlier run is exactly what someone undoing a change needs.
+        """
+        try:
+            found = sorted(paths.backup_dir().glob(f"{rule.identifier}-*.json"))
+        except OSError:
+            return None
+        return found[-1] if found else None
+
+    @staticmethod
+    def _fill(backup_file: Path, command: str) -> str:
+        return command.replace("{{backup_file}}", str(backup_file))
 
     # -- rendering ---------------------------------------------------------
 
@@ -385,6 +434,17 @@ class DetailPanel(QTextBrowser):
             out.append(f"<pre>{html.escape(command)}</pre>")
             out.append(f"<p style='color:#5a6472'>{ui('run_unavailable', lang)}</p>")
 
+        # Shown next to the remediation, not only behind the button, so that the
+        # way back is visible at the moment the change is being considered
+        # rather than after something has already stopped working.
+        rollback = self.rollback_for_clipboard()
+        if rollback:
+            out.append(f"<h3>{ui('detail_rollback', lang)}</h3>")
+            out.append(f"<pre>{html.escape(rollback)}</pre>")
+            out.append(f"<p style='color:#5a6472'>{ui('detail_rollback_hint', lang)}</p>")
+        elif command:
+            out.append(f"<p style='color:#8a3500'>{ui('detail_no_rollback', lang)}</p>")
+
         notes = self._t(rule.data.get("notes"))
         if notes:
             out.append(f"<h3>{ui('detail_notes', lang)}</h3>")
@@ -443,6 +503,13 @@ class MainWindow(QMainWindow):
         self.copy_button.clicked.connect(self.copy_command)
         self.copy_button.setEnabled(False)
 
+        # Beside the remediation copy, not hidden behind it. Enabled only where
+        # the rule defines a rollback - a button that copies nothing would read
+        # as a promise the rule does not make.
+        self.rollback_button = QPushButton()
+        self.rollback_button.clicked.connect(self.copy_rollback)
+        self.rollback_button.setEnabled(False)
+
         language_box = QComboBox()
         language_box.addItems(["Polski", "English"])
         language_box.currentIndexChanged.connect(
@@ -485,9 +552,13 @@ class MainWindow(QMainWindow):
         )
         self.table.selectionModel().selectionChanged.connect(self._selection_changed)
 
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.copy_button)
+        buttons.addWidget(self.rollback_button)
+
         right = QVBoxLayout()
         right.addWidget(self.detail)
-        right.addWidget(self.copy_button)
+        right.addLayout(buttons)
         right_widget = QWidget()
         right_widget.setLayout(right)
 
@@ -560,6 +631,8 @@ class MainWindow(QMainWindow):
         self.scan_button.setText(ui("scan", self.language))
         self.report_button.setText(ui("report", self.language))
         self.copy_button.setText(ui("copy", self.language))
+        self.rollback_button.setText(ui("copy_rollback", self.language))
+        self.rollback_button.setToolTip(ui("copy_rollback_hint", self.language))
 
         for box, key, vocabulary in (
             (self.risk_filter, "filter_risk", "risk_category"),
@@ -706,6 +779,7 @@ class MainWindow(QMainWindow):
         item = self.model.result_at(rows[0].row()) if rows else None
         self.detail.show_result(item)
         self.copy_button.setEnabled(bool(self.detail.command_for_clipboard()))
+        self.rollback_button.setEnabled(self.detail.has_rollback())
 
     def copy_command(self) -> None:
         command = self.detail.command_for_clipboard()
@@ -713,6 +787,13 @@ class MainWindow(QMainWindow):
             return
         QApplication.clipboard().setText(command)
         self.statusBar().showMessage(ui("copied", self.language), 4000)
+
+    def copy_rollback(self) -> None:
+        command = self.detail.rollback_for_clipboard()
+        if not command:
+            return
+        QApplication.clipboard().setText(command)
+        self.statusBar().showMessage(ui("copied_rollback", self.language), 6000)
 
     def _update_summary(self) -> None:
         results = [

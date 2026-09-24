@@ -71,6 +71,26 @@ UI_TEXT: dict[str, dict[str, str]] = {
     },
     "copy": {"pl": "Kopiuj polecenie", "en": "Copy command"},
     "copied": {"pl": "Skopiowano do schowka", "en": "Copied to clipboard"},
+    "copy_rollback": {
+        "pl": "Kopiuj polecenie wycofania",
+        "en": "Copy rollback command",
+    },
+    "copy_rollback_hint": {
+        "pl": (
+            "Przywraca stan z pliku kopii zapasowej zapisanego przed zmianą. "
+            "Ścieżka jest już wpisana w polecenie — uruchom je w konsoli "
+            "z uprawnieniami administratora, a potem sprawdź punkt ponownie."
+        ),
+        "en": (
+            "Restores the state from the backup file written before the "
+            "change. The path is already filled in - run the command in a "
+            "console with administrative rights, then check the item again."
+        ),
+    },
+    "copied_rollback": {
+        "pl": "Skopiowano polecenie wycofania. Działa tylko z plikiem kopii, do którego wskazuje.",
+        "en": "Rollback command copied. It works only with the backup file it points at.",
+    },
     "filter_risk": {"pl": "Ryzyko", "en": "Risk"},
     "filter_disruption": {"pl": "Uciążliwość", "en": "Disruption"},
     "filter_result": {"pl": "Wynik", "en": "Result"},
@@ -84,6 +104,31 @@ UI_TEXT: dict[str, dict[str, str]] = {
     "detail_disruption": {"pl": "Dlaczego taka uciążliwość", "en": "Why this disruption class"},
     "detail_not_when": {"pl": "Kiedy nie stosować", "en": "When not to apply"},
     "detail_command": {"pl": "Polecenie naprawcze", "en": "Remediation command"},
+    "detail_rollback": {"pl": "Polecenie wycofania", "en": "Rollback command"},
+    "detail_rollback_hint": {
+        "pl": (
+            "Odczytuje plik kopii zapasowej i przywraca z niego poprzednią "
+            "wartość. Ma sens dopiero wtedy, gdy kopia powstała — plik jest ten "
+            "sam, który zapisuje polecenie powyżej."
+        ),
+        "en": (
+            "Reads the backup file and restores the previous value from it. It "
+            "means something only once the backup exists - the file is the same "
+            "one the command above writes."
+        ),
+    },
+    "detail_no_rollback": {
+        "pl": (
+            "Ta reguła nie ma polecenia wycofania. Powrót do stanu poprzedniego "
+            "nie jest automatyczny — zapisz stan zastany, zanim cokolwiek "
+            "zmienisz."
+        ),
+        "en": (
+            "This rule has no rollback command. Getting back to the previous "
+            "state is not automatic - record the current state before changing "
+            "anything."
+        ),
+    },
     "detail_notes": {"pl": "Uwagi", "en": "Notes"},
     "detail_interruption": {"pl": "Przerwa w pracy", "en": "Interruption"},
     "detail_reversibility": {"pl": "Odwracalność", "en": "Reversibility"},

@@ -128,7 +128,7 @@ audit:
         }
         else {
           Import-Module WebAdministration -ErrorAction Stop
-          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT' `
             -Filter 'system.web/httpCookies' -Name 'httpOnlyCookies' -ErrorAction Stop
           # The cmdlet hands back an attribute object for some settings and a bare
           # value for others, so both shapes are reduced to one before comparing.
@@ -150,44 +150,60 @@ remediation:
   shell: powershell
   backup_command: |
     Import-Module WebAdministration -ErrorAction Stop
-    # Two backups, on purpose. The named configuration backup is the server's own
-    # mechanism and covers the whole configuration; the value written below lets
-    # the rollback put back one setting without restoring everything around it.
-    $stamp = 'sentin-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-    Backup-WebConfiguration -Name $stamp | Out-Null
-    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+    # This setting lives in the framework root configuration and not in the
+    # server configuration file, so the server's own backup mechanism does not
+    # cover it. The file itself is copied instead - both variants of it,
+    # because a 32-bit application pool reads a different copy than a 64-bit
+    # one does.
+    $files = @()
+    foreach ($base in @('Framework', 'Framework64')) {
+      $source = Join-Path $env:windir ('Microsoft.NET\' + $base + '\v4.0.30319\Config\web.config')
+      if (Test-Path $source) {
+        $copy = '{{backup_file}}' + '.' + $base + '.web.config'
+        Copy-Item -Path $source -Destination $copy -Force
+        $files += [pscustomobject]@{ source = $source; copy = $copy }
+      }
+    }
+    if ($files.Count -eq 0) {
+      throw 'The framework root configuration was not found, so nothing was secured and nothing may be changed.'
+    }
+    $raw = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT' `
       -Filter 'system.web/httpCookies' -Name 'httpOnlyCookies' -ErrorAction SilentlyContinue
     $value = $raw
     if ($null -ne $raw -and $null -ne $raw.Value) { $value = $raw.Value }
     [pscustomobject]@{
-      scope   = 'server'
-      backup  = $stamp
+      scope   = 'framework-root'
       filter  = 'system.web/httpCookies'
       name    = 'httpOnlyCookies'
       value   = [string]$value
       existed = ($null -ne $value)
-    } | ConvertTo-Json | Set-Content -Path '{{backup_file}}' -Encoding UTF8
-    "Saved previous state to {{backup_file}} and configuration backup $stamp"
+      files   = $files
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path '{{backup_file}}' -Encoding UTF8
+    "Saved previous state to {{backup_file}} and copied the framework root configuration"
 
   change_command: |
     Import-Module WebAdministration -ErrorAction Stop
-    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+    # The write goes to the framework root configuration, which is where this
+    # section may be set as a server-wide default. The server configuration
+    # file does not declare this section group at all, so a write aimed there
+    # fails rather than taking effect quietly.
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT' `
       -Filter 'system.web/httpCookies' -Name 'httpOnlyCookies' -Value $true
 
   rollback_command: |
     $b = Get-Content -Path '{{backup_file}}' -Raw | ConvertFrom-Json
-    Import-Module WebAdministration -ErrorAction Stop
-    if (-not $b.existed) {
-      # Nothing was written here before, so the setting goes back to being
-      # inherited rather than being written with a guessed value. The named
-      # configuration backup recorded in that file stays available for a full
-      # restore of the server configuration.
-      Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "$($b.filter)/@$($b.name)" -ErrorAction SilentlyContinue
-    } else {
-      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
-        -Filter $b.filter -Name $b.name -Value $b.value
+    # The whole file goes back rather than one attribute being rewritten. The
+    # copy taken before the change is the only complete record of what the
+    # framework root configuration held, and putting it back cannot leave the
+    # file half restored.
+    foreach ($f in $b.files) {
+      if (-not (Test-Path $f.copy)) {
+        throw 'A copy recorded in the backup file is missing, so nothing was restored.'
+      }
     }
-
+    foreach ($f in $b.files) {
+      Copy-Item -Path $f.copy -Destination $f.source -Force
+    }
 privileges: administrator
 runnable: true
 
@@ -200,8 +216,26 @@ notes:
     Ciasteczka tworzone samodzielnie w kodzie niosą własny znacznik i pozostają
     poza zasięgiem tej zasady. Ocenia się ją razem z wymogiem połączenia
     szyfrowanego, bo dopiero obie razem zamykają sesję.
+
+    Ustawienie należy do konfiguracji aplikacji, a nie serwera, więc jego
+    miejscem jest główna konfiguracja środowiska wykonawczego, nie plik
+    konfiguracyjny serwera — ten ostatni w ogóle nie deklaruje tej grupy sekcji
+    i zapis skierowany tam kończy się błędem. Kopia obejmuje ten plik w obu
+    odmianach, bo pula aplikacji 32-bitowa czyta inną jego kopię niż
+    64-bitowa; tam, gdzie takie pule są używane, zmianę trzeba powtórzyć
+    z sesji 32-bitowej. Odczyt sięga po wartość obowiązującą, więc widzi także
+    ustawienie odziedziczone z konfiguracji nadrzędnej.
   en: |
     The setting covers the cookies issued by the runtime. Cookies created by hand
     in code carry a marker of their own and stay outside the reach of this rule. It
     is judged together with the requirement of an encrypted connection, since only
     the two together shut a session.
+
+    The setting belongs to the application configuration rather than to the
+    server, so its place is the framework root configuration and not the server
+    configuration file - that last one does not declare this section group at
+    all and a write aimed there ends in an error. The backup covers that file
+    in both variants, since a 32-bit application pool reads a different copy of
+    it than a 64-bit one does; where such pools are in use the change has to be
+    repeated from a 32-bit session. The reading reaches for the effective
+    value, so it sees a setting inherited from the configuration above as well.

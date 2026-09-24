@@ -1,0 +1,158 @@
+id: ubuntu2404-shells-nologin
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.4.3.1
+  section: Access Control > User Accounts and Environment > Configure user default environment
+  title:
+    pl: nologin nie jest wymieniony w /etc/shells
+    en: Ensure nologin is not listed in /etc/shells
+  level: 2
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: low
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    /etc/shells to lista prawidłowych powłok logowania. Usługi takie jak
+    FTP i część modułów PAM wpuszczają tylko konta z powłoką z tej listy.
+    Wpisanie tam nologin sprawia, że konta celowo pozbawione powłoki są
+    traktowane jak zwykłe konta.
+
+    Punkt wymaga, żeby w /etc/shells nie było ścieżki do nologin.
+  en: |
+    /etc/shells is the list of valid login shells. Services such as FTP and
+    some PAM modules only let in accounts with a shell from this list.
+    Listing nologin there makes accounts deliberately left without a shell
+    count as normal accounts.
+
+    The item requires /etc/shells not to contain a path to nologin.
+
+disruption_description:
+  pl: |
+    Ubuntu nie wpisuje nologin do /etc/shells, więc zwykle nic się nie
+    zmienia. Jeśli ktoś go dopisał, naprawa zakomentowuje ten wiersz,
+    a konta z nologin przestają logować się do usług sprawdzających
+    /etc/shells.
+  en: |
+    Ubuntu does not list nologin in /etc/shells, so usually nothing changes.
+    If someone added it, the remediation comments out the line, and accounts
+    with nologin can no longer log in to services that check /etc/shells.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konta tylko do FTP z powłoką nologin, jeśli nologin dopisano do /etc/shells właśnie dla nich
+    en:
+      - FTP-only accounts with the nologin shell, if nologin was added to /etc/shells for them
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Serwer FTP, którego użytkownicy celowo mają nologin; lepiej skonfigurować serwer tak, żeby nie sprawdzał /etc/shells
+    en:
+      - An FTP server whose users deliberately have nologin; better configure the server not to check /etc/shells
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    mark='# Sentin-Harden: ubuntu2404-shells-nologin: '
+    # lines: numbers of active lines of /etc/shells with a nologin path
+    lines() { [ -f /etc/shells ] || return 0; awk '{ x = $0; sub(/#.*/, "", x) } x ~ /\/nologin([ \t]|$)/ { print NR }' /etc/shells; }
+    evaluate() {
+      local l
+      l=$(lines | paste -sd/ -)
+      if [ -z "$l" ]; then echo "OK:no-nologin"; else echo "NOT_OK:/etc/shells:$l"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      echo format=shellsnologin-1 > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/shells
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=shellsnologin-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    mark='# Sentin-Harden: ubuntu2404-shells-nologin: '
+    # lines: numbers of active lines of /etc/shells with a nologin path
+    lines() { [ -f /etc/shells ] || return 0; awk '{ x = $0; sub(/#.*/, "", x) } x ~ /\/nologin([ \t]|$)/ { print NR }' /etc/shells; }
+    evaluate() {
+      local l
+      l=$(lines | paste -sd/ -)
+      if [ -z "$l" ]; then echo "OK:no-nologin"; else echo "NOT_OK:/etc/shells:$l"; fi
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "Already meets the item, nothing to change"; exit 0 ;; esac
+      n=$(lines | paste -sd' ' -)
+      t=$(mktemp /etc/.sentin-harden.XXXXXX)
+      trap 'rm -f "$t"' EXIT
+      awk -v lines=" $n " -v mark="$mark" 'index(lines, " " NR " ") { $0 = mark $0 } { print }' "$f" > "$t"
+      chmod --reference="$f" "$t"; chown --reference="$f" "$t"; mv -f "$t" "$f"
+      echo "Commented out the lines $n in $f"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/shells
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=shellsnologin-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    mark='# Sentin-Harden: ubuntu2404-shells-nologin: '
+    # lines: numbers of active lines of /etc/shells with a nologin path
+    lines() { [ -f /etc/shells ] || return 0; awk '{ x = $0; sub(/#.*/, "", x) } x ~ /\/nologin([ \t]|$)/ { print NR }' /etc/shells; }
+    evaluate() {
+      local l
+      l=$(lines | paste -sd/ -)
+      if [ -z "$l" ]; then echo "OK:no-nologin"; else echo "NOT_OK:/etc/shells:$l"; fi
+    }
+      if [ ! -f "$f" ] || ! grep -qF "$mark" "$f"; then echo "No lines of this rule in $f, nothing to restore"; exit 0; fi
+      t=$(mktemp /etc/.sentin-harden.XXXXXX)
+      trap 'rm -f "$t"' EXIT
+      awk -v mark="$mark" 'index($0, mark) == 1 { $0 = substr($0, length(mark) + 1) } { print }' "$f" > "$t"
+      chmod --reference="$f" "$t"; chown --reference="$f" "$t"; mv -f "$t" "$f"
+      echo "Restored the nologin lines in $f"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/shells.5.html
+  - https://man7.org/linux/man-pages/man8/nologin.8.html
+
+notes:
+  pl: |
+    Sprawdzenie obejmuje aktywne wiersze /etc/shells ze ścieżką kończącą
+    się na /nologin. Naprawa zakomentowuje je znacznikiem Sentin-Harden,
+    a wycofanie usuwa znacznik; reszta pliku zostaje bez zmian.
+  en: |
+    The check covers active lines of /etc/shells with a path that ends in
+    /nologin. The remediation comments them out with a Sentin-Harden mark,
+    and rollback removes the mark; the rest of the file stays unchanged.

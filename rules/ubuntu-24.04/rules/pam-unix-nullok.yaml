@@ -1,0 +1,364 @@
+id: ubuntu2404-pam-unix-nullok
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.3.3.4.1
+  section: Access Control > Pluggable Authentication Modules > Configure pluggable module arguments > Configure pam_unix module
+  title:
+    pl: Moduł pam_unix nie przyjmuje pustych haseł
+    en: Ensure pam_unix does not include nullok
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Z opcją nullok pam_unix wpuszcza konto, które ma w /etc/shadow puste
+    hasło, bez pytania o nie. Takie konto może powstać przez pomyłkę, na
+    przykład po passwd -d, i wtedy każdy, kto zna jego nazwę, zaloguje się
+    na nie albo przełączy przez su.
+
+    Punkt wymaga, żeby żaden wiersz pam_unix w plikach /etc/pam.d/common-*
+    nie miał argumentu nullok.
+  en: |
+    With the nullok option pam_unix lets in an account that has an empty
+    password in /etc/shadow without asking for it. Such an account can come
+    from a mistake, for example after passwd -d, and then anyone who knows
+    its name can log in to it or switch to it with su.
+
+    The item requires that no pam_unix line in the /etc/pam.d/common-*
+    files has the nullok argument.
+
+disruption_description:
+  pl: |
+    Ubuntu domyślnie ma nullok w wierszu auth pam_unix. Naprawa zastępuje
+    profil pam-auth-update unix jego kopią bez tego argumentu. Konta
+    z pustym hasłem przestają się logować i nie da się na nie przełączyć
+    przez su, dopóki root nie nada im hasła. Konta z hasłem i konta
+    zablokowane (! albo * w /etc/shadow) działają jak dotąd.
+  en: |
+    Ubuntu has nullok on the pam_unix auth line by default. The remediation
+    replaces the unix pam-auth-update profile with its copy without this
+    argument. Accounts with an empty password can no longer log in and
+    cannot be switched to with su until root gives them a password.
+    Accounts with a password and locked accounts (! or * in /etc/shadow)
+    work as before.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Konta z pustym hasłem, na przykład konta testowe albo kioskowe logujące się bez hasła
+    en:
+      - Accounts with an empty password, for example test or kiosk accounts that log in without a password
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Stanowisko kioskowe albo demonstracyjne, na którym konto celowo loguje się bez hasła i nie da się tego zastąpić automatycznym logowaniem
+    en:
+      - A kiosk or demo station where an account logs in without a password on purpose and automatic login cannot replace it
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    pam_lines() {
+      [ -r "$1" ] || return 0
+      awk -v m="$2" '
+        { sub(/#.*/, "") }
+        NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        p[n] == m { s = $1; for (i = 4; i <= NF; i++) s = s " " $i; print s }' "$1"
+    }
+    evaluate() {
+      local bad="" f t
+      for f in common-auth common-account common-password common-session common-session-noninteractive; do
+        for t in $(pam_lines "/etc/pam.d/$f" pam_unix.so | awk '/(^| )nullok( |$)/ { print $1 }'); do
+          bad="$bad,$f:$t"
+        done
+      done
+      if [ -z "$bad" ]; then echo "OK:no-nullok"; else echo "NOT_OK:nullok=${bad#,}"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+      # Without the list of enabled profiles, rollback could turn off profiles that were on.
+      debconf-show libpam-runtime 2>/dev/null | grep -q 'libpam-runtime/profiles:' ||
+        { echo "debconf does not report the enabled PAM profiles (debconf-show libpam-runtime); nothing saved" >&2; exit 1; }
+      {
+        echo format=pamprof-1
+        for p in unix sentin-harden-unix; do
+          if prof_on "$p"; then e=1; else e=0; fi
+          if [ -e "$D/$p" ]; then x=1; else x=0; fi
+          echo "prof $p $e $x"
+        done
+      } > "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pamprof-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | awk '$1 == "prof" && $3 ~ /^[01]$/ && $4 ~ /^[01]$/ && NF == 4 { printf "%s ", $2; next } { print "bad" }')" = "unix sentin-harden-unix " ] ||
+        { echo "Backup file is damaged: $b" >&2; exit 1; }
+    pam_lines() {
+      [ -r "$1" ] || return 0
+      awk -v m="$2" '
+        { sub(/#.*/, "") }
+        NF == 0 { next }
+        { sub(/^[ \t]*-/, ""); gsub(/\[[^]]*\]/, "[jump]"); $1 = $1; n = split($3, p, "/") }
+        p[n] == m { s = $1; for (i = 4; i <= NF; i++) s = s " " $i; print s }' "$1"
+    }
+    evaluate() {
+      local bad="" f t
+      for f in common-auth common-account common-password common-session common-session-noninteractive; do
+        for t in $(pam_lines "/etc/pam.d/$f" pam_unix.so | awk '/(^| )nullok( |$)/ { print $1 }'); do
+          bad="$bad,$f:$t"
+        done
+      done
+      if [ -z "$bad" ]; then echo "OK:no-nullok"; else echo "NOT_OK:nullok=${bad#,}"; fi
+    }
+    unix_there() {
+      local t miss=""
+      for t in auth account password session; do
+        pam_lines "/etc/pam.d/common-$t" pam_unix.so | awk -v t="$t" '$1 == t { f = 1 } END { exit !f }' || miss="$miss,$t"
+      done
+      [ -z "$miss" ] || { echo "${miss#,}"; return 1; }
+    }
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+    O=sentin-harden-unix
+    undo_unix() {
+      local k p e x ue="" oe="" ox=""
+      while read -r k p e x; do
+        case $p in unix) ue=$e ;; "$O") oe=$e; ox=$x ;; esac
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ "$ue" = 1 ] && ! prof_on unix; then
+        [ -e "$D/unix" ] || { echo "The PAM profile $D/unix does not exist, so it cannot be enabled again; nothing changed" >&2; return 1; }
+        pam-auth-update --enable unix >/dev/null
+        echo "Enabled the PAM profile unix again"
+      fi
+      if [ "$oe" = 0 ] && [ -e "$D/$O" ]; then
+        if [ "$ox" = 0 ]; then
+          pam-auth-update --remove "$O" >/dev/null; rm -f "$D/$O"
+          echo "Removed the PAM profile $O, which this rule created"
+        elif prof_on "$O"; then
+          pam-auth-update --disable "$O" >/dev/null
+          echo "Disabled the PAM profile $O"
+        fi
+      fi
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "pam_unix has no nullok argument, nothing to change"; exit 0 ;; esac
+      command -v pam-auth-update >/dev/null 2>&1 || { echo "pam-auth-update is not installed; remove nullok from the PAM files by hand" >&2; exit 1; }
+      [ -r "$D/unix" ] || { echo "The PAM profile $D/unix does not exist; remove nullok from the PAM files by hand" >&2; exit 1; }
+      prof_on unix || { echo "The unix PAM profile is not enabled, so the pam_unix lines with nullok come from another profile or were written by hand; remove nullok there by hand" >&2; exit 1; }
+      if [ ! -e "$D/$O" ]; then
+        t=$(mktemp "$D/.sentin-harden.XXXXXX")
+        sed -e 's/^Name:.*/Name: Unix authentication without empty passwords (Sentin-Harden)/' -e 's/^Default:.*/Default: no/' \
+          -e ':a' -e 's/[[:blank:]]nullok\([[:blank:]]\|$\)/\1/' -e 'ta' "$D/unix" > "$t"
+        chmod 644 "$t"; chown root:root "$t"; mv -f "$t" "$D/$O"
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      pam-auth-update --enable "$O" >/dev/null && pam-auth-update --disable unix >/dev/null ||
+        { undo_unix "$b" >/dev/null; echo "pam-auth-update failed; restored the previous state" >&2; exit 1; }
+      r=$(evaluate)
+      m=$(unix_there) || r="NOT_OK:no-pam_unix=$m"
+      case "$r" in
+        OK*) ;;
+        *) undo_unix "$b" >/dev/null
+           echo "PAM still does not meet the item after switching to the $O profile ($r), for example because the common-* files were changed by hand outside the part that pam-auth-update manages; restored the previous state" >&2; exit 1 ;;
+      esac
+      echo "Enabled the PAM profile $O, a copy of the unix profile without nullok, in place of the unix profile"
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=pamprof-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      [ "$(tail -n +2 "$b" | awk '$1 == "prof" && $3 ~ /^[01]$/ && $4 ~ /^[01]$/ && NF == 4 { printf "%s ", $2; next } { print "bad" }')" = "unix sentin-harden-unix " ] ||
+        { echo "Backup file is damaged: $b" >&2; exit 1; }
+    D=/usr/share/pam-configs
+    prof_on() {
+      debconf-show libpam-runtime 2>/dev/null | awk -v p="$1" '
+        { sub(/^[* \t]*/, "") }
+        index($0, "libpam-runtime/profiles:") == 1 {
+          n = split(substr($0, 25), a, ",")
+          for (i = 1; i <= n; i++) { gsub(/[ \t]/, "", a[i]); if (a[i] == p) f = 1 } }
+        END { exit !f }'
+    }
+    # undo BACKUP: turn off again the profiles that were off; a profile file this
+    # rule created is removed from the configuration and deleted.
+    undo() {
+      local k p e x rm="" dis=""
+      while read -r k p e x; do
+        [ "$e" = 0 ] && [ -e "$D/$p" ] || continue
+        if [ "$x" = 0 ]; then rm="$rm $p"; elif prof_on "$p"; then dis="$dis $p"; fi
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ -n "$dis" ]; then pam-auth-update --disable $dis >/dev/null; fi
+      if [ -n "$rm" ]; then
+        pam-auth-update --remove $rm >/dev/null
+        for p in $rm; do rm -f "$D/$p"; done
+      fi
+      [ -z "$dis" ] || echo "Disabled the PAM profiles$dis"
+      [ -z "$rm" ] || echo "Removed the PAM profiles$rm, which this rule created"
+    }
+    O=sentin-harden-unix
+    undo_unix() {
+      local k p e x ue="" oe="" ox=""
+      while read -r k p e x; do
+        case $p in unix) ue=$e ;; "$O") oe=$e; ox=$x ;; esac
+      done < <(tail -n +2 "$1")
+      export DEBIAN_FRONTEND=noninteractive
+      if [ "$ue" = 1 ] && ! prof_on unix; then
+        [ -e "$D/unix" ] || { echo "The PAM profile $D/unix does not exist, so it cannot be enabled again; nothing changed" >&2; return 1; }
+        pam-auth-update --enable unix >/dev/null
+        echo "Enabled the PAM profile unix again"
+      fi
+      if [ "$oe" = 0 ] && [ -e "$D/$O" ]; then
+        if [ "$ox" = 0 ]; then
+          pam-auth-update --remove "$O" >/dev/null; rm -f "$D/$O"
+          echo "Removed the PAM profile $O, which this rule created"
+        elif prof_on "$O"; then
+          pam-auth-update --disable "$O" >/dev/null
+          echo "Disabled the PAM profile $O"
+        fi
+      fi
+    }
+      command -v pam-auth-update >/dev/null 2>&1 || { echo "pam-auth-update is not installed; nothing changed" >&2; exit 1; }
+      out=$(undo_unix "$b")
+      echo "${out:-Nothing to restore}"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man8/pam_unix.8.html
+  - https://manpages.ubuntu.com/manpages/noble/man8/pam-auth-update.8.html
+
+notes:
+  pl: |
+    Sprawdzenie czyta aktywne wiersze pam_unix we wszystkich pięciu plikach
+    /etc/pam.d/common-*, także w common-session-noninteractive. Te wiersze
+    buduje pam-auth-update z profilu unix z pakietu libpam-runtime, który
+    ma nullok w wierszach Auth i Auth-Initial.
+
+    Naprawa nie zmienia pliku pakietu, bo aktualizacja libpam-runtime by go
+    nadpisała. Zapisuje profil /usr/share/pam-configs/sentin-harden-unix,
+    kopię obecnego profilu unix bez argumentu nullok, włącza go i dopiero
+    potem wyłącza profil unix, więc pam_unix ani na chwilę nie znika
+    z plików PAM. Potem sprawdza, czy nullok zniknął i czy pam_unix nadal
+    jest w stosach auth, account, password i session; jeśli nie, przywraca
+    poprzedni stan. Gdy profil unix nie jest włączony, naprawa niczego nie
+    robi, bo wiersze pam_unix pochodzą wtedy z innego profilu albo z ręcznej
+    zmiany. Wycofanie włącza z powrotem profil unix, a dopiero potem
+    wyłącza i usuwa profil tej reguły.
+
+    Kopia nie śledzi zmian profilu unix w nowszych wersjach libpam-runtime;
+    po takiej aktualizacji warto wycofać regułę i naprawić ją jeszcze raz.
+    pam-auth-update --package, które uruchamia aktualizacja pakietu,
+    zostawia wybór profili bez zmian. Sprawdziłem w kontenerze Ubuntu 24.04,
+    że su na konto z pustym hasłem działa z nullok i jest odrzucane bez
+    niego. Konta z pustym hasłem pokazuje polecenie
+    awk -F: '$2 == ""' /etc/shadow.
+  en: |
+    The check reads the active pam_unix lines in all five
+    /etc/pam.d/common-* files, common-session-noninteractive included.
+    pam-auth-update builds these lines from the unix profile of the
+    libpam-runtime package, which has nullok on the Auth and Auth-Initial
+    lines.
+
+    The remediation does not change the package file, because an update of
+    libpam-runtime would overwrite it. It writes the profile
+    /usr/share/pam-configs/sentin-harden-unix, a copy of the current unix
+    profile without the nullok argument, enables it and only then disables
+    the unix profile, so pam_unix never leaves the PAM files. It then checks
+    that nullok is gone and that pam_unix is still in the auth, account,
+    password and session stacks; if not, it restores the previous state.
+    When the unix profile is not enabled, the remediation does nothing,
+    because the pam_unix lines then come from another profile or a change by
+    hand. Rollback enables the unix profile again and only then disables and
+    removes the profile of this rule.
+
+    The copy does not follow changes of the unix profile in newer versions
+    of libpam-runtime; after such an update it is worth rolling the rule
+    back and remediating it again. pam-auth-update --package, which a
+    package update runs, keeps the choice of profiles. An Ubuntu 24.04
+    container showed that su to an account with an empty password works
+    with nullok and is rejected without it. The command
+    awk -F: '$2 == ""' /etc/shadow lists accounts with an empty password.

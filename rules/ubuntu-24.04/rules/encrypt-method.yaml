@@ -1,0 +1,419 @@
+id: ubuntu2404-encrypt-method
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.4.1.4
+  section: Access Control > User Accounts and Environment > Configure shadow password suite parameters
+  title:
+    pl: Algorytm skrótu haseł w login.defs jest silny
+    en: Ensure strong password hashing algorithm is configured
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    ENCRYPT_METHOD w /etc/login.defs wybiera algorytm, którym pam_unix bez
+    własnej opcji algorytmu i narzędzia z pakietu passwd zapisują hasła
+    w /etc/shadow. Stare algorytmy, na przykład MD5 albo DES, pozwalają po
+    wycieku pliku szybko odgadnąć hasła.
+
+    Punkt wymaga, żeby ENCRYPT_METHOD wynosił SHA512 albo YESCRYPT.
+  en: |
+    ENCRYPT_METHOD in /etc/login.defs selects the algorithm that pam_unix
+    without its own algorithm option and the tools of the passwd package use
+    to store passwords in /etc/shadow. Old algorithms, for example MD5 or
+    DES, allow passwords to be guessed quickly after the file leaks.
+
+    The item requires ENCRYPT_METHOD to be SHA512 or YESCRYPT.
+
+disruption_description:
+  pl: |
+    Ubuntu domyślnie ustawia SHA512, więc zwykle nic się nie zmienia. Jeśli
+    ustawiono inny algorytm, naprawa ustawia YESCRYPT, tak jak opcja
+    w wierszu pam_unix, i nowe hasła dostają skrót yescrypt; istniejące
+    hasła działają dalej.
+  en: |
+    Ubuntu uses SHA512 by default, so usually nothing changes. If another
+    algorithm was set, the remediation sets YESCRYPT, like the option on the
+    pam_unix line, and new passwords get a yescrypt hash; existing passwords
+    keep working.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+  what_breaks:
+    pl:
+      - Stare systemy albo narzędzia, które czytają skróty z /etc/shadow i nie znają yescrypt
+    en:
+      - Old systems or tools that read hashes from /etc/shadow and do not know yescrypt
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Skróty haseł kopiowane do starego systemu, który obsługuje tylko SHA512; wtedy lepiej ustawić ręcznie SHA512
+    en:
+      - Password hashes copied to an old system that only supports SHA512; then set SHA512 by hand instead
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    # ua_get KEY: "file value" of the last KEY=value line in /etc/default/useradd
+    ua_get() {
+      [ -f /etc/default/useradd ] || return 1
+      awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); n = 1 }
+        END { if (!n) exit 1; print "/etc/default/useradd " v }' /etc/default/useradd
+    }
+    ok() { awk -v v="$1" 'BEGIN { exit !(v == "SHA512" || v == "YESCRYPT") }'; }
+    # shadow_bad: name=value of accounts with a password hash whose field does not meet the item
+    shadow_bad() {
+      awk -F: -v fld= '$2 ~ /^\$.+\$/ { v = $fld; if (!(1)) { printf "%s%s=%s", s, $1, v; s = "," } }' /etc/shadow
+    }
+    evaluate() {
+      local r v s bad="" u=""
+      if r=$(enc_get ENCRYPT_METHOD); then
+        v=${r#* }; s="ENCRYPT_METHOD=$v"
+        [ "${r%% *}" = /etc/login.defs ] || s="$s(${r%% *})"
+      else
+        v=""; s="ENCRYPT_METHOD=not-set"
+      fi
+      ok "$v" || bad=1
+      if [ -n "" ]; then
+        if [ ! -r /etc/shadow ]; then echo "NOT_OK:$s,shadow-unreadable"; return; fi
+        u=$(shadow_bad)
+      fi
+      if [ -z "$bad" ] && [ -z "$u" ]; then echo "OK:$s"; else echo "NOT_OK:$s${u:+,users=$u}"; fi
+    }
+    # restore_users: accounts that still have the value of this rule get the saved value back
+    restore_users() {
+      local tag n v cur
+      while read -r tag n v; do
+        [ "$tag" = user ] || continue
+        cur=$(awk -F: -v n="$n" -v fld= '$1 == n { print $fld; exit }' /etc/shadow)
+        if [ "$cur" = "YESCRYPT" ] && [ "$v" != "YESCRYPT" ]; then chage - "${v:--1}" "$n"; echo "Restored the previous value for $n"; fi
+      done < "$b"
+    }
+    # pam_first KEY: value of the first entry, which pam_unix uses
+    pam_first() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { split(x, w, /[ \t=]+/); if (toupper(w[1]) != k) next; print w[2]; f = 1; exit }
+        END { exit !f }' /etc/login.defs
+    }
+    # enc_get KEY: like defs_get, or "file first:VALUE" when the first entry is not a strong algorithm for pam_unix
+    enc_get() {
+      local p
+      if p=$(pam_first "$1"); then
+        case $(printf '%s' "$p" | tr a-z A-Z) in SHA512|YESCRYPT) ;; *) echo "/etc/login.defs first:$p"; return 0 ;; esac
+      fi
+      defs_get "$1"
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+      {
+        echo format=shadowdefs-1
+        if [ -e /etc/login.defs ]; then echo existed=1; else echo existed=0; fi
+        if [ -n "" ]; then awk -F: -v fld= '$2 ~ /^\$.+\$/ { print "user", $1, $fld }' /etc/shadow; fi
+      } > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/login.defs
+      mark='# Sentin-Harden: ubuntu2404-encrypt-method'
+      line='ENCRYPT_METHOD YESCRYPT'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=shadowdefs-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    # ua_get KEY: "file value" of the last KEY=value line in /etc/default/useradd
+    ua_get() {
+      [ -f /etc/default/useradd ] || return 1
+      awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); n = 1 }
+        END { if (!n) exit 1; print "/etc/default/useradd " v }' /etc/default/useradd
+    }
+    ok() { awk -v v="$1" 'BEGIN { exit !(v == "SHA512" || v == "YESCRYPT") }'; }
+    # shadow_bad: name=value of accounts with a password hash whose field does not meet the item
+    shadow_bad() {
+      awk -F: -v fld= '$2 ~ /^\$.+\$/ { v = $fld; if (!(1)) { printf "%s%s=%s", s, $1, v; s = "," } }' /etc/shadow
+    }
+    evaluate() {
+      local r v s bad="" u=""
+      if r=$(enc_get ENCRYPT_METHOD); then
+        v=${r#* }; s="ENCRYPT_METHOD=$v"
+        [ "${r%% *}" = /etc/login.defs ] || s="$s(${r%% *})"
+      else
+        v=""; s="ENCRYPT_METHOD=not-set"
+      fi
+      ok "$v" || bad=1
+      if [ -n "" ]; then
+        if [ ! -r /etc/shadow ]; then echo "NOT_OK:$s,shadow-unreadable"; return; fi
+        u=$(shadow_bad)
+      fi
+      if [ -z "$bad" ] && [ -z "$u" ]; then echo "OK:$s"; else echo "NOT_OK:$s${u:+,users=$u}"; fi
+    }
+    # restore_users: accounts that still have the value of this rule get the saved value back
+    restore_users() {
+      local tag n v cur
+      while read -r tag n v; do
+        [ "$tag" = user ] || continue
+        cur=$(awk -F: -v n="$n" -v fld= '$1 == n { print $fld; exit }' /etc/shadow)
+        if [ "$cur" = "YESCRYPT" ] && [ "$v" != "YESCRYPT" ]; then chage - "${v:--1}" "$n"; echo "Restored the previous value for $n"; fi
+      done < "$b"
+    }
+    # pam_first KEY: value of the first entry, which pam_unix uses
+    pam_first() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { split(x, w, /[ \t=]+/); if (toupper(w[1]) != k) next; print w[2]; f = 1; exit }
+        END { exit !f }' /etc/login.defs
+    }
+    # enc_get KEY: like defs_get, or "file first:VALUE" when the first entry is not a strong algorithm for pam_unix
+    enc_get() {
+      local p
+      if p=$(pam_first "$1"); then
+        case $(printf '%s' "$p" | tr a-z A-Z) in SHA512|YESCRYPT) ;; *) echo "/etc/login.defs first:$p"; return 0 ;; esac
+      fi
+      defs_get "$1"
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item (${r#OK:}), nothing to change"; exit 0 ;;
+        *shadow-unreadable*) echo "Cannot read /etc/shadow; run as root" >&2; exit 1 ;;
+      esac
+      fix=0
+      if g=$(enc_get ENCRYPT_METHOD); then
+        if ! ok "${g#* }"; then
+          [ "${g%% *}" = "$f" ] || { echo "ENCRYPT_METHOD is set in ${g%% *}, which overrides $f; change it there by hand" >&2; exit 1; }
+          fix=1
+        fi
+      else
+        fix=1
+      fi
+      users=""
+      if [ -n "" ]; then
+        users=$(awk -F: -v fld= '$2 ~ /^\$.+\$/ { v = $fld; if (!(1)) print $1 }' /etc/shadow)
+        lock=$(awk -F: -v fld= -v nv=YESCRYPT -v today=$today '
+          function lk(l, m, i) { return l ~ /^[0-9]+$/ && l + 0 > 0 && m ~ /^[0-9]+$/ && i ~ /^[0-9]+$/ && today - l > m + 0 && today - l - m > i + 0 }
+          $2 ~ /^\$.+\$/ { v = $fld; if (1) next; was = lk($3, $5, $7); $fld = nv
+            if (!was && lk($3, $5, $7)) { printf "%s%s", s, $1; s = "," } }' /etc/shadow)
+        if [ -n "$lock" ]; then
+          echo "These accounts would be locked right away because their password is too old: $lock; set them a new password first, nothing changed" >&2; exit 1
+        fi
+      fi
+      d=$(dirname "$f")
+      old=$(mktemp "$d/.sentin-harden-old.XXXXXX")
+      t=$(mktemp "$d/.sentin-harden.XXXXXX")
+      trap 'rm -f "$old" "$t"' EXIT
+      if [ -e "$f" ]; then had=1; cat "$f" > "$old"; else had=0; fi
+      undo() {
+        if [ "$fix" = 1 ]; then if [ "$had" = 1 ]; then cat "$old" > "$f"; else rm -f "$f"; fi; fi
+        if [ -n "" ]; then restore_users >/dev/null; fi
+      }
+      if [ "$fix" = 1 ]; then
+        { if [ "$had" = 1 ]; then awk -v mark="$mark" -v line="$line" -v k=ENCRYPT_METHOD '
+            skip { skip = 0; if ($0 == line) next }
+            $0 == mark { skip = 1; next }
+            !done { x = $0; sub(/^[ \t]+/, "", x); if (x !~ /^#/) { split(x, w, /[ \t=]+/); if (toupper(w[1]) == k) { print mark; print line; done = 1 } } }
+            { print }
+            END { print mark; print line }' "$f"
+          else echo "$mark"; echo "$line"; fi; } > "$t"
+        if [ "$had" = 1 ]; then chmod --reference="$f" "$t"; chown --reference="$f" "$t"; else chmod 644 "$t"; chown root:root "$t"; fi
+        mv -f "$t" "$f"
+        echo "Set $line in $f"
+      fi
+      for u in $users; do
+        chage - YESCRYPT "$u" || { undo; echo "chage failed for $u; restored the previous state" >&2; exit 1; }
+        echo "Set  YESCRYPT for $u"
+      done
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) undo; echo "The item is not met after the change ($r); restored the previous state" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      f=/etc/login.defs
+      mark='# Sentin-Harden: ubuntu2404-encrypt-method'
+      line='ENCRYPT_METHOD YESCRYPT'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=shadowdefs-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      e=$(sed -n '2s/^existed=//p' "$b")
+      case "$e" in 0|1) ;; *) echo "Backup file is damaged: $b" >&2; exit 1 ;; esac
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    # ua_get KEY: "file value" of the last KEY=value line in /etc/default/useradd
+    ua_get() {
+      [ -f /etc/default/useradd ] || return 1
+      awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); n = 1 }
+        END { if (!n) exit 1; print "/etc/default/useradd " v }' /etc/default/useradd
+    }
+    ok() { awk -v v="$1" 'BEGIN { exit !(v == "SHA512" || v == "YESCRYPT") }'; }
+    # shadow_bad: name=value of accounts with a password hash whose field does not meet the item
+    shadow_bad() {
+      awk -F: -v fld= '$2 ~ /^\$.+\$/ { v = $fld; if (!(1)) { printf "%s%s=%s", s, $1, v; s = "," } }' /etc/shadow
+    }
+    evaluate() {
+      local r v s bad="" u=""
+      if r=$(enc_get ENCRYPT_METHOD); then
+        v=${r#* }; s="ENCRYPT_METHOD=$v"
+        [ "${r%% *}" = /etc/login.defs ] || s="$s(${r%% *})"
+      else
+        v=""; s="ENCRYPT_METHOD=not-set"
+      fi
+      ok "$v" || bad=1
+      if [ -n "" ]; then
+        if [ ! -r /etc/shadow ]; then echo "NOT_OK:$s,shadow-unreadable"; return; fi
+        u=$(shadow_bad)
+      fi
+      if [ -z "$bad" ] && [ -z "$u" ]; then echo "OK:$s"; else echo "NOT_OK:$s${u:+,users=$u}"; fi
+    }
+    # restore_users: accounts that still have the value of this rule get the saved value back
+    restore_users() {
+      local tag n v cur
+      while read -r tag n v; do
+        [ "$tag" = user ] || continue
+        cur=$(awk -F: -v n="$n" -v fld= '$1 == n { print $fld; exit }' /etc/shadow)
+        if [ "$cur" = "YESCRYPT" ] && [ "$v" != "YESCRYPT" ]; then chage - "${v:--1}" "$n"; echo "Restored the previous value for $n"; fi
+      done < "$b"
+    }
+    # pam_first KEY: value of the first entry, which pam_unix uses
+    pam_first() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { split(x, w, /[ \t=]+/); if (toupper(w[1]) != k) next; print w[2]; f = 1; exit }
+        END { exit !f }' /etc/login.defs
+    }
+    # enc_get KEY: like defs_get, or "file first:VALUE" when the first entry is not a strong algorithm for pam_unix
+    enc_get() {
+      local p
+      if p=$(pam_first "$1"); then
+        case $(printf '%s' "$p" | tr a-z A-Z) in SHA512|YESCRYPT) ;; *) echo "/etc/login.defs first:$p"; return 0 ;; esac
+      fi
+      defs_get "$1"
+    }
+      if [ -n "" ]; then restore_users; fi
+      if [ ! -f "$f" ] || ! grep -qxF "$mark" "$f"; then echo "The line of this rule is not in $f, nothing to restore there"; exit 0; fi
+      t=$(mktemp "$(dirname "$f")/.sentin-harden.XXXXXX")
+      trap 'rm -f "$t"' EXIT
+      # Only the marked line of this rule goes; the rest of the file stays as it is now.
+      awk -v mark="$mark" -v line="$line" 'skip { skip = 0; if ($0 == line) next } $0 == mark { skip = 1; next } { print }' "$f" > "$t"
+      if grep -A 1 -xF "$mark" "$f" | grep -qxF "$line"; then kept=0; else kept=1; fi
+      if [ "$e" = 0 ] && ! grep -q '[^[:space:]]' "$t"; then
+        rm -f "$f"; echo "Removed $f, which this rule created"; exit 0
+      fi
+      chmod --reference="$f" "$t"; chown --reference="$f" "$t"; mv -f "$t" "$f"
+      if [ "$kept" = 1 ]; then
+        echo "Removed the comment of this rule from $f; the line under it was changed by hand and stays"
+      else
+        echo "Removed the ENCRYPT_METHOD line of this rule from $f"
+      fi
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/login.defs.5.html
+
+notes:
+  pl: |
+    /etc/login.defs czytają na Ubuntu dwa rodzaje programów i każdy
+    inaczej. pam_unix, gdy jego wiersz w common-password nie ma opcji
+    algorytmu (punkt 5.3.3.4.3), bierze pierwszy wpis ENCRYPT_METHOD, nie
+    rozróżnia wielkości liter, przyjmuje też zapis KEY=wartość, a wartość
+    w cudzysłowie uznaje za nieznaną i zapisuje hasło starym algorytmem
+    DES. Narzędzia z pakietów login i passwd biorą ostatni wpis, zdejmują
+    cudzysłów i rozróżniają wielkość liter; chpasswd uznaje wartość sha512
+    za błędną. Sprawdzenie wymaga więc, żeby pierwszy wpis w rozumieniu
+    pam_unix i ostatni w rozumieniu tych narzędzi miały wartość SHA512 albo
+    YESCRYPT, a wynik NOT_OK z dopiskiem first: podaje pierwszy wpis.
+    Sprawdziłem to w kontenerze Ubuntu 24.04.
+
+    Naprawa wstawia wiersz tej reguły pod komentarzem Sentin-Harden tuż
+    przed pierwszym wpisem ENCRYPT_METHOD i drugi raz na końcu pliku, a gdy
+    wpisu nie ma, tylko na końcu. Wcześniejsze wpisy zostają bez zmian.
+    Wycofanie usuwa tylko wiersze tej reguły.
+  en: |
+    On Ubuntu two kinds of programs read /etc/login.defs, each in its own
+    way. pam_unix, when its line in common-password has no algorithm option
+    (item 5.3.3.4.3), takes the first ENCRYPT_METHOD entry, ignores case,
+    also accepts KEY=value, and treats a quoted value as unknown and stores
+    the password with the old DES algorithm. The tools of the login and
+    passwd packages take the last entry, remove quotes and are case
+    sensitive; chpasswd treats the value sha512 as wrong. The check
+    therefore requires the first entry as pam_unix reads it and the last one
+    as these tools read it to be SHA512 or YESCRYPT, and the NOT_OK result
+    with a first: note gives the first entry. This was checked in an Ubuntu
+    24.04 container.
+
+    The remediation inserts the line of this rule under a Sentin-Harden
+    comment right before the first ENCRYPT_METHOD entry and once more at the
+    end of the file, or only at the end when there is no entry. The earlier
+    entries stay as they are. Rollback removes only the lines of this rule.

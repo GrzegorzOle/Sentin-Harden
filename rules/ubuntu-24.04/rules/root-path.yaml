@@ -1,0 +1,324 @@
+id: ubuntu2404-root-path
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.4.2.5
+  section: Access Control > User Accounts and Environment > Configure root and system accounts and environment
+  title:
+    pl: Ścieżka PATH konta root jest bezpieczna
+    en: Ensure root path integrity
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: none
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Root uruchamia polecenia z katalogów w PATH. Jeśli któryś z nich może
+    zapisać inny użytkownik albo PATH zawiera katalog bieżący, wystarczy
+    podłożyć program o nazwie częstego polecenia, żeby root go uruchomił.
+
+    Punkt wymaga, żeby PATH roota nie miał pustych wpisów ani ścieżek
+    względnych, a każdy wpis był istniejącym katalogiem należącym do roota,
+    bez prawa zapisu dla grupy i innych.
+  en: |
+    root runs commands from the directories in PATH. If another user can
+    write to one of them or PATH contains the current directory, planting a
+    program named like a common command is enough to make root run it.
+
+    The item requires the PATH of root to have no empty entries or relative
+    paths, and every entry to be an existing directory owned by root,
+    without write access for the group and others.
+
+disruption_description:
+  pl: |
+    Na Ubuntu katalogi z PATH roota zwykle istnieją i należą do roota, więc
+    naprawa niczego nie zmienia. Tworzy tylko brakujące katalogi w katalogu
+    domowym roota z prawami 0700, jeśli pliki startowe roota je dopisują.
+    Nikt tego nie zauważy.
+  en: |
+    On Ubuntu the directories in the PATH of root usually exist and are
+    owned by root, so the remediation changes nothing. It only creates
+    missing directories in the home of root with mode 0700 if the startup
+    files of root add them. Nobody will notice.
+
+implementation_consequences:
+  impact_areas:
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Nie ma typowej sytuacji, w której utworzenie pustych katalogów coś psuje
+    en:
+      - There is no typical case where creating empty directories breaks something
+  interruption: none
+  user_visible: false
+  do_not_apply_when:
+    pl:
+      - Nie ma typowej sytuacji, w której warto tego nie robić
+    en:
+      - There is no typical case where this is better left undone
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    home=$(getent passwd root | cut -d: -f6)
+    # root_paths: "source=PATH" per line
+    root_paths() {
+      local p
+      p=$(timeout 30 runuser -l root -c 'printf "SENTIN_HARDEN_PATH=%s\n" "$PATH"' </dev/null 2>/dev/null | sed -n 's/^SENTIN_HARDEN_PATH=//p' | tail -n 1)
+      [ -z "$p" ] || echo "login=$p"
+      if [ -f /etc/environment ]; then
+        p=$(awk '{ x = $0; sub(/^[ \t]+/, "", x); sub(/^export[ \t]+/, "", x) }
+          x ~ /^PATH=/ { v = substr(x, 6); sub(/[ \t]+$/, "", v); if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2); l = v; n = 1 }
+          END { if (n) print l }' /etc/environment)
+        [ -z "$p" ] || echo "environment=$p"
+      fi
+      if command -v sudo >/dev/null 2>&1; then
+        p=$(timeout 30 sudo -V 2>/dev/null | sed -n 's/^Value to override user.s \$PATH with: //p' | tail -n 1)
+        [ -z "$p" ] || echo "sudo=$p"
+      fi
+    }
+    # path_issues PATH: one "kind:dir" per line
+    path_issues() {
+      local d o m
+      awk -v p="$1" 'BEGIN { n = split(p, a, ":"); for (i = 1; i <= n; i++) print a[i] }' | while IFS= read -r d; do
+        case "$d" in
+          "") echo "empty-entry:"; continue ;;
+          /*) ;;
+          *) echo "relative:$d"; continue ;;
+        esac
+        if [ ! -d "$d" ]; then echo "missing:$d"; continue; fi
+        read -r o m <<EOF
+    $(stat -Lc '%u %a' "$d")
+    EOF
+        [ "$o" = 0 ] || echo "owner:$d"
+        [ $(( 0$m & 022 )) = 0 ] || echo "writable:$d"
+      done
+    }
+    # all_issues: the issues of every PATH, each once
+    all_issues() { root_paths | while IFS= read -r l; do path_issues "${l#*=}"; done | awk '!s[$0]++'; }
+    evaluate() {
+      local i
+      [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
+      root_paths | grep -q '^login=' || { echo "NOT_OK:path-unknown"; return; }
+      i=$(all_issues | paste -sd, -)
+      if [ -z "$i" ]; then echo "OK:checked=$(root_paths | cut -d= -f1 | paste -sd/ -)"; else echo "NOT_OK:$i"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    home=$(getent passwd root | cut -d: -f6)
+    # root_paths: "source=PATH" per line
+    root_paths() {
+      local p
+      p=$(timeout 30 runuser -l root -c 'printf "SENTIN_HARDEN_PATH=%s\n" "$PATH"' </dev/null 2>/dev/null | sed -n 's/^SENTIN_HARDEN_PATH=//p' | tail -n 1)
+      [ -z "$p" ] || echo "login=$p"
+      if [ -f /etc/environment ]; then
+        p=$(awk '{ x = $0; sub(/^[ \t]+/, "", x); sub(/^export[ \t]+/, "", x) }
+          x ~ /^PATH=/ { v = substr(x, 6); sub(/[ \t]+$/, "", v); if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2); l = v; n = 1 }
+          END { if (n) print l }' /etc/environment)
+        [ -z "$p" ] || echo "environment=$p"
+      fi
+      if command -v sudo >/dev/null 2>&1; then
+        p=$(timeout 30 sudo -V 2>/dev/null | sed -n 's/^Value to override user.s \$PATH with: //p' | tail -n 1)
+        [ -z "$p" ] || echo "sudo=$p"
+      fi
+    }
+    # path_issues PATH: one "kind:dir" per line
+    path_issues() {
+      local d o m
+      awk -v p="$1" 'BEGIN { n = split(p, a, ":"); for (i = 1; i <= n; i++) print a[i] }' | while IFS= read -r d; do
+        case "$d" in
+          "") echo "empty-entry:"; continue ;;
+          /*) ;;
+          *) echo "relative:$d"; continue ;;
+        esac
+        if [ ! -d "$d" ]; then echo "missing:$d"; continue; fi
+        read -r o m <<EOF
+    $(stat -Lc '%u %a' "$d")
+    EOF
+        [ "$o" = 0 ] || echo "owner:$d"
+        [ $(( 0$m & 022 )) = 0 ] || echo "writable:$d"
+      done
+    }
+    # all_issues: the issues of every PATH, each once
+    all_issues() { root_paths | while IFS= read -r l; do path_issues "${l#*=}"; done | awk '!s[$0]++'; }
+    evaluate() {
+      local i
+      [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
+      root_paths | grep -q '^login=' || { echo "NOT_OK:path-unknown"; return; }
+      i=$(all_issues | paste -sd, -)
+      if [ -z "$i" ]; then echo "OK:checked=$(root_paths | cut -d= -f1 | paste -sd/ -)"; else echo "NOT_OK:$i"; fi
+    }
+      {
+        echo format=rootpath-1
+        # Directories of the PATH missing under the home of root, with the parents that are missing too.
+        all_issues | sed -n 's/^missing://p' | while IFS= read -r d; do
+          case "$d" in "$home"/*) ;; *) continue ;; esac
+          case "/$d/" in */../*|*/./*) continue ;; esac
+          while [ "$d" != "$home" ] && [ ! -e "$d" ]; do echo "dir $d"; d=$(dirname "$d"); done
+        done | sort -u
+      } > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rootpath-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    home=$(getent passwd root | cut -d: -f6)
+    # root_paths: "source=PATH" per line
+    root_paths() {
+      local p
+      p=$(timeout 30 runuser -l root -c 'printf "SENTIN_HARDEN_PATH=%s\n" "$PATH"' </dev/null 2>/dev/null | sed -n 's/^SENTIN_HARDEN_PATH=//p' | tail -n 1)
+      [ -z "$p" ] || echo "login=$p"
+      if [ -f /etc/environment ]; then
+        p=$(awk '{ x = $0; sub(/^[ \t]+/, "", x); sub(/^export[ \t]+/, "", x) }
+          x ~ /^PATH=/ { v = substr(x, 6); sub(/[ \t]+$/, "", v); if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2); l = v; n = 1 }
+          END { if (n) print l }' /etc/environment)
+        [ -z "$p" ] || echo "environment=$p"
+      fi
+      if command -v sudo >/dev/null 2>&1; then
+        p=$(timeout 30 sudo -V 2>/dev/null | sed -n 's/^Value to override user.s \$PATH with: //p' | tail -n 1)
+        [ -z "$p" ] || echo "sudo=$p"
+      fi
+    }
+    # path_issues PATH: one "kind:dir" per line
+    path_issues() {
+      local d o m
+      awk -v p="$1" 'BEGIN { n = split(p, a, ":"); for (i = 1; i <= n; i++) print a[i] }' | while IFS= read -r d; do
+        case "$d" in
+          "") echo "empty-entry:"; continue ;;
+          /*) ;;
+          *) echo "relative:$d"; continue ;;
+        esac
+        if [ ! -d "$d" ]; then echo "missing:$d"; continue; fi
+        read -r o m <<EOF
+    $(stat -Lc '%u %a' "$d")
+    EOF
+        [ "$o" = 0 ] || echo "owner:$d"
+        [ $(( 0$m & 022 )) = 0 ] || echo "writable:$d"
+      done
+    }
+    # all_issues: the issues of every PATH, each once
+    all_issues() { root_paths | while IFS= read -r l; do path_issues "${l#*=}"; done | awk '!s[$0]++'; }
+    evaluate() {
+      local i
+      [ "$(id -u)" = 0 ] || { echo "NOT_OK:needs-root"; return; }
+      root_paths | grep -q '^login=' || { echo "NOT_OK:path-unknown"; return; }
+      i=$(all_issues | paste -sd, -)
+      if [ -z "$i" ]; then echo "OK:checked=$(root_paths | cut -d= -f1 | paste -sd/ -)"; else echo "NOT_OK:$i"; fi
+    }
+      r=$(evaluate)
+      case "$r" in
+        OK*) echo "Already meets the item, nothing to change"; exit 0 ;;
+        NOT_OK:needs-root|NOT_OK:path-unknown) echo "Cannot read the PATH of root (${r#NOT_OK:})" >&2; exit 1 ;;
+      esac
+      other=$(all_issues | while IFS= read -r i; do
+        case "$i" in
+          missing:"$home"/*) case "/${i#missing:}/" in */../*|*/./*) echo "$i" ;; esac ;;
+          *) echo "$i" ;;
+        esac
+      done | paste -sd, -)
+      [ -z "$other" ] || { echo "The PATH of root has problems that have to be fixed by hand: $other" >&2; exit 1; }
+      all_issues | sed -n 's/^missing://p' | while IFS= read -r d; do
+        grep -qxF "dir $d" "$b" || { echo "$d is not in the backup; run backup again" >&2; exit 1; }
+      done
+      sed -n 's/^dir //p' "$b" | awk '{ print length, $0 }' | sort -n | cut -d' ' -f2- | while IFS= read -r d; do
+        [ -e "$d" ] && continue
+        mkdir -m 0700 "$d"; chown root:root "$d"
+        echo "Created $d"
+      done
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) echo "The item is not met after the change ($r); run rollback to remove the created directories" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=rootpath-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+      sed -n 's/^dir //p' "$b" | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2- | while IFS= read -r d; do
+        [ -d "$d" ] || continue
+        if rmdir "$d" 2>/dev/null; then echo "Removed $d"; else echo "$d is not empty and stays"; fi
+      done
+      echo "Rollback finished"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man1/runuser.1.html
+  - https://manpages.ubuntu.com/manpages/noble/man5/environment.5.html
+  - https://manpages.ubuntu.com/manpages/noble/man5/sudoers.5.html
+  - https://www.gnu.org/software/bash/manual/html_node/Bash-Startup-Files.html
+
+notes:
+  pl: |
+    Root dostaje PATH z różnych miejsc zależnie od sposobu wejścia, więc
+    sprawdzenie łączy trzy źródła: powłokę logowania roota uruchomioną przez
+    runuser -l (ENV_SUPATH z /etc/login.defs i pliki startowe roota), PATH
+    z /etc/environment, który pam_env ustawia przy logowaniu na konsoli,
+    przez ssh i po su -, oraz secure_path z sudo, używany przez sudo -i
+    i odczytany poleceniem sudo -V. W kontenerze Ubuntu 24.04 sprawdziłem,
+    że runuser -l nie czyta /etc/environment, a su - tak. /etc/environment
+    i secure_path zawierają /snap/bin, więc bez pakietu snapd wynik to
+    NOT_OK z dopiskiem missing:/snap/bin; wtedy trzeba zainstalować snapd
+    albo usunąć ten wpis z obu miejsc. Bez uprawnień roota sprawdzenie daje
+    wynik NOT_OK z dopiskiem needs-root.
+
+    Wynik NOT_OK podaje problemy: empty-entry (pusty wpis, także dwukropek
+    na początku albo na końcu), relative (ścieżka względna, w tym kropka),
+    missing (brak katalogu), owner (właścicielem nie jest root) i writable
+    (zapis dla grupy albo innych). Naprawa tworzy tylko brakujące katalogi
+    w katalogu domowym roota, bo tam nikt poza rootem nie może ich podłożyć.
+    Pozostałe problemy trzeba poprawić ręcznie; wtedy naprawa niczego nie
+    zmienia. Wycofanie usuwa utworzone katalogi, jeśli są puste.
+  en: |
+    root gets its PATH from different places depending on how it gets in, so
+    the check combines three sources: a login shell of root started with
+    runuser -l (ENV_SUPATH from /etc/login.defs and the startup files of
+    root), the PATH from /etc/environment, which pam_env sets on console
+    and ssh logins and after su -, and the secure_path of sudo, used by
+    sudo -i and read with sudo -V. An Ubuntu 24.04 container showed that
+    runuser -l does not read /etc/environment and su - does.
+    /etc/environment and secure_path contain /snap/bin, so without the
+    snapd package the result is NOT_OK with a missing:/snap/bin note; then
+    snapd has to be installed or this entry removed from both places.
+    Without root privileges the check gives the NOT_OK result with a
+    needs-root note.
+
+    The NOT_OK result lists the problems: empty-entry (an empty entry, also
+    a colon at the start or the end), relative (a relative path, including a
+    dot), missing (no directory), owner (not owned by root) and writable
+    (write access for the group or others). The remediation only creates
+    missing directories in the home of root, because nobody but root can
+    plant them there. The other problems have to be fixed by hand; then the
+    remediation changes nothing. Rollback removes the created directories if
+    they are empty.

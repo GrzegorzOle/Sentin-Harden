@@ -1,0 +1,267 @@
+id: ubuntu2404-system-accounts-nologin
+
+benchmark:
+  name: CIS Ubuntu Linux 24.04 LTS Benchmark
+  version: 1.0.0
+  item: 5.4.2.7
+  section: Access Control > User Accounts and Environment > Configure root and system accounts and environment
+  title:
+    pl: Konta systemowe nie mają powłoki logowania
+    en: Ensure system accounts do not have a valid login shell
+  level: 1
+  profile: server
+
+platform:
+  system: ubuntu-24.04
+
+risk_category: medium
+disruption: needs-review
+assessment_state: assessed-impact-described
+
+description:
+  pl: |
+    Konta systemowe istnieją po to, żeby uruchamiać usługi, a nie żeby ktoś
+    się na nie logował. Powłoka logowania na takim koncie pozwala wejść na
+    nie przez su albo ssh, jeśli ktoś pozna hasło, klucz albo przejmie
+    usługę.
+
+    Punkt wymaga, żeby konta z UID mniejszym niż UID_MIN (oraz konto
+    nobody z UID 65534) nie miały powłoki wymienionej w /etc/shells.
+    CIS pomija konta root, halt, sync, shutdown i nfsnobody.
+  en: |
+    System accounts exist to run services, not for people to log in to.
+    A login shell on such an account allows getting into it through su or
+    ssh, if someone learns the password or key or takes over the service.
+
+    The item requires accounts with a UID below UID_MIN (and the nobody
+    account with UID 65534) not to have a shell listed in /etc/shells.
+    CIS leaves out the root, halt, sync, shutdown and nfsnobody accounts.
+
+disruption_description:
+  pl: |
+    Ubuntu zakłada konta systemowe z powłoką /usr/sbin/nologin, więc zwykle
+    nic się nie zmienia. Niektóre pakiety, na przykład postgresql, dają
+    swojemu kontu powłokę /bin/bash; po naprawie su - postgres przestaje
+    działać, a sudo -u postgres polecenie nadal działa.
+  en: |
+    Ubuntu creates system accounts with the /usr/sbin/nologin shell, so
+    usually nothing changes. Some packages, for example postgresql, give
+    their account the /bin/bash shell; after the remediation su - postgres
+    stops working, while sudo -u postgres command still works.
+
+implementation_consequences:
+  impact_areas:
+    - accounts-and-passwords
+    - scripting-and-automation
+  what_breaks:
+    pl:
+      - Administracja przez su - na konto usługi, np. su - postgres; zamiast tego sudo -u konto polecenie
+      - Skrypty i zadania cron uruchamiane przez su konto -c
+    en:
+      - Administration through su - to a service account, for example su - postgres; use sudo -u account command instead
+      - Scripts and cron jobs started with su account -c
+  interruption: none
+  user_visible: true
+  do_not_apply_when:
+    pl:
+      - Konto usługi, na które administratorzy świadomie logują się powłoką
+    en:
+      - A service account that administrators deliberately log in to with a shell
+  reversibility: immediate
+
+audit:
+  shell: bash
+  test_command: |
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    uid_min() {
+      local r v=""
+      r=$(defs_get UID_MIN) && v=${r#* }
+      case "$v" in ''|*[!0-9]*) v=1000 ;; esac
+      echo "$v"
+    }
+    # sys_bad: "name shell" of system accounts with a valid login shell
+    sys_bad() {
+      awk -F: -v min="$(uid_min)" -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        $1 !~ /^(root|halt|sync|shutdown|nfsnobody)$/ && $3 ~ /^[0-9]+$/ && ($3 + 0 < min || $3 + 0 == 65534) && ($NF in v) { print $1, $NF }' /etc/passwd
+    }
+    evaluate() {
+      local b
+      b=$(sys_bad | tr ' ' '=' | paste -sd, -)
+      if [ -z "$b" ]; then echo "OK:no-system-account-with-shell"; else echo "NOT_OK:$b"; fi
+    }
+    evaluate
+  expected: '^OK:'
+  comparison: regex
+
+remediation:
+  shell: bash
+  backup_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      mkdir -p "$(dirname "$b")"
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    uid_min() {
+      local r v=""
+      r=$(defs_get UID_MIN) && v=${r#* }
+      case "$v" in ''|*[!0-9]*) v=1000 ;; esac
+      echo "$v"
+    }
+    # sys_bad: "name shell" of system accounts with a valid login shell
+    sys_bad() {
+      awk -F: -v min="$(uid_min)" -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        $1 !~ /^(root|halt|sync|shutdown|nfsnobody)$/ && $3 ~ /^[0-9]+$/ && ($3 + 0 < min || $3 + 0 == 65534) && ($NF in v) { print $1, $NF }' /etc/passwd
+    }
+    evaluate() {
+      local b
+      b=$(sys_bad | tr ' ' '=' | paste -sd, -)
+      if [ -z "$b" ]; then echo "OK:no-system-account-with-shell"; else echo "NOT_OK:$b"; fi
+    }
+      { echo format=sysshell-1; sys_bad | sed 's/^/user /'; } > "$b"
+      chmod 600 "$b"
+      echo "Saved previous state to $b"
+    )
+
+  change_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sysshell-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    export LC_ALL=C
+    today=$(( $(date +%s) / 86400 ))
+    # defs_get KEY: "file value" of the last entry, which the shadow tools use
+    defs_get() {
+      [ -f /etc/login.defs ] || return 1
+      awk -v k="$1" '
+        { x = $0; sub(/^[ \t]+/, "", x) }
+        x == "" || x ~ /^#/ { next }
+        { i = match(x, /[ \t]/); if (!i || substr(x, 1, i - 1) != k) next
+          v = substr(x, i); sub(/^[ \t"]+/, "", v); sub(/".*/, "", v); sub(/[ \t]+$/, "", v)
+          if (v != "") { n = 1; l = v } }
+        END { if (!n) exit 1; print "/etc/login.defs " l }' /etc/login.defs
+    }
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    uid_min() {
+      local r v=""
+      r=$(defs_get UID_MIN) && v=${r#* }
+      case "$v" in ''|*[!0-9]*) v=1000 ;; esac
+      echo "$v"
+    }
+    # sys_bad: "name shell" of system accounts with a valid login shell
+    sys_bad() {
+      awk -F: -v min="$(uid_min)" -v sh="$(valid_shells)" '
+        BEGIN { n = split(sh, a, "|"); for (i = 1; i <= n; i++) v[a[i]] = 1 }
+        $1 !~ /^(root|halt|sync|shutdown|nfsnobody)$/ && $3 ~ /^[0-9]+$/ && ($3 + 0 < min || $3 + 0 == 65534) && ($NF in v) { print $1, $NF }' /etc/passwd
+    }
+    evaluate() {
+      local b
+      b=$(sys_bad | tr ' ' '=' | paste -sd, -)
+      if [ -z "$b" ]; then echo "OK:no-system-account-with-shell"; else echo "NOT_OK:$b"; fi
+    }
+    # restore_shells: accounts that still have nologin get the saved shell back
+    restore_shells() {
+      local tag n s cur nl
+      nl=$(nologin_path)
+      while read -r tag n s; do
+        [ "$tag" = user ] || continue
+        cur=$(getent passwd "$n" | awk -F: '{ print $NF }')
+        if [ "$cur" = "$nl" ] && [ "$s" != "$nl" ]; then usermod -s "$s" "$n"; echo "Restored the shell $s for $n"; fi
+      done < "$b"
+    }
+      r=$(evaluate)
+      case "$r" in OK*) echo "Already meets the item, nothing to change"; exit 0 ;; esac
+      nl=$(nologin_path)
+      [ -n "$nl" ] || { echo "nologin not found" >&2; exit 1; }
+      sys_bad | while read -r n s; do
+        grep -qx "user $n .*" "$b" || { echo "$n is not in the backup; run backup again" >&2; exit 1; }
+      done
+      sys_bad | while read -r n s; do
+        usermod -s "$nl" "$n" || { restore_shells >/dev/null; echo "usermod failed for $n; restored the previous shells" >&2; exit 1; }
+        echo "Set the shell $nl for $n (was $s)"
+      done
+      r=$(evaluate)
+      case "$r" in
+        OK*) ;;
+        *) restore_shells >/dev/null; echo "The item is not met after the change ($r); restored the previous shells" >&2; exit 1 ;;
+      esac
+    )
+
+  rollback_command: |
+    (
+      set -e
+      b='{{backup_file}}'
+      [ -r "$b" ] || { echo "Backup file not found: $b" >&2; exit 1; }
+      [ "$(head -n 1 "$b")" = format=sysshell-1 ] || { echo "Backup file is damaged: $b" >&2; exit 1; }
+    valid_shells() { [ -r /etc/shells ] && awk '/^\// { n = split($1, p, "/"); if (p[n] != "nologin") print $1 }' /etc/shells | paste -sd'|' -; }
+    nologin_path() { if [ -x /usr/sbin/nologin ]; then echo /usr/sbin/nologin; else command -v nologin; fi; }
+    # restore_shells: accounts that still have nologin get the saved shell back
+    restore_shells() {
+      local tag n s cur nl
+      nl=$(nologin_path)
+      while read -r tag n s; do
+        [ "$tag" = user ] || continue
+        cur=$(getent passwd "$n" | awk -F: '{ print $NF }')
+        if [ "$cur" = "$nl" ] && [ "$s" != "$nl" ]; then usermod -s "$s" "$n"; echo "Restored the shell $s for $n"; fi
+      done < "$b"
+    }
+      restore_shells
+      echo "Rollback finished"
+    )
+
+privileges: root
+runnable: true
+
+sources:
+  - https://man7.org/linux/man-pages/man5/passwd.5.html
+  - https://man7.org/linux/man-pages/man5/shells.5.html
+  - https://man7.org/linux/man-pages/man8/usermod.8.html
+  - https://man7.org/linux/man-pages/man8/nologin.8.html
+
+notes:
+  pl: |
+    UID_MIN sprawdzenie bierze z /etc/login.defs tak jak narzędzia shadow na
+    Ubuntu, czyli z ostatniego wpisu (domyślnie 1000). Konto sync ma powłokę
+    /bin/sync, której nie ma w /etc/shells, a CIS i tak je pomija. Wynik
+    NOT_OK podaje konta i ich powłoki. Naprawa ustawia im /usr/sbin/nologin
+    poleceniem usermod -s, a stare powłoki zapisuje w kopii zapasowej.
+    Wycofanie przywraca je kontom, które nadal mają nologin.
+  en: |
+    The check takes UID_MIN from /etc/login.defs the way the shadow tools on
+    Ubuntu do, that is from the last entry (1000 by default). The sync
+    account has the /bin/sync shell, which is not in /etc/shells, and CIS
+    leaves it out anyway. The NOT_OK result gives the accounts and their
+    shells. The remediation sets /usr/sbin/nologin for them with usermod -s
+    and saves the old shells in the backup. Rollback gives them back to
+    accounts that still have nologin.

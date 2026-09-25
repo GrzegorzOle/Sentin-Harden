@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QSizePolicy,
     QSplitter,
     QTableView,
     QVBoxLayout,
@@ -132,6 +133,14 @@ class ReverseView(QWidget):
         self.lead = QLabel()
         self.lead.setWordWrap(True)
         self.lead.setStyleSheet("color:#5a6472;")
+        # The paragraph takes the height its text needs and no more. Left to
+        # the defaults it keeps whatever the layout hands it and centres the
+        # text inside, which on a wide window is a band of empty space between
+        # the toolbar and the areas.
+        self.lead.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        lead_policy = self.lead.sizePolicy()
+        lead_policy.setVerticalPolicy(QSizePolicy.Minimum)
+        self.lead.setSizePolicy(lead_policy)
 
         self.areas = QListWidget()
         self.areas.currentRowChanged.connect(self._area_changed)
@@ -171,7 +180,10 @@ class ReverseView(QWidget):
 
         layout = QVBoxLayout()
         layout.addWidget(self.lead)
-        layout.addWidget(splitter)
+        # All the spare height belongs to the splitter. A splitter asks for no
+        # more than it needs by default, so without this the surplus is shared
+        # out evenly and half the window goes to a two-line paragraph.
+        layout.addWidget(splitter, 1)
         self.setLayout(layout)
 
         self.set_rules([], {})
